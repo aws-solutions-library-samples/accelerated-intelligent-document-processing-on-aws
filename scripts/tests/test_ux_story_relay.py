@@ -24,7 +24,10 @@ This module is the ratchet evidence for two registry entries in
 It also holds the third, ``MUTATIONS_WITHOUT_A_GUARDED_CONTROL`` (universe closure):
 every mutation the web UI declares is either in ``MUTATION_CONTROLS``, with the
 shipped controls that send it and the commit guard's refusal of each, or in that
-list, so a mutation the UI gains fails here as an unaccounted one.
+list, so a mutation the UI gains fails here as an unaccounted one. And it closes
+the calls that claim an item over the web UI's code (``CLAIM_CALL_SITES``), so a
+claim reached through a callback, as the grouping board's ``beforeOpen`` is, fails
+here until the control that reaches it is listed and refused.
 """
 
 from __future__ import annotations
@@ -509,6 +512,8 @@ def test_the_story_server_starts_the_same_way_the_expert_session_s_servers_do() 
     story_entry = _story_server(search_path="/opt/node/bin:/usr/bin:/bin")[SERVER]
     expert = agent.mcp_servers(
         toolchain=paths.Toolchain(Path("/opt/ux-runner")),
+        relay=Path("/harness/scripts/ux_runner/review_relay.py"),
+        refusal_log=Path("/run/ux/agent/guard/guard-refusals.jsonl"),
         recorder_adapter=Path("/harness/scripts/ux_recorder_mcp.py"),
         recorder_out=Path("/run/ux/recordings"),
         python="/usr/local/bin/python3",
@@ -1757,8 +1762,10 @@ class Shipped:
     unless the label is built at run time). ``kind`` is how the control is used: a
     ``click`` on a control named ``label``, ``enter`` in the text box named
     ``label`` (``multiline`` when it is a text area), a click on the ``unnamed``
-    button beside a text box, or an ``autosave``: an edit on a page whose editor
-    saves by itself, which shows a control named ``label``. A click control is
+    button beside a text box, an ``autosave``: an edit on a page whose editor
+    saves by itself, which shows a control named ``label``, or ``claims_first``: a
+    click on the button named ``label`` on such a page, where it claims the item
+    before it opens what its name says. A click control is
     shown with ``role``: by default, in a module the side navigation is drawn from
     (:func:`side_navigation_modules`), as its link to another page, which is how
     the side navigation shows one, and anywhere else as a button.
@@ -1781,18 +1788,33 @@ _BREAKER = "components/common/CircuitBreakerPanel.tsx"
 _CONFIG = "components/configuration-layout/ConfigurationLayout.tsx"
 _DETAIL_ACTIONS = "components/document-actions/use-document-actions.tsx"
 _EDIT_TEXT = "components/document-actions/EditPageTextDialog.tsx"
+#: The edit page's read-only notice, which offers Claim beside the bar's own.
+_EDIT_PAGE = "components/edit-screen/EditPage.tsx"
 _FRAME = "components/edit-screen/EditScreen.tsx"
+#: The edit screen names Process Changes with one shared constant (common/labels.ts).
+_PROCESS_CHANGES = "PROCESS_CHANGES_LABEL"
 _INBOX = "components/inbox/InboxMessagesTable.tsx"
 _MAPPINGS = "components/config-prefix-mappings/ConfigPrefixMappingsLayout.tsx"
+_MCP = "components/mcp-configuration/McpConfigurationLayout.tsx"
+_TENANTS = "components/config-prefix-mappings/TenantsSection.tsx"
 _PRODUCTION_MODEL = "components/edit-screen/production-item-edit-model.tsx"
 _QUEUE = "components/review-queues/ReviewQueuePage.tsx"
 _QUEUE_SETTINGS = "components/review-queues/QueueDefinitionModal.tsx"
 _REEXTRACT = "components/document-actions/ReextractSectionsDialog.tsx"
 _RESET = "components/document-actions/ResetPageClassDialog.tsx"
+_SECTION_EDITOR = "components/edit-screen/SectionEditor.tsx"
 _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
 _SLOTS = "components/edit-screen/test-set-editor-slots.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
 _TABLE = "components/document-list/documents-table-config.tsx"
+#: The Document List's Review menu (Start Review, Release Review, bulk skip, send).
+_REVIEW_MENU = "components/review-bulk/review-menu-items.ts"
+_BULK_SKIP = "components/review-bulk/BulkSkipModal.tsx"
+_SEND_TO_REVIEW = "components/review-bulk/SendToReviewModal.tsx"
+#: Home › Jobs row actions, confirmed in a dialog (Cancel job, Delete job).
+_JOB_ACTIONS = "components/review-bulk/JobActionModals.tsx"
+#: The test-set item's edit model, whose Claim calls claimTestSetDocument
+#: (:data:`CLAIM_CALL_SITES`).
 _TEST_SET_MODEL = "components/edit-screen/test-set-item-edit-model.tsx"
 _UPLOAD = "components/upload-document/UploadDocumentPanel.tsx"
 _WIZARD = "components/test-studio/CreateTestSetWizard.tsx"
@@ -1839,15 +1861,20 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "ClaimNextReviewItem": (Shipped(_QUEUE, "Next item"),),
+    "BulkSkipAllReviews": (
+        Shipped(_BULK_SKIP, "Skip All Reviews", inside_dialog=True),
+    ),
+    "CancelBulkReviewJob": (Shipped(_JOB_ACTIONS, "Cancel job", inside_dialog=True),),
     "ClaimReview": (
-        Shipped(_TABLE, "Start Review"),
+        Shipped(_REVIEW_MENU, "Start Review", role="menuitem"),
         Shipped(_DETAIL_ACTIONS, "Start Review"),
     ),
     "ClaimReviewItem": (
         Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
         Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_EDIT_PAGE, "Claim"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
         Shipped(_FRAME, "Save"),
         Shipped(
             _PRODUCTION_MODEL,
@@ -1855,18 +1882,24 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
             source="autosaveMs: canEdit",
             kind="autosave",
         ),
+        Shipped(_SECTION_EDITOR, "Edit Page Grouping", kind="claims_first"),
     ),
     "ClaimTestSetDocument": (
         Shipped(_ANNOTATE, "Claim (2)", source="`Claim (${claimable.length})`"),
         Shipped(_ANNOTATE, "Claim", source="text: 'Claim'"),
         Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
     ),
     "ClearDraftLabels": (
         Shipped("components/test-studio/TestSetDetail.tsx", "Delete draft labels"),
     ),
     "ClearReadInboxMessages": (Shipped(_INBOX, "Clear read", inside_dialog=True),),
-    "CompleteReviewItem": (Shipped(_FRAME, "Process Changes"),),
-    "CompleteSectionReview": (Shipped(_FRAME, "Process Changes"),),
+    "CompleteReviewItem": (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
+    "CompleteSectionReview": (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
     "CopyToBaseline": (
         Shipped(_DETAIL_ACTIONS, "Use As Evaluation Baseline"),
         Shipped(_FRAME, "Use As Evaluation Baseline"),
@@ -1880,6 +1913,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
             "Create Job",
             inside_dialog=True,
         ),
+    ),
+    "CreateMcpCredential": (
+        Shipped(_MCP, "Create", source="'Create'", inside_dialog=True),
     ),
     "CreateReviewQueue": (
         Shipped(_QUEUE_SETTINGS, "Create", source="'Create'", inside_dialog=True),
@@ -1906,6 +1942,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "DeleteConfigPrefixMapping": (Shipped(_MAPPINGS, "Delete"),),
+    "DeleteTenant": (Shipped(_TENANTS, "Delete tenant"),),
     "DeleteConfigProfileRevision": (Shipped(_REVISIONS, "Delete"),),
     "DeleteConfigVersion": (
         Shipped(
@@ -1932,6 +1969,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/custom-models/CustomModelsLayout.tsx", "Delete"),
         Shipped("components/custom-models/FinetuningJobDetail.tsx", "Delete"),
     ),
+    "DeleteBulkReviewJob": (Shipped(_JOB_ACTIONS, "Delete job", inside_dialog=True),),
     "DeleteInboxMessages": (
         Shipped(
             "components/inbox/DeleteInboxMessagesModal.tsx",
@@ -1986,9 +2024,16 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "MoveReviewItem": (
         Shipped(_SUPERVISOR, "Move", source='label="Move"', inside_dialog=True),
     ),
+    # Draft-first: Process Changes opens the version, confirmed in its dialog while no
+    # draft version is open, and at once when one is.
     "OpenTestSetAnnotationDraft": (
-        Shipped(_TEST_SET_MODEL, "Start editing"),
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+        Shipped(
+            "components/common/ProcessChangesConfirmModal.tsx",
+            "Process Changes",
+            source=_PROCESS_CHANGES,
+            inside_dialog=True,
+        ),
     ),
     "PauseCircuitBreaker": (
         Shipped(_BREAKER, "Pause processing"),
@@ -2014,9 +2059,10 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/test-studio/PublishVersionModal.tsx", "Publish version"),
     ),
     "PutConfigPrefixMapping": (Shipped(_MAPPINGS, "Save"),),
+    "PutTenant": (Shipped(_TENANTS, "Save tenant"),),
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
     "ReextractTestSetDocument": (Shipped(_SLOTS, "Re-extract", source="'Re-extract'"),),
-    "ReleaseReview": (Shipped(_TABLE, "Release Review"),),
+    "ReleaseReview": (Shipped(_REVIEW_MENU, "Release Review", role="menuitem"),),
     "ReleaseReviewItem": (Shipped(_FRAME, "Skip"),),
     "RemoveDocumentsFromTestSet": (
         Shipped(
@@ -2052,6 +2098,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(_BREAKER, "Resume processing"),
         Shipped(_BREAKER, "Resume", source="confirmLabel: 'Resume'"),
     ),
+    "RevokeMcpCredential": (
+        Shipped(_MCP, "Revoke", source="'Revoke'", inside_dialog=True),
+    ),
+    "RotateMcpCredential": (
+        Shipped(_MCP, "Rotate", source="'Rotate'", inside_dialog=True),
+    ),
     "SaveReviewDraft": (
         Shipped(_FRAME, "Save"),
         Shipped(
@@ -2062,10 +2114,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "SaveSectionReviewEdits": (Shipped(_FRAME, "Save"),),
-    "SaveTestSetDocumentSection": (Shipped(_FRAME, "Process Changes"),),
+    "SaveTestSetDocumentSection": (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
     "SaveTestSetDocumentSectionDraft": (
         Shipped(_FRAME, "Save"),
-        Shipped(_FRAME, "Process Changes"),
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
     ),
     "SendAgentChatMessage": (
         Shipped(
@@ -2092,6 +2146,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
         Shipped(_CONFIG, "Confirm Activate"),
     ),
+    "SendToReview": (Shipped(_SEND_TO_REVIEW, "Send to review", inside_dialog=True),),
     "SkipAllSectionsReview": (
         Shipped(_DETAIL_ACTIONS, "Skip All Reviews", inside_dialog=True),
     ),
@@ -2140,6 +2195,9 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "UpdateDocumentSections": (
         Shipped(_BOARD, "Save page grouping"),
         Shipped(_BOARD, "Save and Re-extract", inside_dialog=True),
+    ),
+    "UpdateMcpCredential": (
+        Shipped(_MCP, "Save", source="'Save'", inside_dialog=True),
     ),
     "UpdateInboxPreferences": (
         Shipped("components/inbox/InboxPreferences.tsx", "Save", inside_dialog=True),
@@ -2311,6 +2369,11 @@ def _shown_as(control: Shipped) -> tuple[story_relay.Snapshot, str]:
         lines.append(f'{indent}uid=9_0 button "{control.label}" disableable disabled')
         lines.append(f'{indent}uid=9_1 checkbox "Signed"')
         return story_relay.cut_snapshot(lines), "9_1"
+    if control.kind == "claims_first":
+        marker = story_relay.AUTOSAVE_CONTROLS[-1]
+        lines.append(f'{indent}uid=9_0 button "{marker}"')
+        lines.append(f'{indent}uid=9_1 button "{control.label}"')
+        return story_relay.cut_snapshot(lines), "9_1"
     flags = "focusable focused" + (" multiline" if control.multiline else "")
     lines.append(f'{indent}uid=9_0 textbox "{control.label}" {flags}')
     if control.kind == "unnamed":
@@ -2373,6 +2436,9 @@ def test_the_guard_refuses_each_shipped_control_that_sends_a_mutation(
     elif control.kind == "autosave":
         assert snapshot.autosave_control == control.label, (mutation, control)
         assert snapshot.sets_a_value(uid) == ("commit_point", control.label)
+    elif control.kind == "claims_first":
+        assert snapshot.control_of(uid) is None, (mutation, control)
+        assert snapshot.claims_first(uid) == ("commit_point", control.label)
     elif control.file in side_navigation_modules():
         assert snapshot.control_of(uid) is not None, (
             f"{control.file} builds the side navigation, whose links to another page "
@@ -2382,6 +2448,272 @@ def test_the_guard_refuses_each_shipped_control_that_sends_a_mutation(
         )
     else:
         assert snapshot.control_of(uid) is not None, (mutation, control)
+
+
+# A control can send a claim before it does what its name says, through a callback
+# its handler runs: Edit Page Grouping on the edit screen runs the board's
+# ``beforeOpen``, which claims an unassigned review-queue item before the board opens.
+# MUTATION_CONTROLS is authored per mutation, so a control missing from a mutation
+# already listed is invisible to the closure above. The closure below is over the
+# claim's call sites instead, which are computed: every call of a claim function in
+# src/ui/src, named by its file and the names enclosing it, must be listed with the
+# controls that reach it, and those controls must be the ones MUTATION_CONTROLS lists
+# for the mutation, both ways. A claim added anywhere therefore fails here until its
+# control is named. What is not computed is the path from a call site to its control:
+# a control reaches ``beforeOpen`` through EditPage's ``handleAction('regroup')`` and
+# SectionEditor's ``regroup`` prop, wired at run time, and following that needs a
+# type-aware call graph of the TypeScript, which the reading of src/ui/src this suite
+# does cannot build. That step is authored, and checked only to name a control that
+# is still in its file and that the guard refuses: a call mapped to the wrong control
+# of the same mutation passes here.
+
+#: The functions in src/ui/src that claim an item, with the mutation each sends.
+#: ``ensureAssigned``, the production item model's, claims an unassigned item through
+#: ``claimItem`` before its caller does what it is for.
+CLAIM_FUNCTIONS: dict[str, str] = {
+    "claimItem": "ClaimReviewItem",
+    "claimNextItem": "ClaimNextReviewItem",
+    "claimTestSetDocument": "ClaimTestSetDocument",
+    "ensureAssigned": "ClaimReviewItem",
+}
+
+#: Every call of a :data:`CLAIM_FUNCTIONS` function in src/ui/src, by its file and the
+#: path of names enclosing it (:func:`claim_call_sites`), with the shipped controls
+#: that reach it. A call inside a claim function's own definition is that function's
+#: body, reached through the calls of it listed here, and has no row of its own.
+CLAIM_CALL_SITES: dict[tuple[str, str], tuple[Shipped, ...]] = {
+    (_PRODUCTION_MODEL, "useProductionItemEditModel.saveSection"): (
+        Shipped(_FRAME, "Save"),
+        Shipped(
+            _PRODUCTION_MODEL,
+            "Cancel and discard changes",
+            source="autosaveMs: canEdit",
+            kind="autosave",
+        ),
+    ),
+    (_PRODUCTION_MODEL, "useProductionItemEditModel.state.board.beforeOpen"): (
+        Shipped(_SECTION_EDITOR, "Edit Page Grouping", kind="claims_first"),
+    ),
+    (_PRODUCTION_MODEL, "useProductionItemEditModel.state.process.run"): (
+        Shipped(_FRAME, "Process Changes", source=_PROCESS_CHANGES),
+    ),
+    (_PRODUCTION_MODEL, "useProductionItemEditModel.state.claim"): (
+        Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
+    ),
+    (_TEST_SET_MODEL, "useTestSetItemEditModel.state.claim"): (
+        Shipped(_FRAME, "Claim"),
+        Shipped(_EDIT_PAGE, "Claim"),
+    ),
+    (_QUEUE, "ReviewQueuePage.claim"): (
+        Shipped(_QUEUE, "Claim (2)", source="counted('Claim'"),
+        Shipped(_QUEUE, "Claim", source="text: 'Claim'"),
+    ),
+    (_QUEUE, "ReviewQueuePage.claimNext"): (Shipped(_QUEUE, "Next item"),),
+    (_ANNOTATE, "AnnotationQueuePage.handleClaim"): (
+        Shipped(_ANNOTATE, "Claim", source="text: 'Claim'"),
+    ),
+    (_ANNOTATE, "AnnotationQueuePage.handleBulkClaim"): (
+        Shipped(_ANNOTATE, "Claim (2)", source="`Claim (${claimable.length})`"),
+    ),
+}
+
+_ENCLOSING_RE = re.compile(
+    r"\s*(?:(?:export\s+)?(?:const|let)\s+(\w+)\s*[=:]"
+    r"|(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)"
+    r"|(\w+)\s*:(?!:))"
+)
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def enclosing_path(lines: list[str], at: int) -> str:
+    """The names enclosing line ``at``, outermost first, joined by dots.
+
+    Each is the name a shallower line above it opens: a ``const`` or ``function``
+    declaration, or an object key. A shallower line that opens no name, an ``if`` or a
+    ``try``, is passed through, and so is a declaration's closing ``) => {`` at the
+    top level, whose name is on the first top-level line above it.
+    """
+    names: list[str] = []
+    current = _indent(lines[at])
+    for line in reversed(lines[:at]):
+        if not line.strip() or _indent(line) >= current and current > 0:
+            continue
+        if current == 0 and _indent(line) > 0:
+            continue
+        current = _indent(line)
+        opened = _ENCLOSING_RE.match(line)
+        if opened is not None:
+            names.append(next(name for name in opened.groups() if name))
+            if current == 0:
+                break
+        elif current == 0 and not line.lstrip().startswith((")", "}")):
+            break
+    return ".".join(reversed(names))
+
+
+def claim_call_sites() -> dict[tuple[str, str], set[str]]:
+    """Every call of a :data:`CLAIM_FUNCTIONS` function in src/ui/src's code, outside
+    the claim functions' own definitions: ``(file, enclosing path)`` to the functions
+    called there. A ``.graphql`` file declares an operation and calls nothing."""
+    called = re.compile(rf"\b({'|'.join(CLAIM_FUNCTIONS)})\s*\(")
+    found: dict[tuple[str, str], set[str]] = {}
+    for path in _ui_files():
+        if path.suffix == ".graphql":
+            continue
+        lines = _without_comments(path.read_text(encoding="utf-8")).split("\n")
+        for at, line in enumerate(lines):
+            for call in called.finditer(line):
+                where = enclosing_path(lines, at)
+                if where.rsplit(".", 1)[-1] in CLAIM_FUNCTIONS:
+                    continue
+                key = (str(path.relative_to(UI_SOURCE)), where)
+                found.setdefault(key, set()).add(call.group(1))
+    return found
+
+
+def _definition_of(name: str) -> str:
+    """The source of the one definition of ``name`` in src/ui/src."""
+    opened = re.compile(
+        rf"^\s*(?:export\s+)?(?:(?:const|let)\s+{name}\s*=|function\s+{name}\b)"
+    )
+    bodies: list[str] = []
+    for path in _ui_files():
+        lines = _without_comments(path.read_text(encoding="utf-8")).split("\n")
+        for at, line in enumerate(lines):
+            if not opened.match(line):
+                continue
+            body = [line]
+            for following in lines[at + 1 :]:
+                if following.strip() and _indent(following) <= _indent(line):
+                    if following.lstrip().startswith(("}", ")")):
+                        body.append(following)
+                    break
+                body.append(following)
+            bodies.append("\n".join(body))
+    assert len(bodies) == 1, f"{name} is defined {len(bodies)} times in src/ui/src"
+    return bodies[0]
+
+
+@pytest.mark.unit
+def test_every_call_that_claims_an_item_is_mapped_to_the_controls_that_reach_it() -> (
+    None
+):
+    found = claim_call_sites()
+    unaccounted = sorted(set(found) - set(CLAIM_CALL_SITES))
+    assert not unaccounted, (
+        f"{unaccounted}: a call that claims an item, reached by controls nobody has "
+        "named. Find the control whose handler runs it, through any callback it hands "
+        "on (a board's beforeOpen is run by the control that opens the board), and add "
+        "the call to CLAIM_CALL_SITES and the control to MUTATION_CONTROLS, with a verb "
+        "or CLAIM_FIRST_CONTROLS entry in story_relay if the guard lets it through. A "
+        "new function that wraps a claim goes into CLAIM_FUNCTIONS."
+    )
+    stale = sorted(set(CLAIM_CALL_SITES) - set(found))
+    assert not stale, f"{stale}: no longer a claim call in src/ui/src; delete them"
+    unreached = sorted(
+        site for site, controls in CLAIM_CALL_SITES.items() if not controls
+    )
+    assert not unreached, f"{unreached}: a claim call mapped to no control"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mutation", sorted(set(CLAIM_FUNCTIONS.values())))
+def test_the_controls_that_reach_a_claim_are_the_ones_its_mutation_lists(
+    mutation: str,
+) -> None:
+    found = claim_call_sites()
+    reached = {
+        control
+        for site, controls in CLAIM_CALL_SITES.items()
+        if any(CLAIM_FUNCTIONS[name] == mutation for name in found.get(site, ()))
+        for control in controls
+    }
+    assert reached == set(MUTATION_CONTROLS[mutation]), (
+        f"{mutation}: the controls its call sites are reached by are "
+        f"{sorted(c.label for c in reached)}, and MUTATION_CONTROLS lists "
+        f"{sorted(c.label for c in MUTATION_CONTROLS[mutation])}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("name", sorted(CLAIM_FUNCTIONS))
+def test_each_claim_function_sends_its_mutation(name: str) -> None:
+    body = _definition_of(name)
+    mutation = CLAIM_FUNCTIONS[name]
+    wraps = [
+        other
+        for other in CLAIM_FUNCTIONS
+        if other != name
+        and CLAIM_FUNCTIONS[other] == mutation
+        and re.search(rf"\b{other}\s*\(", body)
+    ]
+    assert mutation[0].lower() + mutation[1:] in body or wraps, (name, mutation)
+
+
+@pytest.mark.unit
+def test_a_claim_reached_through_a_new_callback_is_found_where_it_is() -> None:
+    lines = [
+        "export const useSomeModel = (",
+        "  key: string,",
+        "): EditModel => {",
+        "  return {",
+        "    state: {",
+        "      board: {",
+        "        beforeOpen: async () => {",
+        "          if (!(await ensureAssigned())) throw new Error();",
+        "          return true;",
+        "        },",
+        "      },",
+        "    },",
+        "  };",
+        "};",
+    ]
+    assert enclosing_path(lines, 7) == "useSomeModel.state.board.beforeOpen"
+    assert enclosing_path(["const helper = async () => {", "  try {"], 1) == "helper"
+
+
+@pytest.mark.unit
+def test_edit_page_grouping_is_refused_where_it_claims_and_let_through_elsewhere(
+    make_rig: Callable[..., Rig],
+) -> None:
+    """On an unassigned queue item's edit page, which shows the marker, opening the
+    grouping board claims the item; on the document page it opens the board and
+    nothing else, and the board's own saves are refused by name."""
+    edit_page = (
+        'uid=1_0 RootWebArea "lending_package.pdf (Waiting)"',
+        "  uid=1_1 main",
+        '    uid=1_2 button "Cancel and discard changes"',
+        '    uid=1_3 button "Process Changes"',
+        '    uid=1_4 button "Edit Page Grouping"',
+    )
+    document_page = (
+        'uid=1_0 RootWebArea "lending_package.pdf"',
+        "  uid=1_1 main",
+        '    uid=1_2 button "More Actions" expandable expanded',
+        "    uid=1_3 menu",
+        '      uid=1_4 menuitem "Edit Page Grouping"',
+    )
+    rig = make_rig(
+        {"calls": {"take_snapshot": [page(*edit_page), page(*document_page)]}}
+    )
+    rig.call("take_snapshot")
+    assert reply_text(rig.call("click", uid="1_4")) == story_relay.COMMIT_POINT_TEXT
+    assert (rig.last()["refused"], rig.last()["label"]) == (
+        "commit_point",
+        "Edit Page Grouping",
+    )
+    rig.call("take_snapshot")
+    assert not rig.call("click", uid="1_4").is_error
+    assert [call["name"] for call in rig.tool_calls()] == [
+        "take_snapshot",
+        "take_snapshot",
+        "click",
+        "take_screenshot",
+    ]
 
 
 @pytest.mark.unit
@@ -2658,18 +2990,19 @@ def test_the_child_starts_under_env_minus_i_exactly_as_the_expert_session_starts
     assert stat.S_IMODE((rig.out / "screens").stat().st_mode) == 0o700
     expert = agent.mcp_servers(
         toolchain=paths.Toolchain(Path("/x")),
+        relay=Path("/h/review_relay.py"),
+        refusal_log=Path("/g/guard-refusals.jsonl"),
         recorder_adapter=Path("/r"),
         recorder_out=Path("/o"),
         python="python3",
         home=Path("/home/h"),
         fs_root=Path("/fs"),
-    )[DEVTOOLS]
-    assert story_relay.devtools_argv(
-        paths.Toolchain(Path("/x")).devtools_mcp,
-        home=Path("/home/h"),
-        fs_root=Path("/fs"),
-        search_path=agent.DEFAULT_SEARCH_PATH,
-    ) == [expert["command"], *expert["args"]]
+    )[DEVTOOLS]["args"]
+    assert expert[expert.index("--devtools") + 1] == str(
+        paths.Toolchain(Path("/x")).devtools_mcp
+    )
+    assert expert[expert.index("--filesystem-root") + 1] == "/fs"
+    assert "HOME=/home/h" in expert
 
 
 @pytest.mark.unit
@@ -4354,15 +4687,12 @@ def test_the_recording_was_made_with_the_pinned_server_and_the_harness_s_own_fla
     assert SESSION["initialize"]["serverInfo"]["version"] == "1.10.1"
     work = Path("<work>")
     assert recorded["chrome_flags"] == chrome.chrome_flags(profile_dir=work / "profile")
-    expert = agent.mcp_servers(
-        toolchain=paths.Toolchain(Path("/opt/ux-runner")),
-        recorder_adapter=work / "unused",
-        recorder_out=work / "unused",
-        python="python3",
+    assert recorded["devtools_argv"] == story_relay.devtools_argv(
+        paths.Toolchain(Path("/opt/ux-runner")).devtools_mcp,
         home=work / "home",
         fs_root=work / "mcp-files",
-    )[DEVTOOLS]
-    assert recorded["devtools_argv"] == [expert["command"], *expert["args"]]
+        search_path=agent.DEFAULT_SEARCH_PATH,
+    )
 
 
 @pytest.mark.unit

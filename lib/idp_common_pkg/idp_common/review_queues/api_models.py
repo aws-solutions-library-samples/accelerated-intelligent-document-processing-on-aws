@@ -54,6 +54,15 @@ class ReviewReasonView(_View):
     threshold: float
 
 
+class ReviewSendInfoView(_View):
+    """Why a document was sent to review by hand (Send to review)."""
+
+    reason: str
+    note: Optional[str] = None
+    requested_by: str
+    requested_at: str
+
+
 class ReviewItemView(_View):
     object_key: str
     cycle_id: str
@@ -80,6 +89,7 @@ class ReviewItemView(_View):
     disposed_at: Optional[str] = None
     reject_reason: Optional[str] = None
     version: int = 0
+    sent_to_review: Optional[ReviewSendInfoView] = None
 
 
 class ReviewItemPage(_View):
@@ -116,8 +126,11 @@ class ReviewQueueSummary(_View):
 class MyReviewQueues(_View):
     queues: list[ReviewQueueSummary] = Field(default_factory=list)
     my_claim_count: int = 0
-    enabled_profiles: list[str] = Field(default_factory=list)
     items: ReviewItemPage = Field(default_factory=ReviewItemPage)
+    #: Whether the Default queue exists and is enabled (Send to review needs it).
+    default_queue_enabled: bool = False
+    #: The bulk Skip All Reviews inline limit in force.
+    bulk_skip_sync_limit: int = 50
 
 
 class ReviewSectionDetail(_View):

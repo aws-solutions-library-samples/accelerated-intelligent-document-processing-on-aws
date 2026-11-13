@@ -23,7 +23,7 @@ version). Reports include confidence calibration metrics:
 - **📈 Per-Field Confidence Analysis** - Identify which fields have poorly calibrated confidence scores
 - **🎯 Coverage Tracking** - Visibility into fields with vs without confidence data
 
-**Enhanced Reporting (v0.4.9+)**: Fine-grain field comparison details. See [evaluation-enhanced-reporting.md](./evaluation-enhanced-reporting.md) for:
+**Field comparison details**: Fine-grain field comparison details. See [evaluation-enhanced-reporting.md](./evaluation-enhanced-reporting.md) for:
 
 - 📊 **Nested field comparison details** - See individual field matches within complex objects and arrays
 - 🔍 **Interactive report controls** - Filter to show only unmatched rows for focused debugging
@@ -216,13 +216,16 @@ The evaluation service stores confidence scores from extraction results alongsid
      reports its cost and timing, with no accuracy figures and an explanation on the
      results page in place of them. Note the status is written over by promoting a
      document to an evaluation baseline, which uses the same attribute
-   - Generates detailed markdown reports using AI analysis
+   - Writes a markdown report built directly from the comparison results. No model
+     is called to write the report. Model calls in evaluation come only from the
+     comparisons themselves: an `LLM`-method field calls a Bedrock model, and a
+     `SEMANTIC`-method field calls a Bedrock embedding model
 
 3. **Evaluation Reports**
    - Compare section classification accuracy
-   - Analyze extracted field differences 
-   - Identify patterns in discrepancies
-   - Assess severity of differences (cosmetic vs. substantial)
+   - Show each extracted field's expected and actual value, the comparison method,
+     its score and, where the method gives one, its reason
+   - Aggregate the field results into section and document metrics
 
 ## Dynamic Schema Generation
 
@@ -411,8 +414,8 @@ The evaluation framework provides different comparison methods optimized for var
 | **Fuzzy** | Names, addresses, general text | Yes | 0.7 | Token-based fuzzy matching allowing minor variations and reordering. Threshold controls minimum similarity score |
 | **Levenshtein** | Text with typos, variations | Yes | 0.7 | Edit distance-based string comparison for detecting character-level differences. Threshold controls minimum similarity score |
 | **Semantic** | Descriptions, free text | Yes | 0.7 | Embedding-based similarity using Bedrock Titan embeddings for meaning comparison. Threshold controls minimum similarity score |
-| **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler v0.5.0+ `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
-| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. **Not supported inside a list** — see below |
+| **Date** | Dates, date ranges | No (binary) | N/A | Format-insensitive date comparison (Stickler's `DateComparator`). Parses both values into dates first, so `01/05/2024`, `2024-01-05`, and `January 5, 2024` all match. Handles ranges. Optionally tuned via `x-aws-idp-evaluation-method-config` (`dayfirst`, `tolerance`, `range_mode`). Not for time-only values |
+| **LLM** | Complex semantic equivalence on **scalar** fields | No (binary) | N/A | AI-powered comparison with detailed reasoning. Returns binary match decision (1.0 or 0.0), not similarity score. Judged with the `evaluation.llm_method` model and prompts, including on a field that sets its own `x-aws-idp-evaluation-method-config`. **Not supported inside a list** — see below |
 | **Hungarian** | Arrays of structured objects | Yes (match_threshold) | 0.8 | Optimal bipartite matching algorithm for list comparison. Uses the class-level match threshold for item pairing |
 | **AggregateObject** | Nested objects | No | N/A | Recursive field-by-field comparison of nested structures. No top-level threshold |
 
@@ -450,13 +453,11 @@ Setting an evaluation method on the **array itself** has no effect and never has
 (lists are scored through their item fields, and row pairing is Hungarian). That
 is now reported as a warning instead of being silently ignored.
 
-> **Scores from the `LLM` method changed in this release.** The comparison prompt
-> includes the document class, field name and field description, but those were
-> not being passed to the model — every comparison was sent with them blank, so
-> the model judged two bare values with no idea what field it was grading.
-> `LLM`-method scores from earlier releases are not directly comparable with
-> current ones. Identical values now also short-circuit to a match without calling
-> the model at all.
+> **`LLM`-method scores from releases before 0.6.6 are not comparable with current
+> ones.** The comparison prompt includes the document class, field name and field
+> description; before 0.6.6 those were sent to the model blank, so it judged two
+> bare values with no idea what field it was grading. Identical values short-circuit
+> to a match without calling the model at all.
 
 ### Threshold Display in Reports
 
@@ -536,7 +537,7 @@ Weighted Overall Score = (2.0 + 0.8 + 0.3) / (2.0 + 1.0 + 0.5) = 3.1 / 3.5 = 0.8
 
 ### Best Practices
 
-1. **Weight Critical Fields Higher**: Invoice amounts, dates, IDs should have weights ≥ 1.5
+1. **Weight Critical Fields Higher**: Give fields such as invoice amounts, dates and IDs a weight above 1.0. A weight states relative business importance; no particular value has been measured to be better than another
 2. **Use Default Weight for Standard Fields**: Most fields should use weight=1.0 (or omit for default)
 3. **Reduce Weight for Optional Fields**: Notes, descriptions can use weight=0.5
 4. **Test Different Weightings**: Adjust weights based on business feedback and error impact analysis
@@ -587,7 +588,7 @@ Type coercion occurs automatically during evaluation:
 
 ## Assessment Confidence Integration
 
-The evaluation framework automatically integrates with the assessment feature to provide enhanced quality insights. When documents have been processed with assessment enabled via the configuration `assessment.enabled: true` property, the evaluation reports include confidence scores alongside traditional accuracy metrics.
+The evaluation framework automatically integrates with the assessment feature to provide enhanced quality insights. When documents have been processed with confidence scoring on — `extraction.confidence.mode` set to `separate` (the default) or `integrated` rather than `off` — the evaluation reports include confidence scores alongside traditional accuracy metrics. See [Enable/Disable Confidence](configuration.md#enabledisable-confidence).
 
 ### Confidence Score Display
 
@@ -640,12 +641,55 @@ Control evaluation behavior through the configuration file (no stack redeploymen
 evaluation:
   enabled: true  # Set to false to disable evaluation processing
   llm_method:
-    model: "us.anthropic.claude-haiku-4-5-20251001-v1:0"  # Model for evaluation reports
+    model: us.amazon.nova-2-lite-v1:0  # Model for the LLM comparison method
     temperature: "0.0"
-    top_p: "0.0"
-    max_tokens: "4096"
-    # Additional model parameters...
+    top_p: "0.0"         # 0 sends temperature instead of top_p
+    top_k: "5"
+    max_tokens: ""       # Empty = the model's maximum output; set a value to cap it
+    system_prompt: >-
+      You are an evaluator that helps determine if the predicted and expected values match ...
+    task_prompt: >-
+      I need to evaluate attribute extraction for a document of class: {DOCUMENT_CLASS} ...
 ```
+
+These are the shipped values (the prompts are shortened here). The model, the
+sampling settings, `max_tokens` and the prompts are sent with each comparison,
+and the Bedrock client adapts them per model as it does for the other steps:
+models that reject sampling parameters do not get `temperature`, `top_p` or
+`top_k`.
+
+`reasoning_effort` is sent with each comparison too, and only a model with an
+effort control receives it (Claude Sonnet 4.6 and Sonnet 5, xAI Grok, OpenAI GPT-6
+Astra and GPT-5.x, for example); other models ignore it.
+It is not in the shipped file above, but every stored configuration holds its
+default, `medium`, so an evaluation on such a model sends `medium` unless you set
+another value under `llm_method`. A higher effort can cost more and take longer for
+each comparison. The shipped model, Nova 2 Lite, has no effort control.
+
+A prompt you leave out uses the shipped one; an empty
+`system_prompt` or `task_prompt` is refused: every section whose class has an
+`LLM` field is reported as a failed evaluation with a configuration error naming
+the setting, and none of that section's fields are scored.
+
+**Cost of LLM comparisons.** Each comparison the `LLM` method sends to Bedrock
+is added to the document's metering under the `Evaluation` context, so it
+appears in the document's cost and in the reporting `metering` table with
+`context = 'Evaluation'`, beside the processing steps. A comparison is counted
+even when the model's answer cannot be read, and an evaluation that fails still
+reports the comparisons it made. Values that are equal after ignoring case and
+whitespace are matched without a call and cost nothing. Comparisons made by an
+attempt of the Evaluation step that is cut off (a Lambda timeout or crash) are
+not reported: the workflow continues with the document as it was before that
+attempt, so if a retry then succeeds, only the retry's comparisons appear.
+
+**Cost of the Evaluation step's Lambda.** Like the OCR, classification,
+extraction, assessment and summarization steps, the Evaluation step adds its own
+Lambda invocation to the document's metering, as
+`Evaluation/lambda/requests` and `Evaluation/lambda/duration` (GB-seconds). It does
+so whether the document was evaluated, the evaluation reported errors, no baseline
+was found, or evaluation was switched off. An attempt that is cut off, or that
+raises an unexpected error, adds nothing. These keys are priced by the shipped
+`lambda/requests` and `lambda/duration` entries.
 
 **Benefits of Configuration-Based Control:**
 - Enable/disable evaluation without stack redeployment
@@ -705,7 +749,7 @@ classes:
         type: string
         description: Name of the vendor
         x-aws-idp-evaluation-method: FUZZY  # Use fuzzy matching
-        x-aws-idp-confidence-threshold: 0.8  # Minimum similarity threshold
+        x-aws-idp-evaluation-threshold: 0.8  # Minimum similarity threshold
 ```
 
 ### Group Attributes
@@ -727,17 +771,17 @@ classes:
             type: string
             description: "House or building number"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.9
+            x-aws-idp-evaluation-threshold: 0.9
           Street Name:
             type: string
             description: "Name of the street"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.8
+            x-aws-idp-evaluation-threshold: 0.8
           City:
             type: string
             description: "City name"
             x-aws-idp-evaluation-method: FUZZY
-            x-aws-idp-confidence-threshold: 0.9
+            x-aws-idp-evaluation-threshold: 0.9
           State:
             type: string
             description: "State abbreviation (e.g., CA, NY)"
@@ -754,6 +798,15 @@ Arrays of items where each item's attributes are evaluated individually across a
 
 **Important**: Structured arrays (arrays of objects) use **HUNGARIAN matching** with a special `match-threshold` parameter that applies to the entire list, not individual fields.
 
+You do not need to set `x-aws-idp-evaluation-method` on the array itself, and the
+examples below do not. Hungarian matching is always what pairs the rows, so
+`HUNGARIAN` there is accepted and changes nothing, and any other method there is
+ignored: a method meant for scalar fields (`EXACT`, `FUZZY`, `LEVENSHTEIN`,
+`SEMANTIC`, `NUMERIC_EXACT`, `DATE`) is logged at `ERROR` and removed, and `LLM` is
+logged as a warning (see
+[Do not use `LLM` on a field inside a list](#️-do-not-use-llm-on-a-field-inside-a-list)).
+Set methods on the item fields.
+
 ```yaml
 classes:
   - $schema: "https://json-schema.org/draft/2020-12/schema"
@@ -765,7 +818,6 @@ classes:
         type: array
         description: "List of all transactions in the statement period"
         x-aws-idp-list-item-description: "Individual transaction record"
-        x-aws-idp-evaluation-method: HUNGARIAN  # Required for List[Object]
         x-aws-idp-evaluation-match-threshold: 0.8  # Threshold for item matching
         items:
           type: object
@@ -815,7 +867,6 @@ Use `x-aws-idp-evaluation-match-threshold` to control item pairing:
 ```yaml
 CityTaxes:
   type: array
-  x-aws-idp-evaluation-method: HUNGARIAN
   x-aws-idp-evaluation-match-threshold: 0.8  # 80% match for optimal pairing
   items:
     type: object
@@ -861,7 +912,7 @@ Different evaluation methods work with different field types:
 | LEVENSHTEIN | String | `evaluation-threshold` (optional) |
 | SEMANTIC | String, Object | `evaluation-threshold` (optional) |
 | DATE | String | `evaluation-threshold` (optional); tune with `evaluation-method-config` |
-| LLM | String, Object, Array | `evaluation-threshold` (optional) |
+| LLM | String, Object. On a structured array it is ignored, with a warning, and on a field inside one it is downgraded to the field's type default unless `x-aws-idp-evaluation-allow-llm-in-list: true` is set | `evaluation-threshold` (optional) |
 | HUNGARIAN | Array[Object] ONLY | `evaluation-match-threshold` (optional; defaults to 0.8) |
 
 Every threshold above is optional. Omitting one is accepted and the comparator
@@ -1134,12 +1185,12 @@ For doc split metrics to be calculated, each section's result JSON must include:
 
 Creating accurate baseline data is the foundation of the evaluation framework. There are two main approaches:
 
-### Method 1: Use Existing Processing Results (Using Copy to Baseline Feature)
+### Method 1: Use Existing Processing Results (Using Use As Evaluation Baseline)
 
 1. Process documents through the GenAIIDP solution
 2. Review the output in the web UI
 3. Make any necessary corrections
-4. For documents with satisfactory results, click "Copy to Baseline"
+4. For documents with satisfactory results, choose **Use As Evaluation Baseline** in the document page's **More Actions** menu
 5. The system will asynchronously copy all processing results to the baseline bucket
 6. The document status will update to indicate baseline availability:
    - BASELINE_COPYING: Copy operation in progress
@@ -1169,7 +1220,7 @@ The easiest way to create accurate baseline files is to start with processed res
 2. **Option B: Use the Solution UI**
    - Process your document through the GenAIIDP solution
    - In the Web UI, navigate to the processed document
-   - Click "View / Edit data" to review the extracted results
+   - Choose **Edit Data** in a section row's **⋮** menu to review the extracted results
    - Correct any errors directly in the UI
    - Export or copy the corrected data to create your baseline
    - This ensures your baseline matches the exact structure expected by the evaluation framework
@@ -1273,15 +1324,15 @@ Once documents are processed with baselines:
 ### Configuration Best Practices
 
 - **Choose appropriate evaluation methods**: Match methods to your data types (EXACT for IDs, FUZZY for names, SEMANTIC for descriptions)
-- **Set realistic thresholds**: Start with strict thresholds (0.9+) and adjust based on your accuracy requirements
-- **Configure confidence tracking**: Enable assessment to get confidence scores in evaluation reports
+- **Set realistic thresholds**: Start from the defaults (0.7 for `FUZZY`, and the per-type defaults in [Comparator Inference Rules](#comparator-inference-rules)) and raise a field's threshold only where a near-match should count as wrong; no measurement in this repository supports a stricter starting value such as 0.9
+- **Configure confidence tracking**: Leave `extraction.confidence.mode` at `separate` or `integrated` (not `off`) to get confidence scores in evaluation reports
 
 ## Automatic Field Discovery
 
 The evaluation framework automatically discovers and evaluates fields that exist in the data but are not defined in the configuration:
 
 - Detects fields present in actual results, expected results, or both
-- Uses LLM evaluation method by default for discovered fields
+- A field with no `x-aws-idp-evaluation-method` gets its comparator from Stickler's type and field-name inference (see [Comparator Inference Rules](#comparator-inference-rules)), never from the `LLM` method
 - Clearly marks discovered fields in the report
 - Handles cases where fields are missing from either actual or expected results
 
@@ -1306,21 +1357,22 @@ The framework offers two approaches for semantic evaluation:
   - Better at handling implicit/explicit information differences
   - More nuanced understanding of semantic equivalence
   - Ideal for cases where understanding the rationale is important
-  - Used as the default method for attributes discovered in the data but not in the configuration
 
 ## Metrics and Monitoring
 
-The evaluation framework includes comprehensive monitoring through CloudWatch metrics:
-
-- **Evaluation Success/Failure Rates**: Track evaluation completion and error rates
-- **Baseline Data Availability**: Monitor percentage of documents with baseline data for comparison
-- **Report Generation Performance**: Track time to generate evaluation reports
-- **Model Usage Metrics**: Monitor token consumption and API calls for evaluation models
-- **Accuracy Trends**: Historical tracking of processing accuracy over time
+The evaluation function publishes no accuracy metrics to CloudWatch, and the stack
+defines no accuracy alarms. (Its CloudWatch metrics are the Bedrock request and token
+metrics every Bedrock call publishes, made by fields using the `LLM` method.) Each
+document's evaluation outcome is recorded as its
+`EvaluationStatus` (listed below), the evaluation Lambda's log goes to CloudWatch
+Logs, and the accuracy figures are written to the reporting bucket and queried
+through the ReportingDatabase (see
+[Aggregate Evaluation Analytics and Reporting](#aggregate-evaluation-analytics-and-reporting)),
+which is where accuracy over time is tracked.
 
 The framework calculates the following detailed metrics for each document and section:
 
-**Extraction Accuracy Metrics.** As of v0.6.7, counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
+**Extraction Accuracy Metrics.** Counts are derived directly from Stickler's row-level `field_comparisons` — one count per drilldown row the UI displays — with item-level rejected/missing/extra rows weighted by their leaf count so a truncated 5-item list and a partially-wrong 5-item list contribute the same leaf-normalized units. This means:
 
 - **Precision**: Accuracy of positive predictions — `TP / (TP + FP)` where `FP = FA + FD`
 - **Recall**: Coverage of actual positive cases — `TP / (TP + FN)`
@@ -1349,6 +1401,7 @@ The evaluation also tracks different evaluation statuses:
 - **FAILED**: Evaluation encountered errors
 - **TIMED_OUT**: Evaluation could not finish within the evaluation Lambda's time limit
 - **NO_BASELINE**: No baseline data available for comparison
+- **DISABLED**: Evaluation is switched off (`evaluation.enabled: false`) in the configuration the document was processed with, so no comparison was attempted
 - **BASELINE_COPYING**: Process of copying document to baseline is in progress
 - **BASELINE_AVAILABLE**: Document is available in the baseline
 - **BASELINE_ERROR**: Error occurred during the baseline copy operation
@@ -1489,7 +1542,7 @@ ORDER BY eval_day DESC;
 
 ### Analytics Notebook
 
-The solution includes a comprehensive Jupyter notebook (`notebooks/evaluation_reporting_analytics.ipynb`) that provides:
+The solution includes a comprehensive Jupyter notebook (`notebooks/misc/evaluation_reporting_analytics.ipynb`) that provides:
 
 - **Automated Data Loading**: Connects to Athena and automatically loads partitions for all evaluation tables
 - **Table Testing**: Validates connectivity and shows content summaries for document, section, and attribute evaluation tables
@@ -1543,7 +1596,7 @@ The solution includes a comprehensive Jupyter notebook (`notebooks/evaluation_re
 2. **Threshold Tuning**: Adjust accuracy thresholds based on your use case requirements
 3. **Pattern Recognition**: Look for patterns in low-performing document types or sections
 4. **Comparative Analysis**: Compare performance across different prompt configurations
-5. **Automated Alerts**: Set up CloudWatch alarms based on accuracy metrics stored in the database
+5. **Automated Alerts**: No accuracy metric reaches CloudWatch, so an alert has to start from a scheduled query against the ReportingDatabase
 
 ## Evaluation Engine
 
@@ -1686,7 +1739,7 @@ annotation table preserves full auditability.
 See the end-to-end demo at
 `notebooks/usecase-specific-examples/ds11-passport-application/demo.ipynb`.
 
-## A failed evaluation no longer discards the document
+## A failed evaluation does not discard the document
 
 Evaluation is a **measurement** step: by the time it runs, OCR, classification,
 extraction, assessment and summarization have all succeeded and their output
@@ -1695,13 +1748,13 @@ continues to the normal end of the workflow with an honest
 `EvaluationStatus` (`FAILED` or `TIMED_OUT`) rather than failing the execution
 and throwing away that work.
 
-Two things changed to make that true:
+Three things make that true:
 
 - **A timeout is retried once, not eight times.** An evaluation Lambda timeout is
   *deterministic* — the document needs more time than the function has, so every
-  retry burns another full timeout and fails identically. It used to share the
-  transient-error retry policy (8 attempts at 2.5× backoff), which meant one such
-  document held a workflow-concurrency slot for **~5.2 hours** before failing.
+  retry burns another full timeout and fails identically. Under the
+  transient-error retry policy (8 attempts at 2.5× backoff) one such document
+  would hold a workflow-concurrency slot for **~5.2 hours** before failing.
   Genuinely transient faults (throttling, Lambda service errors) still get the
   full retry budget. This policy now applies to **every** Lambda task state in the
   workflow, not just evaluation — see
@@ -1738,7 +1791,7 @@ Common issues and resolutions:
 2. **Evaluation Failures**
    - Check Lambda function logs for error details
    - Verify that the evaluation model is available in your region
-   - Increase Lambda timeout if needed for complex documents
+   - The evaluation Lambda already runs with Lambda's maximum timeout of 15 minutes, so a timeout cannot be fixed by raising it. Reduce the work instead; the usual cause is fields using the `LLM` method, each of which makes a model call
 
 3. **Low Accuracy Scores**
    - Review document quality and OCR results

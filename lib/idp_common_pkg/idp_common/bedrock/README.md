@@ -113,7 +113,7 @@ embedding = client.generate_embedding(
 
 ## Prompt Caching with CachePoint
 
-Prompt caching is a powerful feature in Amazon Bedrock that significantly reduces response latency for workloads with repetitive contexts. The Bedrock client provides built-in support for this via the `<<CACHEPOINT>>` tag.
+Prompt caching in Amazon Bedrock bills a repeated prompt prefix at a reduced cache-read rate. On most Claude models a read is 0.1× the input price (0.05× on Sonnet 5.5 and Opus 5.5) and a write 1.25×, so a prefix written and not read again within five minutes costs more than no caching, and a prefix below the model's minimum is never cached (see the minimum-token note below and `docs/benchmarking/studies/prompt-caching.md`). No benchmark in this repository has measured its effect on latency. The Bedrock client provides built-in support for this via the `<<CACHEPOINT>>` tag.
 
 ### Supported Models
 
@@ -472,6 +472,14 @@ Values are not re-scanned — they are inserted by the `%` operator, which does
 not re-read what it wrote — so a `%` arriving from a class description, an
 attribute description or an OCR page needs no handling at the call site.
 
+Comments (`{# ... #}`) are removed from the template first
+(`idp_common.prompt_comments.strip_prompt_comments`), so a comment is never sent
+and a placeholder that appears only inside a comment does not satisfy
+`required_placeholders`. Templates loaded through the runtime config reader
+already arrive without comments; this covers a template handed to
+`format_prompt` directly. Only the template is stripped: substituted values, such
+as document text that itself contains `{#`, are inserted as they are.
+
 `required_placeholders` is a check on the **template**, not on the substitutions
 dict: it asks whether the prompt offers a slot the caller needs to fill, and
 raises `ValueError` naming the missing ones.
@@ -725,15 +733,44 @@ Guardrails are configured via environment variables:
 
 - `GUARDRAIL_ID_AND_VERSION`: Contains the Guardrail ID and Version in format `id:version`
 
-When properly configured, the `get_guardrail_config()` function will automatically include guardrail parameters in Bedrock API calls.
+An unset or empty variable, an empty half, or a value that does not split into
+exactly two parts means no guardrail, and every request is sent exactly as it would
+be without one.
 
 ### How Guardrail Integration Works
 
-1. The `invoke_model` function checks if `GUARDRAIL_ID_AND_VERSION` is set
-2. If configured, guardrail parameters are parsed from the environment variable
-3. Appropriate guardrail parameters are added to Bedrock API calls:
-   - For `converse` API: Uses `guardrailIdentifier`, `guardrailVersion`, and `trace`
-4. Debug logs show when guardrails are being applied
+Within `idp_common` and the Lambdas built on it, the variable is parsed in one
+place, `idp_common.bedrock.guardrail`, and each model-call path attaches the result
+in the shape its API takes. (The knowledge base resolver's
+`retrieve_and_generate` call parses the variable with its own code.)
+
+| Path | API | What is attached | Helper |
+|---|---|---|---|
+| `BedrockClient.invoke_model` (and the module-level `invoke_model`) | `converse` | `guardrailConfig` | `guardrail_config_from_env()` |
+| `create_strands_bedrock_model` and agentic extraction | Strands `BedrockModel` | `guardrail_id`, `guardrail_version`, `guardrail_trace` | `strands_guardrail_kwargs()` in `idp_common.agents.common.strands_bedrock_model` |
+| A direct `converse` / `converse_stream` call (the chat processors) | `converse_stream` | `guardrailConfig` | `guardrail_config_from_env()` |
+| A direct `invoke_model` call (the Z3 rule translator) | `invoke_model` | `guardrailIdentifier`, `guardrailVersion`, `trace` | `guardrail_invoke_model_params()` |
+
+`BedrockClient.get_guardrail_config()` returns the same dict as
+`guardrail_config_from_env()`. Debug logs show when a guardrail is applied.
+
+Code that builds its own request rather than going through `BedrockClient` or the
+factory must attach the guardrail with one of these helpers.
+`scripts/tests/test_model_call_guardrail.py` enforces that. It finds every
+`BedrockModel(`, `converse(`, `converse_stream(`, `invoke_model(` and
+`invoke_model_with_response_stream(` in `lib/`, `src/lambda/`, `nested/*/src/` and
+`patterns/*/src/` by AST. Each call
+must go through one of the paths above, attach the guardrail itself, or be listed
+with its own reason.
+
+Two paths do not send the guardrail:
+
+- **Embeddings.** `generate_embedding` calls `invoke_model` on an embedding model,
+  and the request carries no guardrail.
+- **OpenAI GPT-5.x models.** `BedrockClient.invoke_model` sends these to the
+  Responses API on the `bedrock-mantle` endpoint (`openai_responses.py`), and that
+  request carries no guardrail. When one is configured, the first such request in
+  each process logs a warning.
 
 ### Example with Guardrails
 
@@ -966,8 +1003,60 @@ The BedrockClient automatically handles common failure scenarios:
 
 - Exponential backoff with jitter for rate limits and transient errors
 - Intelligent classification of retryable vs. non-retryable errors
+- A read or connect timeout, a failed connection (`EndpointConnectionError`) and a
+  connection dropped before the response arrived (`ConnectionClosedError`, botocore's
+  rewrap of urllib3's `ProtocolError`) are retried by `_invoke_with_retry` and counted
+  as `BedrockTimeouts`. botocore's own retries are pinned to one attempt, so this
+  ladder is the only one that sees them; a dropped connection used to fall to the
+  unexpected-error branch and fail the call on its first attempt.
+  `tests/unit/bedrock/test_retry_ladder_bounds.py` drives a real `bedrock-runtime`
+  client with only urllib3's `urlopen` replaced, so the exception is the one botocore
+  itself raises (#1706).
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
+- A retry frees the attempt it replaces before it starts. Every ladder here
+  (`_invoke_with_retry`, `_generate_embedding_with_retry`,
+  `_invoke_lambda_hook_with_retry`) retries by calling itself, and an `except`
+  handler only records the decision: the call is made after the `try` statement,
+  once the handler has exited. A call made from inside the handler runs while the
+  failure is still being handled, so the exception stays reachable for the rest of
+  the ladder, and through its traceback, its chained exceptions and botocore's
+  `error=` and `request=` kwargs so does the failed attempt's serialised request
+  body, with every attached image base64-encoded: one more copy per retry. Before
+  recording the decision the handler also calls `_drop_failed_attempt(e)` (defined in
+  the leaf module `idp_common/failed_attempt.py`, which the agentic retry decorator in
+  `utils/bedrock_utils.py` also uses), which
+  detaches the tracebacks along that chain. botocore's `Endpoint._send_request`
+  holds the exception it raises in a local, which makes a reference cycle; without
+  the detach the attempt is unreachable but stays in memory until the cyclic
+  garbage collector next reaches it. The LambdaHook ladder serialises its payload
+  inline, so its frame holds no copy of the serialised request.
+  No ladder retries from anywhere inside a `try` statement, the body included. The
+  LambdaHook function-error retry (a hook that answers with `FunctionError:
+  Unhandled`) is decided in the `try` body, where no exception is being handled, but
+  it is made after the statement like every other retry: made from the body, the
+  outer frame's own handlers caught whatever the nested ladder finally raised and
+  retried it again on their own count, so with `max_retries=4` one function error
+  followed by read timeouts made 9 invocations instead of 5, and the worst mix of
+  function errors and throttles found made 22 (40 against 8 at the default of 7). A request now makes at
+  most `max_retries + 1` invocations whatever mix of failures it meets;
+  `tests/unit/bedrock/test_retry_ladder_bounds.py` checks every ordering of the three
+  retryable failure kinds (#1706).
+- `LambdaHookRequestsFailed` is emitted once per failed request, at the
+  `except Exception` handler every terminal function error passes through, and never
+  at the `raise` that feeds it. The same test file drives every `raise` in the hook
+  ladder, which it finds in the source and confirms by tracing the lines executed,
+  and asserts one emission for each failure and none for a request that recovers.
+  `tests/unit/bedrock/test_retry_releases_failed_attempts.py` drives every handler
+  that can retry with a stub that fails the way botocore does, and measures the
+  memory still held at each attempt with the cyclic collector off. It also fails
+  when an `except` handler of a ladder calls the ladder by name or contains any
+  `return`, which is how a retry spelled through `getattr`, an alias or
+  `functools.partial` shows up. `_drop_failed_attempt` stops at the exception the
+  caller was already handling when it called in, so a caller's own traceback is
+  left intact. Not covered: a retry started inside a handler through an alias whose
+  result leaves the handler by assignment, on a branch no route drives, and a retry
+  loop placed inside an `except` block (#1678).
 
 ## Configuration Options
 

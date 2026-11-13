@@ -85,30 +85,14 @@
       "F841": 1,
       "I001": 2
     },
-    "lib/idp_common_pkg/idp_common/utils/few_shot_example_builder.py": {
-      "F401": 1,
-      "I001": 1
-    },
     "lib/idp_common_pkg/idp_common/utils/lambda_metering.py": {
       "I001": 1
     },
     "lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py": {
       "I001": 1
     },
-    "nested/api-resolvers/src/lambda/abort_workflow_resolver/index.py": {
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/copy_to_baseline_resolver/index.py": {
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/delete_document_resolver/index.py": {
-      "I001": 1
-    },
     "nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py": {
       "F841": 1,
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/document_versions_resolver/index.py": {
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/process_changes_resolver/index.py": {
@@ -119,9 +103,6 @@
     },
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py": {
       "F841": 1,
-      "I001": 1
-    },
-    "nested/api-resolvers/src/lambda/test_results_resolver/index.py": {
       "I001": 1
     },
     "nested/api-resolvers/src/lambda/test_set_resolver/index.py": {
@@ -188,16 +169,14 @@
       "F541": 3
     },
     "src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py": {
-      "F541": 1,
-      "I001": 1
+      "F541": 1
     },
     "src/lambda/agentcore_mcp_handler/tools/batch_run.py": {
       "F541": 1,
       "I001": 1
     },
     "src/lambda/agentcore_mcp_handler/tools/batch_status.py": {
-      "F541": 1,
-      "I001": 1
+      "F541": 1
     },
     "src/lambda/api_handler/index.py": {
       "I001": 1
@@ -361,15 +340,12 @@
     "nested/api-resolvers/src/lambda/http_api_dispatcher/ddb_direct.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver/tests/test_surface_filter.py",
-    "nested/api-resolvers/src/lambda/list_documents_gsi_resolver/index.py",
-    "nested/api-resolvers/src/lambda/list_documents_range_resolver/index.py",
     "nested/api-resolvers/src/lambda/list_documents_range_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/send_chat_document_message_resolver/index.py",
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver/test_scope_fail_closed.py",
     "nested/api-resolvers/src/lambda/test_results_resolver/index.py",
     "nested/api-resolvers/src/lambda/test_runner/test_captured_config_size.py",
-    "nested/api-resolvers/src/lambda/upload_resolver/test_index.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/client_utils.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_handler.py",
     "nested/bedrockkb/src/opensearch_index_custom_resource/oss_utils.py",
@@ -401,7 +377,6 @@
     "scripts/generate_govcloud_template.py",
     "scripts/generate_standard_classes.py",
     "scripts/sdlc/integration_test_deployment.py",
-    "scripts/sdlc/scan_api_rbac.py",
     "scripts/sdlc/tests/test_api_security_cases.py",
     "scripts/sdlc/tests/test_codebuild_failure_trail.py",
     "scripts/sdlc/tests/test_credential_refresh.py",
@@ -431,7 +406,6 @@
     "scripts/tests/test_secure_transport_deny.py",
     "scripts/tests/test_state_machine_retry_policies.py",
     "scripts/tests/test_threat_model_currency.py",
-    "scripts/tests/test_well_architected_doc.py",
     "security/threat-modeling/scripts/build_threat_model.py",
     "src/lambda/agent_chat_processor/index.py",
     "src/lambda/agent_processor/index.py",
@@ -453,7 +427,6 @@
     "src/lambda/calculate_capacity/test_validation.py",
     "src/lambda/calculate_capacity/validation.py",
     "src/lambda/calculate_capacity_resolver/index.py",
-    "src/lambda/chat_stream_processor/sse.py",
     "src/lambda/chat_stream_processor/tests/test_stream_processor.py",
     "src/lambda/chat_stream_processor/tests/test_vendored_in_sync.py",
     "src/lambda/chat_stream_processor/vendored/agent_chat_processor.py",
@@ -469,8 +442,6 @@
     "src/lambda/dashboard_merger/index.py",
     "src/lambda/discovery_processor/index.py",
     "src/lambda/docsplit_testset_deployer/index.py",
-    "src/lambda/external_idp_group_mapping/index.py",
-    "src/lambda/external_idp_group_mapping/test_index.py",
     "src/lambda/finetuning_deployment_handler/index.py",
     "src/lambda/finetuning_job_creator/index.py",
     "src/lambda/finetuning_job_status_checker/index.py",
@@ -498,7 +469,6 @@
     "src/lambda/test_file_copier/test_index.py",
     "src/lambda/test_set_zip_extractor/index.py",
     "src/lambda/update_settings/index.py",
-    "src/lambda/user_management/test_index.py",
     "src/lambda/user_management/test_scan_pagination.py",
     "src/lambda/user_sync/index.py",
     "src/lambda/w2_dataset_deployer/index.py",
@@ -507,8 +477,8 @@
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py"
   ],
   "highWaterMark": {
-    "lintDebtFiles": 77,
-    "lintFindings": 181,
-    "formatDebtFiles": 166
+    "lintDebtFiles": 71,
+    "lintFindings": 172,
+    "formatDebtFiles": 157
   }
 }

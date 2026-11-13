@@ -2,6 +2,9 @@
 title: "IDP CLI - Command Line Interface for Batch Document Processing"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP CLI - Command Line Interface for Batch Document Processing
 
 A command-line tool for batch document processing with the GenAI IDP Accelerator.
@@ -44,6 +47,8 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
   - [list-batches](#list-batches)
   - [stop-workflows](#stop-workflows)
   - [load-test](#load-test)
+  - [tenancy](#tenancy)
+  - [terraform migrate-from-genai-idp-terraform](#terraform-migrate-from-genai-idp-terraform)
   - [discover](#discover)
   - [discover-multidoc](#discover-multidoc)
   - [remove-deleted-stack-resources](#remove-deleted-stack-resources)
@@ -79,6 +84,7 @@ https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d
 ### Prerequisites
 
 - Python 3.12 or higher
+- [`uv`](https://docs.astral.sh/uv/) on `PATH`, which `make setup-venv` uses to read the dependency lock
 - AWS credentials configured (via AWS CLI or environment variables)
 - An active IDP Accelerator CloudFormation stack
 
@@ -305,9 +311,10 @@ For evaluation workflows with accuracy metrics, see the [Complete Evaluation Wor
 
 > **Comma-separated options:** every option documented below as comma-separated
 > (`--document-ids`, `--test-run-ids`, `--file-types`, `--check-stack-regions`,
-> `--features`, `--tags`) parses through one shared helper that **drops blank
-> segments**, so a trailing or doubled comma is
-> harmless — `--document-ids "a,b,"` names two documents, not three.
+> `--features`, `--tags`) **drops blank segments**, so a trailing or doubled comma
+> is harmless — `--document-ids "a,b,"` names two documents, not three. All but
+> `--features` parse through one shared helper; `--features` is parsed by the SDK's
+> `config.create`, by the same rule.
 >
 > For all of them **except `--tags`**, a value containing **no** non-blank segment is
 > **refused** with exit 1 rather than treated as one value that is the empty string.
@@ -331,7 +338,7 @@ idp-cli deploy [OPTIONS]
 - `--admin-email`: Admin user email
 
 **Optional Parameters:**
-- `--from-code`: Deploy from local code by building and publishing artifacts (path to project root)
+- `--from-code`: Deploy from local code by building and publishing artifacts (path to project root). With `--terraform`, it also publishes the Terraform module from that checkout and deploys it
 - `--template-url`: URL to CloudFormation template in S3 (optional, auto-selected based on region)
 - `--template-file`: Local path to a pre-built CloudFormation template (from a previous `publish`)
 - `--custom-config`: Path to local config file or S3 URI
@@ -371,6 +378,11 @@ idp-cli deploy [OPTIONS]
 - `--build-max-workers`: Maximum concurrent build workers (used with `--from-code`)
 - `--clean-build`: Force full rebuild by deleting checksum files (used with `--from-code`)
 - `--no-validate-template`: Skip CloudFormation template validation
+- `--terraform` (experimental): Deploy with Terraform instead of CloudFormation. See [Terraform deployments](#terraform-deployments) below and the [Terraform Deployment](./terraform.md) guide.
+- `--terraform-module-url`: Terraform module source URL (used with `--terraform`; default: the latest published module for the region; not with `--from-code`, which publishes its own)
+- `--terraform-dir`: Directory for the generated root configuration and local state (used with `--terraform`; default: `./idp-terraform/<stack-name>`)
+- `--terraform-bin`: `terraform` or `tofu` (used with `--terraform`)
+- `--terraform-assume-role-arn`: IAM role both Terraform providers assume (used with `--terraform`; refused without it)
 
 **Note:** `--from-code`, `--template-url`, and `--template-file` are mutually exclusive. Use `--from-code` for development/testing from local source, `--template-url` for production deployments from a pre-published template, and `--template-file` to deploy a locally-built template.
 
@@ -529,6 +541,10 @@ idp-cli deploy \
     --wait
 ```
 
+#### Terraform deployments
+
+`deploy --terraform` deploys the experimental Terraform module instead of a CloudFormation stack. Its options, and how it writes and reuses the Terraform directory, are under [Terraform deployments](#terraform-deployments-1) below; parameters, the label stack and upgrading are in the [Terraform Deployment](./terraform.md) guide.
+
 ---
 
 ### `publish`
@@ -550,11 +566,13 @@ idp-cli publish [OPTIONS]
 - `--headless`: Also generate a **headless (no-UI) template variant**. For commercial regions this produces `idp-main.yaml` **and** `idp-headless.yaml`; for GovCloud (`us-gov-*`) the headless template is additionally updated with GovCloud configuration defaults (ARN partition, GovCloud Bedrock models, `lending-package-sample-govcloud` preset).
 - `--govcloud`: Also generate the **GovCloud template variant** — the full Web UI with every `AWS::CloudFront::*` resource removed and API Gateway UI hosting forced. Writes `.aws-sam/idp-govcloud.yaml` beside `idp-main.yaml` and uploads it as `idp-govcloud.yaml`. The transform is linted against a GovCloud region, so an unsupported resource type that survived it fails the publish with the `cfn-lint` finding rather than at deploy time. Deploy the result with `idp-cli deploy --template-file .aws-sam/idp-govcloud.yaml`, or build and deploy in one step with `idp-cli deploy --from-code . --govcloud`.
 - `--public`: Make S3 artifacts publicly readable (for shared deployments)
+- `--terraform` (experimental): After the CloudFormation publish, also generate the Terraform module from the published main template and upload it beside the templates: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256` checksum, and `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The command prints the module source URL, an HTTPS S3 URL ending `.zip` that Terraform accepts as a module `source`. See [Terraform Deployment](./terraform.md#getting-the-module). It runs the translator in `terraform/translator` of the source checkout, which needs the SDK's `terraform` extra (`pip install -e "lib/idp_sdk[terraform]"`; `make setup` installs it).
 - `--max-workers`: Maximum concurrent build workers (default: auto-detect)
 - `--clean-build`: Force full rebuild by deleting all checksum files
 - `--no-validate`: Skip CloudFormation template validation
 - `--lint / --no-lint`: Enable/disable ruff linting and cfn-lint (default: enabled)
 - `--verbose`, `-v`: Enable verbose build output
+- `--terraform`: After the CloudFormation publish, translate the published main template into a Terraform module (nested templates are fetched by their `TemplateURL`) and upload it to the same bucket and prefix: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256`, and the pointer `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The zip is deterministic, so republishing unchanged files gives the same checksum. Prints the module's HTTPS URL. With `--headless` and/or `--govcloud` as well, each variant template is also translated and published as its own module, named `idp-terraform-<variant>-<version>.zip` (plus `.sha256`) with the pointer `<prefix>/terraform/idp-terraform-<variant>-latest.json`; if a variant's translation fails, the publish fails and names the variant. Needs the source checkout's `terraform/translator`. See [Terraform deployments](#terraform-deployments).
 
 **Prerequisites** (same as `--from-code` deployments):
 - AWS SAM CLI, Docker (for container-image Lambdas), Node.js ≥ 22.12, npm ≥ 10, Python 3.12.
@@ -583,6 +601,9 @@ idp-cli publish --source-dir . --region us-east-1 --clean-build --verbose
 
 # Make artifacts publicly readable (shared template)
 idp-cli publish --source-dir . --region us-east-1 --public
+
+# Also generate and upload the Terraform module (experimental)
+idp-cli publish --source-dir . --region us-east-1 --terraform
 ```
 
 **Output:**
@@ -629,6 +650,9 @@ idp-cli delete [OPTIONS]
 - `--force-delete-all`: Force delete ALL remaining resources after CloudFormation deletion (S3 buckets, CloudWatch logs, DynamoDB tables)
 - `--wait`: Wait for deletion to complete (default: no-wait)
 - `--region`: AWS region (optional)
+- `--terraform` (experimental): Delete a Terraform deployment made with `deploy --terraform`, from its `--terraform-dir`. See [Deleting a Terraform deployment](#deleting-a-terraform-deployment) below.
+- `--terraform-dir`: The directory `deploy --terraform` wrote (used with `--terraform`)
+- `--terraform-assume-role-arn`: IAM role both Terraform providers assume during the delete (used with `--terraform`)
 
 **S3 Bucket Behavior:**
 - **LoggingBucket**: `DeletionPolicy: Retain` - Always kept (unless using `--force-delete-all`)
@@ -693,6 +717,9 @@ idp-cli delete --stack-name test-stack --force-delete-all --force
 
 # Wait for the deletion to reach DELETE_COMPLETE before returning
 idp-cli delete --stack-name test-stack --force --wait
+
+# Delete a Terraform deployment (experimental)
+idp-cli delete --terraform --stack-name idp-tf --force
 ```
 
 Deletion does **not** wait by default: without `--wait` the command initiates the
@@ -844,6 +871,98 @@ Proceeding with stack deletion...
 
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
 
+#### Deleting a Terraform deployment
+
+`delete --terraform` removes a Terraform deployment, keeping the resources CloudFormation would retain. See [Terraform deployments](#terraform-deployments-1) below and [Terraform Deployment](./terraform.md#deleting).
+
+---
+
+### Terraform deployments
+
+`deploy --terraform` and `delete --terraform` deploy and remove the accelerator with Terraform (or OpenTofu) from a module `publish --terraform` produced. The `terraform` (or `tofu`) binary must be on `PATH`, or named with `--terraform-bin`; the command refuses to start without it.
+
+```bash
+idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com \
+    --region us-west-2 --parameters "MaxConcurrentWorkflows=50"
+idp-cli delete --terraform --stack-name my-idp --region us-west-2 --force
+
+# Build and deploy with Terraform from a local checkout
+idp-cli deploy --terraform --from-code . --stack-name my-idp \
+    --admin-email user@example.com --region us-west-2
+```
+
+With `--from-code`, `deploy --terraform` first builds and publishes the templates and the Terraform module from that checkout (as `publish --source-dir <dir> --terraform` does, honouring `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template`), then deploys that module. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url`.
+
+`deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. CloudFormation-only options (`--from-code`, `--template-url`, `--template-file`, `--tags`, `--custom-config` and the like) are refused with `--terraform`.
+
+When the module comes from the pointer, idp-cli downloads the zip to read its `idp-terraform.json` and refuses it if its SHA-256 differs from the pointer's `sha256`. That is a consistency check of the copy idp-cli reads, against the manifest beside it: Terraform downloads the module again itself, and that download is not checked. A module named with `--terraform-module-url` is not checked at all, because there is no pointer to compare it with; to verify an archive, see [Verifying the archive](./terraform.md#verifying-the-archive).
+
+The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, the values of the earlier deploy, remembered by CloudFormation parameter name in `idp-cli-parameters.json`, are kept and the new `--parameters` applied over them, as a CloudFormation update keeps parameters it is not given. An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
+
+`delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained. `--force-delete-all` does not apply.
+
+Plain `deploy` and `delete` (without `--terraform`) refuse a Terraform deployment's label stack.
+
+---
+
+### `terraform migrate-from-genai-idp-terraform`
+
+Moves a deployment of the separate
+[`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
+implementation onto this repository's Terraform module **in place**: a new deployment
+adopts the old one's buckets, tables, KMS key and Cognito user pool, so documents,
+configuration, users and passwords stay, and recreates everything else. It applies
+only to that implementation; it is not a CloudFormation or a configuration migration.
+The procedure, what each phase checks and how to back out of it are in
+[Migrating from genai-idp-terraform](./terraform-migration.md).
+
+Run the phases in this order. Each takes `--stack-name` (the **new** deployment's
+name), `--region`, `--terraform-dir` (the new deployment's root configuration
+directory, default `./idp-terraform/<stack-name>`) and `--json` (the phase's result
+as JSON on stdout; progress and the human-readable report go to stderr). A phase that
+changes something only lists the changes unless given `--apply`, and every phase exits
+1 when it finds something that blocks the next step.
+
+| Phase | Changes | Options |
+|---|---|---|
+| `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
+| `check-retention` | Nothing (lists every object, and every object version of a versioned bucket, in each kept bucket) | `--accept-expiry KIND` (repeatable) |
+| `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800), `--ignore-document KEY` (repeatable) |
+| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
+| `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
+| `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
+| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset | `--apply` |
+| `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
+| `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
+
+```bash
+idp-cli terraform migrate-from-genai-idp-terraform plan --stack-name my-idp \
+    --region us-west-2 --old-state old-idp.tfstate --admin-email admin@example.com
+idp-cli terraform migrate-from-genai-idp-terraform check-retention --stack-name my-idp --region us-west-2
+idp-cli terraform migrate-from-genai-idp-terraform freeze --stack-name my-idp --region us-west-2 --apply --wait
+idp-cli terraform migrate-from-genai-idp-terraform fix-config --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform adopt-user-pool --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 --apply
+idp-cli terraform migrate-from-genai-idp-terraform detach --stack-name my-idp --region us-west-2 \
+    --old-terraform-dir ./old-idp --apply
+idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my-idp \
+    --region us-west-2 --destroy-plan destroy-plan.json
+```
+
+`plan` refuses, writing no adoption files, when the old state holds a resource that
+holds data and has no verdict, or a resource of a type it does not know is safe to
+destroy, and names each one. `apply` re-checks the earlier phases, then refuses a plan
+in which any adopted resource is not imported in place, the user pool is not yet in
+state or would lose a schema item, anything at all is replaced, destroyed or
+forgotten, or an adopted resource (or a setting on a kept bucket) would lose a
+protection such as point-in-time recovery, versioning or its KMS key. It lists every
+other in-place change to those resources for you to read. `check-destroy` refuses
+anything but the old deployment's destroy plan.
+
+When `plan` was given `--terraform-assume-role-arn`, every later phase's own AWS calls
+assume the same role (read back from the providers in `main.tf`), so they act in the
+account Terraform deploys to.
+
 ---
 
 ### `bootstrap`
@@ -920,7 +1039,7 @@ idp-cli run-inference [OPTIONS]
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
-- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., v1, v2)
+- `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
@@ -1004,15 +1123,15 @@ idp-cli process \
 idp-cli process \
     --stack-name my-stack \
     --dir ./documents/ \
-    --config-profile v2 \
+    --config-profile lending \
     --monitor
 
 # Process test set with configuration profile
 idp-cli process \
     --stack-name my-stack \
     --test-set fcc-example-test \
-    --config-profile v1 \
-    --context "Testing with config v1" \
+    --config-profile lending \
+    --context "Testing with the lending profile" \
     --monitor
 ```
 
@@ -2212,23 +2331,30 @@ not at one of them.
 
 ### Iterative Configuration Testing
 
-Test different extraction prompts or configurations:
+Test different extraction prompts or configurations without redeploying the stack.
+Upload each attempt to one profile — every upload cuts a new **revision** — and
+process under that revision
+([Iterating on one profile instead of many](#iterating-on-one-profile-instead-of-many)):
 
 ```bash
-# Test with configuration v1
-idp-cli deploy --stack-name my-stack --custom-config ./config-v1.yaml --wait
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v1 --monitor
+# Attempt 1: upload, then process under the revision it printed (here r1)
+idp-cli config-upload --stack-name my-stack --config-file ./attempt-1.yaml \
+    --config-profile tuning --revision-notes "baseline prompts"
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id tuning-r1 \
+    --config-profile tuning --config-revision 1 --monitor
 
 # Download and analyze results
-idp-cli download-results --stack-name my-stack --batch-id config-v1 --output-dir ./results-v1/
+idp-cli download-results --stack-name my-stack --batch-id tuning-r1 --output-dir ./results-r1/
 
-# Test with configuration v2
-idp-cli deploy --stack-name my-stack --custom-config ./config-v2.yaml --wait
-idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id config-v2 --monitor
+# Attempt 2: upload the change to the same profile, then process under its revision (here r2)
+idp-cli config-upload --stack-name my-stack --config-file ./attempt-2.yaml \
+    --config-profile tuning --revision-notes "improved extraction prompt"
+idp-cli run-inference --stack-name my-stack --dir ./test-set/ --batch-id tuning-r2 \
+    --config-profile tuning --config-revision 2 --monitor
 
 # Compare in Athena
 # SELECT batch_id, AVG(overall_accuracy) FROM evaluation_results 
-# WHERE batch_id IN ('config-v1', 'config-v2') GROUP BY batch_id;
+# WHERE batch_id IN ('tuning-r1', 'tuning-r2') GROUP BY batch_id;
 ```
 
 ### Large-Scale Batch Processing
@@ -2481,12 +2607,14 @@ idp-cli config-create [OPTIONS]
 
 **Options:**
 - `--features`: Feature set (default: `min`)
-  - `min`: classification, extraction, classes only (simplest)
-  - `core`: min + ocr, assessment
-  - `all`: all sections with full defaults
-  - Or comma-separated list: `"classification,extraction,summarization"`
+  - `min`: classification and extraction only (simplest). It also writes `enabled: false` for summarization and evaluation, so those are switched off. It leaves **confidence scoring on**: confidence is configured under `extraction.confidence`, which comes with `extraction` at its default `mode: separate`. To turn it off, set `extraction.confidence.mode: off` in the generated file
+  - `core`: the sections of min plus ocr. Unlike min, it does not turn summarization or evaluation off. Confidence scoring is configured under `extraction.confidence`, so it comes with `extraction`
+  - `all`: every section at its default values, except `hitl`, `chat` and `rule_validation`. ⚠️ On upload the file is merged over the stack's preset or the profile's current configuration, so **every setting it writes is reset to its default there**: `summarization` and `evaluation` are written `enabled: true`, for example, and switch back on where a preset turned them off. Without `--include-prompts` the long prompt fields are not written, so those keep the deployment's own values. Edit the file before uploading, or ask for only the sections you mean to change. The three sections are left out so that the reset does not also switch human review, the chat companion or rule validation on or off. Name them explicitly to include them (`--features hitl`, or a comma-separated list of section names); a feature set cannot be combined with section names, so `all` plus one of them means listing every section
+  - Or one or more section names, comma-separated: `summarization`, or `"classification,extraction,summarization"`. A single name and a list are read the same way. A name that is not a section of the configuration is **refused** with exit 1 and the list of valid sections, rather than dropped, and a feature set cannot be combined with section names
+- No feature set writes a `classes` section. The system defaults define no document classes, and an empty `classes: []` uploaded over a profile would replace the profile's classes with none, so the key is left out and the profile keeps its own. `--features classes` on its own is refused for the same reason. Add your classes under a top-level `classes:` key
+- The header comment of the generated file states which sections it copies, which it switches off, which it leaves out, and whether confidence scoring is on
 - `--output`, `-o`: Output file path (default: stdout)
-- `--include-prompts`: Include full prompt templates (default: stripped for readability)
+- `--include-prompts`: Include full prompt templates. By default the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the file, so they take whatever value the configuration is merged over: the system defaults when validating or deploying, or the stack's default (or the profile's current) configuration when uploading
 - `--no-comments`: Omit explanatory header comments
 
 **Examples:**
@@ -2495,11 +2623,14 @@ idp-cli config-create [OPTIONS]
 # Generate minimal config to stdout
 idp-cli config-create
 
-# Generate full config with all sections
+# Generate a config with every section except hitl, chat and rule_validation
 idp-cli config-create --features all --output full-config.yaml
 
 # Custom section selection
 idp-cli config-create --features "classification,extraction,summarization" --output config.yaml
+
+# A single section
+idp-cli config-create --features summarization
 ```
 
 ---
@@ -2511,12 +2642,12 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 **Validation Checks:**
 - **YAML/JSON Syntax** - Ensures file is well-formed
 - **Schema Validation** - Validates against Pydantic models
-- **Model IDs** - Verifies Bedrock model IDs are valid (checked against pricing.yaml)
+- **Model IDs** - Verifies every Bedrock model ID the configuration names is in `config_library/pricing.yaml`: each section's model, the confidence, escalation, review-agent, chat, agent, discovery, rule-validation and evaluation models, the per-class `x-aws-idp-extraction-model`, `x-aws-idp-extraction-escalation-model` and `x-aws-idp-confidence-escalation-model` overrides, and the `model` in the `x-aws-idp-evaluation-method-config` of any field evaluated with `LLM`. `config-upload` runs the same check unless given `--no-validate`. An ID is compared as written, so one with surrounding spaces or in upper case is reported like any other typo. Embedding-model fields are not checked, because `pricing.yaml` prices no embedding model. A model named by an ARN whose underlying model cannot be determined offline is a warning rather than an error
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
   - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
-  - `assessment.task_prompt`: Requires `{DOCUMENT_IMAGE}`, `{OCR_TEXT_CONFIDENCE}`, `{EXTRACTION_RESULTS}`
+  - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it. `{DOCUMENT_IMAGE}` may appear at most once in the prompt the confidence pass sends — this prompt with comments removed, plus `extraction.geometry.task_prompt_bbox` when `extraction.geometry.mode` is `llm` or `llm_grounded` — because the pass refuses the document otherwise. An explicit empty prompt (`task_prompt: ""`, or one holding only a comment) is refused for the same reason. Both checks run in `integrated` mode too, where the separate pass still runs for some sections; leave the key out to use the system default
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
 - **Pre-0.9 classification layout** - Warns when the file still uses the flat
@@ -2526,7 +2657,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   boundary detection is converted to `sectionSplitting: disabled`, after which a
   short packet becomes one section where it used to be split. Both
   are warnings, not errors — the file is valid and will run.
-- **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction** (`extraction.agentic.enabled: true`, including per-class `x-aws-idp-extraction-model` overrides) or used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
+- **OpenAI GPT-5.x compatibility** - Errors if an `openai.gpt-5.*` model is paired with **agentic extraction**, either as `extraction.model` or as a per-class `x-aws-idp-extraction-model` override. The escalation model is checked the same way — `extraction.validation.escalation_model` or a per-class `x-aws-idp-extraction-escalation-model` — when escalation can run, meaning validation is enabled and `extraction.validation.fail_action` is `escalate`. Extraction is agentic when `extraction.mode` is `advanced`, or, in a configuration that sets no `mode`, when `extraction.agentic.enabled` is `true`; `mode` wins when both are set. It also errors if one is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`). These models run on the `bedrock-mantle` Responses API and cannot accept the Strands agent loop or whole-PDF document blocks. See [OpenAI GPT-5.x Models](openai-models.md).
 - **xAI Grok compatibility** - Errors if `us.xai.grok-4.6` / `global.xai.grok-4.6` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Grok rejects whole-PDF `document` blocks. Unlike GPT-5.x, Grok **is** valid for agentic extraction — it reaches Converse and supports tool use, so that pairing is deliberately allowed. See [xAI Grok Models](grok-models.md).
 - **OpenAI GPT-6 Astra compatibility** - Errors if `us.openai.gpt-6-astra` / `global.openai.gpt-6-astra` is used for **Discovery** (`discovery.*.model_id` / `discovery.rules.model`), because Astra rejects whole-PDF `document` blocks. Like Grok — and unlike its GPT-5.x stablemates — Astra **is** valid for agentic extraction, since it reaches Converse and emits `toolUse`. The agentic check keys on the bedrock-mantle route rather than the `openai.` prefix, so one OpenAI model passes it and the others do not. See [OpenAI Models](openai-models.md#gpt-6-astra-converse).
 
@@ -2539,6 +2670,7 @@ idp-cli config-validate [OPTIONS]
 - `--config-file`, `-f` (required): Path to configuration file to validate
 - `--show-merged`: Show the full merged configuration
 - `--strict`: Fail validation if config contains unknown or deprecated fields
+- `--emit-migrated <path>`: Write the file converted to the current configuration format to `<path>`, headed by a comment naming the format version and the source file
 
 **Examples:**
 
@@ -2555,6 +2687,7 @@ idp-cli config-validate --config-file ./config.yaml --strict
 
 **Notes:**
 - The `config-upload` command runs validation by default before uploading to protect production stacks.
+- The command calls the SDK's `client.config.validate()` and, for `--emit-migrated`, `client.config.migrate()`, so the CLI and the SDK give the same verdict on a file. See [config.validate()](idp-sdk.md#configvalidate).
 - Model ID validation requires `config_library/pricing.yaml`. Ensure `idp-cli` is run from the repository root, or set the `IDP_PROJECT_ROOT` environment variable to the repo root for validation to work correctly.
 
 ---
@@ -2572,7 +2705,7 @@ idp-cli config-download [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--output`, `-o`: Output file path (default: stdout)
 - `--format`: Output format - `full` (default) or `minimal` (only differences from defaults)
-- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile
+- `--config-profile` (alias: `--config-version`): Configuration profile to download (e.g., `default`, `lending`). If not specified, downloads the active profile
 - `--config-revision`: Download an exact **revision** of that profile instead of its current configuration (e.g. `7`). Requires `--config-profile`. Fails if the revision is no longer retained, or if its body has expired under `DataRetentionInDays`, unless it is the profile's current published revision and the profile still provably holds that configuration, in which case it is rebuilt from the profile ([Retention](configuration-profiles.md#retention)), rather than silently returning the current configuration. The file is written in the current configuration format whichever release cut the revision, so it has the same shape as a download of the profile's current configuration ([Revision History](configuration-profiles.md#revision-history))
 - `--region`: AWS region (optional)
 
@@ -2583,7 +2716,7 @@ idp-cli config-download [OPTIONS]
 idp-cli config-download --stack-name my-stack --output config.yaml
 
 # Download a specific profile
-idp-cli config-download --stack-name my-stack --config-profile v2 --output config.yaml
+idp-cli config-download --stack-name my-stack --config-profile lending --output config.yaml
 
 # Download minimal config (only customizations)
 idp-cli config-download --stack-name my-stack --format minimal --output config.yaml
@@ -2622,7 +2755,7 @@ idp-cli config-upload [OPTIONS]
 - `--stack-name` (required): CloudFormation stack name
 - `--config-file`, `-f` (required): Path to configuration file (YAML or JSON)
 - `--validate/--no-validate`: Validate config before uploading (default: validate)
-- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `v1`, `v2`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
+- `--config-profile` (alias: `--config-version`) **(required)**: Configuration profile to update (e.g., `default`, `Production`). If the profile doesn't exist, it will be created automatically. An **empty** value is refused with exit 1 and nothing is written; it used to land the configuration on a key no profile listing can see, reported as "Configuration is now active!" with exit 0
 - `--version-description`: Description for the configuration **profile** (persisted on the profile and overwritten by every save)
 - `--revision-notes`: What this upload changed, recorded on the **revision** it cuts and shown as *Notes* in the revision history (e.g. `'raised topK to 20'`). Per-revision and immutable, unlike `--version-description`
 - `--region`: AWS region (optional)
@@ -2738,7 +2871,7 @@ revisions:
 ```bash
 # Upload attempt N and capture the revision it became
 rev=$(idp-cli config-upload --stack-name my-stack --config-file attempt.yaml \
-        --config-profile tuning-run-42 --version-description "raised topK to 20" \
+        --config-profile tuning-run-42 --revision-notes "raised topK to 20" \
       | sed -n 's/^Revision: r//p')
 
 # Score exactly that revision
@@ -3018,6 +3151,102 @@ idp-cli test-compare \
 
 ---
 
+### `mcp credentials`
+
+Manage MCP service credentials: client-credentials apps that an MCP client signing
+in as a service (a shared Amazon Quick workflow, the MCP Connector, a scheduled
+job) uses instead of a person's sign-in. Each credential has its own role,
+configuration profiles, expiry and secret; the rules are the ones the MCP
+Configuration page applies (see [MCP Server](mcp-server.md#service-credentials)).
+Every subcommand takes `--stack-name` and an optional `--region`, and needs IAM
+access to the stack's credential table, user pool, Secrets Manager and gateway.
+
+| Subcommand | Purpose |
+|---|---|
+| `list [--json]` | Print the credentials. Secrets are never listed |
+| `create --name N --role ROLE [--scope PROFILE …] [--write-tools] [--expires-in-days D]` | Create one and print, as JSON on stdout, its client ID and secret (shown once; also stored in Secrets Manager at `secretArn`), the token URL and the MCP server endpoint. `--scope` repeats; `--expires-in-days 0` means never (default 90) |
+| `update --client-id ID [--role ROLE] [--scope PROFILE …] [--clear-scope] [--write-tools/--no-write-tools] [--enable/--disable]` | Change role, profiles, write tools or enabled; never the secret |
+| `rotate --client-id ID [--overlap-days 0-7]` | Issue a replacement with the same access, print its secret once, and keep the old one working for the overlap (default 7 days) |
+| `revoke --client-id ID [--yes]` | Refuse the credential from its next request and delete its app client and secret |
+| `set-tenant --client-id ID [--tenant-id T]` | Grant one tenant, or none; only when `TenantGrantSource` is `Api` |
+
+### `tenancy`
+
+Manage tenant declarations and check tenant isolation on a deployed stack. A tenant
+is a set of Input-bucket prefixes plus a Configuration Profile pattern; see
+[Multi-Tenant Isolation](multi-tenancy.md) for what declaring one enforces and what
+`TenantIsolationMode=Strict` adds. Every subcommand takes `--stack-name` and an
+optional `--region`.
+
+| Subcommand | Purpose |
+|---|---|
+| `list [--json]` | Print the declared tenants |
+| `put --tenant-id ID --prefix P [--prefix P2 …] --profile-pattern PAT [--granted-by V …] [--description D]` | Create or replace one tenant. Refused when it overlaps another tenant or an existing prefix mapping would cross it — the same checks the web UI applies. `--granted-by` (repeatable, at most three) names the claim or entitlement values that grant the tenant; a value may grant only one tenant |
+| `set-user-tenant --email ADDR [--tenant ID] [--json]` | Grant one existing user one tenant, or none when `--tenant` is omitted. Only when the stack's `TenantGrantSource` is `Api`; an Admin is refused. See [Who grants a tenant](multi-tenancy.md#who-grants-a-tenant) |
+| `delete --tenant-id ID [--yes]` | Remove one declaration. Mappings, profiles and documents are untouched |
+| `apply --file tenants.yaml [--prune] [--yes] [--json]` | Make the declarations match a file. Prints the plan and writes nothing unless `--yes` is given; `--prune` also deletes tenants the file does not declare. The whole plan is validated before anything is written |
+| `generate-policies --principals principals.yaml [--output FILE] [--deploy [--access-point-stack NAME] [--json]]` | Write a CloudFormation template creating one Input-bucket and one Output-bucket S3 Access Point per tenant, confined to that tenant's prefixes. `--deploy` also deploys it as its own stack (default `<stack>-tenant-access-points`, created or updated) and prints each tenant's access point alias and ARN; see [the procedure](multi-tenancy.md#generate-and-deploy-the-access-points-step-by-step) |
+| `audit [--principals principals.yaml] [--sample N] [--json]` | Read-only report; exits 1 when there are findings |
+| `verify --document FILE [--tenant A --tenant B] [--timeout S] [--email-domain D] [--json]` | Live cross-tenant check; exits 0 pass, 1 fail, 2 error, 3 skipped |
+
+**`tenants.yaml`**:
+
+```yaml
+tenants:
+  - tenantId: acme
+    prefixes: [clients/acme/]
+    profilePattern: acme-*
+    grantedBy: [tenant.acme]   # optional; read when TenantGrantSource is IdpClaim
+    description: ACME Corp
+  - tenantId: globex
+    prefixes: [clients/globex/, feeds/globex/]
+    profilePattern: globex-*
+```
+
+**`principals.yaml`** names, per tenant, the IAM roles or users that write its
+documents and read its results. An account-root ARN is refused, because an access
+point cannot confine a whole account to one tenant:
+
+```yaml
+acme:
+  uploaders: [arn:aws:iam::123456789012:role/acme-uploader]
+  consumers: [arn:aws:iam::123456789012:role/acme-results-reader]
+  kmsKeyArn: arn:aws:kms:us-east-1:123456789012:key/EXAMPLE   # optional
+```
+
+In AWS GovCloud (US) the ARNs use the `aws-us-gov` partition (`arn:aws-us-gov:iam::…`).
+
+Output-bucket keys begin with the document's input key, so a tenant's output access
+point is confined to the same prefixes as its input one. The generated template
+creates only the access points. The stack's bucket policies delegate to access points
+in its own account when `TenantIsolationMode=Strict`. Each access point policy confines
+with explicit denies — no other principal may use it, and nothing outside the tenant's
+prefixes may be reached through it by any action — so the confinement holds whatever the
+roles' own policies allow. A role in the stack's account needs no S3 permission of its
+own; a role in another account needs an identity policy allowing its own access point.
+Every role needs use of the stack's KMS key. The command prints what is needed.
+
+**`audit`** reports the isolation mode, prefix mappings that cross a tenant boundary,
+tenant prefixes no mapping of the tenant's own covers, non-admin users with no scope
+or one spanning tenants, a sample of tracked documents whose key and profile belong
+to different tenants, and — with `--principals` — deployed access point policies that
+differ from what `generate-policies` would produce.
+
+**`verify`** creates a throwaway Admin and two throwaway Viewer users scoped to two
+tenants (through the API's own `createUser`, so the scope check runs), uploads the
+given document under each tenant's prefix, and checks that each user can list, read
+and download its own tenant's document and is refused the other's. On a Strict
+stack it also uploads a document outside every tenant, which must be refused at
+ingest, and one under the first tenant's prefix whose metadata names the second
+tenant's profile, which must be refused or processed under the first tenant's own
+profile, never the second's. It temporarily enables
+admin password authentication on the app client and restores the original setting,
+and it removes every user and object it created; a cleanup failure is reported as an
+error. Each tenant needs an enabled prefix mapping to one of its own profiles before
+it runs. The throwaway users' addresses use the stack's first `AllowedSignUpEmailDomain`
+when that parameter is set, because the API refuses to create a user outside it, and
+`example.com` otherwise; `--email-domain` overrides both.
+
 ### `discover`
 
 Discover document class schemas from sample documents using Amazon Bedrock.
@@ -3153,8 +3382,8 @@ idp-cli discover-multidoc [OPTIONS]
 |--------|-------------|
 | `--dir` | Directory containing documents to analyze (recursive scan) |
 | `-d, --document` | Individual document files (repeatable: `-d doc1.pdf -d doc2.png`) |
-| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`) |
-| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`) |
+| `--embedding-model` | Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada) |
+| `--analysis-model` | Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions) |
 | `-o, --output` | Output directory for discovered JSON schemas |
 | `--stack-name` | CloudFormation stack name (required for `--save-to-config`) |
 | `--config-profile` (alias: `--config-version`) | Configuration profile to save schemas to |

@@ -2,6 +2,9 @@
 title: "Error Analyzer (Troubleshooting Tool) - PREVIEW"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Error Analyzer (Troubleshooting Tool) - PREVIEW
 
 ## Overview
@@ -65,7 +68,7 @@ The Error Analyzer uses a set of specialized tools organized in a modular
 architecture. These include CloudWatch log search, DynamoDB document-record
 lookup, Step Functions execution analysis, X-Ray tracing, and
 `fetch_pipeline_configuration` — which returns the Bedrock model ID configured
-for each pipeline stage of a document's config version. The last is what lets
+for each pipeline stage of a document's configuration profile. The last is what lets
 the agent name the exact model behind a retired/unavailable-model error (the
 Bedrock error text itself does not name the model):
 
@@ -137,11 +140,11 @@ dispatching router tool between the model and the tools.
 
 5. **fetch_pipeline_configuration** (Configuration)
    - Returns the Bedrock model ID configured for each pipeline stage of a
-     configuration version, plus whether summarization is enabled
+     configuration profile, plus whether summarization is enabled
    - This is what lets the agent name the exact model behind a
      retired-or-unavailable-model error, since the Bedrock error text does
      not name the model
-   - Argument: `config_version` (empty reads the active version)
+   - Argument: `config_version` (a profile name; empty reads the active profile)
 
 6. **retrieve_document_context** (Lambda)
    - Invokes the lookup Lambda named by `LOOKUP_FUNCTION_NAME` to gather
@@ -253,7 +256,7 @@ Troubleshoot modal footer offers two additional actions:
 
 - **Report this issue on GitHub** — opens a pre-filled GitHub bug-report form in a
   new tab, populated with the deployment environment (Region, Processing Mode,
-  Version/Build/Stack), the document context (object key, status, config version,
+  Version/Build/Stack), the document context (object key, status, configuration profile,
   execution ARN, and any job error), and the agent's Markdown findings.
 - **Copy full details** — copies the complete environment + findings text to your
   clipboard, for pasting content that the pre-filled URL can't carry (the issue link
@@ -1217,7 +1220,7 @@ alone is failing.
 
 #### fetch_pipeline_configuration
 
-Loads a configuration version through `idp_common.config.get_config` and walks
+Loads a configuration profile through `idp_common.config.get_config` and walks
 it for every stage that references a Bedrock model, returning
 `stage_models` as a list of `{"stage": <dotted path>, "model": <model_id>}`
 plus whether summarization is enabled.
@@ -1225,7 +1228,7 @@ plus whether summarization is enabled.
 This is the tool that resolves retired-model failures. A Bedrock
 `ResourceNotFoundException` does not name the model that was rejected, so the
 chain is: `fetch_document_record` for the document's `ConfigVersion`, then
-`fetch_pipeline_configuration` with that version, then match the failing stage
+`fetch_pipeline_configuration` with that profile, then match the failing stage
 to its configured model ID.
 
 ### Performance Considerations
@@ -1367,15 +1370,6 @@ The analyzer will automatically discover and search these logs.
 2. **Special Characters**: Some Unicode in logs may cause parsing issues
 3. **High Volume**: Systems with >1000 errors/hour may hit throttling
 4. **Multi-Region**: Analyzer only searches current region
-
-### Future Enhancements
-
-- **Multi-language Support**: Non-English log analysis
-- **Custom Patterns**: User-defined error patterns
-- **Trend Analysis**: Historical error pattern tracking
-- **Predictive Alerts**: Proactive failure prediction
-- **Export Features**: PDF/JSON report generation
-- **Integration**: Slack/Teams notifications
 
 ## Summary
 

@@ -12,8 +12,12 @@ Covers:
   grants nothing)
 - Freshness: only a fresh sign-in is honoured, never a token refresh
 - Coverage: every Cognito group template.yaml declares is reachable from an IdP
-  claim, in both copies of the handler (TestCognitoGroupCoverage)
+  claim (TestCognitoGroupCoverage)
+- Deployment: template.yaml deploys this directory, not an inline copy
+  (TestTheDeployedCodeIsThisFile)
+- Tenant grants from the claim under TenantGrantSource=IdpClaim (TestClaimTenantGrant)
 """
+
 import json
 import logging
 import os
@@ -40,8 +44,7 @@ TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "template.yaml"
 )
 
-# Resource logical id of the pre-token trigger whose InlineCode is the copy that
-# actually deploys.
+# Resource logical id of the pre-token trigger, whose CodeUri is this directory.
 TRIGGER_RESOURCE = "ExternalIdPGroupMappingFunction"
 
 
@@ -95,30 +98,6 @@ def group_env_vars(template):
         "Variables"
     ]
     return {k: v for k, v in variables.items() if k.endswith("_GROUP_NAME")}
-
-
-def load_inline_copy(env):
-    """Import the InlineCode from template.yaml as a module, under `env`.
-
-    The exec IS the assertion: `code` comes from this repo's own template.yaml,
-    and running the copy that actually deploys is what proves it has not drifted
-    from the copy index.py's tests cover. Comparing the two as text would pass
-    while the deployed handler behaved differently.
-    """
-    import types
-
-    template = load_template()
-    code = template["Resources"][TRIGGER_RESOURCE]["Properties"]["InlineCode"]
-
-    env = dict(env)
-    env.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-    with patch.dict(os.environ, env, clear=False):
-        mod = types.ModuleType("inline_external_idp_group_mapping")
-        # The pragma has to sit on the line immediately above the finding —
-        # semgrep does not look further back than that.
-        # nosemgrep: python.lang.security.audit.exec-detected.exec-detected
-        exec(compile(code, "template.yaml:InlineCode", "exec"), mod.__dict__)  # nosec B102 - see above
-    return mod
 
 
 def load_standalone_copy(env):
@@ -186,7 +165,6 @@ def _admin_get_user_response(provider_name=IDP_NAME):
     return {"Username": "testuser", "UserAttributes": attributes}
 
 
-
 def _override_groups(result):
     """The groups the handler asked Cognito to put in the token, or None.
 
@@ -196,9 +174,8 @@ def _override_groups(result):
     tests assert on both (see TestTokenOverrideShape).
     """
     response = result.get("response") or {}
-    details = (
-        response.get("claimsOverrideDetails")
-        or response.get("claimsAndScopeOverrideDetails")
+    details = response.get("claimsOverrideDetails") or response.get(
+        "claimsAndScopeOverrideDetails"
     )
     if not details:
         return None
@@ -209,6 +186,7 @@ def _override_groups(result):
 # Group parsing tests
 # ============================================================
 
+
 class TestParseIdpGroups:
     """Tests for parse_idp_groups handling various claim formats."""
 
@@ -217,11 +195,15 @@ class TestParseIdpGroups:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.parse = mod.parse_idp_groups
 
     def test_json_array(self):
-        assert self.parse('["IdP-Admins", "IdP-Authors"]') == ["IdP-Admins", "IdP-Authors"]
+        assert self.parse('["IdP-Admins", "IdP-Authors"]') == [
+            "IdP-Admins",
+            "IdP-Authors",
+        ]
 
     def test_json_array_single(self):
         assert self.parse('["IdP-Admins"]') == ["IdP-Admins"]
@@ -253,13 +235,16 @@ class TestParseIdpGroups:
 
     def test_comma_separated_with_spaces(self):
         assert self.parse("  IdP-Admins ,  IdP-Authors , IdP-Viewers  ") == [
-            "IdP-Admins", "IdP-Authors", "IdP-Viewers"
+            "IdP-Admins",
+            "IdP-Authors",
+            "IdP-Viewers",
         ]
 
 
 # ============================================================
 # Handler tests
 # ============================================================
+
 
 @pytest.mark.unit
 class TestHandler:
@@ -276,6 +261,7 @@ class TestHandler:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.mod = mod
             self.handler = mod.handler
@@ -308,7 +294,9 @@ class TestHandler:
             UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
         )
         # Verify token override
-        override = result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]
+        override = result["response"]["claimsAndScopeOverrideDetails"][
+            "groupOverrideDetails"
+        ]
         assert "Admin" in override["groupsToOverride"]
 
     def test_multiple_groups_added(self):
@@ -366,13 +354,17 @@ class TestHandler:
         result = self.handler(event, None)
 
         override_groups = set(
-            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"][
+                "groupsToOverride"
+            ]
         )
         assert override_groups == {"Admin", "Viewer"}
 
     def test_list_groups_api_failure_returns_event(self):
         """If admin_list_groups_for_user fails, handler returns event gracefully."""
-        self.mock_cognito.admin_list_groups_for_user.side_effect = Exception("AccessDenied")
+        self.mock_cognito.admin_list_groups_for_user.side_effect = Exception(
+            "AccessDenied"
+        )
         event = _make_event(idp_groups="IdP-Admins")
 
         result = self.handler(event, None)
@@ -395,7 +387,9 @@ class TestHandler:
         assert self.mock_cognito.admin_add_user_to_group.call_count == 2
         # Token override should still contain both target groups
         override_groups = set(
-            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]["groupsToOverride"]
+            result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"][
+                "groupsToOverride"
+            ]
         )
         assert override_groups == {"Admin", "Author"}
 
@@ -404,7 +398,9 @@ class TestHandler:
         self.mock_cognito.admin_list_groups_for_user.return_value = {
             "Groups": [{"GroupName": "Admin"}, {"GroupName": "Author"}]
         }
-        self.mock_cognito.admin_remove_user_from_group.side_effect = Exception("Throttled")
+        self.mock_cognito.admin_remove_user_from_group.side_effect = Exception(
+            "Throttled"
+        )
         event = _make_event(idp_groups="IdP-Authors")
 
         result = self.handler(event, None)
@@ -439,6 +435,7 @@ class TestHandler:
 # Provenance and freshness tests
 # ============================================================
 
+
 @pytest.mark.unit
 class TestProvenanceAndFreshness:
     """The attribute only grants groups when the IdP put it there.
@@ -454,6 +451,7 @@ class TestProvenanceAndFreshness:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.mod = mod
             self.handler = mod.handler
@@ -505,7 +503,9 @@ class TestProvenanceAndFreshness:
         self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
             UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
         )
-        override = result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]
+        override = result["response"]["claimsAndScopeOverrideDetails"][
+            "groupOverrideDetails"
+        ]
         assert override["groupsToOverride"] == ["Admin"]
 
     def test_token_refresh_grants_nothing(self):
@@ -527,7 +527,9 @@ class TestProvenanceAndFreshness:
     def test_unknown_trigger_source_grants_nothing(self):
         """Anything not on the fresh-sign-in list is treated as untrusted."""
         self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
-        event = _make_event(idp_groups="IdP-Admins", trigger_source="TokenGeneration_Future")
+        event = _make_event(
+            idp_groups="IdP-Admins", trigger_source="TokenGeneration_Future"
+        )
 
         result = self.handler(event, None)
 
@@ -592,6 +594,7 @@ class TestProvenanceAndFreshness:
         with patch.dict(os.environ, env, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             mock_cognito = MagicMock()
             mock_cognito.admin_get_user.return_value = _admin_get_user_response()
@@ -626,83 +629,33 @@ class TestProvenanceAndFreshness:
 
 
 # ============================================================
-# Deployed-copy (template.yaml InlineCode) tests
+# The deployed code is this directory
 # ============================================================
 
-@pytest.mark.unit
-class TestDeployedInlineCopy:
-    """The handler that deploys is the InlineCode in template.yaml, not this file.
 
-    ExternalIdPGroupMappingFunction carries an inline copy of the same logic (a
-    Lambda-layer-free trigger), so a fix applied only to index.py would not ship.
-    These tests load that inline copy and re-run the provenance and freshness
-    assertions against it, which fails if the two drift apart.
+@pytest.mark.unit
+class TestTheDeployedCodeIsThisFile:
+    """template.yaml deploys src/lambda/external_idp_group_mapping, not an inline copy.
+
+    The trigger used to carry an InlineCode copy of this handler, and the tests here
+    ran against both. With one copy, what has to hold instead is that the template
+    points at it: an InlineCode reintroduced beside a CodeUri would deploy code no
+    test in this file runs.
     """
 
-    @pytest.fixture(autouse=True)
-    def _load_inline_module(self):
-        mod = load_inline_copy(ENV_VARS)
-        self.mod = mod
-        self.handler = mod.handler
-        self.mock_cognito = MagicMock()
-        self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
-        mod.cognito = self.mock_cognito
-
-    def test_inline_copy_grants_nothing_to_a_native_user(self):
-        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response(
-            provider_name=None
+    def test_the_trigger_deploys_this_directory(self):
+        props = load_template()["Resources"][TRIGGER_RESOURCE]["Properties"]
+        assert "InlineCode" not in props
+        assert os.path.normpath(props["CodeUri"]) == os.path.join(
+            "src", "lambda", "external_idp_group_mapping"
         )
-        event = _make_event(idp_groups="IdP-Admins")
-
-        result = self.handler(event, None)
-
-        assert result is event
-        self.mock_cognito.admin_add_user_to_group.assert_not_called()
-        assert "claimsAndScopeOverrideDetails" not in result.get("response", {})
-
-    def test_inline_copy_grants_nothing_on_refresh(self):
-        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
-        event = _make_event(
-            idp_groups="IdP-Admins", trigger_source="TokenGeneration_RefreshTokens"
-        )
-
-        result = self.handler(event, None)
-
-        assert result is event
-        self.mock_cognito.admin_add_user_to_group.assert_not_called()
-
-    def test_inline_copy_grants_nothing_via_another_provider(self):
-        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response(
-            provider_name="SomeOtherIdP"
-        )
-        event = _make_event(idp_groups="IdP-Admins")
-
-        result = self.handler(event, None)
-
-        assert result is event
-        self.mock_cognito.admin_add_user_to_group.assert_not_called()
-
-    def test_inline_copy_grants_groups_to_a_federated_user(self):
-        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
-        event = _make_event(idp_groups="IdP-Admins")
-
-        result = self.handler(event, None)
-
-        self.mock_cognito.admin_add_user_to_group.assert_called_once_with(
-            UserPoolId="us-east-1_abc123", Username="testuser", GroupName="Admin"
-        )
-        override = result["response"]["claimsAndScopeOverrideDetails"]["groupOverrideDetails"]
-        assert override["groupsToOverride"] == ["Admin"]
-
-    def test_inline_copy_reads_the_provider_name_from_the_environment(self):
-        """The trusted provider must come from EXTERNAL_IDP_NAME, not be hardcoded."""
-        assert self.mod.EXTERNAL_IDP_NAME == IDP_NAME
-
+        assert props["Handler"] == "index.handler"
 
 
 # ============================================================
 # Token override response shape
 # ============================================================
+
 
 @pytest.mark.unit
 class TestTokenOverrideShape:
@@ -720,6 +673,7 @@ class TestTokenOverrideShape:
         with patch.dict(os.environ, ENV_VARS, clear=False):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             self.handler = mod.handler
             self.mock_cognito = MagicMock()
@@ -753,9 +707,11 @@ class TestTokenOverrideShape:
         assert "claimsOverrideDetails" not in response
         assert "claimsAndScopeOverrideDetails" not in response
 
+
 # ============================================================
 # Module-level GROUP_MAPPING tests
 # ============================================================
+
 
 class TestGroupMapping:
     """Tests for GROUP_MAPPING initialization from environment variables.
@@ -786,6 +742,7 @@ class TestGroupMapping:
         with patch.dict(os.environ, partial_env, clear=True):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             assert mod.GROUP_MAPPING == {"MyAdmins": "Admin"}
             assert mod.COGNITO_GROUPS == {"Admin"}
@@ -796,6 +753,7 @@ class TestGroupMapping:
         with patch.dict(os.environ, cleared, clear=True):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             assert mod.GROUP_MAPPING == {}
             assert mod.COGNITO_GROUPS == set()
@@ -811,6 +769,7 @@ class TestGroupMapping:
         with patch.dict(os.environ, env, clear=True):
             import importlib
             import index as mod
+
             importlib.reload(mod)
             assert "  " not in mod.GROUP_MAPPING
             assert mod.GROUP_MAPPING == {"Authors": "Author"}
@@ -820,10 +779,8 @@ class TestGroupMapping:
 # Every declared Cognito group is reachable from an IdP claim
 # ============================================================
 
-# Both copies of the handler, so a change applied to only one of them fails here.
-# "inline" is the InlineCode in template.yaml, which is what deploys; "standalone"
-# is index.py, which carries these tests.
-COPY_LOADERS = {"inline": load_inline_copy, "standalone": load_standalone_copy}
+# index.py is the one copy that deploys (TestTheDeployedCodeIsThisFile).
+COPY_LOADERS = {"standalone": load_standalone_copy}
 
 
 def _role_from_parameter(parameter_name):
@@ -902,8 +859,14 @@ class TestCognitoGroupCoverage:
         """
         transform = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
-            "..", "..", "..",
-            "lib", "idp_sdk", "idp_sdk", "_core", "template_transform.py",
+            "..",
+            "..",
+            "..",
+            "lib",
+            "idp_sdk",
+            "idp_sdk",
+            "_core",
+            "template_transform.py",
         )
         if not os.path.exists(transform):
             pytest.skip("template_transform.py not reachable from this location")
@@ -938,22 +901,6 @@ class TestCognitoGroupCoverage:
         )
         assert mod.COGNITO_GROUPS == declared
 
-    def test_both_copies_build_the_same_mapping(self):
-        """The two copies must stay in step.
-
-        template.yaml's MAINTENANCE NOTE says to change both together; this is
-        what makes that more than a comment. A tuple added to one mapping list
-        and not the other fails here, in either direction.
-        """
-        inline = load_inline_copy(ENV_VARS)
-        standalone = load_standalone_copy(ENV_VARS)
-
-        assert inline.GROUP_MAPPING == standalone.GROUP_MAPPING, (
-            "template.yaml's InlineCode and index.py disagree about the IdP "
-            "group mapping; both must be changed together"
-        )
-        assert inline.COGNITO_GROUPS == standalone.COGNITO_GROUPS
-
     def test_annotator_is_unmanaged_when_the_parameter_is_left_empty(self):
         """An empty parameter keeps Annotator under manual control.
 
@@ -966,7 +913,7 @@ class TestCognitoGroupCoverage:
         # CloudFormation always sets the variable; an unsupplied parameter
         # arrives as the empty string, which is the case the handler must ignore.
         env = dict(ENV_VARS, ANNOTATOR_GROUP_NAME="")
-        for mod in (load_standalone_copy(env), load_inline_copy(env)):
+        for mod in (load_standalone_copy(env),):
             assert "Annotator" not in mod.COGNITO_GROUPS
             assert "Annotator" not in set(mod.GROUP_MAPPING.values())
             # The others are unaffected.
@@ -974,20 +921,12 @@ class TestCognitoGroupCoverage:
 
 
 @pytest.mark.unit
-class TestGroupSyncOnBothCopies:
-    """The add/remove side effects, run against both copies of the handler.
+class TestGroupSync:
+    """The add/remove side effects, through the module loader the coverage tests use.
 
-    `TestHandler` covers these against `index.py` only, and
-    `TestDeployedInlineCopy` covers provenance and freshness against the
-    InlineCode without ever asserting a group was added or removed. The whole
-    nine-line removal loop could therefore be deleted from the copy that deploys
-    with every test still passing, which is what these four exist to stop.
-
-    Comparing `GROUP_MAPPING` between the copies, as `TestCognitoGroupCoverage`
-    does, catches a divergent mapping but says nothing about divergent *logic* —
-    and the copies are not textually identical (`index.py` factors claim parsing
-    into `parse_idp_groups`, the inline copy inlines it), so the possibility is
-    real rather than theoretical.
+    Kept parametrised over `COPY_LOADERS` so that a second copy of the handler,
+    should one ever be deployed again, is run through the same assertions rather
+    than covered by a mapping comparison that says nothing about its logic.
     """
 
     @pytest.fixture(params=sorted(COPY_LOADERS), autouse=True)
@@ -1124,7 +1063,9 @@ class TestUnmappedGroupLogging:
     def test_every_unmapped_group_is_named(self, caplog):
         with caplog.at_level(logging.WARNING):
             self.handler(
-                _make_event(idp_groups='["IdP-Authors", "Contractors", "Finance-EMEA"]'),
+                _make_event(
+                    idp_groups='["IdP-Authors", "Contractors", "Finance-EMEA"]'
+                ),
                 None,
             )
 
@@ -1142,6 +1083,307 @@ class TestUnmappedGroupLogging:
         with caplog.at_level(logging.WARNING):
             self.handler(_make_event(idp_groups="IdP-Admins, IdP-Annotators"), None)
 
-        assert not any(
-            "no Cognito mapping" in m for m in self._warnings(caplog)
-        ), self._warnings(caplog)
+        assert not any("no Cognito mapping" in m for m in self._warnings(caplog)), (
+            self._warnings(caplog)
+        )
+
+
+# ============================================================
+# Tenant grants from the claim (TenantGrantSource=IdpClaim)
+# ============================================================
+
+USERS_TABLE = "users"
+CONFIG_TABLE = "config"
+GRANT_ENV = dict(
+    ENV_VARS,
+    TENANT_GRANT_SOURCE="IdpClaim",
+    USERS_TABLE_NAME=USERS_TABLE,
+    CONFIGURATION_TABLE_NAME=CONFIG_TABLE,
+)
+USER_ROW_KEY = {"PK": "USER#u1", "SK": "USER#u1"}
+
+
+def _grant_tables():
+    import boto3
+
+    # The handler's own resource, in whatever region the environment names.
+    ddb = boto3.resource("dynamodb")
+    users = ddb.create_table(
+        TableName=USERS_TABLE,
+        KeySchema=[
+            {"AttributeName": "PK", "KeyType": "HASH"},
+            {"AttributeName": "SK", "KeyType": "RANGE"},
+        ],
+        AttributeDefinitions=[
+            {"AttributeName": "PK", "AttributeType": "S"},
+            {"AttributeName": "SK", "AttributeType": "S"},
+            {"AttributeName": "email", "AttributeType": "S"},
+        ],
+        GlobalSecondaryIndexes=[
+            {
+                "IndexName": "EmailIndex",
+                "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                "Projection": {"ProjectionType": "ALL"},
+            }
+        ],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    config = ddb.create_table(
+        TableName=CONFIG_TABLE,
+        KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": "Configuration", "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    from idp_common.config.tenants import TenantStore
+
+    store = TenantStore(config)
+    store.put("acme", ["clients/acme/"], "acme-*", granted_by=["tenant.acme"])
+    store.put("globex", ["clients/globex/"], "globex_*", granted_by=["tenant.globex"])
+    users.put_item(
+        Item={
+            **USER_ROW_KEY,
+            "userId": "u1",
+            "email": "testuser@example.com",
+            "persona": "Viewer",
+            "allowedConfigVersions": ["globex_*"],
+        }
+    )
+    return users
+
+
+@pytest.mark.unit
+class TestClaimTenantGrant:
+    """Under IdpClaim the claim writes the user's tenant at each fresh sign-in.
+
+    Run against moto tables and the real `idp_common` writer, because the row and
+    the pointer are what every scope consumer reads; a mocked writer would prove
+    only that it was called.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load(self, monkeypatch):
+        from moto import mock_aws
+
+        for key, value in GRANT_ENV.items():
+            monkeypatch.setenv(key, value)
+        with mock_aws():
+            self.users = _grant_tables()
+            self.mod = load_standalone_copy(GRANT_ENV)
+            self.mock_cognito = MagicMock()
+            self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+            self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+            self.mod.cognito = self.mock_cognito
+            yield
+
+    def _event(self, claim, **kwargs):
+        return _make_event(
+            idp_groups=claim,
+            extra_attrs={"email": "testuser@example.com", "sub": "sub-1"},
+            **kwargs,
+        )
+
+    def _scope(self):
+        return self.users.get_item(Key=USER_ROW_KEY)["Item"].get(
+            "allowedConfigVersions"
+        )
+
+    def test_the_claim_grants_its_tenant(self):
+        result = self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
+        row = self.users.get_item(Key=USER_ROW_KEY)["Item"]
+        assert row["allowedConfigVersions"] == ["acme-*"]
+        assert row["scopeTenant"] == "acme"
+        assert row["scopeSource"] == "idp"
+        # The pointer that keeps the scope on the account whatever its address.
+        pointer = self.users.get_item(Key={"PK": "SUB#sub-1", "SK": "SUB#sub-1"})
+        assert pointer["Item"]["userId"] == "u1"
+        # The role half of the claim is unaffected.
+        assert _override_groups(result) == ["Viewer"]
+
+    def test_a_grant_value_is_not_reported_as_an_unmapped_group(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
+        assert "tenant.acme" not in caplog.text
+
+    def test_two_tenants_grant_none(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            self.mod.handler(
+                self._event('["IdP-Viewers", "tenant.acme", "tenant.globex"]'), None
+            )
+        assert self._scope() == ["!no-tenant-granted"]
+        assert "granted tenants acme, globex" in caplog.text
+
+    @pytest.mark.parametrize("claim", ['["IdP-Viewers"]', ""])
+    def test_a_claim_granting_no_tenant_removes_the_previous_one(self, claim):
+        self.mod.handler(self._event(claim), None)
+        assert self._scope() == ["!no-tenant-granted"]
+
+    def test_a_refresh_writes_nothing(self):
+        self.mod.handler(
+            self._event(
+                '["tenant.acme"]', trigger_source="TokenGeneration_RefreshTokens"
+            ),
+            None,
+        )
+        assert self._scope() == ["globex_*"]
+
+    @pytest.mark.parametrize("provider", [None, "SomeOtherIdP"])
+    def test_a_user_not_federated_through_the_provider_writes_nothing(self, provider):
+        self.mock_cognito.admin_get_user.return_value = _admin_get_user_response(
+            provider_name=provider
+        )
+        self.mod.handler(self._event('["tenant.acme"]'), None)
+        assert self._scope() == ["globex_*"]
+
+    def test_an_admin_is_not_scoped(self):
+        self.mod.handler(self._event('["IdP-Admins", "tenant.acme"]'), None)
+        assert self._scope() == ["globex_*"]
+
+    def test_a_stored_admin_whose_claim_maps_to_a_tenant_role_is_named(self, caplog):
+        """Nothing resyncs a stored persona, so a row still saying Admin is never
+        scoped and the user is denied. The warning names that and the remedy."""
+        self.users.update_item(
+            Key=USER_ROW_KEY,
+            UpdateExpression="SET persona = :a REMOVE allowedConfigVersions",
+            ExpressionAttributeValues={":a": "Admin"},
+        )
+        with caplog.at_level(logging.WARNING):
+            self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
+        assert self._scope() is None
+        (warning,) = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno >= logging.WARNING and "stored as Admin" in r.getMessage()
+        ]
+        assert "Delete the user in User Management" in warning
+
+    def test_a_stored_admin_whose_claim_maps_to_no_role_is_not_named(self, caplog):
+        """With no mapped role the handler changes no groups, so the warning's
+        description and remedy would both be wrong; it is not emitted."""
+        self.users.update_item(
+            Key=USER_ROW_KEY,
+            UpdateExpression="SET persona = :a",
+            ExpressionAttributeValues={":a": "Admin"},
+        )
+        with caplog.at_level(logging.WARNING):
+            self.mod.handler(self._event('["tenant.acme"]'), None)
+        assert not [r for r in caplog.records if "stored as Admin" in r.getMessage()]
+
+    def test_a_promotion_to_admin_removes_the_scope_the_claim_granted(self):
+        self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
+        assert self._scope() == ["acme-*"]
+        self.mod.handler(self._event('["IdP-Admins"]'), None)
+        row = self.users.get_item(Key=USER_ROW_KEY)["Item"]
+        assert "allowedConfigVersions" not in row
+        assert "scopeTenant" not in row and "scopeSource" not in row
+        pointer = self.users.get_item(Key={"PK": "SUB#sub-1", "SK": "SUB#sub-1"})
+        assert "Item" not in pointer
+
+    def test_a_new_user_gets_a_row_with_the_mapped_persona(self):
+        self.users.delete_item(Key=USER_ROW_KEY)
+        self.mod.handler(self._event('["IdP-Authors", "tenant.globex"]'), None)
+        (row,) = [i for i in self.users.scan()["Items"] if i["PK"].startswith("USER#")]
+        assert row["persona"] == "Author"
+        assert row["source"] == "cognito"
+        assert row["allowedConfigVersions"] == ["globex_*"]
+
+    def test_a_claim_with_no_role_creates_no_row(self):
+        self.users.delete_item(Key=USER_ROW_KEY)
+        self.mod.handler(self._event('["tenant.globex"]'), None)
+        assert [
+            i for i in self.users.scan()["Items"] if i["PK"].startswith("USER#")
+        ] == []
+
+    def test_a_claim_with_no_role_still_rewrites_an_existing_row(self):
+        self.mod.handler(self._event('["tenant.acme"]'), None)
+        assert self._scope() == ["acme-*"]
+
+    def test_an_admin_signs_in_with_the_tenant_index_unreadable(self, monkeypatch):
+        """An Admin is never granted a tenant, so the declarations are not read and
+        their failure cannot lock out the role that would fix it."""
+
+        def broken():
+            raise RuntimeError("throttled")
+
+        monkeypatch.setattr(self.mod, "load_tenants", broken)
+        self.mod.handler(self._event('["IdP-Admins", "tenant.acme"]'), None)
+        assert self._scope() == ["globex_*"]
+
+    def test_an_unreadable_tenant_index_fails_the_sign_in(self, monkeypatch):
+        def broken():
+            raise RuntimeError("throttled")
+
+        monkeypatch.setattr(self.mod, "load_tenants", broken)
+        with pytest.raises(RuntimeError, match="throttled"):
+            self.mod.handler(self._event('["tenant.acme"]'), None)
+        assert self._scope() == ["globex_*"]
+
+    def test_a_failed_write_fails_the_sign_in(self, monkeypatch):
+        import idp_common.user_scope as us
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("write refused")
+
+        monkeypatch.setattr(us, "apply_tenant_grant", broken)
+        with pytest.raises(RuntimeError, match="write refused"):
+            self.mod.handler(self._event('["tenant.acme"]'), None)
+
+    @pytest.mark.parametrize("source", ["Manual", "Api", ""])
+    def test_other_sources_write_no_scope(self, monkeypatch, source):
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", source)
+        self.mod.handler(self._event('["IdP-Viewers", "tenant.acme"]'), None)
+        assert self._scope() == ["globex_*"]
+
+
+@pytest.mark.unit
+class TestClaimGrantIsBoundToTheAccount:
+    """Two live Cognito accounts with one address, each signing in fresh through
+    the trigger with a different tenant claim. Each must keep its own tenant, as
+    the scope readers compute it."""
+
+    EMAIL = "shared@example.com"
+
+    @pytest.fixture(autouse=True)
+    def _load(self, monkeypatch):
+        from moto import mock_aws
+
+        for key, value in GRANT_ENV.items():
+            monkeypatch.setenv(key, value)
+        with mock_aws():
+            self.users = _grant_tables()
+            self.users.delete_item(Key=USER_ROW_KEY)
+            self.mod = load_standalone_copy(GRANT_ENV)
+            self.mock_cognito = MagicMock()
+            self.mock_cognito.admin_get_user.return_value = _admin_get_user_response()
+            self.mock_cognito.admin_list_groups_for_user.return_value = {"Groups": []}
+            self.mod.cognito = self.mock_cognito
+            yield
+
+    def _sign_in(self, sub, claim):
+        event = _make_event(
+            username=f"{IDP_NAME}_{sub}",
+            idp_groups=claim,
+            extra_attrs={"email": self.EMAIL, "sub": sub},
+        )
+        self.mod.handler(event, None)
+
+    def _resolve(self, sub):
+        import boto3
+
+        from idp_common.config_scope import resolve_allowed_config_versions
+
+        return resolve_allowed_config_versions(
+            self.EMAIL,
+            users_table_name=USERS_TABLE,
+            dynamodb=boto3.resource("dynamodb"),
+            caller_sub=sub,
+        )
+
+    @pytest.mark.parametrize("first_signs_in_first", [True, False])
+    def test_each_account_keeps_its_own_tenant(self, first_signs_in_first):
+        first = ("sub-first", '["IdP-Viewers", "tenant.acme"]')
+        second = ("sub-second", '["IdP-Viewers", "tenant.globex"]')
+        order = (first, second) if first_signs_in_first else (second, first)
+        for sub, claim in order:
+            self._sign_in(sub, claim)
+        assert self._resolve("sub-first") == ["acme-*"]
+        assert self._resolve("sub-second") == ["globex_*"]

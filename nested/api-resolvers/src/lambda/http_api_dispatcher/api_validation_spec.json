@@ -243,12 +243,34 @@
         }
       ]
     },
+    "bulkSkipAllReviews": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "input",
+          "non_null": true,
+          "type": "BulkSkipAllReviewsInput"
+        }
+      ]
+    },
     "calculateCapacity": {
       "args": [
         {
           "elem_non_null": false,
           "is_list": false,
           "name": "input",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "cancelBulkReviewJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
           "non_null": true,
           "type": "String"
         }
@@ -495,6 +517,45 @@
         }
       ]
     },
+    "createMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "name",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "role",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "allowedConfigVersions",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "writeTools",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "expiresInDays",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
     "createReviewQueue": {
       "args": [
         {
@@ -546,6 +607,17 @@
           "name": "jobId",
           "non_null": true,
           "type": "ID"
+        }
+      ]
+    },
+    "deleteBulkReviewJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
+          "non_null": true,
+          "type": "String"
         }
       ]
     },
@@ -668,6 +740,17 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "id",
+          "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "deleteTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
           "non_null": true,
           "type": "String"
         }
@@ -829,6 +912,38 @@
           "name": "mineOnly",
           "non_null": false,
           "type": "Boolean"
+        }
+      ]
+    },
+    "getBulkReviewJob": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "jobId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "outcome",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },
@@ -1307,6 +1422,24 @@
         }
       ]
     },
+    "listBulkReviewJobs": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "limit",
+          "non_null": false,
+          "type": "Int"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "nextToken",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "listCatalogFeatures": {
       "args": []
     },
@@ -1541,6 +1674,9 @@
     "listInstalledFeatures": {
       "args": []
     },
+    "listMcpCredentials": {
+      "args": []
+    },
     "listMyReviewWork": {
       "args": [
         {
@@ -1605,6 +1741,9 @@
       "args": []
     },
     "listSampleDocuments": {
+      "args": []
+    },
+    "listTenants": {
       "args": []
     },
     "listTestSetQueues": {
@@ -1780,6 +1919,45 @@
           "elem_non_null": false,
           "is_list": false,
           "name": "description",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "putTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "prefixes",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "profilePattern",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "description",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "grantedBy",
           "non_null": false,
           "type": "String"
         }
@@ -2104,6 +2282,35 @@
         }
       ]
     },
+    "revokeMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        }
+      ]
+    },
+    "rotateMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "overlapDays",
+          "non_null": false,
+          "type": "Int"
+        }
+      ]
+    },
     "saveReviewDraft": {
       "args": [
         {
@@ -2272,6 +2479,13 @@
         {
           "elem_non_null": false,
           "is_list": false,
+          "name": "enableExternalMcpAgents",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
           "name": "toolMetadata",
           "non_null": false,
           "type": "ToolMetadataInput"
@@ -2363,6 +2577,31 @@
         }
       ]
     },
+    "sendToReview": {
+      "args": [
+        {
+          "elem_non_null": true,
+          "is_list": true,
+          "name": "objectKeys",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "reason",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "note",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
     "setActiveVersion": {
       "args": [
         {
@@ -2370,6 +2609,42 @@
           "is_list": false,
           "name": "versionName",
           "non_null": true,
+          "type": "String"
+        }
+      ]
+    },
+    "setMcpCredentialTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": false,
+          "type": "String"
+        }
+      ]
+    },
+    "setUserTenant": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "email",
+          "non_null": true,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "tenantId",
+          "non_null": false,
           "type": "String"
         }
       ]
@@ -2396,6 +2671,13 @@
           "name": "note",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "resubmit",
+          "non_null": false,
+          "type": "Boolean"
         }
       ]
     },
@@ -2953,6 +3235,52 @@
         }
       ]
     },
+    "updateMcpCredential": {
+      "args": [
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clientId",
+          "non_null": true,
+          "type": "ID"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "role",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": true,
+          "name": "allowedConfigVersions",
+          "non_null": false,
+          "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "clearScope",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "writeTools",
+          "non_null": false,
+          "type": "Boolean"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "enabled",
+          "non_null": false,
+          "type": "Boolean"
+        }
+      ]
+    },
     "updateModelConfigLimits": {
       "args": [
         {
@@ -3271,6 +3599,78 @@
         "elem_non_null": false,
         "is_list": false,
         "name": "description",
+        "non_null": false,
+        "type": "String"
+      }
+    ],
+    "BulkSkipAllReviewsInput": [
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "mode",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": true,
+        "is_list": true,
+        "name": "objectKeys",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "profile",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "submittedFrom",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "submittedTo",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "reason",
+        "non_null": true,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "note",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "resubmit",
+        "non_null": false,
+        "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "dryRun",
+        "non_null": false,
+        "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "clientRequestId",
         "non_null": false,
         "type": "String"
       }
@@ -3704,6 +4104,13 @@
       {
         "elem_non_null": false,
         "is_list": false,
+        "name": "sectionId",
+        "non_null": false,
+        "type": "String"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
         "name": "configVersion",
         "non_null": false,
         "type": "String"
@@ -3895,6 +4302,13 @@
         "name": "enabled",
         "non_null": false,
         "type": "Boolean"
+      },
+      {
+        "elem_non_null": false,
+        "is_list": false,
+        "name": "version",
+        "non_null": false,
+        "type": "Int"
       }
     ],
     "SectionInput": [

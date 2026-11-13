@@ -59,6 +59,7 @@ with no overrides, i.e. on the committed `default_cell`.
 | `v<RELEASE>/corefast/` | The release-vs-release A/B grid backing `docs/benchmarking/releases/v<RELEASE>.md`. **One per release**, never overwritten. |
 | `baseline.json` | The PREV release's `corefast` grid, which `aggregate.py --compare` defaults to. See below: it is **not** a byte-identical copy of the committed `v<PREV>/corefast/summary.json`, and must not be assumed to be one. |
 | `v<PREV>-rvprev/corefast/` | The PREV side of a release A/B, re-run on the same stack before the in-place upgrade (`v0.6.10-rvprev/` onwards). It is the `--baseline` the release page compares against, so it is kept for as long as that page is: deleting it leaves a published comparison citing a path that no longer exists. One per release; it is the like-for-like reference, not a variant. |
+| `v0.6.11/corefast-prev0610/` | A `corefast` grid of the published v0.6.10 on a separate stack (`meta.stack` `IDP0610Sec`, `meta.stack_version` `0.6.10`), predating the same-stack `v0.6.10-rvprev/` re-run. It is an exception to step 4 below, kept only because the Reproduce blocks of `docs/benchmarking/releases/v0.6.11.md` and `docs/release-validation/v0.6.11.md` name it as their `--baseline`; no release after v0.6.11 writes one. |
 | `v0.6.8/enforcement-kvform/` | The **only** retained evidence that `typed_accuracy` is ever measured. See below. |
 
 ### One kept slice is not a release grid — `v0.6.8/enforcement-kvform/`
@@ -80,8 +81,8 @@ to run a typed-truth document into a release grid, after which this row can go.
 
 It is promoted by copying a `corefast/summary.json`, but the file it is copied from is
 not necessarily the one committed under `v<PREV>/corefast/`, and it diverges afterwards.
-Today's `baseline.json` is a copy of `v0.6.13/corefast/summary.json` (stack
-`IDPUpg0612to0613`, `meta.scored_at` `2026-10-31T05:19:55Z`), and it carries the
+Today's `baseline.json` is a copy of `v0.6.14/corefast/summary.json` (stack
+`IDPUpg0613to0614`, `meta.scored_at` `2026-11-07T02:29:10Z`), and it carries the
 calibration and confidence-coverage metrics natively, so it needs no backfill. That has not
 always been so: the v0.6.8 grid it replaced was scored on a different stack from the
 `v0.6.8/corefast/` copy, with matching keys and different data, and had been `--augment`ed
@@ -93,6 +94,23 @@ and `meta.scored_at`, which identify the grid, instead of comparing file sizes o
 checksums against the release directory. And **a metric backfilled into one is not in the
 other**: `--augment` both, or `compare_cells` will report the metric as uncomparable on
 one side.
+
+### A `:1m` arm's cost is keyed under the base model id
+
+In a grid run with a `:1m` model (for example
+`v0.6.14/coresynth__extraction-model-sonnet5-1m/`), each row's `cost_by_key` names
+`bedrock/us.anthropic.claude-sonnet-5`, not `bedrock/us.anthropic.claude-sonnet-5:1m`.
+That is the stack's metering, recorded as measured, and it is correct. The Bedrock
+client meters every call through `metering_model_id()` in
+`lib/idp_common_pkg/idp_common/bedrock/model_utils.py`, which drops the `:1m` suffix:
+the suffix is never sent to Bedrock (the client sends the 1M-context beta header
+instead), and the 1M window is billed at the model's standard rates, so there is no
+second price for a separate key to select (#899). The harness prices whatever keys
+the stack recorded and does not rename them.
+
+A `:1m` grid and a plain grid of the same model therefore carry identical pricing
+keys, so tell them apart by the directory name and `meta.overrides`
+(`extraction_model=sonnet5_1m`), never by `cost_by_key`.
 
 ## What is not kept
 

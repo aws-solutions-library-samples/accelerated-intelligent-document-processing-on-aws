@@ -4,16 +4,21 @@
 """Configuration operations for IDP SDK."""
 
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
-from idp_sdk.exceptions import IDPProcessingError, IDPResourceNotFoundError
+from idp_sdk.exceptions import (
+    IDPProcessingError,
+    IDPResourceNotFoundError,
+    IDPValidationError,
+)
 from idp_sdk.models import (
     ConfigActivateResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -163,9 +168,49 @@ class ConfigOperation:
 
         return config_table
 
+    @staticmethod
+    def parse_features(
+        features: "str | list[str] | tuple[str, ...]",
+    ) -> "str | list[str]":
+        """Read a ``features`` value as a feature-set name or a list of sections.
+
+        A string is split on commas and blank segments are dropped, so a trailing
+        or doubled comma is harmless. If exactly one name remains and it is a
+        feature-set name (``min``, ``core``, ``all``), that is the preset; anything
+        else is a list of section names, so a single name and a list are the same
+        request. A list or tuple is taken as section names as given. Which names
+        are sections is decided by ``generate_config_template``, which refuses an
+        unknown one.
+
+        Raises:
+            IDPValidationError: The value names no section at all, or is neither
+                a string nor a list of strings.
+        """
+        from idp_common.config.merge_utils import FEATURE_SETS
+
+        if isinstance(features, (list, tuple)) and all(
+            isinstance(name, str) for name in features
+        ):
+            return [name.strip() for name in features if name.strip()]
+        if not isinstance(features, str):
+            raise IDPValidationError(
+                "features must be a feature-set name or section names, as a "
+                f"comma-separated string or a list; got {type(features).__name__}."
+            )
+        names = [name.strip() for name in features.split(",") if name.strip()]
+        if not names:
+            raise IDPValidationError(
+                "features contains no section names. Give a feature set "
+                f"({', '.join(FEATURE_SETS)}) or one or more section names, "
+                "comma-separated."
+            )
+        if len(names) == 1 and names[0] in FEATURE_SETS:
+            return names[0]
+        return names
+
     def create(
         self,
-        features: str = "min",
+        features: "str | list[str]" = "min",
         pattern: str = "pattern-2",
         output: Optional[str] = None,
         include_prompts: bool = False,
@@ -175,7 +220,12 @@ class ConfigOperation:
         """Generate an IDP configuration template.
 
         Args:
-            features: Feature set to include
+            features: A feature set (``min``, ``core``, ``all``), or one or more
+                section names, comma-separated or as a list (see
+                ``parse_features``). ``all`` is every section except hitl, chat
+                and rule_validation. Uploaded, every setting the template
+                writes resets the deployment's value to the default, so edit it
+                first
             pattern: Pattern to use (pattern-1, pattern-2)
             output: Optional output file path
             include_prompts: Include prompt templates
@@ -184,20 +234,24 @@ class ConfigOperation:
 
         Returns:
             ConfigCreateResult with generated configuration
+
+        Raises:
+            IDPValidationError: ``features`` names no section, an unknown feature
+                set or section, or is not a string or list of strings, or names
+                only sections that are empty in the system defaults (``classes``
+                alone), or ``pattern`` is not a known pattern.
         """
         from idp_common.config.merge_utils import generate_config_template
 
-        if "," in features:
-            feature_list = [f.strip() for f in features.split(",")]
-        else:
-            feature_list = features
-
-        yaml_content = generate_config_template(
-            features=feature_list,
-            pattern=pattern,
-            include_prompts=include_prompts,
-            include_comments=include_comments,
-        )
+        try:
+            yaml_content = generate_config_template(
+                features=self.parse_features(features),
+                pattern=pattern,
+                include_prompts=include_prompts,
+                include_comments=include_comments,
+            )
+        except ValueError as e:
+            raise IDPValidationError(str(e)) from e
 
         if output:
             with open(output, "w", encoding="utf-8") as f:
@@ -206,7 +260,9 @@ class ConfigOperation:
         return ConfigCreateResult(yaml_content=yaml_content, output_path=output)
 
     @staticmethod
-    def _validation_unavailable(cause: ImportError) -> ConfigValidationResult:
+    def _validation_unavailable(
+        cause: ImportError, *, document_loaded: bool = False
+    ) -> ConfigValidationResult:
         """The verdict for an installation that cannot run the checks at all.
 
         `valid` is False, because nothing about the configuration was established
@@ -220,6 +276,7 @@ class ConfigOperation:
         return ConfigValidationResult(
             valid=False,
             validation_available=False,
+            document_loaded=document_loaded,
             errors=[
                 # "Validation" is load-bearing in this sentence: `idp-cli
                 # config-upload` keys its `--no-validate` hint on the word, and that
@@ -257,9 +314,6 @@ class ConfigOperation:
             `errors` — rather than as an exception out of a method whose contract is
             to return a verdict.
         """
-        from pathlib import Path
-
-        import yaml
 
         # `idp_common` does the checking, and a method whose contract is to return a
         # verdict has to answer when it is not importable rather than raise out of a
@@ -282,25 +336,22 @@ class ConfigOperation:
         # module and per cause, and a rule written against any of them misses the
         # rest.
         try:
-            from idp_common.config.merge_utils import load_yaml_file, validate_config
+            from idp_common.config.merge_utils import validate_config
         except ImportError as e:
-            return ConfigOperation._validation_unavailable(e)
+            # Before the file is opened, so nothing is known about it either.
+            return ConfigOperation._validation_unavailable(e, document_loaded=False)
 
         try:
-            user_config = load_yaml_file(Path(config_file))
-        except yaml.YAMLError as e:
+            user_config = ConfigOperation._load_config_file(config_file)
+        except IDPValidationError as e:
             return ConfigValidationResult(
-                valid=False, errors=[f"YAML syntax error: {e}"]
-            )
-        except Exception as e:
-            return ConfigValidationResult(
-                valid=False, errors=[f"Failed to load file: {e}"]
+                valid=False, document_loaded=False, errors=[str(e)]
             )
 
         try:
             result = validate_config(user_config, pattern=pattern)
         except ImportError as e:
-            return ConfigOperation._validation_unavailable(e)
+            return ConfigOperation._validation_unavailable(e, document_loaded=True)
 
         # Keys the configuration models will not read, at every depth, as found by
         # validate_config. Computing `set(config) - set(IDPConfig.model_fields)` here
@@ -325,6 +376,96 @@ class ConfigOperation:
             deprecated_fields=deprecated_fields,
             unknown_fields=unknown_fields,
             merged_config=result.get("merged_config") if show_merged else None,
+            class_count=ConfigOperation._class_count(user_config),
+        )
+
+    @staticmethod
+    def _load_config_file(config_file: str) -> Any:
+        """Read ``config_file`` as YAML, the way ``validate`` and ``migrate`` both do.
+
+        Raises:
+            IDPValidationError: The file is not valid YAML ("YAML syntax error: ...")
+                or could not be read at all ("Failed to load file: ...") — two
+                problems with different remedies, so the message says which.
+        """
+        from pathlib import Path
+
+        import yaml
+
+        from idp_common.config.merge_utils import load_yaml_file
+
+        try:
+            return load_yaml_file(Path(config_file))
+        except yaml.YAMLError as e:
+            raise IDPValidationError(f"YAML syntax error: {e}") from e
+        except Exception as e:
+            raise IDPValidationError(f"Failed to load file: {e}") from e
+
+    @staticmethod
+    def _class_count(user_config: Any) -> Optional[int]:
+        """How many document classes the file itself defines (None: not a mapping)."""
+        if not isinstance(user_config, dict):
+            return None
+        classes = user_config.get("classes")
+        return len(classes) if isinstance(classes, list) else 0
+
+    def migrate(
+        self,
+        config_file: str,
+        output: Optional[str] = None,
+        **kwargs,
+    ) -> ConfigMigrateResult:
+        """Migrate a configuration file to the current configuration format.
+
+        The file is converted the way the loader converts it (for example, v0.5
+        to v0.6 field layouts) and returned as YAML headed by a comment naming the
+        format version and the source file, so the result can be saved and
+        imported without being converted again. Nothing is validated; use
+        ``validate`` for that.
+
+        Args:
+            config_file: Path to the configuration file
+            output: Optional path to write the migrated YAML to
+            **kwargs: Additional parameters
+
+        Returns:
+            ConfigMigrateResult with the migrated YAML and the format version
+
+        Raises:
+            IDPValidationError: The file is not valid YAML, could not be read, or
+                its top level is not a mapping.
+        """
+        import yaml
+
+        from idp_common.config.migrations import migrate_config
+
+        user_config = self._load_config_file(config_file)
+        if not isinstance(user_config, dict):
+            # The loader and validate() refuse this too; migrate_config would raise
+            # an AttributeError from deep inside it.
+            raise IDPValidationError(
+                "The configuration's top level must be a mapping of section names "
+                f"to settings; this file holds a {type(user_config).__name__}."
+            )
+        migrated = migrate_config(user_config)
+        version = migrated.get("config_format_version")
+        yaml_content = (
+            f"# Migrated to config_format_version {version or '?'} "
+            f"from: {config_file}\n\n"
+        ) + yaml.dump(
+            migrated,
+            default_flow_style=False,
+            sort_keys=False,
+            allow_unicode=True,
+            width=120,
+        )
+        if output:
+            with open(output, "w", encoding="utf-8") as f:
+                f.write(yaml_content)
+        return ConfigMigrateResult(
+            yaml_content=yaml_content,
+            config_format_version=None if version is None else str(version),
+            output_path=output,
         )
 
     def download(
@@ -839,6 +980,7 @@ class ConfigOperation:
         bda_orphaned_arns: list = []
         bda_classes_synced = 0
         bda_classes_failed = 0
+        bda_unsent_classes: list = []
 
         try:
             os.environ["STACK_NAME"] = name
@@ -879,7 +1021,10 @@ class ConfigOperation:
                     config_version,
                 )
                 try:
-                    from idp_common.bda.bda_blueprint_service import BdaBlueprintService
+                    from idp_common.bda.bda_blueprint_service import (
+                        BdaBlueprintService,
+                        classes_not_sent,
+                    )
 
                     bda_project_arn = manager.get_bda_project_arn(config_version)
                     bda_service = BdaBlueprintService(
@@ -904,8 +1049,14 @@ class ConfigOperation:
                     sync_failed = [
                         item for item in sync_result if item.get("status") != "success"
                     ]
+                    # A class not sent to BDA (no field a blueprint can hold) is
+                    # a success but has no blueprint, so it is counted apart.
+                    bda_unsent_classes = classes_not_sent(sync_result)
                     sync_succeeded = [
-                        item for item in sync_result if item.get("status") == "success"
+                        item
+                        for item in sync_result
+                        if item.get("status") == "success"
+                        and not classes_not_sent([item])
                     ]
 
                     bda_classes_synced = len(sync_succeeded)
@@ -931,6 +1082,7 @@ class ConfigOperation:
                             bda_classes_synced=0,
                             bda_classes_failed=bda_classes_failed,
                             bda_orphaned_blueprint_arns=bda_orphaned_arns,
+                            bda_unsent_classes=bda_unsent_classes,
                             error="BDA sync failed for all classes — activation aborted",
                         )
                     elif bda_classes_failed > 0:
@@ -979,6 +1131,7 @@ class ConfigOperation:
                 bda_classes_synced=bda_classes_synced,
                 bda_classes_failed=bda_classes_failed,
                 bda_orphaned_blueprint_arns=bda_orphaned_arns,
+                bda_unsent_classes=bda_unsent_classes,
             )
 
         except IDPResourceNotFoundError:
@@ -1000,6 +1153,7 @@ class ConfigOperation:
                 bda_classes_synced=bda_classes_synced,
                 bda_classes_failed=bda_classes_failed,
                 bda_orphaned_blueprint_arns=bda_orphaned_arns,
+                bda_unsent_classes=bda_unsent_classes,
                 error=str(e),
             )
 
@@ -1175,7 +1329,10 @@ class ConfigOperation:
 
         try:
             os.environ["STACK_NAME"] = name
-            from idp_common.bda.bda_blueprint_service import BdaBlueprintService
+            from idp_common.bda.bda_blueprint_service import (
+                BdaBlueprintService,
+                classes_not_sent,
+            )
             from idp_common.config.configuration_manager import ConfigurationManager
 
             manager = ConfigurationManager(region=self._client._region)
@@ -1294,9 +1451,13 @@ class ConfigOperation:
                 sync_mode=mode,
             )
 
-            # Process results
+            # Process results. A class not sent to BDA (no field a blueprint can
+            # hold) is a success with no blueprint, so it is counted apart.
+            unsent_classes = classes_not_sent(sync_result)
             sync_succeeded = [
-                item for item in sync_result if item.get("status") == "success"
+                item
+                for item in sync_result
+                if item.get("status") == "success" and not classes_not_sent([item])
             ]
             sync_failed = [
                 item for item in sync_result if item.get("status") != "success"
@@ -1356,6 +1517,7 @@ class ConfigOperation:
                 classes_synced=classes_synced,
                 classes_failed=classes_failed,
                 processed_classes=processed_names,
+                unsent_classes=unsent_classes,
                 orphaned_blueprint_arns=orphaned_arns,
                 error=f"{classes_failed} class(es) failed to sync"
                 if classes_failed > 0

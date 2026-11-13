@@ -4,12 +4,12 @@
 // Keeps a queue definition the caller has just saved on screen, whatever the next reads
 // return.
 //
-// The API serves queue definitions from a short per-process cache (`QueueDefStore`,
-// 30 seconds). A save clears the cache of the instance that handled it, but the next
-// read may be served by another instance that still holds the old list, so a reload
-// straight after Save can show the old name and settings again. A saved definition
-// therefore stands in for the listed one until a read returns it, or the cache window
-// has passed.
+// A read straight after Save can still return the old definition: the API's queue
+// listing reads past its per-process cache (`QueueDefStore`), but other readers of the
+// definitions keep it for up to 30 seconds, and the listing itself is an eventually
+// consistent read. A saved definition therefore stands in for the listed one until a
+// read returns a later version (someone else saved since), or that window has passed;
+// with an API that reports no version, until a read returns it.
 import { useCallback, useMemo, useRef } from 'react';
 
 import type { ReviewQueueDefinition } from '../../graphql/generated/operation-types';
@@ -19,6 +19,16 @@ export const SAVED_DEFINITION_HOLD_MS = 35_000;
 
 const sameDefinition = (a: ReviewQueueDefinition, b: ReviewQueueDefinition): boolean =>
   JSON.stringify({ ...a, __typename: undefined }) === JSON.stringify({ ...b, __typename: undefined });
+
+/**
+ * The list is to be believed over the held definition. Every write bumps the version,
+ * so when both carry one only a later version (someone else saved since) replaces the
+ * held one: the same version is the same definition, and holding it keeps a later
+ * stale read from showing the old one again. An API that reports no version is
+ * compared field by field.
+ */
+const caughtUp = (listed: ReviewQueueDefinition, held: ReviewQueueDefinition): boolean =>
+  typeof listed.version === 'number' && typeof held.version === 'number' ? listed.version > held.version : sameDefinition(listed, held);
 
 interface SavedQueueDefinitions {
   /** Record a definition the caller has just saved. */
@@ -48,7 +58,7 @@ const useSavedQueueDefinitions = (now: () => number = Date.now): SavedQueueDefin
         const held = saved.current.get(d.id);
         if (!held) return d;
         // The list has caught up, or the cache window is over: the read is authoritative again.
-        if (sameDefinition(d, held.definition) || at >= held.until) {
+        if (caughtUp(d, held.definition) || at >= held.until) {
           saved.current.delete(d.id);
           return d;
         }

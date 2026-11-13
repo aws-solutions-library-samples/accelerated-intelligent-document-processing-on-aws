@@ -3,6 +3,7 @@
 
 """Unit tests for the queue_sender Lambda function."""
 
+import dataclasses
 import json
 import os
 import sys
@@ -17,6 +18,8 @@ import pytest
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg")
 )
+from idp_common import testrun_status as real_testrun_status  # noqa: E402
+from idp_common.config import tenants as real_tenants  # noqa: E402
 from idp_common.job_completion import parse_job_document_id  # noqa: E402
 from idp_common.models import Status  # noqa: E402
 
@@ -46,6 +49,21 @@ sys.modules["idp_common.config.configuration_manager"] = MagicMock()
 # what it does with the answer, and what it emits — which is the half that suite
 # cannot see.
 sys.modules["idp_common.config.prefix_mappings"] = MagicMock()
+# The tenant RULE (`ingest_rejection_reason`) and the mode switch
+# (`is_strict_isolation`, read from TENANT_ISOLATION_MODE) are the real ones; only
+# the store is stubbed. The rule's own matrix is in
+# lib/idp_common_pkg/tests/unit/config/test_tenants.py. What is tested here is that
+# this Lambda consults it in strict mode, never reads anything in Off mode, and
+# fails closed when it cannot.
+mock_tenants_module = MagicMock()
+mock_tenants_module.is_strict_isolation = real_tenants.is_strict_isolation
+mock_tenants_module.ingest_rejection_reason = real_tenants.ingest_rejection_reason
+sys.modules["idp_common.config.tenants"] = mock_tenants_module
+
+# The run statuses that end a Test Studio run, kept REAL: which run records still
+# vouch for a document is the property the replay tests below pin, and a stubbed set
+# would let them pass against any value.
+sys.modules["idp_common.testrun_status"] = real_testrun_status
 
 mock_xray_core = MagicMock()
 # capture() is used as a decorator; make it a pass-through.
@@ -72,34 +90,26 @@ def mock_env():
         yield
 
 
+@dataclasses.dataclass(frozen=True)
 class FakeAssignment:
     """Stands in for idp_common's frozen ConfigAssignment.
 
     Written out rather than taken from a MagicMock because every flag on it is a
     branch in the handler, and a MagicMock attribute is *truthy* — which silently
-    sends every document down the `rejected` path.
+    sends every document down the `rejected` path. A frozen dataclass, like the
+    real one, because the strict-mode tenant check derives a refusal from it with
+    ``dataclasses.replace``.
     """
 
-    def __init__(
-        self,
-        profile="active",
-        revision=None,
-        source="active-profile",
-        mapping_prefix=None,
-        conflict=False,
-        rejected=False,
-        unresolvable=False,
-        reason="because",
-    ):
-        self.profile = profile
-        self.revision = revision
-        self.source = source
-        self.mapping_prefix = mapping_prefix
-        self.conflict = conflict
-        self.rejected = rejected
-        self.unresolvable = unresolvable
-        self.scope_denied = False
-        self.reason = reason
+    profile: object = "active"
+    revision: object = None
+    source: str = "active-profile"
+    mapping_prefix: object = None
+    conflict: bool = False
+    rejected: bool = False
+    unresolvable: bool = False
+    reason: str = "because"
+    scope_denied: bool = False
 
 
 @pytest.fixture(autouse=True)
@@ -1104,7 +1114,7 @@ class TestVerdictDeliveredMoreThanOnce:
     def test_a_verdict_arriving_before_the_upload_event_raises_for_retry(self):
         """Creating the row here instead would race the upload path into
         overwriting a terminal status with MALWARE_SCANNING, hanging the document
-        for good. Raising hands it to the rule's RetryPolicy."""
+        for good. Raising hands it to Lambda's asynchronous retry."""
         error, mock_sqs, mock_cw = self._expect_raise()
 
         assert "before its document row existed" in str(error)
@@ -1601,7 +1611,7 @@ class TestSameKeyReuploadRace:
             patch.object(index, "sns") as mock_sns,
             patch.object(index, "cloudwatch") as mock_cw,
             patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
+            patch.object(index, "s3") as mock_s3,
             patch.object(
                 index,
                 "malware_policy_for",
@@ -1610,6 +1620,12 @@ class TestSameKeyReuploadRace:
             patch.object(index, "job_service", MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            # The bucket holds the version the row is waiting on, which is what
+            # makes the verdict superseded rather than early. The opposite case
+            # is TestReusedKeyVerdictOrdering.
+            mock_s3.head_object.return_value = {
+                "VersionId": stored_version.split(":", 1)[1]
+            }
             # A new object per call: the handler mutates the document it loaded,
             # and DynamoDB would not hand back that mutation on a re-read.
             mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
@@ -1667,7 +1683,7 @@ class TestSameKeyReuploadRace:
             patch.object(index, "sns") as mock_sns,
             patch.object(index, "cloudwatch"),
             patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
+            patch.object(index, "s3") as mock_s3,
             patch.object(
                 index,
                 "malware_policy_for",
@@ -1676,6 +1692,8 @@ class TestSameKeyReuploadRace:
             patch.object(index, "job_service", MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            # The bucket holds v2, the clean replacement.
+            mock_s3.head_object.return_value = {"VersionId": "v2"}
             mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
             mock_doc_service.update_document_status.side_effect = (
                 ConditionalCheckFailed()
@@ -2196,7 +2214,7 @@ class TestTheStallSignal:
             patch.object(index, "sns"),
             patch.object(index, "cloudwatch") as mock_cw,
             patch.object(index, "document_service") as mock_doc_service,
-            patch.object(index, "s3"),
+            patch.object(index, "s3") as mock_s3,
             patch.object(
                 index,
                 "malware_policy_for",
@@ -2205,6 +2223,8 @@ class TestTheStallSignal:
             patch.object(index, "job_service", MagicMock()),
             patch.object(index.xray_recorder, "current_segment", return_value=None),
         ):
+            # The bucket holds v2, so the v1 verdict is superseded, not early.
+            mock_s3.head_object.return_value = {"VersionId": "v2"}
             mock_doc_service.get_document.side_effect = lambda *_a, **_k: fresh()
             mock_doc_service.update_document_status.side_effect = (
                 ConditionalCheckFailed()
@@ -2709,3 +2729,684 @@ class TestConfigPrefixMappings:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CONFIG_TABLE", None)
             assert index.resolve_configuration(document, "k") is None
+
+
+ACME = {"tenantId": "acme", "prefixes": ["clients/acme/"], "profilePattern": "acme-*"}
+GLOBEX = {
+    "tenantId": "globex",
+    "prefixes": ["clients/globex/"],
+    "profilePattern": "globex-*",
+}
+
+
+@pytest.mark.unit
+class TestStrictTenantIsolation:
+    """The ingest half of ``TenantIsolationMode=Strict``.
+
+    The boundary rule is the real ``ingest_rejection_reason``; only the tenant store
+    and the test-run read are stubbed. Each case asserts what the handler DID — wrote
+    a FAILED row, enqueued, raised — and not only what it returned.
+    """
+
+    @staticmethod
+    def _run(
+        assignment,
+        key,
+        *,
+        mode="Strict",
+        tenants=(ACME, GLOBEX),
+        source=None,
+        tenant_read_error=None,
+        test_run=None,
+        test_run_status="RUNNING",
+    ):
+        import index
+
+        document = MagicMock()
+        document.id = key
+        document.input_key = key
+        document.config_version = None
+        document.config_revision = None
+        document.submission_source = source
+        document.to_json.return_value = "{}"
+
+        store = MagicMock()
+        if tenant_read_error:
+            store.return_value.list.side_effect = tenant_read_error
+        else:
+            store.return_value.list.return_value = list(tenants)
+        table = MagicMock()
+        run_item = {"ConfigVersion": test_run} if test_run else None
+        if run_item is not None and test_run_status is not None:
+            run_item["Status"] = test_run_status
+        table.get_item.return_value = {"Item": run_item} if run_item else {}
+        env = {"TENANT_ISOLATION_MODE": mode, "TRACKING_TABLE": "tracking"}
+        with (
+            patch.dict(os.environ, env),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "delete_current_output_objects") as mock_purge,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "PrefixMappingStore"),
+            patch.object(index, "ConfigurationManager"),
+            patch.object(index, "TenantStore", store),
+            patch.object(index, "_config_table", return_value=table),
+            patch.object(index.Document, "from_s3_event", return_value=document),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+            patch.object(index, "resolve_config_assignment", return_value=assignment),
+        ):
+            response = index.handler(make_event(key), None)
+        metrics = [
+            datum["MetricName"]
+            for call in mock_cw.put_metric_data.call_args_list
+            for datum in call.kwargs.get("MetricData", [])
+        ]
+        return {
+            "response": response,
+            "document": document,
+            "metrics": metrics,
+            "enqueued": mock_sqs.send_message.called,
+            "created": mock_doc_service.create_document.called,
+            "purged": mock_purge.called,
+            "tenant_reads": store.return_value.list.call_count,
+            "test_run_reads": table.get_item.call_count,
+        }
+
+    def _assert_refused(self, result):
+        assert result["response"]["refused"] == "tenant_boundary"
+        assert result["document"].status == Status.FAILED
+        assert "Refused" in result["document"].config_assignment_error
+        assert result["created"] is True, "the refusal must be visible, not dropped"
+        assert result["enqueued"] is False
+        assert result["purged"] is False
+        assert "TenantBoundaryRejected" in result["metrics"]
+
+    def test_an_in_tenant_document_is_processed(self):
+        result = self._run(
+            FakeAssignment(profile="acme-invoices"), "clients/acme/x.pdf"
+        )
+        assert result["enqueued"] is True
+        assert result["tenant_reads"] == 1
+        assert "TenantBoundaryRejected" not in result["metrics"]
+
+    def test_metadata_naming_another_tenants_profile_is_refused(self):
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="globex-w2", source="metadata"),
+                "clients/acme/x.pdf",
+            )
+        )
+
+    def test_an_upload_outside_every_tenant_is_refused(self):
+        self._assert_refused(
+            self._run(FakeAssignment(profile="default"), "loose/x.pdf")
+        )
+
+    def test_a_forged_submission_source_does_not_cross_the_boundary(self):
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="globex-w2", source="internal-producer"),
+                "clients/acme/x.pdf",
+                source="pii-anonymizer",
+            )
+        )
+
+    def test_a_verified_test_run_into_a_tenant_profile_is_processed(self):
+        result = self._run(
+            FakeAssignment(profile="acme-invoices", source="internal-producer"),
+            "run-123/doc.pdf",
+            source="test-studio",
+            test_run="acme-invoices",
+        )
+        assert result["enqueued"] is True
+        assert result["test_run_reads"] == 1
+
+    @pytest.mark.parametrize(
+        "status", ["COMPLETE", "PARTIAL_COMPLETE", "ABORTED", "FAILED", None]
+    )
+    def test_a_finished_test_run_cannot_be_replayed(self, status):
+        """A run that has stopped has no documents left to write, so its record is
+        not evidence for a new one. A record with no status is refused too."""
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="acme-invoices", source="internal-producer"),
+                "run-123/doc.pdf",
+                source="test-studio",
+                test_run="acme-invoices",
+                test_run_status=status,
+            )
+        )
+
+    @pytest.mark.parametrize("status", ["QUEUED", "RUNNING", "EVALUATING"])
+    def test_an_in_flight_test_run_is_honoured(self, status):
+        result = self._run(
+            FakeAssignment(profile="acme-invoices", source="internal-producer"),
+            "run-123/doc.pdf",
+            source="test-studio",
+            test_run="acme-invoices",
+            test_run_status=status,
+        )
+        assert result["enqueued"] is True
+
+    def test_an_unverified_test_run_is_refused(self):
+        self._assert_refused(
+            self._run(
+                FakeAssignment(profile="acme-invoices", source="internal-producer"),
+                "run-123/doc.pdf",
+                source="test-studio",
+                test_run=None,
+            )
+        )
+
+    def test_a_tenant_read_failure_fails_closed(self):
+        """Raised out of the handler so Lambda's async retries and the alarmed DLQ
+        take it; nothing is written and nothing is queued."""
+        import index
+
+        with pytest.raises(index.TenantIsolationUnavailable):
+            self._run(
+                FakeAssignment(profile="acme-invoices"),
+                "clients/acme/x.pdf",
+                tenant_read_error=RuntimeError("throttled"),
+            )
+
+    def test_an_unresolvable_configuration_fails_closed(self):
+        import index
+
+        with patch.object(
+            index, "resolve_configuration", side_effect=RuntimeError("boom")
+        ):
+            with pytest.raises(index.TenantIsolationUnavailable):
+                self._run(FakeAssignment(), "clients/acme/x.pdf")
+
+    def test_a_mapping_rejection_is_reported_as_one(self):
+        result = self._run(
+            FakeAssignment(rejected=True, source="rejected", profile=None),
+            "clients/acme/x.pdf",
+        )
+        assert result["response"]["refused"] == "config_prefix_mapping_conflict"
+        assert result["tenant_reads"] == 0
+
+    @pytest.mark.parametrize("mode", ["Off", ""])
+    def test_off_mode_reads_no_tenants_and_refuses_nothing(self, mode):
+        result = self._run(
+            FakeAssignment(profile="globex-w2"), "clients/acme/x.pdf", mode=mode
+        )
+        assert result["tenant_reads"] == 0
+        assert result["test_run_reads"] == 0
+        assert result["enqueued"] is True
+        assert "refused" not in result["response"]
+
+
+class TestStrictTenantIsolationAtTheVerdict:
+    """The malware gate re-resolves the configuration when the verdict arrives, so
+    strict mode re-checks the tenant boundary there too: a mapping or tenant change
+    during the scan must not admit a document the upload path would have refused."""
+
+    @staticmethod
+    def _run(assignment, key, *, mode="Strict", row_source=None):
+        import index
+
+        doc = _mock_document(key)
+        # What a failed object-metadata read leaves: no submission source on the
+        # document built from the verdict, so only the row knows it.
+        doc.submission_source = None
+        store = MagicMock()
+        store.return_value.list.return_value = [ACME, GLOBEX]
+        with (
+            patch.dict(os.environ, {"TENANT_ISOLATION_MODE": mode}),
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index, "resolve_configuration", return_value=assignment),
+            patch.object(index, "TenantStore", store),
+            patch.object(index, "_config_table", return_value=MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            row = _row_double()
+            row.submission_source = row_source
+            mock_doc_service.get_document.return_value = row
+            response = index.handler(make_scan_result_event(key=key), None)
+        return response, doc, mock_sqs, mock_doc_service, store
+
+    def test_a_clean_verdict_for_a_cross_tenant_document_is_refused(self):
+        _, doc, mock_sqs, mock_doc_service, _ = self._run(
+            FakeAssignment(profile="globex-w2"), "clients/acme/x.pdf"
+        )
+        assert doc.status == Status.FAILED
+        mock_sqs.send_message.assert_not_called()
+        extra = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]
+        assert "tenant 'acme'" in extra["ConfigAssignmentError"]
+
+    def test_a_clean_verdict_for_an_in_tenant_document_is_admitted(self):
+        _, doc, mock_sqs, _, _ = self._run(
+            FakeAssignment(profile="acme-invoices"), "clients/acme/x.pdf"
+        )
+        assert doc.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    def test_the_rows_submission_source_decides_when_the_metadata_read_failed(self):
+        """An internal producer's document outside every tenant is admitted on the
+        row's authority. Checked before the overlay, it would be refused."""
+        _, doc, mock_sqs, _, _ = self._run(
+            FakeAssignment(profile="lending"),
+            "redacted/x.pdf",
+            row_source="pii-anonymizer",
+        )
+        assert doc.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    def test_off_mode_reads_no_tenants_at_the_verdict(self):
+        _, doc, _, _, store = self._run(
+            FakeAssignment(profile="globex-w2"), "clients/acme/x.pdf", mode="Off"
+        )
+        assert doc.status == Status.QUEUED
+        assert store.return_value.list.call_count == 0
+
+
+class _FakeTrackingRow:
+    """One tracking-table row, with the gate's compare-and-set evaluated for real.
+
+    The verdict path's decision depends on what the row says *and* on whether the
+    conditional write holds against it, so the two are modelled together: the
+    write succeeds exactly when the row is ``MALWARE_SCANNING`` and holds the
+    verdict's version, which is the condition `handle_scan_result` sends. A test
+    can then move the row the way the upload path would (`rewrite_for_upload`)
+    and deliver the same verdict again, which is the re-delivery the fix relies on.
+    """
+
+    def __init__(self, status, version):
+        self.status = status
+        self.version = version
+        self.writes = []
+
+    def get_document(self, *_a, **_k):
+        # A new object per read, as DynamoDB would return: the handler mutates
+        # the document it loaded.
+        d = _mock_document("report.pdf")
+        d.status = self.status
+        d.malware_scan_version_id = self.version
+        return d
+
+    def update_document_status(self, key, status, **kwargs):
+        self.writes.append((key, status, kwargs))
+        values = kwargs.get("extra_attributes") or {}
+        condition = kwargs.get("condition_expression")
+        if condition:
+            if self.status != Status.MALWARE_SCANNING:
+                raise ConditionalCheckFailed()
+            if ":verdict_version" in values and values[":verdict_version"] != (
+                self.version
+            ):
+                raise ConditionalCheckFailed()
+        self.status = status
+
+    def rewrite_for_upload(self, version):
+        """What `handle_object_created` does to the row for a new upload."""
+        self.status = Status.MALWARE_SCANNING
+        self.version = version
+
+
+@pytest.mark.unit
+class TestReusedKeyVerdictOrdering:
+    """A verdict for the NEWEST upload of a reused key must not be dropped.
+
+    GuardDuty's verdict and the upload's own Object Created event reach this
+    function independently, and on a reused key the verdict can win: the row then
+    still describes an EARLIER upload — the previous run's terminal state, or a
+    gate waiting on an older version — and its version does not match the
+    verdict's. Reading that mismatch as "this verdict is stale" dropped it as a
+    duplicate or as superseded; the upload event then parked the row at
+    MALWARE_SCANNING for the new version, and no verdict for it was ever coming
+    again, so the document stayed in MALWARE_SCANNING for good.
+
+    The handler now asks the bucket which version is current. These tests run
+    that question against a real versioned bucket (moto), so the version ids and
+    the HeadObject response shape are the service's, not hand-written strings.
+    """
+
+    KEY = "report.pdf"
+    BUCKET = "test-input-bucket"
+
+    @pytest.fixture(autouse=True)
+    def versioned_bucket(self):
+        import boto3
+        from moto import mock_aws
+
+        with mock_aws():
+            client = boto3.client("s3", region_name="us-east-1")
+            client.create_bucket(Bucket=self.BUCKET)
+            client.put_bucket_versioning(
+                Bucket=self.BUCKET,
+                VersioningConfiguration={"Status": "Enabled"},
+            )
+            old = client.put_object(Bucket=self.BUCKET, Key=self.KEY, Body=b"run 1")
+            new = client.put_object(Bucket=self.BUCKET, Key=self.KEY, Body=b"run 2")
+            self.s3 = client
+            self.old_vid = old["VersionId"]
+            self.new_vid = new["VersionId"]
+            self.new_etag = new["ETag"]
+            assert self.old_vid != self.new_vid
+            yield
+
+    def _deliver(self, row, verdict_vid, result_status="NO_THREATS_FOUND", s3=None):
+        """Deliver one verdict for `verdict_vid` against `row`.
+
+        Returns ``(response, raised, mocks)``: exactly one of the first two is set,
+        so a caller asserting on one cannot silently get the other.
+        """
+        import index
+
+        threats = (
+            [{"name": "EICAR-Test-File (not a virus)"}]
+            if result_status == "THREATS_FOUND"
+            else None
+        )
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", self.BUCKET),
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "sns") as mock_sns,
+            patch.object(index, "cloudwatch") as mock_cw,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3", s3 or self.s3),
+            patch.object(
+                index,
+                "current_object_version",
+                wraps=index.current_object_version,
+            ) as spy,
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index, "job_service", MagicMock()),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.side_effect = row.get_document
+            mock_doc_service.update_document_status.side_effect = (
+                row.update_document_status
+            )
+            event = make_scan_result_event(
+                key=self.KEY, result_status=result_status, threats=threats
+            )
+            if verdict_vid is None:
+                del event["detail"]["s3ObjectDetails"]["versionId"]
+            else:
+                event["detail"]["s3ObjectDetails"]["versionId"] = verdict_vid
+            event["detail"]["s3ObjectDetails"]["eTag"] = self.new_etag
+            response, raised = None, None
+            try:
+                response = index.handler(event, None)
+            except Exception as e:  # noqa: BLE001 - returned to the caller to assert
+                raised = e
+        metrics = str(mock_cw.put_metric_data.call_args_list)
+        return response, raised, (mock_sqs, mock_sns, metrics, spy)
+
+    # (a) ------------------------------------------------------------------------
+    def test_a_current_verdict_against_a_previous_terminal_run_is_redelivered(self):
+        """Observed live: the row still held the previous run's COMPLETED state,
+        so the new upload's clean verdict was taken as a duplicate and dropped."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        response, raised, (mock_sqs, _, metrics, spy) = self._deliver(row, self.new_vid)
+
+        assert response is None
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictBeforeIngest" in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        # The mechanism: the bucket was asked, and in the verdict's own kind.
+        spy.assert_called_once_with(self.BUCKET, self.KEY, "v")
+        mock_sqs.send_message.assert_not_called()
+        assert row.status == Status.COMPLETED
+
+    def test_a_current_refusal_against_a_terminal_run_is_redelivered_not_applied(
+        self,
+    ):
+        """The refusing variant must not take the late-refusal path either: it
+        would quarantine the row and the upload event would then reset it to
+        MALWARE_SCANNING, losing the detection and stranding the document."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        _, raised, (_, mock_sns, metrics, _) = self._deliver(
+            row, self.new_vid, result_status="THREATS_FOUND"
+        )
+
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictUnappliedRefusal" not in metrics
+        mock_sns.publish.assert_not_called()
+        # Only the compare-and-set was attempted; no unconditional write.
+        assert [w[2].get("condition_expression") is not None for w in row.writes] == [
+            True
+        ]
+
+    # (b) ------------------------------------------------------------------------
+    def test_a_current_verdict_while_the_gate_waits_on_an_older_version_is_redelivered(
+        self,
+    ):
+        """Observed live: logged as superseded ("describes version v:<new> but
+        the document is now waiting on version v:<old>") and dropped."""
+        import index
+
+        row = _FakeTrackingRow(Status.MALWARE_SCANNING, f"v:{self.old_vid}")
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(row, self.new_vid)
+
+        assert response is None
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictSuperseded" not in metrics
+        assert "MalwareScanVerdictBeforeIngest" in metrics
+        mock_sqs.send_message.assert_not_called()
+
+    def test_the_redelivery_is_admitted_once_the_upload_event_lands(self):
+        """The point of raising: the same verdict, delivered again after the
+        upload path rewrote the row, now satisfies the compare-and-set."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        _, raised, _ = self._deliver(row, self.new_vid)
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+
+        row.rewrite_for_upload(f"v:{self.new_vid}")
+        response, raised, (mock_sqs, _, _, _) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response["queued"] is True
+        assert row.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+
+    # (c) ------------------------------------------------------------------------
+    def test_an_older_verdict_while_the_gate_waits_on_the_current_one_is_superseded(
+        self,
+    ):
+        row = _FakeTrackingRow(Status.MALWARE_SCANNING, f"v:{self.new_vid}")
+        response, raised, (mock_sqs, _, metrics, spy) = self._deliver(row, self.old_vid)
+
+        assert raised is None
+        assert response["superseded"] is True
+        assert "MalwareScanVerdictSuperseded" in metrics
+        assert "MalwareScanVerdictBeforeIngest" not in metrics
+        spy.assert_called_once()
+        mock_sqs.send_message.assert_not_called()
+        assert row.status == Status.MALWARE_SCANNING
+
+    def test_a_verdict_for_a_deleted_key_is_superseded(self):
+        """No current object means no verdict can describe the current bytes."""
+        self.s3.delete_object(Bucket=self.BUCKET, Key=self.KEY)
+        row = _FakeTrackingRow(Status.MALWARE_SCANNING, f"v:{self.old_vid}")
+        response, raised, _ = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response["superseded"] is True
+
+    # (d) ------------------------------------------------------------------------
+    def test_a_same_version_duplicate_is_still_a_duplicate_and_reads_nothing(self):
+        row = _FakeTrackingRow(Status.QUEUED, f"v:{self.new_vid}")
+        response, raised, (mock_sqs, _, metrics, spy) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response["duplicate"] is True
+        assert "MalwareScanVerdictDuplicate" in metrics
+        mock_sqs.send_message.assert_not_called()
+        # Routine at-least-once redelivery costs no S3 call.
+        spy.assert_not_called()
+
+    # Failure to ask ---------------------------------------------------------------
+    def test_an_unreadable_bucket_raises_rather_than_discarding(self):
+        """If the bucket cannot be asked, this verdict may be the only one the
+        current upload gets, so it is re-delivered rather than dropped."""
+        from botocore.exceptions import ClientError
+
+        failing = MagicMock()
+        failing.head_object.side_effect = ClientError(
+            {"Error": {"Code": "AccessDenied", "Message": "denied"}}, "HeadObject"
+        )
+        row = _FakeTrackingRow(Status.COMPLETED, f"v:{self.old_vid}")
+        response, raised, (_, _, metrics, _) = self._deliver(
+            row, self.new_vid, s3=failing
+        )
+
+        assert response is None
+        assert isinstance(raised, ClientError)
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        assert "MalwareScanVerdictSuperseded" not in metrics
+
+    def test_an_etag_only_verdict_is_compared_in_its_own_kind(self):
+        """HeadObject on a versioned bucket returns both a version id and an
+        ETag. A verdict carrying only the ETag must be compared against the ETag,
+        or it would never equal the current object and would always be dropped."""
+        import index
+
+        row = _FakeTrackingRow(Status.COMPLETED, "e:some-earlier-etag")
+        _, raised, (_, _, _, spy) = self._deliver(row, None)
+
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        spy.assert_called_once_with(self.BUCKET, self.KEY, "e")
+
+    # The upload lands between the compare-and-set and the re-read ---------------
+    #
+    # Observed live on a reused key, three times in six runs: the verdict's
+    # compare-and-set ran against the previous run's row and failed, the upload
+    # event then finished rewriting the row to MALWARE_SCANNING for the verdict's
+    # own version, and the failure handler's re-read saw that row. It is not a
+    # version mismatch, so it fell through to the duplicate path, which returned
+    # 200 — nothing re-delivered, and the document waited at the gate for good.
+    def _row_rewritten_after_the_condition(self, *, failures=1, rewrite=True):
+        """A row the upload event rewrites just after a compare-and-set fails.
+
+        ``failures`` conditional writes fail; with ``rewrite`` the first of them
+        leaves the row at MALWARE_SCANNING for the verdict's version, as the
+        upload event does. Each generation carries its own upload time, so a test
+        can tell which row the document handed to the pipeline was built from.
+        """
+        test = self
+
+        class _Row(_FakeTrackingRow):
+            failures_left = failures
+
+            def get_document(self, *_a, **_k):
+                d = super().get_document()
+                d.initial_event_time = self.initial_event_time
+                d.queued_time = self.initial_event_time
+                d.trace_id = None
+                d.submission_source = None
+                d.test_set_id = None
+                return d
+
+            def update_document_status(self, key, status, **kwargs):
+                if kwargs.get("condition_expression") and self.failures_left > 0:
+                    self.failures_left -= 1
+                    self.writes.append((key, status, kwargs))
+                    if rewrite:
+                        self.rewrite_for_upload(f"v:{test.new_vid}")
+                        self.initial_event_time = "2026-11-07T22:47:50Z"
+                    raise ConditionalCheckFailed()
+                return super().update_document_status(key, status, **kwargs)
+
+        row = _Row(Status.COMPLETED, f"v:{self.old_vid}")
+        row.initial_event_time = "2026-11-07T22:42:28Z"
+        return row
+
+    def test_a_verdict_whose_row_is_rewritten_after_the_condition_is_applied(self):
+        """The observed interleaving: applied, not dropped as a duplicate."""
+        row = self._row_rewritten_after_the_condition()
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        assert response is not None
+        assert response.get("queued") is True
+        assert "duplicate" not in response
+        assert row.status == Status.QUEUED
+        mock_sqs.send_message.assert_called_once()
+        assert "MalwareScanVerdictApplied" in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        assert "MalwareScanVerdictBeforeIngest" not in metrics
+        # Two compare-and-sets: the one that lost, and the one that landed.
+        assert [w[2].get("condition_expression") is not None for w in row.writes] == [
+            True,
+            True,
+        ]
+
+    def test_the_rerun_builds_the_document_from_the_rewritten_row(self):
+        """Retrying the same write would have handed the pipeline a document
+        overlaid from the PREVIOUS upload's row; the re-run reads the new one."""
+        import index
+
+        row = self._row_rewritten_after_the_condition()
+        _, raised, (mock_sqs, _, _, _) = self._deliver(row, self.new_vid)
+
+        assert raised is None
+        mock_sqs.send_message.assert_called_once()
+        # `Document` is a MagicMock in this suite and `from_s3_event` returns the
+        # same object on every call, so this reads what the LAST overlay wrote
+        # onto the document that was enqueued. Retrying the write in place would
+        # leave the previous upload's time here.
+        enqueued = index.Document.from_s3_event.return_value
+        assert enqueued.initial_event_time == "2026-11-07T22:47:50Z"
+        assert enqueued.queued_time == "2026-11-07T22:47:50Z"
+
+    def test_a_refusal_whose_row_is_rewritten_after_the_condition_is_applied(self):
+        """The refusing variant goes through the compare-and-set too, rather than
+        the unconditional late-refusal write meant for a row that left the gate."""
+        row = self._row_rewritten_after_the_condition()
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(
+            row, self.new_vid, result_status="THREATS_FOUND"
+        )
+
+        assert raised is None
+        assert response is not None
+        assert response.get("queued") is False
+        assert row.status == Status.QUARANTINED
+        mock_sqs.send_message.assert_not_called()
+        assert "MalwareScanThreatsFound" in metrics
+        assert "MalwareScanVerdictUnappliedRefusal" not in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        assert all(w[2].get("condition_expression") for w in row.writes[:2])
+
+    def test_a_row_that_keeps_moving_is_redelivered_after_one_rerun(self):
+        """Bounded: one re-run, then raise for Lambda's asynchronous retry rather
+        than loop, and never report it as a duplicate."""
+        import index
+
+        row = self._row_rewritten_after_the_condition(failures=5)
+        response, raised, (mock_sqs, _, metrics, _) = self._deliver(row, self.new_vid)
+
+        assert response is None
+        assert isinstance(raised, index.ScanVerdictBeforeIngestError)
+        assert "MalwareScanVerdictBeforeIngest" in metrics
+        assert "MalwareScanVerdictDuplicate" not in metrics
+        mock_sqs.send_message.assert_not_called()
+        assert len(row.writes) == 2

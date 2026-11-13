@@ -2,10 +2,10 @@
 title: "Rule Validation"
 ---
 
-# Rule Validation
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Rule Validation
 
 ## Overview
 
@@ -59,8 +59,8 @@ Rule validation works for any industry using this two-step process:
 **How to do it:** Use **Policy Discovery** — see [docs/policy-discovery.md](./policy-discovery.md) for the full walkthrough. In short:
 
 1. In the Web UI, open the **Discovery** tab and switch to **Policy Discovery** mode.
-2. Upload your policy PDF. Policy Discovery parses it into structured rules and writes them to the active configuration version's `policy_classes` field.
-3. Review the extracted rules in **Configuration → Policy Schema**, then save the version.
+2. Upload your policy PDF. Policy Discovery parses it into structured rules and writes them to the active configuration profile's `policy_classes` field.
+3. Review the extracted rules in **Configuration → Policy Schema**, then save the profile.
 
 **Skip this step if:** You already have your rules in a structured format — paste them directly into the Policy Schema editor.
 
@@ -92,8 +92,6 @@ Rule validation works for any industry using this two-step process:
    - Upload documents to validate
    - System automatically processes and validates against your rules
    - View results showing Pass/Fail for each rule with detailed reasoning
-
-**Coming Soon**: We're working on combining both steps into a single unified application.
 
 ### Quick Start with Healthcare Example
 
@@ -155,7 +153,7 @@ The workflow includes:
 
 ## Human-in-the-Loop (HITL)
 
-HITL review for rule validation results is not supported in the current version and will be added in a future release. When HITL is enabled for extraction, rule validation automatically skips on the second execution and reuses results from the first run.
+HITL review of rule validation results is not supported. When HITL is enabled for extraction, rule validation automatically skips on the second execution and reuses results from the first run.
 
 ### No-Policy-Match Behavior
 
@@ -517,7 +515,7 @@ task_prompt: |
   </user_history>
 ```
 
-This caches the static instructions and only processes the dynamic document content, reducing costs.
+This caches the static instructions ahead of the dynamic document content. Whether that lowers cost depends on the prefix clearing the model's minimum and being read again within five minutes; see the [prompt caching study](./benchmarking/studies/prompt-caching.md).
 
 ### Chunking Configuration
 
@@ -695,7 +693,7 @@ Rule validation costs depend on:
 - Prompt caching effectiveness
 
 **Cost Optimization Tips**:
-1. Use prompt caching (can reduce costs by 50-90%)
+1. Use prompt caching on busy stacks: a cached prefix that is read again within five minutes is billed at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but one that is never read again is billed at about 25% more than uncached, and a prefix below the model's minimum is never cached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 2. Choose appropriate model (Haiku for simple rules, Sonnet for complex)
 3. Minimize rule redundancy
 4. Optimize chunk sizes to reduce API calls
@@ -726,7 +724,7 @@ We provide a complete healthcare example demonstrating prior authorization valid
   - Contains medical coding rules, bundling guidelines, and compliance requirements
 
 **Configuration Files:**
-- **Step 1 - Policy Discovery**: extracted rules are written into `policy_classes` on the active config version (see [docs/policy-discovery.md](./policy-discovery.md))
+- **Step 1 - Policy Discovery**: extracted rules are written into `policy_classes` on the active configuration profile (see [docs/policy-discovery.md](./policy-discovery.md))
 - **Step 2 - Rule Validation**: `config_library/unified/rule-validation/config.yaml`
 
 This example includes:
@@ -779,5 +777,5 @@ triggers).
 4. **Use Caching**: Always place static content before `<<CACHEPOINT>>`
 5. **Clear Recommendations**: Define unambiguous recommendation options
 6. **Document Rules**: Include context and examples in rule descriptions
-7. **Version Control**: Track rule changes and their impact on results
+7. **Track Changes**: Each save cuts a profile [revision](./configuration-profiles.md#revision-history); compare revisions to track rule changes and their impact on results
 8. **Regular Review**: Periodically review and update rules based on results

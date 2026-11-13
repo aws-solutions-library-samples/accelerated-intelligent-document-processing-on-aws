@@ -49,7 +49,11 @@ _REPO = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from classification_flat import METHOD_FOR_GRANULARITY, V09_BLOCKS  # noqa: E402
+from classification_flat import (  # noqa: E402
+    METHOD_FOR_GRANULARITY,
+    V09_BLOCKS,
+    strip_prompt_comments_in_config,
+)
 
 
 def dropped_keys(model_cls: Any, data: Any, prefix: str) -> List[str]:
@@ -168,6 +172,60 @@ def resolve_in_release(cfg: Dict[str, Any], lib_root: str) -> Dict[str, Any]:
     return json.loads(lines[-1])
 
 
+# A second child: the field names the TARGET release's ClassificationConfig declares.
+# Same isolation and same provenance check as _CHILD.
+_FIELDS_CHILD = r"""
+import json, os, sys
+lib_root = sys.argv[1]
+sys.path.insert(0, lib_root)
+import idp_common
+where = os.path.realpath(idp_common.__file__)
+if not where.startswith(os.path.realpath(lib_root) + os.sep):
+    print(json.dumps({"fatal": f"idp_common resolved to {where}, not {lib_root}"}))
+    sys.exit(0)
+from idp_common.config.models import IDPConfig
+model = IDPConfig.model_fields["classification"].annotation
+names = set(model.model_fields)
+names.update(f.alias for f in model.model_fields.values() if f.alias)
+print(json.dumps({"fields": sorted(names)}))
+"""
+
+
+@functools.lru_cache(maxsize=None)
+def classification_fields(lib_root: str) -> frozenset:
+    """The keys the release at ``lib_root`` declares on ``classification``."""
+    child = subprocess.run(  # nosec B603 - fixed argv
+        [sys.executable, "-I", "-c", _FIELDS_CHILD, lib_root],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = [ln for ln in child.stdout.splitlines() if ln.startswith("{")]
+    if child.returncode != 0 or not lines:
+        raise RuntimeError(
+            f"cannot read the classification model at {lib_root}: "
+            f"{child.stderr.strip()[-800:]}"
+        )
+    answer = json.loads(lines[-1])
+    if answer.get("fatal"):
+        raise RuntimeError(answer["fatal"])
+    return frozenset(answer["fields"])
+
+
+def reads_nested_classification(lib_root: str) -> bool:
+    """True when the release at ``lib_root`` declares every v0.9 classification block.
+
+    Such a release (v0.6.13 onward) reads the cell's nested blocks as they are, so
+    a native upload sends the file unchanged rather than adding the pre-0.9 flat
+    keys: its own model has no flat key to compare them against, and it has the
+    split-then-classify strategy the flat layout cannot express.
+    A release declaring only some of the blocks is not treated as one, so its
+    native upload keeps the flat keys and :func:`check_config` reports what it
+    drops.
+    """
+    return set(V09_BLOCKS) <= classification_fields(lib_root)
+
+
 def _get(node: Any, path: Tuple[str, ...]) -> Any:
     for key in path:
         if not isinstance(node, dict):
@@ -205,6 +263,16 @@ def resolved_flat_pairs(granularity: str) -> List[Tuple[str, Tuple[str, ...]]]:
     return pairs
 
 
+def _flat_keys() -> frozenset:
+    """The pre-0.9 flat classification keys, as the CURRENT reader defines them."""
+    current_lib = os.path.join(_REPO, "lib", "idp_common_pkg")
+    if current_lib not in sys.path:
+        sys.path.insert(0, current_lib)
+    from idp_common.config.migrations.v08_to_v09 import FLAT_KEYS
+
+    return frozenset(FLAT_KEYS | {"classificationMethod"})
+
+
 def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     """Errors for ``cfg`` against the release whose ``idp_common`` is at ``lib_root``.
 
@@ -221,6 +289,21 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
 
     classification = cfg.get("classification") or {}
     has_flat = "classificationMethod" in classification
+    if reads_nested_classification(lib_root):
+        # Any one flat key is converted on read and wins over its nested block,
+        # and the migration consumes it before ``dropped`` is computed, so the
+        # dropped-key check above never sees it. Refuse every one, not only a
+        # file that also carries ``classificationMethod``.
+        flat_present = sorted(set(classification) & _flat_keys())
+        if flat_present:
+            errors.append(
+                f"classification carries pre-0.9 flat key(s) {', '.join(flat_present)}, "
+                f"but this release reads the nested v0.9 classification blocks: it "
+                f"converts them on read and they take precedence over the nested "
+                f"values. Remove them (run_matrix --native-upload sends such a "
+                f"release the config without them)."
+            )
+            return errors
     for path in answer["dropped"]:
         root = path.split(".")[1]
         if has_flat and root in V09_BLOCKS:
@@ -249,9 +332,13 @@ def check_config(cfg: Dict[str, Any], lib_root: str) -> List[str]:
     nested_only = copy.deepcopy(cfg)
     for key in FLAT_KEYS | {"classificationMethod"}:
         nested_only["classification"].pop(key, None)
-    current = IDPConfig.model_validate(
-        migrate_config(nested_only)
-    ).classification.model_dump(mode="json")
+    # As sent: the current runtime reader removes {# ... #} prompt comments, and
+    # the flat prompts the release reads were written without them.
+    current = strip_prompt_comments_in_config(
+        IDPConfig.model_validate(migrate_config(nested_only)).classification.model_dump(
+            mode="json"
+        )
+    )
     old = answer["classification"]
     granularity = str(_get(current, ("combined", "granularity")) or "page")
     expected_method = METHOD_FOR_GRANULARITY.get(granularity)

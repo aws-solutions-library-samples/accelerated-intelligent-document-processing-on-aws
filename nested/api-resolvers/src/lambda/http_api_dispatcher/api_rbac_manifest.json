@@ -35,10 +35,18 @@
       "Admin",
       "Author"
     ],
+    "bulkSkipAllReviews": [
+      "Admin",
+      "Reviewer"
+    ],
     "calculateCapacity": [
       "Admin",
       "Author",
       "Viewer"
+    ],
+    "cancelBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "checkFeatureEntitlement": "ANY",
     "claimNextReviewItem": [
@@ -57,8 +65,7 @@
       "Reviewer"
     ],
     "claimTestSetDocument": [
-      "Annotator",
-      "Reviewer"
+      "Annotator"
     ],
     "clearDraftLabels": [
       "Admin",
@@ -104,6 +111,9 @@
       "Admin",
       "Author"
     ],
+    "createMcpCredential": [
+      "Admin"
+    ],
     "createReviewQueue": [
       "Admin"
     ],
@@ -116,6 +126,10 @@
       "Author",
       "Reviewer",
       "Viewer"
+    ],
+    "deleteBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "deleteChatSession": [
       "Admin",
@@ -158,6 +172,9 @@
     "deleteReviewQueue": [
       "Admin"
     ],
+    "deleteTenant": [
+      "Admin"
+    ],
     "deleteTestSets": [
       "Admin",
       "Author"
@@ -172,8 +189,7 @@
     "estimateReviewEffort": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "forceReleaseReviewItem": [
       "Admin"
@@ -194,7 +210,10 @@
     "getAnnotationQueue": [
       "Admin",
       "Annotator",
-      "Author",
+      "Author"
+    ],
+    "getBulkReviewJob": [
+      "Admin",
       "Reviewer"
     ],
     "getChatMessages": [
@@ -257,8 +276,7 @@
     "getDraftLabelJob": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "getFeatureLaunchUrl": [
       "Admin"
@@ -351,8 +369,7 @@
     "getTestSetDocuments": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "getTestSetVersions": [
       "Admin",
@@ -381,6 +398,10 @@
     ],
     "listBucketFiles": [
       "Admin"
+    ],
+    "listBulkReviewJobs": [
+      "Admin",
+      "Reviewer"
     ],
     "listCatalogFeatures": "ANY",
     "listChatSessions": "ANY",
@@ -445,6 +466,9 @@
       "Viewer"
     ],
     "listInstalledFeatures": "ANY",
+    "listMcpCredentials": [
+      "Admin"
+    ],
     "listMyReviewWork": [
       "Admin",
       "Annotator",
@@ -453,8 +477,7 @@
     "listMyTestSetTasks": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "listReviewQueueItems": [
       "Admin",
@@ -469,10 +492,12 @@
       "Author",
       "Viewer"
     ],
+    "listTenants": [
+      "Admin"
+    ],
     "listTestSetQueues": [
       "Admin",
-      "Annotator",
-      "Reviewer"
+      "Annotator"
     ],
     "listUsers": [
       "Admin"
@@ -497,8 +522,7 @@
     "openTestSetAnnotationDraft": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "pauseCircuitBreaker": [
       "Admin"
@@ -517,6 +541,9 @@
     "putConfigPrefixMapping": [
       "Admin"
     ],
+    "putTenant": [
+      "Admin"
+    ],
     "queryKnowledgeBase": [
       "Admin",
       "Annotator",
@@ -530,8 +557,7 @@
     "reextractTestSetDocument": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "rejectReviewItem": [
       "Admin",
@@ -582,6 +608,12 @@
     "resumeCircuitBreaker": [
       "Admin"
     ],
+    "revokeMcpCredential": [
+      "Admin"
+    ],
+    "rotateMcpCredential": [
+      "Admin"
+    ],
     "saveReviewDraft": [
       "Admin",
       "Annotator",
@@ -594,14 +626,12 @@
     "saveTestSetDocumentSection": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "saveTestSetDocumentSectionDraft": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "sendAgentChatMessage": [
       "Admin",
@@ -619,9 +649,19 @@
       "Admin",
       "Author"
     ],
+    "sendToReview": [
+      "Admin",
+      "Reviewer"
+    ],
     "setActiveVersion": [
       "Admin",
       "Author"
+    ],
+    "setMcpCredentialTenant": [
+      "Admin"
+    ],
+    "setUserTenant": [
+      "Admin"
     ],
     "skipAllSectionsReview": [
       "Admin",
@@ -630,8 +670,7 @@
     "skipTestSetDocument": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "startMultiDocDiscovery": [
       "Admin",
@@ -680,6 +719,9 @@
       "Reviewer",
       "Viewer"
     ],
+    "updateMcpCredential": [
+      "Admin"
+    ],
     "updateModelConfigLimits": [
       "Admin"
     ],
@@ -696,8 +738,7 @@
     "updateTestSetDocumentSections": [
       "Admin",
       "Annotator",
-      "Author",
-      "Reviewer"
+      "Author"
     ],
     "updateTestSetQueue": [
       "Admin"

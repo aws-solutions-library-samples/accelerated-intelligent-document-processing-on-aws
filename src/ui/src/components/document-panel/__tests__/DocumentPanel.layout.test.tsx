@@ -10,7 +10,8 @@
  */
 
 import React from 'react';
-import { render } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
+
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -110,12 +111,12 @@ beforeEach(() => {
 
 describe('Document Details', () => {
   it('lays the fields out in four aligned columns that narrow on a narrow screen', () => {
-    render(<DocumentAttributes item={ITEM as never} versions={[]} />);
+    renderWithIntl(<DocumentAttributes item={ITEM as never} versions={[]} />);
     expect(state.columnLayouts.at(-1)).toMatchObject({ columns: 4, minColumnWidth: 160, variant: 'text-grid' });
   });
 
   it('keeps the fields in their order, each a key label over its value', () => {
-    render(<DocumentAttributes item={ITEM as never} versions={[]} />);
+    renderWithIntl(<DocumentAttributes item={ITEM as never} versions={[]} />);
     const labels = [...document.querySelectorAll('[class*="key-label"]')].map((e) => e.textContent);
     expect(labels).toEqual([
       'Document ID',
@@ -131,19 +132,20 @@ describe('Document Details', () => {
       'Review Completed By',
       'Skip Reason',
       'Confidence Alerts',
+      'Missing Required Fields',
       'Summary',
       'Malware scan',
     ]);
   });
 
   it('shows the status with the shared status indicator', () => {
-    render(<DocumentAttributes item={ITEM as never} versions={[]} />);
+    renderWithIntl(<DocumentAttributes item={ITEM as never} versions={[]} />);
     const statusField = [...document.querySelectorAll('[class*="key-label"]')].find((e) => e.textContent === 'Status')!.parentElement!;
     expect(createWrapper(statusField).findStatusIndicator()!.getElement().textContent).toBe('COMPLETED');
   });
 
   it('has no Estimated Cost panel: Reports › Estimated Cost opens it in a dialog', () => {
-    render(<DocumentPanel item={ITEM as never} />);
+    renderWithIntl(<DocumentPanel item={ITEM as never} />);
     expect(createWrapper(document.body).findExpandableSection()).toBeNull();
     expect(document.body.textContent).not.toContain('Estimated Cost (per page');
     detailBar.chooseMenuItem('Reports', 'Estimated Cost');

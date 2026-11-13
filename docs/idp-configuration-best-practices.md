@@ -2,10 +2,10 @@
 title: "IDP Configuration Best Practices Guide"
 ---
 
-# IDP Configuration Best Practices Guide
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# IDP Configuration Best Practices Guide
 
 ## Table of Contents
 
@@ -814,12 +814,12 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 
 ### Key Benefits
 
-- **🎯 Improved Accuracy**: Models understand document patterns and expected formats better through concrete examples
+- **🎯 Accuracy**: Concrete examples can help a model recognise document patterns and expected formats. The size of the effect has not been measured in this repository's benchmarks, so A/B test it on your own documents
 - **📏 Consistent Output**: Examples establish exact JSON structure and formatting standards
-- **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classification or attribute values
+- **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
+- **💰 Cost Effectiveness with Caching**: Examples placed before `<<CACHEPOINT>>` are billed at the cache-read price when the prefix is read again within five minutes; see Cost Benefits below for when caching costs more instead
 
 ### Configuration Structure
 
@@ -849,7 +849,7 @@ classes:
               "RecipientName": "The Honorable Wendell H. Ford",
               "Date": "10/31/1995",
               "Subject": null
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
       - x-aws-idp-class-prompt: "This is an example of the class 'Letter'"
         name: "Letter2"
         x-aws-idp-attributes-prompt: |
@@ -859,7 +859,7 @@ classes:
               "RecipientName": "Mr. Addison Y. Yeaman",
               "Date": "10/14/1970",
               "Subject": "Invitation to the Twelfth Annual Meeting of the TGIC"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter2.png"
 ```
 
 ### Example Fields Explained
@@ -884,12 +884,12 @@ The `x-aws-idp-image-path` field supports multiple formats:
 
 **Single Image File:**
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images:**
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/"
 ```
 
 **S3 Prefix with Multiple Images:**
@@ -976,7 +976,7 @@ extraction:
 
 4. **Leverage Prompt Caching**
    - Always include `<<CACHEPOINT>>` to separate static examples from dynamic content
-   - Place all examples before the cache point for maximum cost savings
+   - Place all examples before the cache point so they are part of the cached prefix
 
 ## Cache Checkpoint Strategy
 
@@ -1026,9 +1026,17 @@ task_prompt: >-
 ### Cost Benefits
 
 For models supporting cache checkpoints:
-- **Initial Request**: Full token cost
-- **Subsequent Requests**: Cache read cost (typically 10x cheaper) + new content cost
-- **Typical Savings**: 60-90% cost reduction for repeated processing
+- **Initial Request**: Full token cost, plus a write premium on the cached prefix (1.25× its input price on Claude models)
+- **Subsequent Requests**: Cache read cost (a tenth of the input price on most Claude models, a twentieth on Claude Sonnet 5.5 and Opus 5.5) + new content cost
+- **What it saves depends on the workload, and it can cost more.** Only the prefix
+  before `<<CACHEPOINT>>` is cached, and on the `ocr-benchmark` documents that was
+  about 1,000–2,900 of about 7,800 input tokens per request. A prefix shorter than the
+  model's minimum (1,024 tokens on Claude Sonnet 5) is never cached and raises no
+  error, and a prefix that is written but not read again within the five-minute
+  cache lifetime is billed at **about 25% more** than with no cache point (1.25× on
+  the cached prefix only, so a smaller share of the whole request)
+  ([prompt caching study](./benchmarking/studies/prompt-caching.md)). No end-to-end
+  saving for repeated processing has been measured here.
 
 ## LLM Inference Parameters
 
@@ -1074,11 +1082,19 @@ top_p: 0.0    # Take the most likely token
 top_k: 5      # Consider top 5 candidates
 ```
 
-**Conservative Configuration:**
+**Narrower alternative** (not shipped, and not measured to be more accurate):
 ```yaml
 top_p: 0.05   # More focused selection
 top_k: 3      # Fewer candidates
 ```
+
+The only top-k measurement in this repository found no effect: on Nova Lite
+Advanced extraction, `topK: 1` and the full greedy triple left the invalid
+tool-use failure rate unchanged
+([greedy-decoding study](./benchmarking/studies/greedy-decoding-tool-use.md)).
+Claude 4.7 and later, xAI Grok and OpenAI GPT-6 Astra reject sampling parameters,
+so the accelerator omits them for those models and a configured `top_k` is
+silently ignored there. A/B test any change on your own documents.
 
 ### Max Tokens Sizing
 
@@ -1134,9 +1150,9 @@ extraction:
 
 #### Token Efficiency Benefits
 
-YAML format provides significant token savings for all processing tasks:
+YAML usually needs fewer tokens than the equivalent JSON, though the saving has
+not been measured here and depends on the shape of your data:
 
-- **10-30% fewer tokens** than equivalent JSON
 - No quotes required around keys
 - More compact syntax for nested structures
 - Natural support for multiline content
@@ -1191,13 +1207,13 @@ customer_name: John Smith
 customer_address: 456 Oak Ave, City, State 67890
 ```
 
-The YAML version uses approximately 25% fewer tokens while maintaining the same information content.
+The YAML version carries the same information with less punctuation, so it usually needs fewer tokens.
 
 ### OCR Confidence Data Integration
 
 The assessment feature implements several cost optimization techniques:
 
-1. **Text Confidence Data**: Uses condensed OCR confidence information instead of full raw OCR results (80-90% token reduction)
+1. **Text Confidence Data**: Uses condensed OCR confidence information instead of full raw OCR results, which is smaller
 2. **Conditional Image Processing**: Images only processed when `{DOCUMENT_IMAGE}` placeholder is present
 3. **Efficient Prompting**: Optimized prompt templates minimize token usage while maintaining accuracy
 
@@ -1260,8 +1276,8 @@ Each configuration contains these essential components:
 ocr: [OCR method and parameters]
 classes: [Document type definitions]
 classification: [Classification prompts and parameters]
-extraction: [Extraction prompts and parameters]
-assessment: [Assessment prompts and parameters]
+extraction: [Extraction prompts and parameters, including confidence assessment under extraction.confidence]
+hitl: [Human review settings, including the confidence threshold]
 evaluation: [Evaluation prompts and parameters]
 summarization: [Summarization prompts and parameters]
 pricing: [Cost calculation parameters]
@@ -1421,7 +1437,7 @@ For documents with multiple pages, the system provides comprehensive image suppo
 
 ### Overview
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` (there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore). Confidence assessment analyzes extraction outputs against
@@ -1433,7 +1449,7 @@ full reference.
 
 - **Multimodal Analysis**: Combines text analysis with document images for comprehensive confidence assessment
 - **Per-Attribute Scoring**: Provides individual confidence scores and explanations for each extracted attribute
-- **Token-Optimized Processing**: Uses condensed text confidence data for 80-90% token reduction compared to full OCR results
+- **Token-Optimized Processing**: Uses condensed text confidence data, which is smaller than the full OCR results
 - **UI Integration**: Seamlessly displays confidence results in the web interface with explainability information
 - **Confidence Threshold Support**: Configurable global and per-attribute confidence thresholds with color-coded visual indicators
 - **Runtime Control**: Enabled/disabled via configuration (`extraction.confidence.enabled` / `mode`), no stack redeployment required
@@ -1496,7 +1512,7 @@ Confidence results automatically appear in the web interface with color-coded di
 ### Best Practices for Confidence Configuration
 
 1. **Enable Selectively**: Disable confidence (`enabled: false` or `mode: off`) for non-critical document types to control costs
-2. **Use Advanced (agentic) for Complex Documents**: For very large documents and big tables, prefer agentic extraction — it shards both extraction and confidence assessment and yields the best-calibrated confidence
+2. **Use Advanced (agentic) for Large Lists**: For sections that can hold more than about 400 list rows, and for very large documents, use agentic extraction — it shards both extraction and confidence assessment, and in the v0.6.14 benchmark it was the only mode that returned every row with every row confidence-scored at 1,200 rows and above (at the study's control extraction model). On real-world forms Simple mode was as accurate at about half the cost, so do not switch for forms ([config-guidance §2c, §3](./benchmarking/config-guidance.md#3-scaling-limits-by-document-size))
 3. **Lower `list_batch_size` for Large Lists** if a chunk under-enumerates. It is a ceiling on a derived size, so raising it does not cut the inference count
 4. **Configure Appropriate Image Dimensions**: Use original resolution for maximum accuracy
 5. **Monitor Resource Usage**: Track processing time and costs when using confidence features
@@ -1542,7 +1558,7 @@ classes:
         type: string
         description: Name of the vendor
         x-aws-idp-evaluation-method: FUZZY  # Use fuzzy matching
-        x-aws-idp-confidence-threshold: 0.8  # Minimum similarity threshold
+        x-aws-idp-evaluation-threshold: 0.8  # Minimum similarity threshold
 ```
 
 ### Supported Evaluation Methods
@@ -1559,12 +1575,22 @@ The framework supports multiple comparison methods:
 ### Baseline Data Configuration
 
 #### Baseline Bucket Structure Configuration
+
+Each document's baseline is a directory named after the document's key, holding
+one `result.json` per section, in the same layout the solution writes to the
+output bucket (see [evaluation.md](./evaluation.md#method-2-create-baseline-data-manually)):
+
 ```
 baseline-bucket/
-├── document1.pdf.json    # Baseline for document1.pdf
-├── document2.pdf.json    # Baseline for document2.pdf
+├── document1.pdf/
+│   └── sections/
+│       └── 1/
+│           └── result.json    # Baseline for section 1 of document1.pdf
 └── subfolder/
-    └── document3.pdf.json  # Baseline for subfolder/document3.pdf
+    └── document3.pdf/
+        └── sections/
+            └── 1/
+                └── result.json  # Baseline for subfolder/document3.pdf
 ```
 
 ### Aggregate Evaluation Analytics Configuration
@@ -1622,7 +1648,7 @@ ocr:
 |---|---|
 | `textract` | Amazon Textract (the default) |
 | `bedrock` | LLM-based OCR through the model in `ocr.model_id`, as configured above |
-| `bda` | Amazon Bedrock Data Automation, which is the backend to prefer for table-heavy documents |
+| `bda` | Amazon Bedrock Data Automation. On the table-heavy statements of the v0.6.14 benchmark it tied Textract `TABLES` and `LAYOUT` on accuracy (every row and every value right) and was not measurably cheaper ([config-guidance §2a](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode), [§4](./benchmarking/config-guidance.md#4-cost-and-its-run-to-run-variation-5-repeats-of-one-400-row-document)) |
 | `none` | No text extraction; page images only |
 
 > ⚠️ **The value is not validated when the config is saved.** A misspelled
@@ -1643,31 +1669,51 @@ what had happened to the list this paragraph replaced.
 
 Commonly used choices:
 
-- `us.amazon.nova-lite-v1:0` — cheapest; adequate for clean, text-heavy scans
-- `us.amazon.nova-pro-v1:0` — better on mixed layouts
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0` — fast Claude option
-- `us.anthropic.claude-sonnet-4-6` — strongest on handwriting and dense tables
-- `qwen.qwen3-vl-235b-a22b` — vision-language alternative
+- `us.amazon.nova-2-lite-v1:0` — the default `ocr.model_id` (used only when the
+  backend is `bedrock`), and the one the v0.6.14 benchmark measured (below)
+- `us.amazon.nova-lite-v1:0`, `us.amazon.nova-pro-v1:0` — Amazon Nova
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `us.anthropic.claude-sonnet-4-6` —
+  Anthropic Claude
+- `qwen.qwen3-vl-235b-a22b` — Qwen vision-language model
+
+No benchmark in this repository compares OCR models with one another, so this list
+says nothing about which is more accurate on a given kind of document. Compare
+candidates on a sample of your own documents, and compare their per-token prices in
+`config_library/pricing.yaml`.
 
 Select `LambdaHook` instead of a model to route OCR to your own Lambda function.
 
 #### When to Configure Bedrock OCR
 
+> ⚠️ **Bedrock OCR is the one backend measured to get values wrong.** On the v0.6.14
+> benchmark (typed synthetic bank statements, the default OCR model Amazon Nova 2
+> Lite) it returned every row, but at cell accuracy **0.990** where Textract
+> `TABLES`, Textract `LAYOUT` and BDA were all at 1.000, and it perturbed fixed-width
+> identifiers such as account numbers. It was also the cheapest backend: $0.3821
+> per document against $0.5238 for Textract `TABLES`, and about $0.004 per page for
+> OCR against `TABLES`' $0.015 (the per-page figures are the OCR phase of
+> `benchmarks/results/v0.6.14/core/summary.json`). Do not use it where identifiers
+> or amounts matter ([config-guidance §2a, finding 4](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode)).
+> Handwritten and low-quality documents were not measured, so the list below is
+> not a measured result.
+
 Configure Bedrock OCR for:
 - **Complex layouts** or mixed content types
-- **Handwritten or low-quality documents** where Textract struggles
+- **Handwritten or low-quality documents** where Textract struggles (not measured;
+  test on your own documents)
 - **Domain-specific documents** requiring contextual understanding
 - **Unified processing** across the entire pipeline
 - **Experimental or specialized use cases** requiring prompt customization
 
 ### Configuration Presets
 
-The IDP accelerator supports multiple configuration presets for different use cases:
-
-- **Default**: Standard processing configuration
-- **few_shot_example**: Enhanced with few-shot learning examples
-- **medical_records_summarization**: Specialized for medical document processing
-- **checkboxed_attributes_extraction**: Optimized for form processing
+The configuration presets are the directories under `config_library/unified/`.
+The `ConfigurationPreset` stack parameter takes a directory name, though it offers
+only some of them: its `AllowedValues` in `template.yaml` list which, and any other
+preset can be loaded as a custom configuration instead. List that directory for the
+current set; most presets carry a `README.md` saying what they are
+for. Few-shot examples, for instance, are demonstrated by
+`rvl-cdip-with-few-shot-examples`.
 
 ### Dynamic Configuration Updates
 
@@ -1676,15 +1722,15 @@ Configuration management features:
 - **Web UI Configuration**: Update configurations through the web interface without stack redeployment
 - **Configuration Library**: Organized preset configurations for different document types
 - **Runtime Updates**: Changes take effect immediately without code deployment
-- **Version Control**: Configuration versioning for rollback capabilities
+- **Revision History**: Every save of a configuration profile cuts a numbered [revision](./configuration-profiles.md#revision-history) you can compare and restore
 
 ### Best Practices for Configuration Management
 
 1. **Use Configuration Library**: Leverage pre-built configurations for common use cases
 2. **Test Configuration Changes**: Thoroughly validate changes before production deployment
 3. **Monitor Performance**: Track metrics after configuration updates
-4. **Version Control**: Maintain configuration versions for rollback capabilities
-5. **Environment-Specific Configs**: Use different configurations for development and production
+4. **Use Revision History for Rollback**: Restore an earlier revision of a profile rather than keeping a separately named copy per iteration
+5. **Environment-Specific Configs**: Use separate configuration profiles for development and production
 6. **OCR Backend Selection**: Choose appropriate OCR backend based on document types and requirements
 
 ## Testing and Validation
@@ -1779,8 +1825,11 @@ extraction:
                        # quote it — bare `off` is YAML's boolean false and is rejected
 ```
 
-`integrated` is the usual answer when cost is the concern but you still want
-confidence; `"off"` when you do not. Unlike most of the settings on this page,
+`integrated` does not save money: in Simple mode it cost the same as `separate`,
+and in Advanced mode it cost more — about 42% more at the shipped default on a
+100-row statement, and 4.8× at the benchmark's control model over seven statements
+([config-guidance §2a, §2.1](./benchmarking/config-guidance.md#2a-ocr-backend-extraction-mode-and-confidence-mode)).
+`"off"` is the setting that saves money, when you do not need confidence. Unlike most of the settings on this page,
 `mode` *is* validated: a value other than `off`, `separate` or `integrated` is
 rejected when the config is saved. If you only need confidence on *some*
 document types, run them through a separate stack rather than trying to express
@@ -1933,8 +1982,8 @@ ocr:
 
 classes: [Document type definitions with examples]
 classification: [Classification configuration with few-shot]
-extraction: [Extraction configuration with few-shot]
-assessment: [Assessment configuration]
+extraction: [Extraction configuration with few-shot, and confidence assessment under extraction.confidence]
+hitl: [Human review configuration]
 evaluation: [Evaluation configuration]
 summarization: [Summarization configuration]
 pricing: [Cost calculation parameters]

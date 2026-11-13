@@ -1,6 +1,10 @@
 ---
 title: "Sample: Health Insurance Review"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Sample: Health Insurance Review
 
 > **This is a sample, not the Claims Processing product.** It exists to show how
@@ -29,7 +33,7 @@ Adds a **Claims Review** page with two tabs:
    supporting pages, and reasoning (plus the full markdown summary).
 2. **Rules Discovery** — upload a payer policy document (e.g. an NCCI Medicare
    Policy Manual) and the host's Rules Discovery pipeline extracts the
-   validation rules into a configuration version, which the tab then renders as
+   validation rules into a configuration profile, which the tab then renders as
    a browsable rule set.
 
 ## Claim status
@@ -53,19 +57,20 @@ It exercises the full host contract:
   injects its `postRuleValidation` hook into the preset's
   `rule_validation.postHook` (using the hook Lambda's resolved ARN), then calls
   the host's `applyFeatureConfigPreset` mutation, which writes the preset as a
-  **new, non-active** configuration version
+  **non-active** configuration profile
   (`sample-health-insurance-review` — one profile, a revision per release). An admin reviews and activates
   it from the **Configuration** page — installing the feature never silently
   changes the active configuration. Because the hook lives **inside** the preset
-  version, activating that version brings the rules and the hook together
+  profile, activating that profile brings the rules and the hook together
   atomically.
 - **Pipeline hook** — after rule validation completes for a document, the host's
-  pipeline-hooks dispatcher (which reads hooks from the *active* config version)
+  pipeline-hooks dispatcher (which reads hooks from the configuration profile the document is processed
+  under — the active one unless another was chosen at upload)
   invokes the feature's hook Lambda, which derives the claim status and records
   it in the feature's own DynamoDB table. The hook is shipped as part of the
   config preset above rather than via a separate `registerFeatureHooks` call —
-  that keeps it attached to the very version the admin activates, instead of
-  being orphaned in whatever version happened to be active at install time.
+  that keeps it attached to the very profile the admin activates, instead of
+  being orphaned in whatever profile happened to be active at install time.
 - **Feature API** — an HTTP API + Lambda (Cognito-authenticated) over that table
   with routes for the claim list (filterable by status/time window), a single
   claim's detail (merged with the consolidated summary from the output bucket),

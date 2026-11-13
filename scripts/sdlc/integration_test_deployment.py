@@ -8,6 +8,7 @@ Handles code packaging, S3 upload, and pipeline monitoring for integration tests
 import json
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import time
@@ -82,6 +83,182 @@ def create_deployment_package():
     print("✅ Deployment package created")
 
 
+#: The pipeline variable the weekly variant-probe schedule carries. The same name
+#: codebuild_deployment.py reads on the build side, where the buildspec sets it
+#: from the S3 object metadata upload_to_s3 writes.
+VARIANT_PROBES_VARIABLE = "IDP_RUN_PROBES"
+
+
+def variant_probes_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly variant-probe run.
+
+    The deployment-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and
+    PRIVATE hosting, Jobs API, tenant isolation) each stand up their own throwaway stack beside the
+    primary one. Two conditions, both required:
+
+    * ``IDP_RUN_PROBES=true`` as a pipeline variable, which the weekly schedule
+      carries and the nightly schedule does not. Keying on the schedule alone
+      would put the probes on the nightly, and a probe failure would then fail
+      the nightly and be read as a product regression.
+    * ``CI_PIPELINE_SOURCE == "schedule"``, so the variable set anywhere else (a
+      project-level CI/CD variable, the "Run pipeline" form) cannot add the
+      probe stacks to a deploy somebody clicked to check a merge request. An on-demand
+      probe run is "Run" on the weekly schedule, which GitLab starts as a
+      scheduled pipeline, or ``make stacktest-*``.
+
+    The resource_group that serialises deploys does not make the probes cheap:
+    the burst that made them flaky is the primary and the probe stacks deploying
+    at once WITHIN one run. What bounds it is codebuild_deployment.py's launch
+    stagger (IDP_PROBE_LAUNCH_STAGGER_SECS), concurrency cap
+    (IDP_PROBE_MAX_CONCURRENCY) and one-shot retry, which is why the probes run
+    weekly rather than on every nightly.
+    """
+    env = os.environ if environ is None else environ
+    return (
+        env.get("CI_PIPELINE_SOURCE", "") == "schedule"
+        and str(env.get(VARIANT_PROBES_VARIABLE, "")).strip().lower() == "true"
+    )
+
+
+#: The pipeline variable a weekly region schedule carries: the region the run
+#: deploys and tests in. Unset, the run is in PRIMARY_CI_REGION.
+REGION_RUN_VARIABLE = "IDP_TEST_REGION"
+#: The region the nightly, the probe run and every button press use.
+PRIMARY_CI_REGION = "us-east-1"
+#: The regions other than PRIMARY_CI_REGION that hold the CI infrastructure a run
+#: needs: the source bucket, the `genaiic-sdlc-codepipeline` stack and its test
+#: VPC. A region is added here only once those exist in it; codebuild_deployment.py
+#: holds the same set as CI_INFRA_REGIONS, and test_weekly_region_runs.py keeps the
+#: two in step.
+REGION_RUN_REGIONS = ("eu-central-1", "ca-central-1")
+
+
+def region_run_requested(environ: dict | None = None) -> str | None:
+    """The region a weekly region run deploys in, or None for every other run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives: a project-level variable or the "Run pipeline" form must not move a
+    deploy somebody clicked to check a merge request into another region.
+
+    Raises ValueError for a value outside REGION_RUN_REGIONS on a schedule. A
+    region with no CI infrastructure has no source bucket and no pipeline, and
+    running the suite in us-east-1 instead would report a result for a region
+    that was never tested.
+    """
+    env = os.environ if environ is None else environ
+    region = str(env.get(REGION_RUN_VARIABLE, "")).strip().lower()
+    if not region or env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return None
+    if region not in REGION_RUN_REGIONS:
+        raise ValueError(
+            f"{REGION_RUN_VARIABLE}={region!r} names no region with CI "
+            f"infrastructure; expected one of {', '.join(REGION_RUN_REGIONS)}"
+        )
+    return region
+
+
+def region_env_lines(environ: dict | None = None) -> list[str]:
+    """Shell `export` lines that select the run's region, for the GitLab job.
+
+    The job's script and after_script are separate shells, so both evaluate these
+    rather than one inheriting the other's exports. AWS_REGION is set as well as
+    AWS_DEFAULT_REGION because the CLI and boto3 prefer it, and a runner that
+    exports it would otherwise keep every call in its own region.
+    """
+    env = os.environ if environ is None else environ
+    requested = region_run_requested(env)
+    region = requested or env.get("AWS_DEFAULT_REGION") or PRIMARY_CI_REGION
+    return [
+        f"export AWS_DEFAULT_REGION={shlex.quote(region)}",
+        f"export AWS_REGION={shlex.quote(region)}",
+    ]
+
+
+#: The pipeline variable that selects how the run deploys the accelerator. The
+#: same name codebuild_deployment.py reads (iac_mode); the value reaches the build
+#: in ci_run_options.json as ``iac``, because CodeBuild sees the zip and not the
+#: GitLab job's environment.
+IAC_VARIABLE = "IDP_IAC"
+IAC_CLOUDFORMATION = "cloudformation"
+IAC_TERRAFORM = "terraform"
+IAC_MODES = (IAC_CLOUDFORMATION, IAC_TERRAFORM)
+
+
+def iac_requested(environ: dict | None = None) -> str:
+    """How this run deploys: ``cloudformation`` (the default) or ``terraform``.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives: a project-level variable or the "Run pipeline" form must not turn a
+    deploy somebody clicked to check a merge request into a Terraform one. The
+    Terraform run is a schedule of its own carrying ``IDP_IAC=terraform``.
+
+    Raises ValueError on a schedule for a value outside IAC_MODES, and for a
+    Terraform schedule that also asks for the variant probes or a region run:
+    both of those deploy through CloudFormation only, and running the Terraform
+    suite in their place would report a result for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    value = str(env.get(IAC_VARIABLE, "")).strip().lower()
+    if not value or env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return IAC_CLOUDFORMATION
+    if value not in IAC_MODES:
+        raise ValueError(
+            f"{IAC_VARIABLE}={value!r} is not a deployment mode; expected one of "
+            f"{', '.join(IAC_MODES)}"
+        )
+    if value == IAC_TERRAFORM:
+        if variant_probes_requested(env):
+            raise ValueError(
+                f"{IAC_VARIABLE}=terraform cannot be combined with "
+                f"{VARIANT_PROBES_VARIABLE}=true: the deployment-variant probes "
+                "deploy through CloudFormation only. Put them on their own schedule."
+            )
+        if region_run_requested(env):
+            raise ValueError(
+                f"{IAC_VARIABLE}=terraform cannot be combined with "
+                f"{REGION_RUN_VARIABLE}: the Terraform run deploys in "
+                f"{PRIMARY_CI_REGION} only."
+            )
+    return value
+
+
+#: The weekly Terraform-migration schedule: the build runs
+#: scripts/sdlc/terraform_migration_test.py instead of the primary suite (the same
+#: name codebuild_deployment.py reads in terraform_migration_mode). Reaches the
+#: build in ci_run_options.json as ``terraform_migration``.
+TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+
+
+def terraform_migration_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform-migration run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the same schedule also asks for the variant
+    probes, a region run or a Terraform run: the migration run replaces the primary
+    suite, so any of those would report a result for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() != "true":
+        return False
+    for clash, asked in (
+        (f"{VARIANT_PROBES_VARIABLE}=true", variant_probes_requested(env)),
+        (REGION_RUN_VARIABLE, bool(region_run_requested(env))),
+        (
+            f"{IAC_VARIABLE}=terraform",
+            str(env.get(IAC_VARIABLE, "")).strip().lower() == IAC_TERRAFORM,
+        ),
+    ):
+        if asked:
+            raise ValueError(
+                f"{TERRAFORM_MIGRATION_VARIABLE}=true cannot be combined with "
+                f"{clash}: the migration run replaces the primary suite. Give each "
+                "its own schedule."
+            )
+    return True
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -97,6 +274,23 @@ def upload_to_s3(bucket_name):
         if gitlab_user_email:
             metadata["gitlab-user-email"] = gitlab_user_email
             print(f"Adding GitLab user email to metadata: {gitlab_user_email}")
+
+        # The deployment-variant probes run only on the weekly variant-probe
+        # schedule; see variant_probes_requested for the rule and the reasons.
+        # S3 object metadata is the channel the buildspec reads them from, the
+        # same one the admin email above reaches the build on.
+        if variant_probes_requested():
+            metadata["idp-run-probes"] = "true"
+            print(
+                "Weekly variant-probe run — enabling the deployment-variant probes"
+            )
+        elif os.environ.get(VARIANT_PROBES_VARIABLE, "").strip().lower() == "true":
+            source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
+            print(
+                f"⚠️ {VARIANT_PROBES_VARIABLE} is set, but this is a {source} "
+                "pipeline: the deployment-variant probes run only on a scheduled "
+                "one. Press Run on the weekly schedule, or use make stacktest-*."
+            )
 
         response = s3_client.put_object(
             Bucket=bucket_name,
@@ -323,10 +517,25 @@ def stream_new_milestones(logs_client, log_stream, next_token, console, max_page
 # before they expire: it re-assumes idp-sdlc-GitLab again (a fresh 1h session —
 # role chaining allows repeated re-assumes, each capped at 1h) and rebuilds its
 # boto3 clients. So MONITOR_HANDOFF_SECONDS can now exceed the 1h cap. It is set
-# below the GitLab job timeout (2h30m) with headroom for before/after_script.
+# below the GitLab job timeout (4h30m) with headroom for before/after_script.
 # If refresh ever fails (e.g. the self-assume permission is missing), the
 # monitor still hands off gracefully to the S3 summary + SNS email.
 MONITOR_HANDOFF_SECONDS = 6600  # 110 min
+# The weekly variant-probe run joins the probes after the primary suite, so its
+# final summary lands later: up to PROBE_JOIN_DEADLINE_SECONDS (150 min) after
+# CodeBuild's main() starts, plus the source stage and provisioning before it.
+# Handing off at 110 min would read the INTERIM summary and leave a probe failure
+# to the email alone, so that run watches longer. Both stay below the GitLab job
+# timeout (4h30m) with the same before/after_script headroom as the nightly.
+PROBE_RUN_MONITOR_HANDOFF_SECONDS = 10500  # 175 min
+PROBE_RUN_MONITOR_MAX_WAIT_SECONDS = 11700  # 195 min
+# The weekly Terraform-migration run fills the CodeBuild project's 240-minute
+# timeout (TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES in codebuild_deployment.py), so
+# its monitor watches past that, plus the source stage and provisioning in front of
+# it. Both stay below the GitLab job timeout (4h30m) with before/after_script
+# headroom.
+MIGRATION_RUN_MONITOR_HANDOFF_SECONDS = 15000  # 250 min
+MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS = 15600  # 260 min
 # Re-assume this far before the ~1h chained-session expiry.
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
@@ -373,10 +582,13 @@ def write_ci_run_options(
 
     codebuild_deployment.py updates the long-lived UX review stack in place only on
     the nightly schedule of develop, and CodeBuild sees only the zip, not the GitLab
-    job's environment, so the two facts travel inside it. This is a correctness
-    guard, not a security control: an MR-button run executes the MR's own
-    codebuild_deployment.py, which reads or ignores this file however its author
-    wrote it. What it does prevent is the ordinary mistake, a button press moving
+    job's environment, so the two facts travel inside it. ``variant_probes`` says
+    whether this is the weekly variant-probe run (variant_probes_requested), which
+    leaves the review stack alone: that stack moves once a night, on the nightly
+    run. ``iac`` says how the build deploys (iac_requested); a Terraform run
+    leaves the review stack alone too. This is a correctness guard, not a security control: an MR-button run
+    executes the MR's own codebuild_deployment.py, which reads or ignores this file
+    however its author wrote it. What it does prevent is the ordinary mistake, a button press moving
     the shared review stack onto an unmerged template.
 
     Written with pathlib rather than through run_command, so the zip stays
@@ -391,6 +603,10 @@ def write_ci_run_options(
         "pipeline_source": env.get("CI_PIPELINE_SOURCE", ""),
         "ref": env.get("CI_COMMIT_REF_NAME", ""),
         "pipeline_id": env.get("CI_PIPELINE_ID", ""),
+        "variant_probes": variant_probes_requested(env),
+        "region_run": region_run_requested(env) or "",
+        "iac": iac_requested(env),
+        "terraform_migration": terraform_migration_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -501,8 +717,9 @@ def monitor_pipeline_execution(
               a failure. The caller exits neutrally and the run's real result
               surfaces via the S3 summary + SNS.
 
-    max_wait (135 min) is a hard backstop below the GitLab job's 2h30m ceiling;
-    handoff_after (110 min) is the normal exit for a still-running pipeline.
+    max_wait (default 135 min) is a hard backstop below the GitLab job's ceiling;
+    handoff_after (default 110 min) is the normal exit for a still-running
+    pipeline. A probe run passes larger budgets for both.
     The monitor refreshes its 1h-capped creds every ~50 min (see
     _CredentialRefresher), so it can watch past the single-credential lifetime.
     """
@@ -714,7 +931,9 @@ def monitor_pipeline_execution(
         return False
 
 
-def monitor_pipeline(pipeline_name, version_id, max_wait=8100):
+def monitor_pipeline(
+    pipeline_name, version_id, max_wait=8100, handoff_after=MONITOR_HANDOFF_SECONDS
+):
     """Monitor pipeline using version-based tracking"""
     # First find the execution that matches our version
     execution_id = find_pipeline_execution_by_version(pipeline_name, version_id)
@@ -728,7 +947,9 @@ def monitor_pipeline(pipeline_name, version_id, max_wait=8100):
     print(f"Pipeline execution ID written to file: {execution_id}")
         
     # Then monitor that specific execution
-    return monitor_pipeline_execution(pipeline_name, execution_id, max_wait)
+    return monitor_pipeline_execution(
+        pipeline_name, execution_id, max_wait, handoff_after=handoff_after
+    )
 
 
 def main():
@@ -760,15 +981,81 @@ def main():
 
     print(f"Account ID: {account_id}")
     print(f"Region: {region}")
+    region_run = region_run_requested()
+    if region_run:
+        print(f"🌍 Weekly region run — deploying and testing in {region_run}")
+        if region != region_run:
+            # The job evaluates region_env_lines before calling this; a mismatch
+            # means it did not, and the run would test the wrong region.
+            print(
+                f"❌ AWS_DEFAULT_REGION is {region} but {REGION_RUN_VARIABLE} asks "
+                f"for {region_run}; the job must evaluate --region-env first"
+            )
+            sys.exit(1)
+    elif os.environ.get(REGION_RUN_VARIABLE, "").strip():
+        source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
+        print(
+            f"⚠️ {REGION_RUN_VARIABLE} is set, but this is a {source} pipeline: "
+            f"region runs happen only on a scheduled one, so this run stays in "
+            f"{region}."
+        )
+    try:
+        iac = iac_requested()
+        migration = terraform_migration_requested()
+    except ValueError as e:
+        print(f"❌ {e}")
+        sys.exit(1)
+    if migration:
+        print(
+            "🔀 Weekly Terraform-migration run — migrating a genai-idp-terraform "
+            "deployment onto the built-in module instead of the primary suite"
+        )
+    if iac == IAC_TERRAFORM:
+        print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
+    elif os.environ.get(IAC_VARIABLE, "").strip():
+        source = os.environ.get("CI_PIPELINE_SOURCE") or "non-CI"
+        print(
+            f"⚠️ {IAC_VARIABLE} is set, but this is a {source} pipeline: the "
+            "Terraform run happens only on a scheduled one, so this run deploys "
+            "with CloudFormation."
+        )
     print(f"Bucket: {bucket_name}")
     print(f"Pipeline: {pipeline_name}")
 
     # Execute deployment steps
     write_ci_run_options()
+    if (iac == IAC_TERRAFORM or migration) and not pathlib.Path(
+        CI_RUN_OPTIONS_FILE
+    ).is_file():
+        # The file is the only way the choice reaches CodeBuild, which reads no
+        # file as CloudFormation. Running on would deploy and report the
+        # CloudFormation suite under a Terraform schedule.
+        print(
+            f"❌ {CI_RUN_OPTIONS_FILE} could not be written, and on a Terraform "
+            "schedule it is what tells the build to deploy with Terraform"
+        )
+        sys.exit(1)
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 
-    result = monitor_pipeline(pipeline_name, version_id)
+    if migration:
+        # Two deployments, two one-hour DynamoDB waits and both teardowns: the
+        # longest run, filling the build's whole timeout.
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    elif variant_probes_requested():
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=PROBE_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=PROBE_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    else:
+        result = monitor_pipeline(pipeline_name, version_id)
 
     if result is True:
         print("🎉 Integration test deployment completed successfully!")
@@ -803,4 +1090,11 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--region-env"]:
+        try:
+            print("\n".join(region_env_lines()))
+        except ValueError as e:
+            print(f"❌ {e}", file=sys.stderr)
+            sys.exit(2)
+        sys.exit(0)
     main()

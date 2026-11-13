@@ -25,6 +25,7 @@ from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.discovery.discovered_text import clean_rule_classes
 from idp_common.utils import extract_json_from_text
 from idp_common.utils.s3util import S3Util
 
@@ -44,6 +45,13 @@ except ImportError as _agentic_import_error:
         "Traditional rule discovery will still work; set discovery.rules.agentic.enabled=False to suppress this message.",
         _agentic_import_error,
     )
+
+
+#: Raised when rules would be saved with no configuration profile named.
+MISSING_VERSION_MESSAGE = (
+    "Rules discovery needs the configuration profile to save into: pass version=. "
+    "There is no fallback to the active profile."
+)
 
 
 def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, Any]:
@@ -91,6 +99,9 @@ def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, A
     }
     if rule_class.get("description"):
         reshaped_class["description"] = rule_class["description"]
+    # The persisted shape is cleaned here too, so the local/notebook path that
+    # calls this directly gets the same plain text as the S3 path.
+    clean_rule_classes([reshaped_class])
     return reshaped_class
 
 
@@ -109,6 +120,31 @@ def _is_max_tokens_error(exc: Exception) -> bool:
     return is_max_tokens_agent_error(exc)
 
 
+def truncation_remedy(max_tokens: Optional[int]) -> str:
+    """What a user can do about a ruleset truncated at the output-token limit.
+
+    ``discovery.rules.max_tokens`` ships empty, which requests the selected model's
+    maximum output, and a value above that maximum is refused. So "raise
+    ``max_tokens``" is an action only for a configuration that set a cap; for every
+    other one the call already had the whole output budget the model offers, and
+    what is left is a smaller document or a model with a larger output limit.
+    """
+    split = (
+        "Split the policy document into smaller uploads (e.g. by chapter), or set "
+        "discovery.rules.model to a model with a larger output limit"
+    )
+    if max_tokens:
+        return (
+            f"{split}. discovery.rules.max_tokens is set to {max_tokens}, which caps "
+            "the response below the model's maximum; clearing it lets the call use "
+            "the model's full output limit."
+        )
+    return (
+        f"{split}. discovery.rules.max_tokens is already empty, so the call "
+        "already requested the model's full output limit."
+    )
+
+
 class RulesTruncatedError(Exception):
     """Rule extraction was truncated at the model's output token limit.
 
@@ -116,8 +152,8 @@ class RulesTruncatedError(Exception):
     A rule missing from a compliance validation set fails silently — the
     document is validated against a subset of the policy and reported as
     compliant — so a failed job is the better outcome. The message carries the
-    remediation (split the document, or raise ``discovery.rules.max_tokens``)
-    and reaches the UI via the discovery job's status message.
+    remediation (:func:`truncation_remedy`) and reaches the UI via the discovery
+    job's status message.
     """
 
 
@@ -148,10 +184,12 @@ class RulesDiscovery:
     ``_warn_if_no_regex``).
 
     Usage:
-        # With S3
+        # With S3, saving into a named configuration profile (required: there is
+        # no fallback to the active profile)
         discovery = RulesDiscovery(
             input_bucket="my-bucket",
             input_prefix="policies/ncci-policy.pdf",
+            version="my-profile",
         )
         result = discovery.discovery_rules_from_document(
             input_bucket="my-bucket",
@@ -185,8 +223,9 @@ class RulesDiscovery:
             input_prefix: S3 key prefix for the policy document
             region: AWS region (defaults to AWS_REGION env var)
             config: Optional IDPConfig. If not provided, loads from DynamoDB.
-            version: Config version to save extracted rules into. Defaults to
-                the active version if omitted.
+            version: Config version to save extracted rules into. Required
+                whenever the rules are saved (that is, when ``config`` is not
+                given); there is no fallback to the active version.
         """
         self.input_bucket = input_bucket
         self.input_prefix = input_prefix
@@ -243,6 +282,9 @@ class RulesDiscovery:
         logger.info(
             f"Extracting rules from policy document: s3://{input_bucket}/{input_prefix}"
         )
+        # Refuse before the model runs rather than after: the save is what needs it.
+        if self.config_manager and not self.version:
+            raise ValueError(MISSING_VERSION_MESSAGE)
 
         try:
             file_in_bytes = S3Util.get_bytes(bucket=input_bucket, key=input_prefix)
@@ -254,6 +296,10 @@ class RulesDiscovery:
 
             if extracted_rules is None:
                 raise Exception("Failed to extract rules from document")
+
+            # Rule text is saved into the profile, shown in the UI and later read
+            # by rule validation, so it is kept to plain text before either.
+            clean_rule_classes(extracted_rules)
 
             # Override the model-assigned rule type with a filename-derived
             # name so each uploaded document produces a distinguishable policy
@@ -317,6 +363,10 @@ class RulesDiscovery:
 
             if extracted_rules is None:
                 raise Exception("Failed to extract rules from document")
+
+            # Rule text is saved into the profile, shown in the UI and later read
+            # by rule validation, so it is kept to plain text before either.
+            clean_rule_classes(extracted_rules)
 
             # Reshape to the persisted contract. Names are de-duplicated within
             # this batch only; there is no existing config to collide with here.
@@ -452,20 +502,20 @@ class RulesDiscovery:
                     logger.warning(
                         "Rules extraction hit the output token limit on attempt %d "
                         "(~%d rule(s) recovered, ruleset INCOMPLETE). Retrying. If "
-                        "this persists, split the policy document by chapter or "
-                        "raise discovery.rules.max_tokens.",
+                        "this persists: %s",
                         attempt + 1,
                         partial_count,
+                        truncation_remedy(max_tokens),
                     )
                     if attempt == max_retries - 1:
                         logger.error(
                             "Rules extraction truncated at the output token limit "
                             "on all %d attempts. Refusing to persist a partial "
                             "ruleset — %d of an unknown total rule(s) were "
-                            "recovered. Split the policy document into smaller "
-                            "uploads or raise discovery.rules.max_tokens.",
+                            "recovered. %s",
                             max_retries,
                             partial_count,
+                            truncation_remedy(max_tokens),
                         )
                         raise RulesTruncatedError(
                             f"The model's response was truncated at its output token "
@@ -473,9 +523,8 @@ class RulesDiscovery:
                             f"ruleset is incomplete "
                             f"(~{partial_count} rule(s) recovered). "
                             f"A partial ruleset is not saved, because rules missing "
-                            f"from a compliance validation set fail silently. Split "
-                            f"the policy document into smaller uploads (e.g. by "
-                            f"chapter), or raise discovery.rules.max_tokens."
+                            f"from a compliance validation set fail silently. "
+                            f"{truncation_remedy(max_tokens)}"
                         )
                     continue
 
@@ -532,7 +581,7 @@ class RulesDiscovery:
         model_id: str,
         system_prompt: str,
         user_prompt: str,
-        max_tokens: int,
+        max_tokens: Optional[int],
     ) -> Optional[List[Dict[str, Any]]]:
         """
         Extract rules using the agentic approach with Strands Agent.
@@ -651,9 +700,7 @@ class RulesDiscovery:
                     f"so the extracted ruleset is incomplete "
                     f"(~{total_individual_rules} rule(s) recovered). A partial ruleset "
                     f"is not saved, because rules missing from a compliance "
-                    f"validation set fail silently. Split the policy document into "
-                    f"smaller uploads (e.g. by chapter), or raise "
-                    f"discovery.rules.max_tokens."
+                    f"validation set fail silently. {truncation_remedy(max_tokens)}"
                 )
 
             # Log metering info
@@ -686,9 +733,8 @@ class RulesDiscovery:
                     "The model's response was truncated at its output token "
                     "limit, so the extracted ruleset is incomplete. A partial "
                     "ruleset is not saved, because rules missing from a "
-                    "compliance validation set fail silently. Split the policy "
-                    "document into smaller uploads (e.g. by chapter), or raise "
-                    f"discovery.rules.max_tokens. (underlying error: {e})"
+                    "compliance validation set fail silently. "
+                    f"{truncation_remedy(max_tokens)} (underlying error: {e})"
                 ) from e
             logger.error(f"Agentic rule discovery failed: {e}", exc_info=True)
             raise
@@ -887,12 +933,10 @@ class RulesDiscovery:
         """
         version = getattr(self, "version", None)
         if not version:
-            for v in self.config_manager.list_config_versions():
-                if v.get("isActive"):
-                    version = v.get("versionName")
-                    break
-            if not version:
-                version = "default"
+            # No fallback to the active profile: that would write discovered rules
+            # into whichever profile documents are currently processed under, which
+            # is not a profile anyone chose for this run.
+            raise ValueError(MISSING_VERSION_MESSAGE)
 
         existing_item_raw = self.config_manager.get_configuration(
             "Config", version=version

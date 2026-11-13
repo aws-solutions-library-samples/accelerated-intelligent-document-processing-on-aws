@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-10-29 |
-| **Applies to release** | v0.6.13 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
+| **Applies to release** | v0.6.14 |
 | **Classification** | Internal |
 | **System Name** | GenAI Intelligent Document Processing (IDP) Accelerator |
 
@@ -23,7 +23,8 @@
 > `nested/bedrockkb`, `nested/multi-doc-discovery`, the feature-platform main-stack
 > extensions), `patterns/unified/statemachine/workflow.asl.json`,
 > `scripts/api_rbac_expectations.yaml` and the dispatcher / queue-processor /
-> review-queue source. The main user pool has **five** groups; **164** operations
+> review-queue source, and checked against the same sources at v0.6.14, which adds
+> tenant isolation (TB8 below). The main user pool has **five** groups; **180** operations
 > are routable through the dispatcher, with the group distribution in §5 taken from
 > `scripts/api_rbac_expectations.yaml`; §5 names what each layer does *not* cover;
 > §5.2 covers the two non-REST authenticated entry points, §5.3 admission control
@@ -247,6 +248,7 @@ flowchart TD
 | **TB5: Analytics Layer** | Data analytics and search | Athena workgroup isolation, OpenSearch encryption |
 | **TB6: Customer Extensions** | Customer/third-party hooks, MCP agents, and **installed features** | Separate IAM roles, invocation-only permissions from core. **Feature UI bundles execute in the host SPA's origin with the user's session** — see FEAT.T01. `onError: fail` is terminal at **every** hook point: each of the seven routes `HookFatalError` (what `onError: fail` raises) to a terminal failure state (HOOK.T07, closed by **issue #919**). Under queue review the four hooks before the review point run in both executions (§5.4) |
 | **TB7: Deployment / IaC** | The principal that creates the stack, and the optional CloudFormation service role shipped for it | CloudTrail attribution, `iam:PassRole` gating, `scripts/sdlc/validate_service_role_permissions.py` in both CI systems. The shipped role now carries a **permissions boundary**, which bounds what it can reach; its own policy still grants `iam:*`, so it is not yet narrowed to the resources the stack needs — see §7.1 and SDK.T05 (**issue #927**, closed on the boundary) |
+| **TB8: Tenant (inside one stack)** | Several tenants sharing one deployment, each a set of Input-bucket prefixes tied to a profile name pattern; the principals who decide tenancy (Admins under `TenantGrantSource=Manual`, the identity provider's role administration under `IdpClaim`, an entitlement system under `Api`) and whoever deploys the per-tenant S3 Access Points | Write-time boundary checks on mappings, tenants and scopes; under `TenantIsolationMode=Strict` or an external grant source, unscoped non-Admins denied, unscopable surfaces closed, ingest tenant check, access-point delegation with confining policies. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) (TEN.T01–T05) |
 
 > **Critical boundary note (new in v3.0).** TB6 now contains code that executes
 > *inside* TB1's browser context at the host's origin: an installed feature's
@@ -284,29 +286,36 @@ table.
 | In-process handlers (`ddb_direct`, 11 ops) | **Enforces `cognito:groups`** from its own `_REQUIRED_GROUPS` table before touching DynamoDB — the only group check at dispatcher level | Returns without denying for any field absent from that table, so the check is opt-in per field |
 | **Resolver Lambda** (~40 functions) | **Enforces `allowedConfigVersions` and `allowedTestSets` scope, per-object ownership and review-queue eligibility**, and repeats the group check | Nothing forces a per-object check to exist or to match the right object (AUTH.T16) |
 
-**164 operations** are routable — 42 mapped directly by the
+**180 operations** are routable — 43 mapped directly by the
 `FIELD_FUNCTION_MAP` published to SSM at
-`/${StackName}/http-api/field-function-map`, **112** aliased onto shared
+`/${StackName}/http-api/field-function-map`, **121** aliased onto shared
 resolvers by `FIELD_ALIASES`, and 11 served in process by `ddb_direct`. Those
-three sets sum to 165, not 164, because one field (`getCircuitBreakerStatus`)
+three sets sum to 181, not 180, because one field (`getCircuitBreakerStatus`)
 appears in both `FIELD_FUNCTION_MAP` and `ddb_direct._HANDLED`; the distinct
-union is 164, which is exactly the number of entries in
+union is 180, which is exactly the number of entries in
 `scripts/api_rbac_expectations.yaml`. Their required-group distribution:
 
 | Required groups | Ops |
 |---|---|
+| Admin only | 49 |
 | Admin + Author | 42 |
-| Admin only | 39 |
 | Any assigned group, whichever one (`ANY_GROUP`) | 27 |
 | Admin + Author + Viewer | 15 |
-| Any authenticated user, group or no group (`ANY`) | 8 |
+| Admin + Annotator + Reviewer | 14 |
 | Admin + Annotator + Author | 11 |
-| Admin + Annotator | 11 |
-| Admin + Annotator + Reviewer | 4 |
+| Any authenticated user, group or no group (`ANY`) | 8 |
 | Admin + Reviewer | 3 |
+| Admin + Annotator | 1 |
 | Annotator only | 1 |
-| Admin + Annotator + Author + Viewer | 1 |
+| All five groups | 1 |
 | IAM/backend only (Cognito callers rejected) | 2 |
+
+The four operations 0.6.14 adds — `listTenants`, `putTenant`, `deleteTenant` and
+`setUserTenant` — are all Admin only. The same release removes `Reviewer` from the
+Test Studio queue, labelling and test-set operations, which now admit Admin,
+Author and Annotator (Admin and Annotator for `listTestSetQueues`, Annotator alone for
+`claimTestSetDocument`), so a Reviewer
+works production review queues only.
 
 `ANY_GROUP` is resolved at build time into every group `template.yaml` creates, so a
 group added there joins those 27 without an edit per operation; what they refuse is a
@@ -331,19 +340,21 @@ test-set documents are likewise reachable only through a resolver that applies t
 caller's scope to the key. ⚠️ What the distribution does **not** supply is
 per-document authorization: on the document buckets the resolver matches the owning
 document's `ConfigVersion` against the caller's `allowedConfigVersions`, which refuses
-a *scoped* caller a document outside their profiles and refuses an *unscoped* one
-nothing, scoping being opt-in per user, and document ownership is not modelled at all.
+a *scoped* caller a document outside their profiles. Under the default
+`TenantIsolationMode: Off` it refuses an *unscoped* caller nothing, scoping being
+opt-in per user; under `Strict` an unscoped non-admin resolves to a scope that matches
+no profile and is refused every document. Per-user document ownership is not modelled
+at all; per-*tenant* isolation is, through tenant declarations (see
+[Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)).
 
-Beyond the group check, **26** operations verify config-version scope, **9** filter
-their result rows by it, and **17** verify per-object ownership.
+Beyond the group check, **61** operations verify config-version scope, **10** filter
+their result rows by it, and **21** verify per-object ownership.
 [`scripts/api_rbac_expectations.yaml`](../../../scripts/api_rbac_expectations.yaml)
 is the manifest of record for all of this and is asserted by
 `make api-test-static` in both CI systems and by the live matrix in
-`make api-test`. Its `known_gaps` block holds **three** entries, of which two are accepted *authorization* gaps and the third is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The two authorization gaps: **GAP-02**: the `queryKnowledgeBase`
+`make api-test`. Its `known_gaps` block holds **two** entries, of which one is an accepted *authorization* gap and the other is a limitation of the live harness — `GAP-SEC-INCONCLUSIVE-5XX`, which records that a 5xx response scores a matrix cell INCONCLUSIVE rather than as a pass, and that a resolver refusal raised as a bare `Exception` still produces one. The not-found refusals that used to produce most of them now answer 404 (`errorType: "ResourceNotFound"`); the gap entry itself enumerates what remains at 500, rather than this page quoting a count that goes stale. The authorization gap: **GAP-02**: the `queryKnowledgeBase`
 *resolver* performs no group check of its own, so the dispatcher's floor — which
-requires an assigned group — is the only group gate on it. **GAP-07**: the chat
-Function URL transport carries no `cognito:groups` claim, so neither chat route's
-group check can be applied to callers arriving that way.
+requires an assigned group — is the only group gate on it.
 
 Two mechanical details matter when reading resolver code. The REST authorizer
 places claims at `requestContext.authorizer.claims` (not where an AppSync-era
@@ -366,7 +377,7 @@ and do **not** inherit the resolver authorization model:
 
 | Entry point | Authentication | Authorization |
 |---|---|---|
-| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool** | **No group check.** `lambda:InvokeFunctionUrl` (and `lambda:InvokeFunction`, on the function itself) is granted to the single authenticated Identity Pool role that all five groups share, so IAM cannot distinguish them. Ownership of a chat session is not verified on this transport, and the caller identifier available to it is an assumed-role session name rather than a verified Cognito `sub`. See CHAT.T03 and CHAT.T06. **issue #920** is closed: both routes now resolve identity through one helper in which a body-supplied `callerSub` is a fallback only and a value contradicting the transport is refused with 403. What that does not supply is a *verified per-user* subject on this transport, and no group claim reaches it at all (`GAP-07`) — so CHAT.T03 stays open |
+| **Chat streaming Function URL** (`ChatStreamProcessorUrl`) | `AuthType=AWS_IAM`; the browser SigV4-signs with credentials from the Cognito **Identity Pool**, and also presents its Cognito **ID token** in `x-idp-id-token` | The endpoint verifies the ID token (signature against the user pool's key set, issuer, app client, `token_use`, expiry) and answers 401 without one. The group checks of both chat routes and the Chat-with-Document scope check run on the verified claims, and each session id is checked against its owner in `ChatSessionOwnersTable` before the stream opens. Nothing identity-like is read from the request body. See CHAT.T03 and CHAT.T06 |
 | **Jobs API** (optional, `EnableJobsApi=true`) | A separate `ApiUserPool` with OAuth **client-credentials** scopes (`idp-api/jobs.write`, `jobs.read`) | Scope-based, PRIVATE-endpoint only. A distinct realm from the Cognito group model — see JOB.T01–T03 |
 
 When `WebUIHosting=APIGateway`, two further methods (`GET /` and `GET /{proxy+}`)
@@ -383,6 +394,14 @@ CORS is wildcard-origin on both the REST route and the Function URL. Because
 credentials travel in headers (bearer token or SigV4) and `AllowCredentials` is
 false, this is not itself the authorization gap — but it does mean any origin can
 drive both APIs with credentials it can obtain.
+
+Under `TenantIsolationMode=Strict` or an external `TenantGrantSource` (the
+`DeniesUnscopedCaller` condition in `template.yaml`) the Web UI is built with an
+empty `VITE_STREAM_URL`, so it uses the REST chat path, which carries verified
+Cognito claims and can be scoped. The streaming function itself refuses any turn it
+cannot attribute to a verified caller (`chat_stream_processor/app.py`), which on the
+Function URL is every turn. The Function URL and its Identity Pool grant still
+exist in those modes, but they serve nothing.
 
 ### 5.3 Admission control at ingestion
 
@@ -487,7 +506,18 @@ to overwrite a document's sections while it is in review.
 - **Runtime**: Python 3.12+ (Lambda), React/Vite (UI)
 - **UI hosting**: `WebUIHosting=CloudFront` (default) or `APIGateway` (S3 proxy on the REST API; VPC-capable, GovCloud-compatible). **ALB hosting removed in v0.6.0.**
 - **Regions**: All commercial AWS regions with required service availability; **GovCloud supported** via `idp-cli publish/deploy --govcloud` (full Web UI) or `--headless`
-- **Multi-tenancy**: Single-tenant per deployment (one stack = one environment)
+- **Multi-tenancy**: one stack per tenant, or several tenants in one stack through
+  tenant declarations (Input-bucket prefixes tied to a profile name pattern). With
+  `TenantIsolationMode: Off` (the default) declarations are enforced when mappings,
+  tenants and user scopes are written; `Strict` also denies unscoped non-admins,
+  refuses documents whose key and profile belong to different tenants at ingest,
+  makes the cross-document agent and Knowledge Base surfaces Admin-only, refuses MCP
+  tools, and lets the Input and Output bucket policies delegate to per-tenant S3
+  Access Points. `TenantGrantSource` decides who writes a non-Admin's scope
+  (`Manual`, `IdpClaim` or `Api`); under the two external sources an unscoped
+  non-Admin is denied whatever the isolation mode, and Admin scope edits are
+  refused. Admins are cross-tenant in every mode. Threats: TEN.T01–T05 in
+  [`tenant-isolation.md`](../feature-threats/tenant-isolation.md)
 - **Infrastructure as Code**: `template.yaml` + nested stacks (`api-resolvers`, `bedrockkb`, `multi-doc-discovery`, feature-platform)
 
 ### 7.1 Deployment-time privilege
@@ -517,10 +547,11 @@ release under [`security/test-results/<version>/`](../../test-results/):
 | **RBAC dynamic** (`make api-test`) | Live multi-role matrix, scope, IDOR, token lifecycle, input validation, TLS | AUTH.T03, T07–T12 |
 
 Two coverage limits are worth stating alongside that table, because a reader can
-otherwise take it as broader assurance than it is. Both RBAC suites drive
-`POST /op/{field}` only, so **no test exercises the chat Function URL
-transport** — a regression on the paths described in §5.2 would not be detected
-(CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
+otherwise take it as broader assurance than it is. The static suite
+covers the chat Function URL routes (S6–S9 in `scan_api_rbac.py`), and the live
+suite has cells for that transport (`run_chat_session_idor_suite`) that have not
+yet been run against a deployment, so a runtime regression on the paths described
+in §5.2 is caught only once they are (CHAT.T03, CHAT.T06). And the static suite asserts each operation against the
 expectations manifest and the dispatcher refuses an operation with no entry
 (**issue #928**, closed), but neither asserts that a resolver's per-object check —
 scope, ownership, review-queue eligibility — exists and matches the right object,

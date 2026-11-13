@@ -79,7 +79,7 @@ The Assessment service is designed to assess the confidence and accuracy of extr
 - **Multi-modal analysis** with support for both document text and images
 - **Automatic bounding box processing** with spatial localization of extracted fields
 - **UI-compatible geometry output** for immediate visualization
-- **Optimized token usage** with pre-generated text confidence data (80-90% reduction)
+- **Optimized token usage** with pre-generated text confidence data, which is smaller than the full OCR results
 - **Structured confidence output** with scores and explanations per attribute
 - **Prompt template support** with placeholder substitution
 - **Image placeholder positioning** for precise multimodal prompt construction
@@ -706,8 +706,10 @@ Before the ceiling, the largest shortfall this rung said nothing about was **115
 unscored rows of 3,200** (3.6%) on `scale_3200.pdf`, against 24 of 800 (3.0%) when it
 was last measured — the share barely moved while the row count grew 4.8×, because the
 document grew 4×, which is what a purely multiplicative rung does. With the 10-row
-ceiling the largest silent shortfall over this whole corpus is **6 unscored rows of
-400** (1.5%), and it cannot exceed 9 whatever the list's length
+ceiling the largest silent shortfall over the committed grids through v0.6.14 is **8
+unscored rows of 202** (4.0%), on three Nova Lite runs of the 17-page document whose
+extraction had itself stopped at 202 of 800 rows (6 of 400 before the v0.6.14 grids), and
+it cannot exceed 9 whatever the list's length
 ([#1495](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1495)).
 
 The two error paths are disjoint on this corpus, and together they account for
@@ -1037,7 +1039,7 @@ The assessment service supports the following placeholders in prompt templates:
 - `{EXTRACTION_RESULTS}` - JSON of extraction results to assess
 
 ### OCR Confidence Data
-- `{OCR_TEXT_CONFIDENCE}` - **NEW** - Optimized text confidence data with 80-90% token reduction
+- `{OCR_TEXT_CONFIDENCE}` - **NEW** - Optimized text confidence data, smaller than the full OCR results
 
 ### Image Positioning
 - `{DOCUMENT_IMAGE}` - Placeholder for precise image positioning in multimodal prompts.
@@ -1323,6 +1325,43 @@ Key behaviors:
   the same, and the tag now names the form that matched whole, `"ocr-normalized"`.
   Over the same sample documents (all but the 17-page fund factsheet, left out of
   that pass for time) none of 11,466 unchanged boxes changed tag.
+- **Word-span narrowing** of a value found inside a longer line (the value-in-line
+  tiers, `_TIER_SUBSTRING` and `_TIER_SUBSTRING_EMBEDDED`): `_word_span_box` joins the
+  line's `words[]` in the order the line lists them, normalizes the result the way
+  `_normalize` normalizes a line while tracking which word each character came from,
+  finds the value there, and returns the union of the words it covers. So
+  `"14.05.2024"` in `"Issue Date 14.05.2024"` gets that word's box rather than the
+  line's. It returns `None`, keeping the line box, when the line has fewer than two
+  words, the value is not in the joined words (for instance words listed in another
+  order than the line text), the value occurs there more than once, or it covers a
+  word with no box. Matching and tiers are unchanged, but narrowing happens while
+  each candidate is built (`_build_match(..., narrow_to=)`), so the spatial
+  tie-break (`llm_grounded`, nearest to the LLM box) compares the narrowed boxes:
+  which of several equal-tier candidates wins can change, toward the line whose
+  value words sit where the model pointed. The row-order tie-break (`ocr_only` list
+  items, `_reading_order_key`) deliberately does **not**: a narrowed candidate
+  carries its line box under a private key (`_ORDER_BOX_KEY`, stripped before the
+  geometry is returned), and rows are ordered by that, so narrowing never changes
+  which occurrence a list item is given, not even for two columns on one visual row
+  printing the same amount. `TestNarrowedBoxesFeedTheTieBreaks` pins all three. Narrowing does not itself change how a candidate is tagged in `geometry_source`, and `ocr_confidence` stays the line's: it is
+  the value the HITL review screens and earlier artifacts already show, and changing
+  it to a per-word figure would move confidence alerts, which this change does not
+  set out to do. On a 36-page Arabic/English benchmark (333 targets, Textract OCR,
+  scored by ink coverage, each value grounded on its own with no LLM box and no row
+  index, i.e. the `ocr_only` scalar path) this moved CORRECT boxes from 70.0% to
+  88.6% — 62 better, none worse: every value previously given a LOOSE whole-line
+  box.
+  The benchmark harness was ad hoc and is not kept in the repository; the
+  dataset is private.
+
+  Two things this deliberately does not change. **It records no provenance of its
+  own:** a narrowed box carries the same `geometry_source` as the line box it
+  replaced, so a stored artifact cannot tell the two apart. That is a choice, not
+  an oversight — `"ocr-weak"` exists because a fragment-based box is *weaker*
+  evidence of location, whereas a word-span box is the same match located more
+  precisely, and a new tag would split every downstream count of `"ocr"` boxes
+  for no change in trust. Whether narrowing fired is recoverable by comparing the
+  box with its line in `pageData.json`. **It does not reorder rows,** as above.
 - **Spatial disambiguation** of repeated values: when a value matches multiple lines, the
   candidate nearest the LLM-estimated box wins; with no usable reference box the field keeps
   its LLM box (so identical amounts across table rows don't collapse onto one line).
@@ -1572,6 +1611,61 @@ The assessment service automatically handles each attribute type differently:
 - Applies the same confidence thresholds to all items in the list
 - Creates alerts using array notation (e.g., "LineItems[0].Description", "LineItems[1].Total")
 - **Important**: Does NOT create aggregate assessments - each item must be assessed individually
+
+### Absent values raise no alert; missing required fields are counted
+
+`assessment/presence.py` holds the two rules that read the **extracted values**,
+which the alert builders above never see
+([#1527](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1527)).
+
+- **`exclude_absent_value_alerts(alerts, assessment, extraction_results)`** drops
+  every alert raised on a confidence leaf whose own extracted value is absent
+  (`has_extracted_value`: `_is_populated_value` from #1474, applied recursively, so
+  an object or list holding only null, blank or empty members is absent too). The
+  leaf's score and reason stay in `explainability_info`. The walk names leaves
+  exactly as `enrich_assessment_with_thresholds` names alerts, and an alert beneath
+  an absent leaf (as `_check_confidence_alerts` reports for a leaf's sub-fields) is
+  dropped with it. A populated string the model scored as sub-keyed fragments keeps
+  its fragment alerts, since there is no per-fragment value to test.
+- **`collect_missing_required_fields(extraction_results, class_schema, assessment)`**
+  lists the fields the class schema's JSON Schema `required` arrays require and the
+  extraction left absent: per present object, per existing list row, one entry for
+  an absent required object rather than one per child, nothing for a schema with no
+  `required`, and the multi-instance wrapper's own `required: ["instances"]`
+  ignored. Entries have the alert shape (`attribute_name`, `confidence`,
+  `confidence_threshold`), with the score read from the assessment leaf at the same
+  path when there is one. The list is evaluated per section against that section's
+  class schema; the document's `missing_required_field_count` is the sum over its
+  sections.
+
+They are applied where each mode stores its alerts, so every producer upstream is
+covered by one call: `AssessmentService.process_document_section` (`separate`),
+`ExtractionService._attach_explainability` (`integrated`, and `separate` run
+inside agentic shards), and
+`create_confidence_threshold_alerts` in the BDA result processor, which skips a
+key-value entry whose `value` is absent. `ExtractionService._save_results` builds
+`missing_required_fields` for every confidence mode, including none, and the
+`separate` Assessment step rebuilds it with scores. Because `ConfidenceAlertCount`,
+`review_queues.routing.legacy_section_triggers` and the `low_confidence` review
+reasons all read `confidence_threshold_alerts`, none of them sees an absent value.
+Legacy HITL does not route on `missing_required_fields`; review-queue routing does,
+as `missing_required` reasons, while `hitl.route_missing_required_fields` is on (see
+`review_queues/README.md`).
+
+One path judges list rows it cannot place. On the agentic sharded path, when the
+integrated retry did not rebuild the alert surface, each alert's row index counts
+from its shard's first row (upstream #813), so matching it against the merged data
+would test the wrong row and could drop a real alert on a populated row.
+`_attach_explainability` therefore passes `row_indexes_are_global=False` there, and
+alerts carrying a row index are kept unjudged.
+
+The tracking item stores the list as `MissingRequiredFields` beside
+`ConfidenceThresholdAlerts`, bounded the same way (at most 50 per section and 300
+per document, with `MissingRequiredFieldsTotal` recorded when a section's list was
+truncated), and the document count as `MissingRequiredFieldCount`. The document list's
+`TypeDateIndexV2` projects that count, so the list shows it for every document
+processed since the count was introduced; an older row, or one served from
+`TypeDateIndex` while `TypeDateIndexV2` backfills after an upgrade, shows a dash.
 
 ### Assessment Response Requirements
 

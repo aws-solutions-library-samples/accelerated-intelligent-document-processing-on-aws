@@ -651,6 +651,67 @@ class TestProcessorScopeFailsClosed:
         users_table.query.assert_not_called()
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "grant_source,expected",
+        [
+            ("IdpClaim", {"ok": False, "reason": "scope_denied"}),
+            ("Api", {"ok": False, "reason": "scope_denied"}),
+            ("Manual", {"ok": True, "turnId": "t-1"}),
+        ],
+    )
+    def test_a_row_recording_another_accounts_sub(
+        self, monkeypatch, grant_source, expected
+    ):
+        """Cognito does not make ``email`` unique, so the address can match a row
+        another live account owns. Where an unscoped caller is denied, that row's
+        scope is the other account's grant, and the turn is refused; under Manual it
+        is a restriction and is applied, so an in-scope document is still allowed."""
+        import index
+
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", grant_source)
+        result, _publishes, bedrock, _users = _run_scope_turn(
+            index,
+            {
+                "identity": {
+                    "claims": {
+                        "email": _VERIFIED_IDENTITY["claims"]["email"],
+                        "sub": "sub-other-account",
+                    }
+                }
+            },
+            users_items=[
+                {"allowedConfigVersions": ["secret-v1"], "cognitoSub": "sub-owner"}
+            ],
+        )
+        assert result == expected
+
+    @pytest.mark.unit
+    def test_the_email_leg_chooses_the_row_recording_the_callers_sub(
+        self, monkeypatch
+    ):
+        """An address can hold one row per account. The email leg reads them all and
+        uses the caller's own, wherever it falls in the page."""
+        import index
+
+        monkeypatch.setenv("TENANT_GRANT_SOURCE", "IdpClaim")
+        result, _publishes, _bedrock, _users = _run_scope_turn(
+            index,
+            {
+                "identity": {
+                    "claims": {
+                        "email": _VERIFIED_IDENTITY["claims"]["email"],
+                        "sub": "sub-own-account",
+                    }
+                }
+            },
+            users_items=[
+                {"allowedConfigVersions": ["other-v2"], "cognitoSub": "sub-other"},
+                {"allowedConfigVersions": ["secret-v1"], "cognitoSub": "sub-own-account"},
+            ],
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+
+    @pytest.mark.unit
     def test_a_diverged_email_still_resolves_the_scope_through_the_sub(self):
         """The residual this join exists to close.
 
@@ -935,7 +996,7 @@ class TestProcessorScopeFailsClosed:
             if r.levelname == "WARNING" and "scope NOT enforced" in r.getMessage()
         ]
         assert warnings, f"the stand-down must be logged; got {caplog.records}"
-        assert "GAP-07" in warnings[0]
+        assert "direct IAM invocation" in warnings[0]
 
     @pytest.mark.unit
     def test_lookup_helper_raises_rather_than_returning_none(self):
@@ -1264,3 +1325,194 @@ class TestProcessorModelIdSuffixes:
         assert "serviceTier" not in kwargs
         assert "performanceConfig" not in kwargs
         assert "additionalModelRequestFields" not in kwargs
+
+class TestProcessorExternalTenantGrants:
+    """``TenantGrantSource`` IdpClaim or Api on a chat turn, with isolation Off.
+
+    An unscoped caller is one nobody has granted a tenant yet, so it is denied
+    as under strict isolation. The identity-less path (a direct IAM invocation)
+    is closed as well: with tenants granted from outside, a turn with no verified caller
+    cannot be confined to one tenant, so it is refused rather than served.
+    """
+
+    @staticmethod
+    def _run(source, **kwargs):
+        import index
+
+        env = {"TENANT_ISOLATION_MODE": "Off", "TENANT_GRANT_SOURCE": source}
+        with patch.dict(os.environ, env):
+            return _run_scope_turn(index, **kwargs)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("source", ["IdpClaim", "Api"])
+    def test_an_unscoped_caller_is_denied(self, source):
+        result, _p, bedrock, _u = self._run(
+            source, event_extra={"identity": _VERIFIED_IDENTITY}, users_items=[]
+        )
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("source", ["IdpClaim", "Api"])
+    def test_an_unverified_transport_is_denied(self, source):
+        result, _p, bedrock, users_table = self._run(
+            source, event_extra={"identity": None}
+        )
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    def test_manual_leaves_an_unscoped_caller_unrestricted(self):
+        result, _p, bedrock, _u = self._run(
+            "Manual", event_extra={"identity": _VERIFIED_IDENTITY}, users_items=[]
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+
+    @pytest.mark.unit
+    def test_a_granted_caller_is_unaffected(self):
+        result, _p, bedrock, _u = self._run(
+            "IdpClaim",
+            event_extra={"identity": _VERIFIED_IDENTITY},
+            users_items=[{"allowedConfigVersions": ["secret-v1"]}],
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+
+
+class TestProcessorStrictTenantIsolation:
+    """``TenantIsolationMode=Strict`` on a chat turn.
+
+    This processor restates the scope lookup rather than calling
+    ``config_scope.resolve_allowed_config_versions``, so it does not inherit the
+    strict rule from that function and has to apply it itself.
+    """
+
+    @staticmethod
+    def _strict(**kwargs):
+        import index
+
+        with patch.dict(os.environ, {"TENANT_ISOLATION_MODE": "Strict"}):
+            return _run_scope_turn(index, **kwargs)
+
+    @pytest.mark.unit
+    def test_an_unscoped_caller_is_denied(self):
+        result, _p, bedrock, _u = self._strict(
+            event_extra={"identity": _VERIFIED_IDENTITY}, users_items=[]
+        )
+        assert result == {"ok": False, "reason": "scope_denied"}
+        bedrock.converse_stream.assert_not_called()
+
+    @pytest.mark.unit
+    def test_a_scoped_caller_is_unaffected(self):
+        result, _p, bedrock, _u = self._strict(
+            event_extra={"identity": _VERIFIED_IDENTITY},
+            users_items=[{"allowedConfigVersions": ["secret-v1"]}],
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+        assert bedrock.converse_stream.call_count == 1
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("groups", [["Admin"], "[Admin, Viewer]"])
+    def test_an_admin_stays_unrestricted_without_a_lookup(self, groups):
+        identity = {"claims": {"email": "admin@example.com", "cognito:groups": groups}}
+        result, _p, bedrock, users_table = self._strict(
+            event_extra={"identity": identity}, users_items=[]
+        )
+        assert result == {"ok": True, "turnId": "t-1"}
+        users_table.query.assert_not_called()
+
+    @pytest.mark.unit
+    def test_an_unverified_transport_is_denied_instead_of_standing_down(self):
+        """A turn with no verified caller (a direct IAM invocation). Off mode
+        serves it unrestricted with a WARNING; strict mode refuses it."""
+        result, _p, bedrock, users_table = self._strict(event_extra={"identity": None})
+        assert result == {"ok": False, "reason": "scope_unavailable"}
+        bedrock.converse_stream.assert_not_called()
+        users_table.query.assert_not_called()
+
+
+class TestProcessorGuardrail:
+    """The configured Bedrock guardrail reaches the processor's own converse_stream.
+
+    This processor calls ``converse_stream`` directly rather than through
+    ``BedrockClient``, so the guardrail has to be attached here. The expected value
+    is the ``GuardrailStreamConfiguration`` members botocore's ``bedrock-runtime``
+    model declares, not a copy of the processor's own dict.
+    """
+
+    @staticmethod
+    def _stream_kwargs(monkeypatch, guardrail_env: str | None) -> dict:
+        import index
+
+        if guardrail_env is None:
+            monkeypatch.delenv("GUARDRAIL_ID_AND_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("GUARDRAIL_ID_AND_VERSION", guardrail_env)
+        bedrock = MagicMock()
+        bedrock.converse_stream.return_value = {
+            "stream": iter(_make_stream_events(["ok"]))
+        }
+        _install_capture_sink(index, [])
+        with patch.object(index, "_get_bedrock_runtime", return_value=bedrock):
+            index._invoke_bedrock_stream_and_emit(
+                session_id="s-1",
+                selected_model_id="us.anthropic.claude-sonnet-4-6",
+                system_prompt="sys",
+                user_text="question",
+                temperature=0.0,
+                max_tokens=64,
+            )
+        assert bedrock.converse_stream.call_count == 1
+        return bedrock.converse_stream.call_args.kwargs
+
+    @pytest.mark.unit
+    def test_configured_guardrail_is_sent(self, monkeypatch):
+        import botocore.session
+
+        shape = (
+            botocore.session.get_session()
+            .get_service_model("bedrock-runtime")
+            .operation_model("ConverseStream")
+            .input_shape.members["guardrailConfig"]
+        )
+        kwargs = self._stream_kwargs(monkeypatch, "gr0abc123:3")
+
+        sent = kwargs["guardrailConfig"]
+        assert set(sent) <= set(shape.members)
+        assert sent["guardrailIdentifier"] == "gr0abc123"
+        assert sent["guardrailVersion"] == "3"
+        assert sent["trace"] in shape.members["trace"].enum
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("guardrail_env", [None, "", "no-version-separator"])
+    def test_no_guardrail_leaves_the_request_unchanged(self, monkeypatch, guardrail_env):
+        kwargs = self._stream_kwargs(monkeypatch, guardrail_env)
+
+        assert "guardrailConfig" not in kwargs
+        assert set(kwargs) == {"modelId", "messages", "inferenceConfig", "system"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", "us.anthropic.claude-opus-4-8:1m"),
+        ("eu-central-1", "eu.anthropic.claude-opus-4-8:1m"),
+        ("ca-central-1", "us.anthropic.claude-opus-4-8:1m"),
+        (None, "us.anthropic.claude-opus-4-8:1m"),
+    ],
+)
+def test_the_default_chat_model_is_the_one_the_swap_writes(
+    monkeypatch, region, expected
+):
+    """With no chat or summarization model configured, the processor uses the US
+    default through the shared Region translation, which
+    ``src/lambda/update_configuration/test_eu_region.py`` holds to the swap tables.
+    """
+    import index
+
+    if region is None:
+        monkeypatch.delenv("AWS_REGION", raising=False)
+    else:
+        monkeypatch.setenv("AWS_REGION", region)
+    assert index._default_model_for_region() == expected

@@ -580,15 +580,17 @@ than no repair.
 `extraction.prompt_cache: auto | off` (default `auto`). `off` removes every
 `<<CACHEPOINT>>` marker before Simple-mode content is built
 (`_build_prompt_content`) and, on the Advanced path, skips the trailing
-`cachePoint` block and the Strands `cache_prompt` / `cache_tools` flags, so no cache
-point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
+`cachePoint` block, the system prompt's `cachePoint` block and the Strands
+`cache_tools` flag, so no cache point reaches Bedrock. A cache write is 1.25× input price and pays back only on a
 second same-prefix request inside the 5-minute TTL, so a low-volume deployment is
 better off with `off`.
 
 ⚠️ **Bedrock permits at most four `cache_control` blocks in one request, and the
 Advanced path already uses three of them.** It counts additively across the three
-places they can appear — one in `system` (Strands `cache_prompt`), one in
-`toolConfig` (`cache_tools`), and one per message block — so a fifth is rejected
+places they can appear — one in `system` (a `cachePoint` block that
+`_build_system_prompt_content` appends to the system prompt; strands 1.48
+deprecates its `cache_prompt` option for this), one in `toolConfig`
+(`cache_tools`), and one per message block — so a fifth is rejected
 outright with `ValidationException: A maximum of 4 blocks with cache_control may be
 provided. Found 5.`, which is not retried and fails the section keeping no rows.
 There is one message-level block, the trailing one `_prepare_prompt_content`
@@ -597,6 +599,18 @@ last one available**. This is also why `invoke_agent_with_retry` *resumes* a fai
 attempt's conversation rather than sending the prompt again: a second copy of the
 prompt is a fourth block and a third copy is a fifth
 ([#1296](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1296)).
+
+Because the system cache point now belongs to the agent's system prompt rather
+than to the model, strands' conversation-summarization call no longer carries one
+in `system`. That call sends strands' own fixed summarization prompt (about 925
+characters, roughly 230 tokens) through the same model, plus strands' placeholder
+`noop` tool whenever the conversation holds tool calls, so the prefix the old block
+covered was that prompt and the `noop` spec. For the Claude models this is below
+the minimum cacheable prefix `min_cacheable_prefix_tokens` reports (512 tokens at
+the smallest), so the block could not create a cache entry — an estimate from
+those minimums, not a measurement. For Nova, whose minimum that function does not
+record, it may have; summarization runs only when the conversation is compacted,
+and that cost is not measured.
 
 Each model has a **minimum cacheable prefix**, and below it a cache point silently
 does nothing. ⚠️ **The numbers are deliberately not repeated here** — ask
@@ -1036,6 +1050,34 @@ working deployment.
 Rollback refuses to flatten a baseline holding more than one record, because that
 would discard ground truth the user authored.
 
+## Bedrock Guardrails
+
+When `GUARDRAIL_ID_AND_VERSION` is set (the stack's `BedrockGuardrailId` and
+`BedrockGuardrailVersion`), both extraction modes send the guardrail with every
+model request:
+
+- **Simple mode** calls `BedrockClient.invoke_model`, which adds `guardrailConfig`
+  to the `converse` request.
+- **Advanced (agentic) mode** builds its Strands `BedrockModel` itself, because the
+  boto config, session and request fields are its own. It adds
+  `strands_guardrail_kwargs()`, so the guardrail reaches every turn of the agent
+  loop, sharded runs included.
+
+With no guardrail configured, the helper returns an empty dict and the model is
+built exactly as before.
+
+Two effects are expected on the agentic path. Both are inferred from the request
+shape and have not been measured on a live stack:
+
+- A guardrail intervention should end that turn with the guardrail's blocked-output
+  message instead of a tool call, leaving the section without an extraction, just
+  as an intervention does in Simple mode.
+- The guardrail is sent with every turn of the loop, so its per-request cost should
+  grow with the number of turns rather than once per section.
+
+See `idp_common/bedrock/README.md` for how the variable is parsed and which paths
+send it.
+
 ## Error Handling
 
 The ExtractionService has built-in error handling:
@@ -1044,6 +1086,45 @@ The ExtractionService has built-in error handling:
 2. If extraction fails for any reason, the error is captured in `document.errors`
 3. All errors are logged for debugging
 4. Few-shot example loading errors are handled gracefully with fallback to standard prompts
+
+### A failed agent run is still metered — `idp_common.utils.metering.failure_metering`
+
+`structured_output_async` returns its metering only when it returns. When the agent
+loop raises (throttle exhaustion, `ModelInvalidToolUseSequence`, a context overflow,
+a `max_tokens` stop `_salvage_truncated_extraction` cannot recover) or ends without a
+valid extraction, the usage of every model call the agent completed is attached to
+the exception with `attach_failure_metering`, under the same
+`<context>/bedrock/<model>` key the success path uses. The exception keeps its class,
+because Step Functions retries and the service's own handlers match on it.
+
+The usage is read once, from `agent.event_loop_metrics.accumulated_usage`. In the
+pinned `strands-agents` that total is added to as soon as a model response arrives
+(so a `max_tokens` turn is in it) and is never reset by a later `invoke_async` on the
+same agent, so one reading covers every feedback round and every resumed retry. Do
+not add readings together: each is cumulative. A call that raised before a response
+arrived recorded no usage, and none is invented for it. Strands' own
+conversation-summarization call goes to the model directly rather than through the
+event loop, so it is not in this total on either path.
+
+Two callers read it with `failure_metering(e)`, and only from the exception they
+caught, never from its `__cause__`:
+
+* `_escalate_failing_fields` adds it to the escalation metering it returns, so a
+  failed escalation, which keeps the original result, still reports the calls it
+  made.
+* `process_document_section` adds it to `document.metering` before re-raising, so
+  the document the caller holds carries it. The extraction Lambda then fails, and a
+  failed workflow saves no metering to the reports, so on that path the usage is on
+  the in-memory document and goes no further.
+
+In the in-process sharded path the failing shard's exception carries that shard's
+usage only. Shards that finished are not added to it. On the Step Functions
+Distributed Map route each shard runs in its own Lambda, and nothing there reads
+the attached usage: a shard that fails fails its iteration, and its usage goes
+nowhere.
+
+Tests: `tests/unit/extraction/test_agentic_failure_metering.py`, which runs the real
+agent with only `converse_stream` scripted.
 
 ### A raising failure still reaches the section's record — `idp_common.extraction.failure`
 
@@ -1260,7 +1341,7 @@ The extraction service is designed to be thread-safe, supporting concurrent proc
 > never half-applied) and `x-aws-idp-allow-integrated-lists: true` (the author has
 > verified list completeness). `config.merge_utils._validate_simple_integrated_lists`
 > warns at `idp-cli config-validate` / SDK validate time — the web UI does not validate
-> on save; its Prompt Preview shows the decision per class. Runtime per-section decision,
+> on save; its prompt preview (Preview prompts) shows the decision per class. Runtime per-section decision,
 > not a config rejection: a stored config must keep loading, and the new key is a
 > free-form class key that older releases ignore.
 
@@ -1489,9 +1570,9 @@ Configure agentic extraction in your configuration file:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"  # Anthropic Claude recommended for agentic
   agentic:
-    enabled: true
     max_concurrent_batches: 1  # Parallel processing (2-10 for very large docs)
     table_parsing:
       enabled: true  # Enable deterministic table parser tool
@@ -1504,7 +1585,9 @@ extraction:
     enabled: false             # see "Schema-Constraint Validation" below
 ```
 
-> **Every `agentic.*` sub-option only takes effect when `agentic.enabled: true`**
+> **Every `agentic.*` sub-option only takes effect when `agentic.enabled` resolves
+> to `true`** (that is, `extraction.mode: advanced`; `mode` is authoritative and
+> overwrites `agentic.enabled` whenever it is set)
 > — `table_parsing`, `validation`, and `max_concurrent_batches` are all ignored
 > for non-agentic extraction. In the **Configuration UI** these options are
 > progressively disclosed: they appear only after you enable Agentic Extraction,
@@ -1521,6 +1604,14 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Tolerates empty lines (page breaks) within tables via configurable lookahead
    - Recovers from missing pipe characters in corrupted rows
    - Automatically merges table fragments with identical columns
+   - Recovers the column names when OCR emits a blank header row with the labels in
+     the rows below it (a wrapped label can span two rows), on a table split across
+     pages where each page starts the table again (blank header, separator, the
+     same labels): they become the header rather than data, and a
+     warning says how many rows were taken. A one-page table is left as it was,
+     because one page cannot tell a short all-text data row from a label row. The
+     check runs over the text `parse_table` is given, so on the sharded path a
+     shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
@@ -1736,8 +1827,8 @@ Key behaviors:
 ```yaml
 # Enable sharded concurrent extraction (up to 4 shards in parallel)
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   agentic:
-    enabled: true
     max_concurrent_batches: 4
     shard_token_budget: 8000    # default; lower if shards still overflow, raise for 1M-context models
     max_pages_per_shard: 5      # default; page ceiling so large docs always shard (0 = disable)
@@ -1746,8 +1837,9 @@ extraction:
 ```
 
 **Document-size guidance.** The defaults above are tuned to work without
-hand-tuning on large documents (validated at scale on 100- and 200-page
-single- and multi-table PDFs). For very large documents (100+ pages) prefer the
+hand-tuning on large documents. The largest document the benchmark suite has
+measured is 66 pages and 3,200 rows (`docs/benchmarking/config-guidance.md`);
+larger documents have not been measured. For very large documents (100+ pages) prefer the
 Step Functions Distributed Map runtime (`runtime: step_functions`) so each shard
 runs in its own Lambda and the section is not bound by the single-Lambda 15-min
 ceiling; the in-process runtime still shards correctly but a 200-page section may
@@ -1785,7 +1877,10 @@ Step Functions Distributed Map — one implementation, no behaviour divergence.
   `merge_shard_results`. Because each shard persists its result idempotently to
   S3, SFN's **native per-iteration retry re-runs only the failed/incomplete
   shards** — completed shards load from S3, with no custom near-timeout/reentry
-  code and no 15-minute ceiling for the section as a whole.
+  code and no 15-minute ceiling for the section as a whole. The planning state
+  (`ExtractionService.plan_section_shards`) plans a section that already has an
+  `extraction_result_uri` as single-pass, so on a reprocess it reaches the
+  extraction step's skip branch instead of being sharded and extracted again.
 
 Select the backend with `extraction.agentic.runtime` (`in_process` default, or
 `step_functions`); the `EXTRACTION_RUNTIME` env var and an explicit `override`
@@ -1816,6 +1911,7 @@ separate downstream step, controlled by `extraction.confidence.mode`:
 
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   confidence:
     enabled: true                     # master on/off — false disables confidence entirely
     mode: separate                    # off | "separate" (default) | "integrated"
@@ -1826,7 +1922,6 @@ extraction:
                                       # ('llm' also accepted, but discouraged: same
                                       #  prompt and cost as llm_grounded, no grounding)
   agentic:
-    enabled: true
     max_concurrent_batches: 4         # sharded; confidence scoring runs per-shard
 hitl:
   enabled: false                      # route low-confidence fields to human review
@@ -1877,7 +1972,7 @@ hitl:
   For the *agentic* path, integrated confidence can be produced two ways. This knob
   is **not surfaced in the config UI** — it exists so operators can A/B the
   cost/latency-vs-calibration trade-off before we pick a default. Set it via
-  `idp-cli config-upload` on a throwaway config version; both values produce
+  `idp-cli config-upload` on a throwaway configuration profile; both values produce
   identical `explainability_info` downstream (only the inference mechanics differ):
 
   | value | how confidence is produced | inferences per turn/shard (happy path) |
@@ -1964,8 +2059,7 @@ validation still fails.
 
 ```yaml
 extraction:
-  agentic:
-    enabled: true
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   validation:                 # sibling of `agentic`
     enabled: false            # Off by default (no behavior change on upgrade)
     check_formats: true       # Enforce JSON-Schema 'format' keywords
@@ -2027,6 +2121,13 @@ How it works:
 **Escalation model precedence:** per-class `x-aws-idp-extraction-escalation-model`
 schema extension → global `validation.escalation_model` → the extraction model
 itself (escalation becomes a plain second attempt).
+
+**Escalation metering context.** Every escalation model call, in both modes and
+both escalation scopes, is metered under `ESCALATION_METERING_CONTEXT`
+(`ExtractionEscalation`) from `extraction/service.py`. Simple mode used
+`Extraction-Escalation` before that constant existed, so stored reporting rows
+from earlier releases carry that spelling; a reader that groups escalation cost
+must accept both.
 
 **Configuration UI.** The global `validation` block (enabled / check_formats /
 fail_action / escalation_model) is editable under **Extraction → Agentic
@@ -2132,9 +2233,9 @@ When OCR confidence data is unavailable, the tool relies on `parse_success_rate`
 ```yaml
 # config.yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true
       max_empty_line_gap: 5  # Handle multi-page statements
@@ -2488,7 +2589,7 @@ signals make both loud without changing what is extracted:
   | Surface | Reader | Before | After |
   |---|---|---|---|
   | The section's status indicator | `getSectionIssueStatus` in `src/ui/src/components/common/processing-issues-utils.ts` | `success` / **OK** | `info` / **Info** |
-  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py`, or summed from the sections on the GSI path | `0` | non-zero |
+  | The document list's processing-issue count | `ProcessingIssueCount`, written with no severity filter in `dynamodb/service.py` | `0` | non-zero |
 
   So on an OCR configuration that renders no exact-width tables, a document where
   nothing is wrong gets a non-zero issue count and a section labelled **Info**.

@@ -528,7 +528,9 @@ class TestTheScopeSuiteArmsClassifyInconclusiveResults:
     def test_no_arm_passes(self, monkeypatch, capsys, status, et):
         results = self._run(monkeypatch, capsys, status, et)
 
-        assert len(results) == 3, "expected all three scope arms to be recorded"
+        assert len(results) == 3 + len(h.SCOPED_DISCOVERY_CELLS), (
+            "expected every scope arm to be recorded"
+        )
         assert not [r for r in results if r["outcome"] == "PASS"]
 
     def test_every_arm_is_flagged_inconclusive(self, monkeypatch, capsys, status, et):
@@ -569,6 +571,8 @@ def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
         # test_api_security_cases.py.
         if token == "tok-scoped" and field == "getConfigVersion":  # nosec B105
             return 200, None, "Unauthorized", "rid"
+        if token == "tok-scoped" and field in _DISCOVERY_FIELDS:  # nosec B105
+            return 403, "Unauthorized", None, "rid"
         return 200, None, None, "rid"
 
     monkeypatch.setattr(h, "call", _call)
@@ -577,9 +581,47 @@ def test_a_healthy_scope_suite_still_passes(monkeypatch, capsys):
     h.run_scope_suite(CTX, SCOPE_TOKENS, results)
     capsys.readouterr()
 
-    assert len(results) == 3
+    assert len(results) == 3 + len(h.SCOPED_DISCOVERY_CELLS)
     assert all(r["outcome"] == "PASS" for r in results)
     assert not [r for r in results if r["inconclusive"]]
+
+
+_DISCOVERY_FIELDS = {field for field, _ in h.SCOPED_DISCOVERY_CELLS}
+
+
+def test_the_discovery_cells_fail_on_a_stack_without_the_scope_check(
+    monkeypatch, capsys
+):
+    """What those operations answered before they were scope-checked: 400 for the
+    read-only default profile, and 200 with an upload URL for the zip upload. Each
+    cell must read that as a failure, not as a refusal."""
+    before = {
+        "startMultiDocDiscovery": (400, "ValueError", None, "rid"),
+        "uploadDiscoveryDocument": (400, "ValueError", None, "rid"),
+        "uploadMultiDocDiscoveryZip": (200, None, None, "rid"),
+    }
+    assert set(before) == _DISCOVERY_FIELDS
+
+    def _call(api_base, field, args, token):
+        if token == "tok-scoped" and field == "getConfigVersion":  # nosec B105
+            return 200, None, "Unauthorized", "rid"
+        if token == "tok-scoped" and field in before:  # nosec B105
+            return before[field]
+        return 200, None, None, "rid"
+
+    monkeypatch.setattr(h, "call", _call)
+    results = []
+    h.run_scope_suite(CTX, SCOPE_TOKENS, results)
+    capsys.readouterr()
+
+    failed = {r["op"] for r in results if r["outcome"] == "FAIL"}
+    assert failed == _DISCOVERY_FIELDS
+
+
+def test_every_discovery_cell_names_the_out_of_scope_profile():
+    for field, arguments in h.SCOPED_DISCOVERY_CELLS:
+        named = arguments.get("configVersion") or arguments.get("version")
+        assert named == h.OUT_OF_SCOPE_VERSION, field
 
 
 #: A ctx the per-document suite can reach a verdict with. Its own rather than
@@ -904,3 +946,78 @@ def test_live_matrix_roles_are_every_template_group():
         "Reviewer",
         "Viewer",
     }
+
+
+#: The one scope-checked discovery operation the live suite does not drive, and why:
+#: refusing it needs a real allow-listed bucket, and with an empty one the resolver
+#: answers 400 before the scope check in either build.
+_DISCOVERY_NOT_PROBED_LIVE = {"autoDetectSections"}
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def test_every_scope_checked_discovery_operation_is_probed_live_or_named():
+    """Closure over the discovery resolver's scope-checked operations: each is a
+    live cell or is named above, so none is unaccounted for and neither list holds
+    a name the other universe lacks."""
+    import yaml
+
+    ops = yaml.safe_load(
+        (_REPO / "scripts" / "api_rbac_expectations.yaml").read_text()
+    )["operations"]
+    universe = {
+        op
+        for op, o in ops.items()
+        if o.get("scope_checked")
+        and o["enforced_in"].endswith("discovery_upload_resolver/index.py")
+    }
+    assert universe, "no scope-checked discovery operation found"
+    probed = {field for field, _ in h.SCOPED_DISCOVERY_CELLS}
+    assert not probed & _DISCOVERY_NOT_PROBED_LIVE
+    assert probed | _DISCOVERY_NOT_PROBED_LIVE == universe
+
+
+@pytest.mark.parametrize(
+    ("pages", "expected"),
+    [
+        (
+            [
+                [
+                    {"ObjectKey": "failed.pdf", "ObjectStatus": "FAILED"},
+                    {"ObjectKey": "done.pdf", "ObjectStatus": "COMPLETED"},
+                ]
+            ],
+            "done.pdf",
+        ),
+        # every document on the first page failed: the next page is read
+        (
+            [
+                [{"ObjectKey": "cpm-1.pdf", "ObjectStatus": "FAILED"}],
+                [{"ObjectKey": "done.pdf", "ObjectStatus": "COMPLETED"}],
+            ],
+            "done.pdf",
+        ),
+        # no completed document anywhere: None, so the arm SKIPs, never a failed one
+        ([[{"ObjectKey": "only.pdf", "ObjectStatus": "FAILED"}]], None),
+        ([[]], None),
+    ],
+    ids=["completed-first", "next-page", "none-completed", "empty"],
+)
+def test_the_document_the_mcp_arms_use_is_a_completed_one(monkeypatch, pages, expected):
+    """The Admin arm asserts get_results serves the document; a document that
+    failed processing has nothing to serve, so only a COMPLETED one is used, and
+    the search pages past failed ones."""
+    h = _load_harness()
+    seen = []
+
+    def call_body(base, op, args, token):
+        index = len(seen)
+        seen.append(dict(args))
+        nxt = f"t{index + 1}" if index + 1 < len(pages) else None
+        return 200, json.dumps({"Documents": pages[index], "nextToken": nxt})
+
+    monkeypatch.setattr(h, "call_body", call_body)
+    assert (
+        h.resolve_document_object_key({"api_base": "https://x"}, {"Admin": "t"})
+        == expected
+    )
+    assert all(a.get("limit") == h.DOCUMENT_PAGE_LIMIT for a in seen)

@@ -7,6 +7,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { fetchSharedAuthSession } from '../../api/auth-session';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 interface DateRange {
   startDateTime: string;
@@ -26,6 +27,7 @@ import { exportToExcel } from '../common/download-func';
 import DeleteDocumentModal from '../common/DeleteDocumentModal';
 import ReprocessDocumentModal from '../common/ReprocessDocumentModal';
 import AbortWorkflowModal from '../common/AbortWorkflowModal';
+import AddProcessedDocumentsModal, { type PreselectedDocument } from '../test-studio/AddProcessedDocumentsModal';
 import DateRangeModal from '../common/DateRangeModal';
 import { isPendingForReviewer } from './reviewer-pending-filter';
 import { exportDocuments, triggerBrowserDownload } from '../document-panel/document-export';
@@ -36,6 +38,15 @@ import { claimSelectedReviews, type ClaimedReview } from './claim-selected-revie
 import { releaseSelectedReviews, type ReleasedReview } from './release-selected-reviews';
 
 import type { MappedDocument } from './documents-table-config';
+import BulkSkipModal from '../review-bulk/BulkSkipModal';
+import type { BulkSkipMode } from '../review-bulk/BulkSkipModal';
+import BulkResultsModal from '../review-bulk/BulkResultsModal';
+import type { BulkResultRow } from '../review-bulk/BulkResultsTable';
+import SendToReviewModal from '../review-bulk/SendToReviewModal';
+import { buildReviewMenuItems } from '../review-bulk/review-menu-items';
+import useReviewActionSettings from '../review-bulk/use-review-action-settings';
+import { isHitlReviewFinished } from '../common/review-status';
+import { jobDetailPath } from '../../routes/constants';
 import {
   DocumentsPreferences,
   DocumentsCommonHeader,
@@ -57,6 +68,40 @@ import { formatConfigVersionText } from '../test-studio/utils/configVersionUtils
 import '@cloudscape-design/global-styles/index.css';
 
 const logger = new ConsoleLogger('DocumentList');
+
+const messages = defineMessages<{
+  downloadFailed: { readonly error: string };
+  unknownError: NoMessageValues;
+  bulkSkipJobStarted: NoMessageValues;
+  bulkSkipResults: NoMessageValues;
+  sendToReviewResults: NoMessageValues;
+}>({
+  downloadFailed: {
+    id: 'documents.list.downloadFailed',
+    defaultMessage: 'Download failed: {error}',
+    description: 'Error notification when the bulk document export fails. {error} is the error message.',
+  },
+  unknownError: {
+    id: 'documents.list.unknownError',
+    defaultMessage: 'Unknown error',
+    description: 'Used as the error of a failed bulk document export when there is no error message.',
+  },
+  bulkSkipJobStarted: {
+    id: 'documents.list.bulkSkipJobStarted',
+    defaultMessage: 'Skip All Reviews is running as a background job.',
+    description: 'Success notification when bulk Skip All Reviews is too large to run at once and starts as a background job.',
+  },
+  bulkSkipResults: {
+    id: 'documents.list.bulkSkipResults',
+    defaultMessage: 'Skip All Reviews results',
+    description: 'Title of the results dialog of a bulk Skip All Reviews run from the Document List.',
+  },
+  sendToReviewResults: {
+    id: 'documents.list.sendToReviewResults',
+    defaultMessage: 'Send to review results',
+    description: 'Title of the results dialog of Send to review from the Document List.',
+  },
+});
 
 /**
  * Documents hydrated per round before a bulk export. Matches the exporter's own
@@ -81,11 +126,25 @@ const DocumentList = (): React.JSX.Element => {
   const [isReprocessLoading, setIsReprocessLoading] = useState(false);
   const [isAbortLoading, setIsAbortLoading] = useState(false);
   const [isDateRangeModalVisible, setIsDateRangeModalVisible] = useState(false);
+  // The selection the add-to-test-set dialog was opened with; null while it is closed.
+  const [addToTestSetDocuments, setAddToTestSetDocuments] = useState<PreselectedDocument[] | null>(null);
+  const [addToTestSetMessage, setAddToTestSetMessage] = useState<string | null>(null);
   const [currentUsername, setCurrentUsername] = useState('');
   // Server refusals from the last Start Review or Release Review, shown above the table.
   const [reviewRefusal, setReviewRefusal] = useState<{ header: string; messages: string[] } | null>(null);
   const { settings } = useSettingsContext();
-  const { currentCredentials } = useAppContext();
+  const { currentCredentials, setErrorMessage, setSuccessMessage } = useAppContext();
+  const reviewSettings = useReviewActionSettings();
+  const intl = useIntl();
+  // Bulk Skip All Reviews / Send to review: the open dialog and the last results.
+  const [bulkSkip, setBulkSkip] = useState<{ mode: BulkSkipMode; keys: string[] } | null>(null);
+  const [sendKeys, setSendKeys] = useState<string[] | null>(null);
+  const [bulkResults, setBulkResults] = useState<{
+    header: string;
+    counts: { outcome: string; count: number }[];
+    results: BulkResultRow[];
+    exportName: string;
+  } | null>(null);
   const { isAdmin, isReviewerOnly, canWrite, canReview, canWorkReviewQueues } = useUserRole();
   const navigate = useNavigate();
 
@@ -452,7 +511,9 @@ const DocumentList = (): React.JSX.Element => {
         logger.info('Bulk document export cancelled by user');
       } else {
         logger.error('Bulk document export failed:', err);
-        alert(`Download failed: ${(err as Error).message || 'Unknown error'}`);
+        setErrorMessage(
+          intl.formatMessage(messages.downloadFailed, { error: (err as Error).message || intl.formatMessage(messages.unknownError) }),
+        );
       }
     } finally {
       setIsDownloadInProgress(false);
@@ -477,19 +538,106 @@ const DocumentList = (): React.JSX.Element => {
     if (scope) void startBulkDownload(scope);
   };
 
+  const handleOpenAddToTestSet = () => {
+    const selected = (collectionProps.selectedItems ?? []) as MappedDocument[];
+    setAddToTestSetMessage(null);
+    setAddToTestSetDocuments(
+      selected.map((item) => ({
+        objectKey: item.objectKey,
+        objectStatus: item.objectStatus,
+        submitted: item.initialEventTime,
+        evaluationStatus: item.evaluationStatus,
+        configVersion: item.configVersion,
+      })),
+    );
+  };
+
   const handleCloseDownloadProgress = () => {
     setIsDownloadFinished(false);
     setDownloadProgress(null);
     setDownloadScope(null);
   };
 
+  const reviewMenu = buildReviewMenuItems({
+    selected: (collectionProps.selectedItems ?? []) as MappedDocument[],
+    currentUsername,
+    isAdmin: !!isAdmin,
+    isTestView,
+    defaultQueueEnabled: reviewSettings.defaultQueueEnabled,
+    show: { claim: !!canReview, release: !!isAdmin, skip: !!canReview, send: !!canReview },
+    intl,
+  });
+
+  /** Reflect skipped or sent documents in the list without reloading it. */
+  const patchRows = (results: BulkResultRow[], status: (r: BulkResultRow) => string | null) => {
+    const changed = new Map(results.map((r) => [r.objectKey, status(r)] as const).filter(([, s]) => !!s));
+    if (changed.size === 0) return;
+    setDocumentList((prev) =>
+      prev.map((doc) => {
+        const next = changed.get(doc.objectKey);
+        return next ? { ...doc, hitlStatus: next, hitlCompleted: isHitlReviewFinished(next) } : doc;
+      }),
+    );
+    actions.setSelectedItems([]);
+  };
+
+  const onReviewAction = (id: string) => {
+    if (id === 'skip-selected') setBulkSkip({ mode: 'SELECTED', keys: reviewMenu.skippable });
+    else if (id === 'skip-profile') setBulkSkip({ mode: 'PROFILE', keys: [] });
+    else if (id === 'send-selected') setSendKeys(reviewMenu.sendable);
+  };
+
   return (
     <>
+      {bulkSkip && (
+        <BulkSkipModal
+          mode={bulkSkip.mode}
+          objectKeys={bulkSkip.keys}
+          onDismiss={() => setBulkSkip(null)}
+          onJobStarted={(jobId) => {
+            setBulkSkip(null);
+            setSuccessMessage(intl.formatMessage(messages.bulkSkipJobStarted));
+            navigate(jobDetailPath(jobId));
+          }}
+          onFinished={(result) => {
+            setBulkSkip(null);
+            patchRows(result.results, (r) => (r.outcome === 'SKIPPED' ? (r.kind === 'queue' ? 'complete' : 'Review Skipped') : null));
+            setBulkResults({
+              header: intl.formatMessage(messages.bulkSkipResults),
+              counts: result.counts,
+              results: result.results,
+              exportName: `skip-all-reviews-${result.jobId ?? 'results'}`,
+            });
+          }}
+        />
+      )}
+      {sendKeys && (
+        <SendToReviewModal
+          objectKeys={sendKeys}
+          onDismiss={() => setSendKeys(null)}
+          onDone={(result) => {
+            setSendKeys(null);
+            patchRows(result.results, (r) => (r.outcome === 'SENT' ? 'in_review' : null));
+            setBulkResults({
+              header: intl.formatMessage(messages.sendToReviewResults),
+              counts: result.counts,
+              results: result.results,
+              exportName: 'send-to-review-results',
+            });
+          }}
+        />
+      )}
+      {bulkResults && <BulkResultsModal {...bulkResults} onDismiss={() => setBulkResults(null)} />}
       {reviewRefusal && (
         <Alert type="error" dismissible onDismiss={() => setReviewRefusal(null)} header={reviewRefusal.header}>
           {reviewRefusal.messages.map((message) => (
             <div key={message}>{message}</div>
           ))}
+        </Alert>
+      )}
+      {addToTestSetMessage && (
+        <Alert type="success" dismissible onDismiss={() => setAddToTestSetMessage(null)}>
+          {addToTestSetMessage}
         </Alert>
       )}
       <Table
@@ -537,6 +685,12 @@ const DocumentList = (): React.JSX.Element => {
             }
             onClaimReview={canReview ? handleClaimReview : null}
             onReleaseReview={isAdmin ? handleReleaseReview : null}
+            reviewMenu={reviewMenu}
+            onReviewAction={onReviewAction}
+            // Admin only, by decision on #812. The add itself is authorized
+            // server-side for Admin and Author, as it is from Test Studio. The
+            // Test Studio view lists test-run copies, not documents to curate.
+            onAddToTestSet={isAdmin && !isTestView ? handleOpenAddToTestSet : null}
             currentUsername={currentUsername}
           />
         }
@@ -601,6 +755,19 @@ const DocumentList = (): React.JSX.Element => {
         selectedItems={collectionProps.selectedItems}
         isLoading={isAbortLoading}
       />
+
+      {addToTestSetDocuments ? (
+        <AddProcessedDocumentsModal
+          visible
+          testSet={null}
+          preselected={addToTestSetDocuments}
+          onDismiss={() => setAddToTestSetDocuments(null)}
+          onSubmitted={({ message }) => {
+            setAddToTestSetDocuments(null);
+            setAddToTestSetMessage(message);
+          }}
+        />
+      ) : null}
 
       <DownloadOptionsModal
         visible={pendingDownloadScope !== null}

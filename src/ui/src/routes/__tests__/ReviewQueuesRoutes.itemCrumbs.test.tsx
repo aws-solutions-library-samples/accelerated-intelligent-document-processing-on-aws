@@ -10,12 +10,22 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const role = { isAdmin: true, isAnnotator: false, isAuthor: false, isReviewer: false, canAnnotate: true, canWrite: true, loading: false };
+const role = {
+  isAdmin: true,
+  isAnnotator: false,
+  isAuthor: false,
+  isReviewer: false,
+  canAnnotate: true,
+  canWorkTestSetQueues: true,
+  canWrite: true,
+  loading: false,
+};
 vi.mock('../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../contexts/app', () => ({
   default: () => ({
@@ -68,6 +78,13 @@ vi.mock('../../components/edit-screen/test-set-item-edit-adapter', () => ({
 
 import { TestSetItemPage } from '../ReviewQueuesRoutes';
 
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const crumbs = () =>
   createWrapper(document.body)
     .findBreadcrumbGroup()!
@@ -81,6 +98,7 @@ const renderAt = (path: string) =>
         <Route path="/review-queues/test-sets/:testSetId/items/:objectKey" element={<TestSetItemPage />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 beforeEach(() => {
@@ -88,6 +106,7 @@ beforeEach(() => {
   testSetName.value = undefined;
   role.isAdmin = true;
   role.isAnnotator = false;
+  role.canWorkTestSetQueues = true;
 });
 
 describe('a Test Studio item’s breadcrumbs', () => {
@@ -111,6 +130,7 @@ describe('a Test Studio item’s breadcrumbs', () => {
     testSetName.value = undefined;
     role.isAdmin = false;
     role.isAnnotator = true;
+    role.canWorkTestSetQueues = true;
     renderAt(TEST_ITEM);
     expect(crumbs().map((c) => c.text)).toEqual(['Home', 'Tasks', 'a.pdf']);
   });

@@ -14,6 +14,7 @@
    "evaluation_results_uri": null,
    "evaluation_status": null,
    "forced_document_class": null,
+   "forced_sections": null,
    "hitl_metadata": [
     {
      "bp_match": "MATCH",
@@ -94,6 +95,7 @@
     "evaluation_results_uri": null,
     "evaluation_status": null,
     "forced_document_class": null,
+    "forced_sections": null,
     "id": "folder/inv.pdf",
     "initial_event_time": null,
     "input_bucket": "in",
@@ -133,6 +135,7 @@
     "evaluation_results_uri": null,
     "evaluation_status": null,
     "forced_document_class": null,
+    "forced_sections": null,
     "hitl_metadata": [
      {
       "bp_match": "MATCH",

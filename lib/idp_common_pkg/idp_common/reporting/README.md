@@ -137,6 +137,7 @@ reporter = SaveReportingData(
 ### Cost Calculation Process
 
 1. **Configuration Loading**: Pricing data is loaded from the config dictionary and cached for performance
+   - A price is read with `idp_common.config.models.read_price`, never bare `float()`. It accepts a non-negative decimal with an optional exponent (`PRICE_PATTERN`) whose value is finite, with surrounding whitespace tolerated (`PRICE_WHITESPACE`: the characters both `float()` and JavaScript's `Number()` skip), and anything else makes that unit **unpriced**. An entry whose every price is invalid, or that lists no units, still matches its key, so its units are unpriced rather than priced from a shorter key the suffix walk would otherwise reach, which is also how the web UI's cost panel treats it. `PricingConfig` refuses anything `parse_price` rejects on save (whitespace included), and a null price, which `PricingUnit` otherwise reads as `"0.0"` (so a processing configuration or a stored record holding one still loads, valued at zero). The web UI reads prices with the same rule (`readPrice` in `src/ui/src/components/pricing-layout/price-format.ts`) and saves them with the same rule (`parsePrice`), so a price is valued here exactly as the web UI values it. A `PricingConfig` read back from storage is validated under `STORED_PRICING_CONTEXT`, which logs an invalid price and keeps it instead of failing the load, so a table saved before the check existed still loads.
 2. **Service Matching**: The pricing key is resolved by **exact** match on `service_api`, then on progressively shorter `/`-delimited suffixes of it (longest wins). This is the same rule the benchmark harness uses (`benchmarks/harness/lib.py::price_metering`), so a benchmark cost and a reported cost for the same metering map agree.
 3. **Unit Matching**: The unit name is matched **exactly** within the resolved entry
 4. **Cost Calculation**: `estimated_cost = value × unit_cost` for each metering record
@@ -184,10 +185,23 @@ reporter = SaveReportingData(
 > `tests/unit/reporting/test_pricing_lookup.py` pins the rates by hand and
 > asserts every selectable model has an exact pricing entry.
 
+### Each run reports only its own usage
+
+`save_metering_data` receives `document.metering`, which holds only the current run's
+usage. A resubmitted document (Process Changes, a review finalize, the SDK rerun)
+arrives at `queue_processor.start_workflow` carrying the usage of its earlier runs,
+which is moved into `document.metering_baseline` there; callers of SaveReportingData
+strip `metering_baseline` from the payload. So each run writes one set of metering
+rows and one `DocumentEstimatedCost` datapoint for the stages it ran, and a
+document's rows summed over its runs give its total. The tracking-table `Metering`
+attribute keeps the cumulative total (`idp_common.utils.cumulative_metering`), which
+is what the Web UI's Estimated Cost shows. Rows already written for documents
+reprocessed before this split was introduced are not rewritten.
+
 ### One rate per unit: pricing sees sums, never single requests
 
 Step 4 prices an **aggregate**. By the time `save_metering_data` runs, every call
-made on a document has been merged by `idp_common.utils.merge_metering_data`,
+made on a document in this run has been merged by `idp_common.utils.merge_metering_data`,
 which adds values per (metering key, unit); the Athena rollups
 (`src/lambda/data_mart_rollup`), the Web UI document cost table, the benchmark
 harness and the Test Studio results resolver all sum further, across documents
@@ -390,7 +404,8 @@ timestamp.
 **Columns:** `document_id`, `context`, `service_api`, `unit`, `value`,
 `number_of_pages`, `unit_cost`, `estimated_cost`, `timestamp` (completion
 time — same as partition), `initial_event_time` (original queue time,
-preserved for consumers who need queue-time semantics), `config_version`.
+preserved for consumers who need queue-time semantics), `config_version`
+(the configuration profile the document was processed under).
 
 **Semantic note for consumers of raw `metering`:** `WHERE date = 'X'`
 means "docs completed on X", NOT "docs queued on X". Filter on
@@ -403,8 +418,9 @@ than raw metering:
 
 - `metering_hourly` — hourly cost rollup, hour × config_version × service_api × unit (`sum_value`, `sum_cost`)
 - `metering_daily` — daily cost rollup, day × config_version × service_api × unit (`sum_value`, `sum_cost`)
-- `metering_docs_hourly` — hourly doc/pages rollup, hour × config_version (`n_docs`, `sum_pages`), aggregated via MAX-per-doc to avoid fanning `number_of_pages` out by service/unit rows
-- `metering_docs_daily` — daily doc/pages rollup, day × config_version (`n_docs`, `sum_pages`), where `n_docs` is a doc-hours count (a doc processed across two hours counts twice)
+- `metering_docs_hourly` — hourly doc/pages/runs rollup, hour × config_version (`n_docs`, `sum_pages`, `n_runs`), aggregated via MAX-per-doc to avoid fanning `number_of_pages` out by service/unit rows
+- `metering_docs_daily` — daily doc/pages/runs rollup, day × config_version (`n_docs`, `sum_pages`, `n_runs`), where `n_docs` is a doc-hours count (a doc processed across two hours counts twice)
+- `n_docs` counts documents and `n_runs` counts runs — one run is one `(document_id, timestamp)` pair, so a reprocessed document raises `n_runs` only. `SUM(n_runs)` is exact over any set of rows; `SUM(n_docs)` is an upper bound on distinct documents
 - `control_plane_hourly` — per-Lambda cost attribution for control-plane infra
 
 See [`docs/reporting-sql-layer.md`](../../../../docs/reporting-sql-layer.md)

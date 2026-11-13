@@ -20,6 +20,8 @@ import {
 import useConfigProfileRevisions, { ConfigProfileRevision } from '../../hooks/use-config-profile-revisions';
 import useUserRole from '../../hooks/use-user-role';
 import ConfigurationComparison from './ConfigurationComparison';
+import ResizableModal from '../common/ResizableModal';
+import UnrecordedChangesAlert from '../common/UnrecordedChangesAlert';
 
 interface ConfigRevisionHistoryPanelProps {
   /** Configuration Profile whose history is shown. */
@@ -31,7 +33,9 @@ interface ConfigRevisionHistoryPanelProps {
 }
 
 const BADGE_TOOLTIPS = {
-  current: 'Current: the configuration this profile is running now.',
+  current: 'Current: the revision new documents processed with this profile run.',
+  differs:
+    'The profile was changed after this revision was recorded, without recording a new one. New documents still run this revision, not the configuration shown in the editor.',
   pinned: 'Pinned by a test run — exempt from the revision limit, but its stored configuration still expires after DataRetentionInDays.',
   labeled: 'Labeled — exempt from the revision limit, but its stored configuration still expires after DataRetentionInDays.',
 };
@@ -59,8 +63,18 @@ const ConfigRevisionHistoryPanel = ({
   onRestored,
 }: ConfigRevisionHistoryPanelProps): React.JSX.Element => {
   const { isAdmin, canWrite } = useUserRole();
-  const { revisions, loading, error, setError, loadRevisions, fetchRevisionConfig, restoreRevision, labelRevision, deleteRevision } =
-    useConfigProfileRevisions();
+  const {
+    revisions,
+    profileMatchesPublished,
+    loading,
+    error,
+    setError,
+    loadRevisions,
+    fetchRevisionConfig,
+    restoreRevision,
+    labelRevision,
+    deleteRevision,
+  } = useConfigProfileRevisions();
 
   const [selected, setSelected] = useState<ConfigProfileRevision[]>([]);
   const [compareConfigs, setCompareConfigs] = useState<Record<string, unknown> | null>(null);
@@ -149,6 +163,11 @@ const ConfigRevisionHistoryPanel = ({
             {error}
           </Alert>
         )}
+        <UnrecordedChangesAlert
+          profileName={profileName}
+          publishedRevision={revisions.find((r) => r.published)?.revision}
+          profileMatchesPublished={profileMatchesPublished}
+        />
 
         <Table
           variant="embedded"
@@ -199,6 +218,11 @@ const ConfigRevisionHistoryPanel = ({
                   {item.published && (
                     <span title={BADGE_TOOLTIPS.current}>
                       <Badge color="green">Current</Badge>
+                    </span>
+                  )}
+                  {item.published && profileMatchesPublished === false && (
+                    <span title={BADGE_TOOLTIPS.differs}>
+                      <Badge color="red">Differs from profile</Badge>
                     </span>
                   )}
                   {item.pinned && (
@@ -269,10 +293,9 @@ const ConfigRevisionHistoryPanel = ({
 
       {/* Comparison in its own modal: with a long history the diff would
           otherwise sit below a table the user has to scroll past to reach it. */}
-      <Modal
+      <ResizableModal
         visible={comparing || compareConfigs !== null}
         onDismiss={() => setCompareConfigs(null)}
-        size="max"
         header={
           compareVersionKeys.length === 2
             ? `Compare ${compareVersionKeys[0]} → ${compareVersionKeys[1]} — ${profileName}`
@@ -290,7 +313,7 @@ const ConfigRevisionHistoryPanel = ({
         {!comparing && compareConfigs && compareVersionKeys.length === 2 && (
           <ConfigurationComparison versions={compareVersionKeys} configs={compareConfigs} />
         )}
-      </Modal>
+      </ResizableModal>
 
       {/* Restore confirmation */}
       <Modal

@@ -4,9 +4,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 1.1 |
-| **Last Updated** | 2026-10-30 |
-| **Applies to release** | v0.6.13 |
+| **Document Version** | 1.2 |
+| **Last Updated** | 2026-11-09 |
+| **Applies to release** | v0.6.14 |
 | **Feature** | HITL review queues (Production and Test Studio), the per-user Inbox, the review finalize execution |
 | **Classification** | Internal |
 
@@ -97,7 +97,8 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | `review_queues_resolver`, `idp_common/review_queues/` (`service.py`, `directory.py`) |
 | **Mitigations** | Every per-item operation and every listing decides profile scope by the **item's own profile**: `ReviewQueueService._sees`, which uses `idp_common.config_scope.scope_allows` — the same comparison the rest of the API uses (AUTH.T07) — and so admits an item with no profile to no scoped caller. It applies to `listReviewQueueItems` (one queue or all of the caller's), `getMyReviewQueues`, `listMyReviewWork` and `claimNextReviewItem`; a listing that leaves items out still pages forward, and Claim next reads past them up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope`, which admits an empty profile, is used only for a queue reference, never for an item. `lib/idp_common_pkg/tests/unit/review_queues/test_listing_profile_scope.py` covers each listing for a scoped caller, an unscoped caller and an Admin. Admins and unscoped Annotators see every profile by design. |
-| **Residual risk / recommendation** | A queue's counts (depth, unclaimed) are the queue's and are not filtered by scope, so a scoped Annotator can see how many items a queue holds beyond the ones they are shown, though not what they are. The static RBAC rule (`make api-test-static`) checks that a scope lookup is reachable from a `scope_filtered` operation, not that its result is applied to each returned item, so a regression of this class is caught by the unit tests above rather than by that gate. The behaviour has not been exercised against a live deployment. |
+| **Residual risk / recommendation** | A queue's counts (depth, unclaimed, oldest item) are filtered for a **scoped** caller item by item, in one projected pass per queue (`ReviewQueueService` in `idp_common/review_queues/service.py`), so they count only the items the caller's scope admits; Admins and callers whose scope is unrestricted get whole-queue counts, which match what they are shown. The static RBAC rule (`make api-test-static`) checks that a scope lookup is reachable from a `scope_filtered` operation, not that its result is applied to each returned item, so a regression of this class is caught by the unit tests above rather than by that gate. The behaviour has not been exercised against a live deployment. |
+| **Evidence** | `lib/idp_common_pkg/tests/unit/review_queues/test_listing_profile_scope.py`; `make api-test-static`; UNVERIFIED: the citations have not been matched to each listed mitigation |
 
 ### HITL.T02: Reviewer-Controlled Drafts Become the Document's Final Output
 
@@ -113,6 +114,7 @@ flowchart TD
 | **Affected Components** | `review_queues_resolver`, `idp_common/review_queues/` (`service.py`, `finalize.py`, `routing.py`, `regrouping.py`), `process_changes_resolver`, the state machine's `ProcessResults` steps |
 | **Mitigations** | Only the holder can save, complete or reject: each write is a transactional `Put` conditioned on the item's version **and** on `Status = CLAIMED AND OwnerKey = <caller>` (with the lease unexpired), so a stale or concurrent writer is refused by DynamoDB rather than by a read-then-check. Supervisor operations (take over, assign, unassign, move, remove, force release) are `Admin` only at the dispatcher and again in the service, and a take-over tells the former holder in their Inbox. The finalize message body is built server-side from the tracking row, so no request argument reaches the workflow input; the finalize token is validated by shape and becomes the execution name, so a resent finalize does not start a second run. The item records its review activity, field edits and disposition; `status.json` and the `document_reviews` reporting table record the reviewer and disposition. Legacy review operations and `uploadDocument` refuse a document a queue manages, so there is one write path while it is in review. `processChanges` requires a caller who is not an Admin to hold the document's open review and to have the document's profile in scope, and refuses section and page changes to a document whose pinned revision routes it to BDA. |
 | **Residual risk / recommendation** | The review history lives in `HITLTable`, which several Lambda roles in the stack hold write grants on, so it is an operational record rather than a tamper-evident one. A draft is not checked against the section's schema; validating it there would bound a draft to the fields the class declares and keep a malformed body out of the consumers that render it (UI.T01). Remove-from-review is a supervisor decision with no second approver, recorded only as a disposition. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HITL.T03: Review Metadata Reaches Readers Beyond the Queue's Audience
 
@@ -128,6 +130,7 @@ flowchart TD
 | **Affected Components** | `idp_common/notifications/`, `idp_common/review_queues/` (`queue_defs.py`, `notify.py`, `status_object.py`), `NotificationsTable`, Output bucket notification configuration |
 | **Mitigations** | No API operation posts a message, so Inbox content comes only from platform code. Reading, marking and deleting are keyed on the caller's verified identity and take no user argument, and the Inbox operations require an assigned group. A message's link must be an in-app route: the server refuses a scheme, a host or a protocol-relative form, and the UI repeats the check before rendering it as a hash route. Message bodies are rendered through `SafeMarkdown` (`rehype-sanitize`), not raw HTML, and skip notes are never put into a message. `NotificationsTable` is encrypted with the stack CMK, expires rows by TTL and has point-in-time recovery. EventBridge delivery from S3 carries object metadata, not object content. |
 | **Residual risk / recommendation** | Address the waiting-work announcement to the queue's eligible Annotators rather than to the whole `Annotator` group. Message bodies interpolate the uploader's file name and are rendered as sanitized markdown; the sanitizer removes script and event handlers but admits external `http(s)` links and inline style, so a file name is rendered as markup in another user's Inbox rather than as text — rendering the interpolated name as plain text would remove that class. Whether every Output-bucket event needs to reach the default bus, rather than only the `status.json` key, is a deployment decision; a rule filtering on the key suffix bounds what a consumer receives but not what the bus carries. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### HITL.T04: Resolvers Serving Annotator Operations Hold Write Grants on Authorization and Workflow State
 
@@ -143,13 +146,14 @@ flowchart TD
 | **Affected Components** | `TestSetResolverFunction`, `ReviewQueuesResolverFunction`, `ReviewQueueSweeperFunction`, `TestRunSweeperFunction` (IAM policies in `template.yaml` and `nested/api-resolvers/template.yaml`) |
 | **Mitigations** | The dispatcher's group floor admits `assignTestSetDocuments` to `Admin` only, and the resolver checks again. Every grant is scoped to a named table, bucket, prefix or queue of this stack; the only `*` resources are `cloudwatch:PutMetricData` statements conditioned on the namespace. `states:StopExecution` on the queue processor and `states:DescribeExecution` on the sweeper are scoped to this stack's processing state machine. The finalize message is built server-side from the tracking row (HITL.T02). |
 | **Residual risk / recommendation** | IAM cannot express "this item" or "this user's own row", so a resolver's per-object correctness is the only bound on these writes (AUTH.T16). Moving the `allowedTestSets` write behind the user-management function, which already owns UsersTable writes, would take UsersTable write off a role Annotators reach. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 
 | Control | Implementation | Threats Mitigated |
 |---------|---------------|-------------------|
 | **Group floor and default deny** | Dispatcher `authz.py`; queue administration and supervisor operations `Admin` only; item operations `Admin` + `Annotator` | HITL.T02, HITL.T04 |
-| **Per-item profile scope** | `ReviewQueueService._sees` (`scope_allows` on the item's own profile) in every per-item operation and every listing | HITL.T01 |
+| **Per-item profile scope** | `ReviewQueueService._sees` (`scope_allows` on the item's own profile) in every per-item operation, every listing and, for a scoped caller, every queue count | HITL.T01 |
 | **Conditional writes** | Version plus `Status`/`OwnerKey`/lease conditions on every item write | HITL.T02 |
 | **Server-built finalize** | Message body from the tracking row; token validated by shape and used as the execution name | HITL.T02, HITL.T04 |
 | **Single write path in review** | Legacy review operations, `uploadDocument` and `processChanges` refuse a document a queue manages | HITL.T02 |
@@ -161,7 +165,6 @@ flowchart TD
 
 | Item | Threat | Status |
 |------|--------|--------|
-| Queue counts (depth, unclaimed) are not filtered by profile scope | HITL.T01 | **Open** — residual, counts only |
 | Waiting-work announcements reach every Annotator, not the queue's eligible ones | HITL.T03 | **Open** |
 | Drafts are not validated against the section schema | HITL.T02 | **Open** — recommendation |
 | UsersTable write on a role Annotators reach | HITL.T04 | **Open** — recommendation |

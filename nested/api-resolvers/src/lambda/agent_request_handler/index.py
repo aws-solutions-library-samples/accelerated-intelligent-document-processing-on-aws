@@ -55,6 +55,19 @@ def validate_user_identity(identity):
     return user_id
 
 
+
+def _unscoped_is_denied():
+    """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
+    tenants granted by the identity provider or an entitlement system.
+
+    The same test as ``idp_common.config_scope.unscoped_is_denied``, restated
+    because this function ships without the ``idp_common`` layer.
+    """
+    return os.environ.get("TENANT_ISOLATION_MODE", "Off") == "Strict" or os.environ.get(
+        "TENANT_GRANT_SOURCE", "Manual"
+    ) in ("IdpClaim", "Api")
+
+
 def handler(event, context):
     """
     Handle agent query requests from AppSync.
@@ -114,6 +127,19 @@ def handler(event, context):
             )
             raise PermissionError(
                 "Unauthorized: submitAgentQuery requires Admin, Author, or Viewer group"
+            )
+        # Strict tenant isolation: the analytics agents query the reporting
+        # database, which holds every tenant's results. Admin only.
+        if _unscoped_is_denied() and "Admin" not in groups:
+            logger.warning(
+                "Rejecting submitAgentQuery from %s: tenant isolation "
+                "restricts agent queries to Admin",
+                user_id,
+            )
+            raise PermissionError(
+                "Unauthorized: this deployment runs with tenant isolation, "
+                "where agent queries (which read across every tenant's documents) "
+                "are limited to the Admin group"
             )
 
         # Generate a unique job ID

@@ -111,6 +111,12 @@ SHARED_GATES = [
     "scripts/sdlc/validate_service_role_permissions.py",
     "make srt-scan",
     "scripts/security/dep_audit.py",
+    # Offline Terraform translation of template.yaml, then `init -backend=false` and
+    # `validate` under each pinned Terraform/OpenTofu. Invoked directly, not through
+    # `lint-cicd`: it downloads binaries and providers, so it is its own job on both
+    # sides. Its version pins are asserted by
+    # test_terraform_check_binaries_are_pinned_consistently.
+    "make terraform-check",
 ]
 
 #: ``Makefile`` section headings every one of whose targets is scanned, because the
@@ -136,10 +142,17 @@ GATE_SECTION_PREFIXES = (
 )
 
 #: The one section this module excludes *wholesale*, and the only one where a single
-#: justification really is a property of every member: every target in "Stack tests"
-#: deploys or talks to a live IDP stack, which its own heading says and which no
-#: pull-request gate can do. They are mapped in ``docs/testing.md``, and that each one
-#: appears there is enforced by ``scripts/tests/test_testing_doc.py``.
+#: justification really is a property of every member: no target in "Stack tests" is a
+#: gate a pull-request run could hold. Members fall into three kinds:
+#:
+#: * most deploy or talk to a live stack, as the section heading says;
+#: * ``live-auth-checks`` and ``stacktest-sandbox-network`` need no stack, but they
+#:   need live AWS credentials and create throwaway AWS resources of their own;
+#: * ``stacktest-list``, ``transform-deploy-test-list``, ``stacktest-upgrade`` and
+#:   ``ux-record-deps`` assert nothing: they list, print or check for local tools.
+#:
+#: They are mapped in ``docs/testing.md``, and that each one appears there is enforced
+#: by ``scripts/tests/test_testing_doc.py``.
 #:
 #: Count-pinned by :func:`test_the_live_stack_section_exclusion_is_count_pinned`, so a
 #: target added inside this excluded section is a deliberate edit here rather than a
@@ -147,7 +160,7 @@ GATE_SECTION_PREFIXES = (
 LIVE_STACK_SECTION_PREFIXES = ("Stack tests",)
 
 #: How many targets that wholesale exclusion covers today, audited when written.
-LIVE_STACK_SECTION_TARGET_COUNT = 21
+LIVE_STACK_SECTION_TARGET_COUNT = 26
 
 #: Name shapes that make a target a check wherever it lives. This is what stops
 #: :data:`GATE_SECTION_PREFIXES` from being a section-scoped hole: a ``check-*`` or
@@ -193,6 +206,16 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "runs `ruff format --check` instead — see CHECK_ONLY_EQUIVALENTS."
     ),
     # --- reporting variants of a gate that does run ----------------------------
+    "terraform-parity": (
+        "Reads two live deployments of the same release, one CloudFormation and one "
+        "Terraform, through Cloud Control: it needs AWS credentials and both stacks, "
+        "so it is a release-validation tier (release-validation.md), not a gate."
+    ),
+    "terraform-scan-diff": (
+        "The second step of `make terraform-check` (in SHARED_GATES), which runs "
+        "this same target, so both CIs run it there. Named on its own only so the "
+        "scan diff can be run without re-validating every Terraform binary."
+    ),
     "cfn-lint-warnings": (
         "`cfn-lint` with CFN_LINT_SHOW_WARNINGS=1: identical checks, verbose "
         "output. `cfn-lint` runs from lint-cicd, so the checking is gated."
@@ -220,8 +243,8 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "gated; this Makefile wrapper is the local spelling of it."
     ),
     "test-cli": (
-        "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs as the "
-        "first step of `test-packages-cicd`."
+        "`lib/idp_cli_pkg` alone, verbosely. The same suite runs in both CIs, under "
+        "coverage, as the `idp_cli` tree of `coverage-all-cicd`."
     ),
     "test-config-library": (
         "`config_library/test_config_library.py` alone, verbosely. The same file "
@@ -229,7 +252,8 @@ GATES_DELIBERATELY_OUT_OF_CI = {
     ),
     "test-hooks": (
         "`scripts/tests/test_check_commit_text.py` alone, verbosely. It sits under "
-        "`scripts/tests`, which `test-packages-cicd` runs in full in both CIs."
+        "`scripts/tests`, which `coverage-all-cicd` runs in full in both CIs as the "
+        "`scripts` tree."
     ),
     "test-capacity": (
         "`src/lambda/calculate_capacity` alone, verbosely. `make test` covers it "
@@ -257,8 +281,10 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "reports on that tree and passes — correct for a developer who measured one "
         "tree, and the exact state that left eight of nine trees advisory-but-passing "
         "in CI (#1256). Both CIs therefore reach `check-coverage-debt-cicd` instead, "
-        "which adds `--require-all-trees` and is in SHARED_GATES. Registered here for "
-        "this one target: the check runs in both CIs, under the other name."
+        "which adds `--require-all-trees` and is in SHARED_GATES. GitHub's "
+        "scripts_coverage job also calls this bare target, with `--require-tree scripts`, "
+        "for the one tree it measures; it is still not a shared gate, because GitLab "
+        "has no second coverage job to call it from."
     ),
     "coverage-table": (
         "Reprints the table from the last measurement without re-measuring. Reading "
@@ -993,6 +1019,85 @@ def test_cfn_lint_is_pinned_consistently() -> None:
         )
 
 
+#: The four ``Makefile`` pins ``TERRAFORM_CHECK_BINARIES`` is composed from.
+TERRAFORM_CHECK_PINS = {
+    "TERRAFORM_FLOOR_VERSION": "terraform",
+    "TERRAFORM_LATEST_VERSION": "terraform",
+    "OPENTOFU_FLOOR_VERSION": "tofu",
+    "OPENTOFU_LATEST_VERSION": "tofu",
+}
+
+#: Platforms the two CIs' runners use: GitHub's ``ubuntu-latest`` and GitLab's
+#: arm64 pool. A pin with no committed hash for one of them fails only in that CI.
+TERRAFORM_CHECK_CI_PLATFORMS = ("linux_amd64", "linux_arm64")
+
+
+def _terraform_check_binaries_in_ci() -> list[tuple[str, str]]:
+    """``(label, value)`` of ``TERRAFORM_CHECK_BINARIES`` in each CI's job."""
+    gitlab = yaml.safe_load(GITLAB.read_text())
+    github = yaml.safe_load(GITHUB_TESTS.read_text())
+    found = [
+        (f"{GITLAB.name}:{name}", body["variables"]["TERRAFORM_CHECK_BINARIES"])
+        for name, body in gitlab.items()
+        if isinstance(body, dict)
+        and "TERRAFORM_CHECK_BINARIES" in (body.get("variables") or {})
+    ]
+    found += [
+        (f"{GITHUB_TESTS.name}:{name}", body["env"]["TERRAFORM_CHECK_BINARIES"])
+        for name, body in (github.get("jobs") or {}).items()
+        if "TERRAFORM_CHECK_BINARIES" in (body.get("env") or {})
+    ]
+    return found
+
+
+@pytest.mark.unit
+def test_terraform_check_binaries_are_pinned_consistently() -> None:
+    """Both CIs validate with exactly the binaries the ``Makefile`` pins.
+
+    The pins are exact for the reason ``CFN_LINT_VERSION`` is: a new release can
+    change the verdict with no code change. Each CI passes the list explicitly, so
+    a ``Makefile`` bump that misses one of them would leave that CI on the old
+    releases while local runs moved, which is the drift this module exists to find.
+    Every pinned binary must also have a committed archive hash for both CI
+    platforms, or the installer refuses it in one CI only.
+    """
+    pins = {name: _declared_version(name) for name in TERRAFORM_CHECK_PINS}
+    expected = " ".join(
+        f"{tool}@{pins[name]}" for name, tool in TERRAFORM_CHECK_PINS.items()
+    )
+    declared = re.search(
+        r"^TERRAFORM_CHECK_BINARIES\s*\??=\s*(.*)$", MAKEFILE.read_text(), re.MULTILINE
+    )
+    assert declared, "TERRAFORM_CHECK_BINARIES is no longer declared in the Makefile"
+    composed = declared.group(1)
+    for name in TERRAFORM_CHECK_PINS:
+        assert f"$({name})" in composed, (
+            f"TERRAFORM_CHECK_BINARIES no longer includes $({name})"
+        )
+
+    found = _terraform_check_binaries_in_ci()
+    labels = {label.split(":", 1)[0] for label, _ in found}
+    assert labels == {GITLAB.name, GITHUB_TESTS.name}, (
+        f"TERRAFORM_CHECK_BINARIES must be set in a job on both sides; found {found}"
+    )
+    for label, value in found:
+        assert value.split() == expected.split(), (
+            f"{label} passes TERRAFORM_CHECK_BINARIES={value!r}, but the Makefile "
+            f"pins {expected!r}. Keep the two CI configs in step with it."
+        )
+
+    lock = json.loads(
+        (REPO_ROOT / "scripts" / "terraform_binaries.lock.json").read_text()
+    )["binaries"]
+    for spec in expected.split():
+        for platform in TERRAFORM_CHECK_CI_PLATFORMS:
+            assert platform in lock.get(spec, {}), (
+                f"{spec} has no committed hash for {platform} in "
+                f"scripts/terraform_binaries.lock.json; run "
+                f"`python3 scripts/terraform_check.py --update-lock {spec}`."
+            )
+
+
 def _lint_debt_module():
     """``scripts/check_lint_debt.py``, loaded by path.
 
@@ -1258,7 +1363,11 @@ def test_every_executing_ruff_install_pins_the_version() -> None:
         if not path.is_file():
             continue
         for line in _uncommented(path.read_text()).splitlines():
-            if not re.search(r"\b(pip|pip3|uv pip)\b.*\binstall\b", line):
+            # Case-insensitive and inside a word, so the installer variable `make
+            # setup` uses (`$$SETUP_PIP install`) is read. Matching only the bare
+            # words left that line unchecked, and the floor below then held only
+            # because the Ubuntu setup script installed ruff too (#1758).
+            if not re.search(r"(?i)\b(\w*pip\d*|uv pip)\b.*\binstall\b", line):
                 continue
             if not re.search(r"(?<![\w.-])ruff(?![\w.-])", line):
                 continue
@@ -1277,6 +1386,330 @@ def test_every_executing_ruff_install_pins_the_version() -> None:
         f"{unpinned}. Whatever they install is what `ruff check` and "
         f"`ruff format` then measure, and findings and formatting are both "
         f"properties of the linter version."
+    )
+
+
+IDP_COMMON_LOCK = REPO_ROOT / "lib" / "idp_common_pkg" / "uv.lock"
+GITHUB_PYTHON_ENV = GITHUB_ACTIONS_DIR / "python-env" / "action.yml"
+LOCK_CONSTRAINTS_REF = '-c "$LOCK_CONSTRAINTS"'
+
+
+def _locked_version(name: str) -> str:
+    """The version ``lib/idp_common_pkg/uv.lock`` records for ``name``."""
+    import tomllib
+
+    lock = tomllib.loads(IDP_COMMON_LOCK.read_text())
+    versions = {p["version"] for p in lock["package"] if p["name"] == name}
+    assert len(versions) == 1, f"uv.lock records {name} at {sorted(versions)}"
+    return versions.pop()
+
+
+def _ci_python_setups() -> list[tuple[str, list[str]]]:
+    """``(label, commands)`` for the step each CI builds its Python environment in.
+
+    GitLab's is the ``.python_setup`` anchor, one command per list item (a folded
+    multi-line item is one command). GitHub's is the install step of the
+    ``python-env`` composite action, one command per uncommented line.
+    """
+    gitlab = yaml.safe_load(GITLAB.read_text())[".python_setup"]
+    action = yaml.safe_load(GITHUB_PYTHON_ENV.read_text())
+    (install,) = [
+        step["run"]
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Install Python dependencies"
+    ]
+    github = [line.strip() for line in _uncommented(install).splitlines()]
+    return [
+        (GITLAB.name, gitlab),
+        (str(GITHUB_PYTHON_ENV.relative_to(REPO_ROOT)), github),
+    ]
+
+
+@pytest.mark.unit
+def test_the_lock_pins_the_ruff_the_gate_runs() -> None:
+    """``uv.lock`` and ``RUFF_VERSION`` must name one ruff.
+
+    Every install in both CIs is constrained to the lock (below), so a lock that
+    pins another ruff makes the ``ruff==RUFF_VERSION`` install unsatisfiable —
+    and an environment built from the lock alone lints with a ruff the gate does
+    not run, which is how the two drifted apart (#1707). Bump them together:
+    a Dependabot update of ruff in the lock fails here until ``RUFF_VERSION``
+    follows it.
+    """
+    assert _locked_version("ruff") == _declared_version("RUFF_VERSION"), (
+        f"lib/idp_common_pkg/uv.lock pins ruff {_locked_version('ruff')} but "
+        f"RUFF_VERSION is {_declared_version('RUFF_VERSION')}. Re-lock with "
+        f"`uv lock --upgrade-package ruff==<RUFF_VERSION>` in lib/idp_common_pkg, "
+        f"or move RUFF_VERSION, so the lock and the gate agree."
+    )
+
+
+#: An install into the interpreter the job runs: uv's pip, a pip, or ``python -m
+#: pip``. Whitespace-tolerant, because ``uv  pip install`` is the same command.
+_INSTALL_COMMAND = re.compile(
+    r"(?<![\w.-])(?:uv\s+pip|pip3?|python3?\s+-m\s+pip)\s+install(?![\w-])"
+)
+#: An install into the ENVIRONMENT after its setup step. A bare ``pip`` is left out
+#: here on purpose: after GitLab activates a ``uv venv``, which has no pip, a bare
+#: ``pip`` is the image's system pip, and installs outside the environment the
+#: tests run in.
+_ENV_INSTALL_COMMAND = re.compile(
+    r"(?<![\w.-])(?:uv\s+pip|python3?\s+-m\s+pip)\s+install(?![\w-])"
+)
+
+
+def _subcommands(command: str) -> list[str]:
+    """One shell command line split at ``&&``, ``||``, ``;`` and ``|``."""
+    return [part.strip() for part in re.split(r"&&|\|\||;|\|", command) if part.strip()]
+
+
+def _flatten(items) -> list[str]:
+    """GitLab script lists with anchors expanded (an alias arrives as a nested list)."""
+    flat: list[str] = []
+    for item in items or []:
+        flat.extend(_flatten(item) if isinstance(item, list) else [str(item)])
+    return flat
+
+
+@pytest.mark.unit
+def test_every_ci_install_is_constrained_to_the_lock() -> None:
+    """Both CIs install against ``uv.lock``, by the same mechanism (#1707).
+
+    Unconstrained, the install resolved every dependency against the index on the
+    day, and CI tested a different dependency set from the one the lock records.
+    What is asserted, per CI: the constraints file is exported from the lock once,
+    before the first install, and it is the file the ``Makefile`` names; every
+    install in the environment step carries it, read per sub-command so one chained
+    after ``&&`` is not hidden by the ``-c`` of the line it rides on — a tool
+    installed first without it would leave a shared dependency at an unlocked
+    version for the constrained pass to fight over; and no step after the
+    environment step installs into the environment again.
+
+    The boundary of that last check: it reads the literal install commands in the
+    CI YAML and the one known reinstall (``make test-cicd`` in
+    ``lib/idp_common_pkg``) spelled with the directory on the command line. An
+    install made inside some other Makefile recipe (``make dev``, ``make setup``),
+    a ``cd`` before the ``make``, ``uv pip sync`` / ``uv run --with``, or an
+    ``--override`` beside the ``-c`` are not recognised. None exists in either CI
+    today.
+    """
+    makefile = MAKEFILE.read_text()
+    default = re.search(r"^LOCK_CONSTRAINTS \?= (.*)$", makefile, re.M)
+    assert default, "the Makefile no longer declares LOCK_CONSTRAINTS"
+    relative = default.group(1).strip().removeprefix("$(CURDIR)/")
+
+    for label, commands in _ci_python_setups():
+        parts = [part for command in commands for part in _subcommands(command)]
+        # What runs before the environment exists (GitLab's `pip install uv` into
+        # the image) installs the tooling, not the environment under test.
+        venv = [i for i, c in enumerate(parts) if c.startswith("uv venv")]
+        parts = parts[venv[-1] + 1 :] if venv else parts
+        installs = [i for i, c in enumerate(parts) if _INSTALL_COMMAND.search(c)]
+        assert installs, f"{label}: no install found; this check would be vacuous"
+        exports = [i for i, c in enumerate(parts) if "LOCK_CONSTRAINTS=" in c]
+        assert len(exports) == 1 and parts[exports[0]].rstrip('"').endswith(relative), (
+            f"{label} must set LOCK_CONSTRAINTS exactly once, to .../{relative}; "
+            f"found {[parts[i] for i in exports]}"
+        )
+        made = [i for i, c in enumerate(parts) if c == "make lock-constraints"]
+        assert made, f"{label} no longer runs `make lock-constraints`"
+        assert exports[0] < made[0] < installs[0], (
+            f"{label}: the lock must be exported before the first install"
+        )
+        unconstrained = [
+            parts[i]
+            for i in installs
+            if LOCK_CONSTRAINTS_REF not in re.sub(r"\s+", " ", parts[i])
+        ]
+        assert not unconstrained, (
+            f"{label} installs without {LOCK_CONSTRAINTS_REF}: {unconstrained}"
+        )
+
+    # After the environment step: GitLab jobs that use `.python_setup`, and every
+    # step of the two GitHub workflows (the composite action is not a step's `run`).
+    setup = set(_flatten(yaml.safe_load(GITLAB.read_text())[".python_setup"]))
+    later: list[tuple[str, str]] = []
+    for name, body in yaml.safe_load(GITLAB.read_text()).items():
+        if not isinstance(body, dict) or "script" not in body:
+            continue
+        lines = _flatten(body.get("before_script")) + _flatten(body.get("script"))
+        if not setup <= set(lines):
+            continue
+        later += [
+            (f"{GITLAB.name}:{name}", line) for line in lines if line not in setup
+        ]
+    for workflow in (GITHUB_TESTS, GITHUB_SECURITY):
+        for name, steps in _github_job_steps(workflow).items():
+            later += [(f"{workflow.name}:{name}", step) for step in steps]
+    reinstalls = [
+        (where, part)
+        for where, text in later
+        for line in _uncommented(text).splitlines()
+        for part in _subcommands(line)
+        if _ENV_INSTALL_COMMAND.search(part)
+        or (
+            re.search(
+                r"make\b.*\btest-cicd\b.*lib/idp_common_pkg|make\b.*-C\s+lib/idp_common_pkg\b.*\btest-(unit-)?cicd\b",
+                part,
+            )
+            and "SKIP_INSTALL=1" not in part
+        )
+    ]
+    assert not reinstalls, (
+        f"these install into the CI environment after its lock-constrained setup "
+        f"step, so whatever they resolve is not the lock: {reinstalls}. Install in "
+        f"the setup step, or pass SKIP_INSTALL=1 to lib/idp_common_pkg's targets."
+    )
+
+    assert "lock-constraints" in re.search(
+        r"^install-first-party:(.*)$", makefile, re.M
+    ).group(1), "install-first-party no longer depends on lock-constraints"
+    assert re.search(
+        r"\$\(PIP\) install -c \"\$\(LOCK_CONSTRAINTS\)\" \$\(FIRST_PARTY_EDITABLES\)",
+        _uncommented(_recipe("install-first-party")),
+    ), "install-first-party no longer installs with -c $(LOCK_CONSTRAINTS)"
+    export = re.sub(r"\\\n\s*", " ", _uncommented(_recipe("lock-constraints")))
+    assert re.search(r"uv export --locked\b", export), (
+        "lock-constraints no longer exports with --locked, so a lock that has "
+        "fallen behind pyproject.toml would be exported without complaint"
+    )
+    assert "--all-extras" in export and "--all-groups" in export, (
+        "lock-constraints no longer exports every extra and group, so packages "
+        "outside the narrower selection would install unconstrained"
+    )
+    assert not re.search(r"--only-|--no-dev\b|--extra\b|--group\b", export), (
+        f"lock-constraints narrows the export: {export.strip()}"
+    )
+
+
+def _installer_segments(recipe: str) -> list[str]:
+    """Each shell command in ``recipe`` that runs an installer's ``install``.
+
+    The rule is about the installer, not about a spelling of it: a command counts
+    when the word before ``install`` names pip in any form (``$$SETUP_PIP``,
+    ``$(VENV_DIR)/bin/pip``, ``python -m pip``, ``uv pip``, ``pip3``). Bound: an
+    installer reached through a variable whose name does not contain ``pip``, or a
+    different subcommand (``uv sync``), is not recognised.
+    """
+    joined = re.sub(r"\\\n\s*", " ", _uncommented(recipe))
+    segments = re.split(r"&&|\|\||;|\||\n", joined)
+    found = []
+    for segment in segments:
+        words = segment.split()
+        for i, word in enumerate(words[1:], start=1):
+            if word == "install" and "pip" in words[i - 1].lower():
+                found.append(" ".join(words))
+                break
+    return found
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target", ["setup", "setup-venv"])
+def test_the_setup_targets_install_against_the_lock(target: str) -> None:
+    """``make setup`` and ``make setup-venv`` hold the versions CI tests (#1729).
+
+    Both CIs install against ``lib/idp_common_pkg/uv.lock`` (#1707); the two setup
+    targets did not, so a contributor's environment resolved afresh from the index
+    and could differ from CI on any package. Each must export the lock first and
+    pass it to every install. The one exemption is pip upgrading itself, which is
+    the installer rather than part of the environment under test.
+    """
+    header = re.search(rf"^{re.escape(target)}:(.*)$", MAKEFILE.read_text(), re.M)
+    assert header and "lock-constraints" in header.group(1).split("##")[0], (
+        f"`{target}` no longer depends on lock-constraints, so the constraints "
+        f"file it passes to -c may be absent or stale"
+    )
+    installs = _installer_segments(_recipe(target))
+    # Non-vacuity: the recipe installs the first-party packages, the capacity test
+    # requirements, cfn-lint and ruff. Finding none would mean the parse is wrong.
+    assert len(installs) >= 4, f"`{target}`: only found installs {installs}"
+    constrained = re.compile(
+        r'(?:^|\s)(?:-c|--constraint)[\s=]"\$\(LOCK_CONSTRAINTS\)"'
+    )
+    self_upgrade = (["--upgrade", "pip"], ["-U", "pip"])
+    unconstrained = [
+        cmd
+        for cmd in installs
+        if not constrained.search(cmd)
+        and cmd.split(" install ", 1)[-1].split() not in self_upgrade
+    ]
+    assert not unconstrained, (
+        f'`{target}` installs without -c "$(LOCK_CONSTRAINTS)": {unconstrained}. '
+        f"Whatever these resolve is not the version CI tests."
+    )
+
+
+def _first_party_requirements() -> list[tuple[str, str]]:
+    """``(pyproject, requirement)`` for every requirement of every ``lib/*`` package.
+
+    Runtime dependencies, every extra and every dependency group, so a requirement
+    is counted whichever selection a CI or ``make setup`` happens to install.
+    """
+    import tomllib
+
+    pairs = []
+    for pyproject in sorted(REPO_ROOT.glob("lib/*/pyproject.toml")):
+        data = tomllib.loads(pyproject.read_text())
+        project = data["project"]
+        reqs = list(project.get("dependencies", []))
+        for extra in project.get("optional-dependencies", {}).values():
+            reqs += extra
+        for group in data.get("dependency-groups", {}).values():
+            reqs += [r for r in group if isinstance(r, str)]  # skip include-group
+        rel = str(pyproject.relative_to(REPO_ROOT))
+        pairs += [(rel, r) for r in reqs]
+    return pairs
+
+
+@pytest.mark.unit
+def test_every_third_party_requirement_of_a_first_party_package_is_locked() -> None:
+    """Nothing a first-party package requires installs at an unlocked version (#1729).
+
+    Both CIs and ``make setup`` install all five ``lib/*`` packages constrained to
+    ``lib/idp_common_pkg/uv.lock``, and a constraint pins only a package the lock
+    records. A third-party requirement of one of the OTHER four that the lock does
+    not hold therefore resolves from the index on the day of the install — which is
+    how ``semver`` and ``pytest-mock`` floated after #1707 while every lock check
+    passed. The remedy is to name it in idp_common_pkg's ``first-party-siblings``
+    dependency group and re-lock.
+
+    Bound: this checks distribution names. An extra of a locked package that the
+    lock never resolved (``moto[dynamodb]`` against a lock that requested other moto
+    extras) is not checked; its dependencies happen to be locked today.
+    """
+    import tomllib
+
+    from packaging.requirements import Requirement
+    from packaging.utils import canonicalize_name
+
+    first_party = {
+        canonicalize_name(tomllib.loads(p.read_text())["project"]["name"])
+        for p in REPO_ROOT.glob("lib/*/pyproject.toml")
+    }
+    assert len(first_party) >= 5, f"lib/*/pyproject.toml found only {first_party}"
+    locked = {
+        canonicalize_name(p["name"])
+        for p in tomllib.loads(IDP_COMMON_LOCK.read_text())["package"]
+    }
+    requirements = _first_party_requirements()
+    third_party = [
+        (where, req)
+        for where, req in requirements
+        if canonicalize_name(Requirement(req).name) not in first_party
+    ]
+    # An empty universe would pass vacuously; the five packages require far more.
+    assert len(third_party) > 50, f"only {len(third_party)} requirements were read"
+    unlocked = [
+        f"{where}: {req}"
+        for where, req in third_party
+        if canonicalize_name(Requirement(req).name) not in locked
+    ]
+    assert not unlocked, (
+        "these first-party requirements name a distribution "
+        "lib/idp_common_pkg/uv.lock does not record, so every lock-constrained "
+        f"install resolves it from the index instead: {unlocked}. Add it to the "
+        "`first-party-siblings` dependency group in lib/idp_common_pkg/pyproject.toml "
+        "and run `uv lock` there."
     )
 
 
@@ -1399,12 +1832,12 @@ def test_the_integration_pytest_tier_runs_in_no_ci() -> None:
 
 #: The ``make`` targets through which a CI job reaches ``scripts/tests``, and so
 #: ``scripts/tests/test_ui_test_discovery.py``, whose three calibrations consult the
-#: installed Vitest. ``test-packages-cicd`` runs that suite directly;
-#: ``coverage-all-cicd`` re-runs it in order to measure it, which drags the same
-#: toolchain requirement into a job whose name and ``script:`` block say nothing
-#: about it. Both spellings are listed because either one alone would leave a job
-#: that runs the suite outside the universe below.
-SCRIPTS_SUITE_TARGETS = ("test-packages-cicd", "coverage-all-cicd")
+#: installed Vitest. ``coverage-all-cicd`` runs that suite in order to measure it,
+#: which drags the toolchain requirement into a job whose name and ``script:`` block
+#: say nothing about it. ``test-packages-cicd`` no longer runs it: the coverage run is
+#: the one execution of it in CI, so that recipe leaves out every suite a coverage tree
+#: measures.
+SCRIPTS_SUITE_TARGETS = ("coverage-all-cicd",)
 
 #: The composite-action input by which a GitHub job asks for the UI's npm
 #: dependencies. GitHub Actions has no YAML anchors, so the install itself lives in
@@ -1586,8 +2019,8 @@ def test_every_ci_job_running_this_suite_installs_the_ui_deps() -> None:
         "these CI jobs run scripts/tests without installing the UI's npm "
         "dependencies, so test_ui_test_discovery.py's three calibrations cannot run "
         "there:\n  " + "\n  ".join(missing) + "\n\n"
-        "On GitLab add `cd src/ui && npm ci --prefer-offline --no-audit && cd ../..` "
-        "to the job's before_script, with the src/ui/node_modules cache block the "
+        "On GitLab add `(cd src/ui && npm ci --prefer-offline --no-audit)` to the "
+        "job's before_script, with the src/ui/node_modules cache block the "
         f'other jobs declare. On GitHub pass `{UI_DEPS_INPUT}: "true"` to the '
         "python-env composite action. That module now FAILS rather than skips when "
         "it finds them missing under CI, so such a job is red rather than quietly "
@@ -1804,4 +2237,61 @@ def test_the_github_ui_deps_input_actually_installs_the_dependencies() -> None:
         f"input against '{passed_value}' AND runs `npm ci` in src/ui. The input is "
         "therefore inert, and those jobs run scripts/tests with no UI dependencies "
         "while appearing to ask for them."
+    )
+
+
+@pytest.mark.parametrize(
+    "workflow", [GITHUB_TESTS, GITHUB_SECURITY], ids=lambda p: p.name
+)
+def test_github_gate_workflows_cancel_superseded_runs(workflow: Path) -> None:
+    """GitHub's spelling of GitLab's ``interruptible: true`` on the gate jobs.
+
+    Without it a push to a pull request leaves the previous head's run going to
+    completion on a runner the new head's jobs then queue behind, which is the
+    queue tail this exists to remove. Three properties, each with its own way of
+    going wrong:
+
+    - the group names the workflow, or the two gate workflows share one group and
+      cancel each other on every push;
+    - the group names the pull request, or a push to one PR cancels another's run;
+    - cancelling is limited to ``pull_request`` runs, so a ``workflow_dispatch``
+      re-run — the recovery path for a dropped event — is never killed by a second
+      one, only queued behind it.
+    """
+    loaded = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    concurrency = loaded.get("concurrency")
+    assert isinstance(concurrency, dict), (
+        f"{workflow.name} has no top-level `concurrency` block, so a superseded "
+        "head's run holds its runner until it finishes"
+    )
+    group = str(concurrency.get("group", ""))
+    assert "github.workflow" in group, (
+        f"{workflow.name}: the concurrency group does not name the workflow, so "
+        "both gate workflows land in one group and cancel each other"
+    )
+    assert "github.event.pull_request.number" in group, (
+        f"{workflow.name}: the concurrency group is not per pull request"
+    )
+    cancel = str(concurrency.get("cancel-in-progress", ""))
+    assert re.fullmatch(
+        r"\$\{\{\s*github\.event_name\s*==\s*'pull_request'\s*\}\}", cancel
+    ), (
+        f"{workflow.name}: cancel-in-progress is {cancel!r}; it must cancel "
+        "pull_request runs only, so a manual dispatch is never cancelled"
+    )
+
+
+@pytest.mark.parametrize("job", [".fast_check_job", "srt_security_review", "dep_audit"])
+def test_the_gitlab_gate_jobs_are_interruptible(job: str) -> None:
+    """The GitLab half of the same property, so neither side can drop it alone.
+
+    ``.fast_check_job`` carries it for the five jobs built on that anchor. The two
+    security gates, the twins of ``security-checks.yml``, do not use the anchor and
+    set it themselves, so each is pinned on its own.
+    """
+    loaded = yaml.safe_load(GITLAB.read_text(encoding="utf-8"))
+    definition = loaded.get(job) or {}
+    assert definition.get("interruptible") is True, (
+        f"{job} is no longer interruptible, so a superseded MR pipeline's run of "
+        "it goes to completion"
     )

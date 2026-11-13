@@ -366,7 +366,10 @@ class TestTransformBdaToIdp:
         assert result["properties"]["items"]["instruction"] == "List of items"
 
     def test_validate_nested_array_instruction_requirements(self, service):
-        """Test that nested array properties in definitions are skipped due to BDA limitations."""
+        """Arrays inside a definition used as array items are skipped.
+
+        BDA rejects an array nested in an array (measured, issue #1742).
+        """
         idp_schema_with_nested_array = {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "TestDoc",
@@ -378,13 +381,13 @@ class TestTransformBdaToIdp:
                         "name": {"type": "string", "description": "Employee name"},
                         "shifts": {
                             "type": "array",
-                            "description": "Weekly shifts",  # Nested array - should be skipped
+                            "description": "Weekly shifts",  # Array in an array-items definition - skipped
                             "items": {"type": "string"},
                         },
                         "tasks": {
                             "type": "array",
                             "items": {"type": "string"},
-                            # Nested array - should be skipped
+                            # Array in an array-items definition - skipped
                         },
                     },
                 }

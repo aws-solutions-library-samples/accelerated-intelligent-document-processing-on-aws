@@ -74,6 +74,7 @@ from idp_sdk.operations.batch import _batch_started_at
 
 STACK_NAME = "test-idp-stack"
 BARE_STACK = "test-idp-stack-bare"
+TABLELESS_STACK = "test-idp-stack-no-table"
 INPUT_BUCKET = "idp-input-bucket"
 OUTPUT_BUCKET = "idp-output-bucket"
 TESTSET_BUCKET = "idp-testset-bucket"
@@ -88,33 +89,35 @@ _OUTPUTS = {
 }
 
 
-def _template(outputs, physical_suffix=""):
+def _template(outputs, physical_suffix="", with_table=True):
     """A stack of the shape ``StackInfo`` requires: a ``DocumentQueue``, a
     ``TrackingTable`` and the outputs the resource map is built from."""
+    resources = {
+        "DocumentQueue": {
+            "Type": "AWS::SQS::Queue",
+            "Properties": {"QueueName": f"idp-document-queue{physical_suffix}"},
+        },
+    }
+    if with_table:
+        resources["TrackingTable"] = {
+            "Type": "AWS::DynamoDB::Table",
+            "Properties": {
+                "TableName": f"{TRACKING_TABLE}{physical_suffix}",
+                "KeySchema": [
+                    {"AttributeName": "PK", "KeyType": "HASH"},
+                    {"AttributeName": "SK", "KeyType": "RANGE"},
+                ],
+                "AttributeDefinitions": [
+                    {"AttributeName": "PK", "AttributeType": "S"},
+                    {"AttributeName": "SK", "AttributeType": "S"},
+                ],
+                "BillingMode": "PAY_PER_REQUEST",
+            },
+        }
     return json.dumps(
         {
             "AWSTemplateFormatVersion": "2010-09-09",
-            "Resources": {
-                "DocumentQueue": {
-                    "Type": "AWS::SQS::Queue",
-                    "Properties": {"QueueName": f"idp-document-queue{physical_suffix}"},
-                },
-                "TrackingTable": {
-                    "Type": "AWS::DynamoDB::Table",
-                    "Properties": {
-                        "TableName": f"{TRACKING_TABLE}{physical_suffix}",
-                        "KeySchema": [
-                            {"AttributeName": "PK", "KeyType": "HASH"},
-                            {"AttributeName": "SK", "KeyType": "RANGE"},
-                        ],
-                        "AttributeDefinitions": [
-                            {"AttributeName": "PK", "AttributeType": "S"},
-                            {"AttributeName": "SK", "AttributeType": "S"},
-                        ],
-                        "BillingMode": "PAY_PER_REQUEST",
-                    },
-                },
-            },
+            "Resources": resources,
             "Outputs": {key: {"Value": value} for key, value in outputs.items()},
         }
     )
@@ -1282,19 +1285,57 @@ class TestDownloadResults:
 class TestVersions:
     """A document's processing-run history and one run's exact output."""
 
-    def test_list_versions_propagates_the_missing_resource_key(self, client):
-        """DEFECT, pinned as-is: consequence at the public API of
-        ``batch_processor.py:1019``.
+    @pytest.fixture
+    def tableless_stack(self, idp_stack):
+        """A stack with the buckets but no ``TrackingTable`` resource."""
+        boto3.client("cloudformation", region_name=idp_stack).create_stack(
+            StackName=TABLELESS_STACK,
+            TemplateBody=_template(_OUTPUTS, physical_suffix="-none", with_table=False),
+        )
+        return TABLELESS_STACK
 
-        ``BatchProcessor.list_document_versions`` reads
-        ``resources["TrackingTable"]``, a key ``StackInfo`` never produces (it
-        records the table as ``DocumentsTable``). ``list_versions`` adds no
-        ``try``, so the caller receives a bare ``KeyError`` naming an internal
-        resource key instead of a version list or an SDK exception. The operation
-        cannot succeed against any stack.
-        """
-        with pytest.raises(KeyError, match="TrackingTable"):
-            client.batch.list_versions("b/a.pdf")
+    def test_list_versions_reads_the_stacks_tracking_table(self, client, idp_stack):
+        """No stack output names the table; the operation still finds and queries
+        it, newest run first."""
+        table = boto3.resource("dynamodb", region_name=idp_stack).Table(TRACKING_TABLE)
+        for run in ("001", "002"):
+            table.put_item(Item={"PK": "doc#b/a.pdf", "SK": f"run#{run}", "RunId": run})
+
+        versions = client.batch.list_versions("b/a.pdf")
+
+        assert [version["RunId"] for version in versions] == ["002", "001"]
+
+    def test_list_versions_names_a_missing_tracking_table_and_its_stack(
+        self, client, tableless_stack
+    ):
+        """An SDK exception a caller can catch, naming what is missing and where,
+        rather than a ``KeyError`` for an internal resource key."""
+        with pytest.raises(IDPResourceNotFoundError) as raised:
+            client.batch.list_versions("b/a.pdf", stack_name=tableless_stack)
+
+        assert "TrackingTable" in str(raised.value)
+        assert f"'{tableless_stack}'" in str(raised.value)
+
+    def test_download_version_does_not_need_the_tracking_table(
+        self, client, s3, tableless_stack, tmp_path
+    ):
+        """The run manifest in S3 is all a version download reads, so a stack
+        without the table still serves one."""
+        key = "b/a.pdf/summary/summary.json"
+        s3.put_object(Bucket=OUTPUT_BUCKET, Key=key, Body=b"pinned bytes")
+        s3.put_object(
+            Bucket=OUTPUT_BUCKET,
+            Key="b/a.pdf/runs/run-1/manifest.json",
+            Body=json.dumps({"files": [{"key": key}]}),
+        )
+        destination = tmp_path / "out"
+
+        result = client.batch.download_version(
+            "b/a.pdf", "run-1", str(destination), stack_name=tableless_stack
+        )
+
+        assert result.files_downloaded == 1
+        assert (destination / "run-1" / key).read_bytes() == b"pinned bytes"
 
     def test_download_version_reports_one_document(self, client, s3, tmp_path):
         """``documents_downloaded`` is hardcoded to 1 here because the operation is

@@ -9,10 +9,11 @@ name lets one pytest invocation hold several of them without collision.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from tests.unit._handler_loading import exec_with_stubs
 
 REPO_ROOT = Path(__file__).resolve().parents[5]
 
@@ -21,28 +22,20 @@ def load_lambda(module_name: str, relative_dir: str, *, patches: dict | None = N
     """Import ``<repo>/<relative_dir>/index.py`` as ``module_name``.
 
     ``patches`` maps dotted targets to replacement objects, applied only while the
-    module executes (for module-scope clients and services).
+    module executes (for module-scope clients and services). See
+    ``tests.unit._handler_loading`` for what is left in ``sys.modules`` afterwards.
     """
     os.environ.setdefault("AWS_REGION", "us-east-1")
     os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
     path = REPO_ROOT / relative_dir / "index.py"
     xray_core = MagicMock()
     xray_core.patch_all = lambda: None
-    managers = [
-        patch.dict(
-            "sys.modules",
-            {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core},
-        )
-    ]
-    managers += [patch(target, value) for target, value in (patches or {}).items()]
+    stubs = {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core}
+    managers = [patch(target, value) for target, value in (patches or {}).items()]
     for m in managers:
         m.start()
     try:
-        spec = importlib.util.spec_from_file_location(module_name, path)
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        return exec_with_stubs(module_name, path, stubs, taint=tuple(patches or ()))
     finally:
         for m in reversed(managers):
             m.stop()
-    return module

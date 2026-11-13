@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "idp-sdk"
-version = "0.6.13"
+version = "0.6.15"
 description = "Python SDK for IDP Accelerator - programmatic access to document processing capabilities"
 authors = [{name = "AWS"}]
 license = {text = "MIT-0"}
@@ -47,6 +47,13 @@ dev = [
     "pytest>=7.4.0",
     "pytest-mock>=3.11.0",
     "moto>=4.2.0",
+    "pyyaml>=6.0",
+]
+# What `idp-cli publish --terraform` needs to run the translator in
+# terraform/translator. The lower bound is the version uv.lock resolves and CI
+# validates against.
+terraform = [
+    "aws-sam-translator>=1.109.0,<2",
     "pyyaml>=6.0",
 ]
 lambda = [

@@ -258,10 +258,36 @@ The solution supports optional Amazon Bedrock Guardrails integration:
 - Configuration parameters:
   - `BedrockGuardrailId` - ID of an existing Bedrock Guardrail
   - `BedrockGuardrailVersion` - Version of the guardrail to use (e.g., DRAFT, 1, 2)
-- Guardrails can be applied to:
-  - Extraction operations
+- The guardrail is applied to:
+  - Extraction, both the standard and the agentic modes
   - Summarization (when enabled)
+  - Rule validation
+  - Chat with Document, the Agent Companion chat and the analytics agents
+  - Discovery, both single-document and multi-document
   - Knowledge Base interactions (when enabled)
+- It is not applied to these steps, each for its own reason:
+  - **Classification.** Applying the guardrail broke classification when guardrail
+    support was added, so it is disabled for that function. The failure mode was not
+    recorded and has not been re-measured.
+  - **OCR with the Bedrock backend**, **assessment** and **LLM evaluation**. Their
+    model output is page text, a confidence document and a match verdict, which the
+    next step reads directly. A guardrail intervention would put the guardrail's
+    blocked-output message in its place. They have never sent the guardrail, and
+    enabling it is a behaviour change that has not been measured.
+  - **Embeddings** for multi-document discovery, which return vectors rather than
+    text.
+  - **Rule authoring** in the configuration editor, which translates rule text an
+    administrator types rather than document text.
+- OpenAI GPT-5.x models are served through the Responses API on the
+  `bedrock-mantle` endpoint, and their requests do not carry the guardrail on any
+  step. When a guardrail is configured, the first such request in each Lambda
+  process logs a warning saying so.
+- Which model calls apply the guardrail is enforced by
+  `scripts/tests/test_model_call_guardrail.py`. It finds every Bedrock model call in
+  the main stack's Lambda and library code, and every Lambda in the main stack and
+  its nested stacks that may invoke a model. Each one must apply the guardrail or be
+  listed with its own reason. Separately deployed extensions, such as the feature
+  platform's, are outside that check.
 
 ### Malware Scanning on Ingest
 
@@ -349,8 +375,8 @@ machine transition yourself. A hook returns its changes under the
 `updatedDocument` key (`idp_common.hooks.UPDATED_DOCUMENT_KEY`), and a
 `preprocessing` hook may additionally return `halt=True` to stop the document
 before any work is spent on it. Every hook point is inert unless enabled in the
-active configuration version, which means a hook can be turned on, retargeted, or
-switched off by activating a different configuration — no redeployment.
+active configuration profile, which means a hook can be turned on, retargeted, or
+switched off by activating a different profile — no redeployment.
 
 Reach for a pipeline hook when the document itself needs to change: redacting PII
 before extraction, calling a third-party enrichment service, or gating documents

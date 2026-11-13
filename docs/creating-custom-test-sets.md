@@ -67,8 +67,8 @@ see [How much review is enough?](./test-studio.md#how-much-review-is-enough).
 
 ### How much data
 
-Your overall accuracy score firms up quickly, within roughly the first hundred documents.
-The accuracy of an individual *field* does not, because a field appearing once per
+Your overall accuracy score firms up much faster than the accuracy of any single field,
+because every field of every document contributes to it. A field appearing once per
 document gives you one observation per document — so a badly failing field can hide inside
 a healthy-looking overall score. Fields that repeat within a document (invoice line items)
 need fewer documents; fields appearing once per document drive the requirement.
@@ -148,9 +148,9 @@ and comparing test executions) is how you use the set whichever way you built it
 The goal of this initial run is to produce predictions that are as accurate as possible, minimizing the amount of manual editing you'll need to do later. Use the best available model for both classification and extraction.
 
 1. Go to **Configuration** in the web UI
-2. Create a new configuration version (or edit an existing one)
+2. Create a new configuration profile with **Create profile** (or edit an existing one)
 3. Set both the **classification model** and **extraction model** to a high-accuracy model (e.g., Claude Opus)
-4. Save the configuration version
+4. Save the configuration profile
 
 > **Tip**: You can always create a cheaper configuration later for production use. The expensive model is only used here to bootstrap high-quality ground truth.
 
@@ -161,7 +161,7 @@ For details on configuration management, see [Configuration](./configuration.md)
 If you don't already have document classes defined for your document type, use Discovery to bootstrap the schema automatically.
 
 1. Go to **Discovery** in the web UI
-2. Select your high-accuracy configuration version
+2. Select your high-accuracy configuration profile
 3. Upload a representative sample document
 4. Run discovery — it will analyze the document and populate document classes and attributes
 
@@ -174,7 +174,7 @@ For details on discovery modes and options, see [Discovery](./discovery.md).
 Now process a set of sample documents that will become your test set.
 
 1. Go to **Upload Documents** in the web UI
-2. Select your high-accuracy configuration version
+2. Select your high-accuracy configuration profile
 3. Upload your sample documents
 4. Wait for all documents to finish processing
 
@@ -254,7 +254,7 @@ With your test set created, you can now run test executions to compare different
 
 1. Go to **Test Studio** → **Test Executions** tab
 2. Select your test set
-3. Choose the high-accuracy configuration version you used to create the ground truth
+3. Choose the high-accuracy configuration profile you used to create the ground truth
 4. Run the test
 
 This establishes your baseline — it should show near-perfect accuracy since the ground truth was generated from these same model predictions.
@@ -263,7 +263,7 @@ This establishes your baseline — it should show near-perfect accuracy since th
 
 Create and test alternative configurations to find the best cost/accuracy balance:
 
-1. Create a new configuration version with a cheaper model (e.g., Nova Lite)
+1. Create a new configuration profile with a cheaper model. Expect the comparison to show losses: on the v0.6.14 benchmark Amazon Nova Lite and Nova Pro matched the default extraction model only on one-page forms and returned about half the rows of longer lists, with mean recall 0.4980 and 0.5035 ([config-guidance §5.1](./benchmarking/config-guidance.md#51-extraction-model--the-full-grid))
 2. Run a test execution against the same test set using the new configuration
 3. Use the **comparison view** to analyze the results side-by-side
 
@@ -294,7 +294,7 @@ You don't have to create your entire test set in one go. As you process and revi
 6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date/time) to easily find recently reviewed documents
 7. Click **Check Files** to preview matches, then **Add Documents**
 
-Files without matching baseline data are automatically excluded, so you can use a broad pattern — only documents you've reviewed and saved as evaluation baselines will be added. The test set's file count is updated automatically.
+Files without matching baseline data are added **unlabeled** rather than skipped, so narrow the pattern (or the **Modified after** filter) to the documents you have reviewed if you want the set to stay fully labeled: one unlabeled document makes the whole set read as unlabeled until it is draft-labeled. A document already in the set is skipped, so its labels in the set are kept; to take a newer baseline for it, remove it from the set and add it again. A `.zip` the pattern matches is left out. The test set's file count is updated automatically.
 
 You do not have to start with documents at all: **Create test set** → **Start empty** creates a set with nothing in it, ready to be grown this way. To prune a set, open it, tick the documents and choose **Remove**.
 

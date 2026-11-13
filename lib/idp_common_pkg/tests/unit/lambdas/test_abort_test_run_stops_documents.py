@@ -209,6 +209,11 @@ def stack(monkeypatch):
     monkeypatch.setenv("AWS_REGION", _REGION)
     monkeypatch.setenv("TRACKING_TABLE", _TABLE)
     monkeypatch.setenv("TRACKING_TABLE_NAME", _TABLE)
+    # abortWorkflow confines a REST caller to documents in their configuration
+    # scope, and the lookup fails closed. The Author here has no UsersTable row,
+    # so they are unscoped and the table only has to exist.
+    monkeypatch.setenv("USERS_TABLE_NAME", "abort-e2e-users")
+    monkeypatch.delenv("TENANT_ISOLATION_MODE", raising=False)
     monkeypatch.setenv("ABORT_WORKFLOW_FUNCTION_NAME", _ABORT_WORKFLOW_ARN)
     monkeypatch.delenv("TEST_RESULT_CACHE_UPDATE_QUEUE_URL", raising=False)
     monkeypatch.delenv("HITL_TABLE_NAME", raising=False)
@@ -224,6 +229,26 @@ def stack(monkeypatch):
             AttributeDefinitions=[
                 {"AttributeName": "PK", "AttributeType": "S"},
                 {"AttributeName": "SK", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        ddb.create_table(
+            TableName="abort-e2e-users",
+            KeySchema=[
+                {"AttributeName": "PK", "KeyType": "HASH"},
+                {"AttributeName": "SK", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "PK", "AttributeType": "S"},
+                {"AttributeName": "SK", "AttributeType": "S"},
+                {"AttributeName": "email", "AttributeType": "S"},
+            ],
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "EmailIndex",
+                    "KeySchema": [{"AttributeName": "email", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                }
             ],
             BillingMode="PAY_PER_REQUEST",
         )
@@ -1065,8 +1090,11 @@ def test_the_wait_for_late_sends_is_the_connect_bound_and_no_longer(stack, monke
 
     That grace is the only part of the request allowed past the point where the
     metrics pause would begin, so it is what bounds the request's overrun. The
-    bounds are shrunk to fractions of a second and the asynchronous sends made
-    to hang, so the real time the handler takes is the grace itself.
+    bound is read from the timeout the handler hands ``concurrent.futures.wait``,
+    which is the whole of what it controls: how long the wait then takes in real
+    time depends on the host's load, so a wall-clock ceiling measured the machine
+    rather than the handler (#1708). The sends hang, so the real wait still runs to
+    its timeout, which the lower bound on elapsed time confirms.
     """
     import time as real_time
 
@@ -1074,6 +1102,14 @@ def test_the_wait_for_late_sends_is_the_connect_bound_and_no_longer(stack, monke
     monkeypatch.setattr(abort, "ABORT_WAIT_BUDGET_SECONDS", 0)
     monkeypatch.setattr(abort, "ABORT_INVOKE_CONNECT_TIMEOUT_SECONDS", 0.3)
     monkeypatch.setattr(abort, "ABORT_INVOKE_READ_TIMEOUT_SECONDS", 1.5)
+    timeouts = []
+    real_wait = abort.wait
+
+    def recording_wait(fs, timeout=None, **kwargs):
+        timeouts.append(timeout)
+        return real_wait(fs, timeout=timeout, **kwargs)
+
+    monkeypatch.setattr(abort, "wait", recording_wait)
     release = threading.Event()
     stack["lambda"].handlers[_ABORT_WORKFLOW_ARN] = lambda event, context: (
         release.wait(5) and {}
@@ -1087,7 +1123,8 @@ def test_the_wait_for_late_sends_is_the_connect_bound_and_no_longer(stack, monke
     finally:
         release.set()
 
-    assert 0.3 <= elapsed < 1.0, elapsed
+    assert timeouts == [pytest.approx(0.3, abs=1e-9)], timeouts
+    assert elapsed >= 0.3, elapsed
     (error,) = result["errors"]
     assert "3 of 3 document(s)" in error, error
 

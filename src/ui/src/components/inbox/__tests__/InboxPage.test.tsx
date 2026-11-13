@@ -76,8 +76,10 @@ const inbox = {
   markAllRead: vi.fn(),
   deleteMessages: vi.fn(),
   clearRead: vi.fn(),
-  syncUnreadCount: vi.fn(),
+  beginUnreadSync: vi.fn(),
 };
+// What beginUnreadSync hands back: applies the listed unread count (never stale here).
+const applyUnread = vi.fn();
 
 const renderPage = (path = '/inbox') =>
   render(
@@ -131,8 +133,22 @@ describe('InboxPage', () => {
     inbox.markAllRead.mockResolvedValue(result);
     inbox.deleteMessages.mockResolvedValue(result);
     inbox.clearRead.mockResolvedValue(result);
+    applyUnread.mockReset().mockReturnValue(true);
+    inbox.beginUnreadSync.mockReturnValue(applyUnread);
     inboxRef.current = { unreadCount: 2, changeToken: 0, recent: [], loaded: true, ...inbox };
     localStorage.clear();
+  });
+
+  it('starts every column but Action at a set width, so a long title cannot widen the table', async () => {
+    renderPage();
+    await loaded();
+    const widths = table()
+      .findColumnHeaders()
+      .map((h) => h.getElement().closest('th')!.style.width);
+    // Received 143 (10% wider than 130), Title a fixed 340, Type 120, Severity 110.
+    // Action, the last column, has only a minimum and fills what is left on a real
+    // page (jsdom has no container width, so it stays at that minimum here).
+    expect(widths.slice(-5)).toEqual(['143px', '340px', '120px', '110px', '80px']);
   });
 
   it('shows the loading state while messages load', async () => {
@@ -149,7 +165,7 @@ describe('InboxPage', () => {
     expect(await screen.findByText(EMPTY_TITLE)).toBeTruthy();
     expect(screen.getByText(EMPTY_DESCRIPTION)).toBeTruthy();
     expect(EMPTY_DESCRIPTION).toBe("You'll see messages here when work is assigned to you or something needs your attention.");
-    expect(inbox.syncUnreadCount).toHaveBeenCalledWith(2);
+    expect(applyUnread).toHaveBeenCalledWith(2);
   });
 
   it('shows no-match with a working clear-filter action', async () => {
@@ -294,6 +310,24 @@ describe('InboxPage', () => {
     expect(modal.getElement().textContent).toContain('Message 3');
     await act(async () => modal.findFooter()!.findButton('[class*="variant-primary"]')!.click());
     expect(inbox.deleteMessages).toHaveBeenCalledWith([M3]);
+  });
+
+  it('shows no Unread badge: an unread title is bold, a read title is normal weight', async () => {
+    renderPage();
+    await loaded();
+    const TITLE_COLUMN = 3;
+    const titleCell = (row: number) => table().findBodyCell(row, TITLE_COLUMN)!;
+
+    // Row 1 is M1 (unread), row 2 is M2 (read).
+    const unread = titleCell(1);
+    expect(unread.findBadge()).toBeNull();
+    expect(unread.getElement().textContent).toBe('Message 1');
+    expect(unread.find('span[title="Message 1"]')!.getElement().style.fontWeight).toBe('bold');
+
+    const read = titleCell(2);
+    expect(read.findBadge()).toBeNull();
+    expect(read.getElement().textContent).toBe('Message 2');
+    expect(read.find('span[title="Message 2"]')!.getElement().style.fontWeight).toBe('normal');
   });
 
   it('sorts severity by rank, not alphabetically', async () => {

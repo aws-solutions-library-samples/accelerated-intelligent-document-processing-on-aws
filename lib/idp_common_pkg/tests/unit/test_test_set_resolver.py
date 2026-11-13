@@ -15,6 +15,7 @@ from moto import mock_aws
 
 from idp_common.dynamodb.client import DynamoDBClient as RealDynamoDBClient
 from idp_common.dynamodb.client import DynamoDBError
+from idp_common.forced_sections import decode_forced_sections
 from idp_common.review_queues.testset_docs import (
     SUMMARY_BUILDING,
     SUMMARY_READY,
@@ -26,6 +27,7 @@ from idp_common.review_queues.testset_docs import (
 from idp_common.review_queues.testset_docs import (
     TestSetDocStore as DocStore,  # aliased: pytest would try to collect "Test*"
 )
+from idp_common.review_queues.testset_labels import LabelEditor
 from tests.unit.review_queues._table import create_review_table
 
 #: The resolver's per-set check: the shared `assert_can_access_test_set`, given its
@@ -794,11 +796,11 @@ class TestTestSetResolver:
 
     @patch.dict(os.environ, _GET_TEST_SETS_ENV)
     def test_get_test_sets_passes_through_declared_config_version(self):
-        """A test set may DECLARE the config version Test Studio preselects.
+        """A test set may DECLARE the configuration profile Test Studio preselects.
 
         Needed by extension-deployed test sets: the Feature Platform names their
-        config presets `<featureId>-v<version>`, which can never equal the test
-        set id, so the id-matching convention cannot reach them.
+        preset profiles after the feature id, which need not equal any test set
+        id, so the id-matching convention cannot reach them.
         """
         with patch.object(test_set_index, "find_matching_files") as mock_find_files:
             mock_find_files.return_value = []
@@ -3889,6 +3891,173 @@ class TestTestSetResolver:
         )
         assert written["document_class"]["type"] == "bank-check"
 
+    def _seed_reextract_packet(self, s3, sections):
+        """A packet's baseline, one result.json per (class, labelSource) given."""
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        bodies = {}
+        for n, (cls, source) in enumerate(sections, start=1):
+            key = f"ts1/baseline/packet.pdf/sections/{n}/result.json"
+            body = json.dumps(
+                {
+                    "labelSource": source,
+                    "document_class": {"type": cls},
+                    "split_document": {"page_indices": [n - 1]},
+                    "inference_result": {f"{cls}_field": n},
+                }
+            ).encode()
+            s3.put_object(Bucket="test-set-bucket", Key=key, Body=body)
+            bodies[key] = body
+        return bodies
+
+    @pytest.mark.parametrize("count", [2, 3])
+    def test_reextract_with_a_class_refuses_a_multi_section_document(
+        self, labeling_env, count
+    ):
+        """#1672: one section's correction must not rewrite every section's class.
+
+        The forced class is document-wide all the way down — stamped on every
+        baseline section, then applied by the pipeline to every page as one
+        section — so on a packet it relabelled every section and the harvest then
+        collapsed the grouping. Refused before any write, and before the run.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        before = self._seed_reextract_packet(
+            s3,
+            [
+                ("Payslip", "reviewed-human"),
+                ("Bank-checks", "draft-machine"),
+                ("W2", "draft-machine"),
+            ][:count],
+        )
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match=f"has {count} sections"):
+                test_set_index.reextract_test_set_document(
+                    {
+                        "input": {
+                            "testSetId": "ts1",
+                            "objectKey": "packet.pdf",
+                            "documentClass": "Bank-checks",
+                        }
+                    }
+                )
+
+        mock_lambda.invoke.assert_not_called()
+        for key, body in before.items():
+            stored = s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            assert stored == body, f"{key} was rewritten"
+
+    def test_generate_draft_labels_refuses_a_forced_class_on_a_packet(
+        self, labeling_env
+    ):
+        """The guard holds for a direct generateDraftLabels call, not just reextract.
+
+        generateDraftLabels accepts documentClass itself, and forwarding it on a
+        packet collapses the harvest to one section exactly as reextract did.
+        """
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        before = self._seed_reextract_packet(
+            s3, [("Payslip", "draft-machine"), ("W2", "draft-machine")]
+        )
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match="has 2 sections"):
+                test_set_index.generate_draft_labels(
+                    {
+                        "input": {
+                            "testSetId": "ts1",
+                            "objectKeys": ["packet.pdf"],
+                            "documentClass": "W2",
+                        }
+                    }
+                )
+
+        mock_lambda.invoke.assert_not_called()
+        for key, body in before.items():
+            stored = s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            assert stored == body, f"{key} was rewritten"
+
+    @pytest.mark.parametrize("object_keys", [None, [], ["a.pdf", "b.pdf"]])
+    def test_generate_draft_labels_forces_a_class_onto_exactly_one_document(
+        self, labeling_env, object_keys
+    ):
+        """Without one named document a forced class would land on a whole set."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=2)
+        for name in ("a.pdf", "b.pdf"):
+            s3.put_object(Bucket="test-set-bucket", Key=f"ts1/input/{name}", Body=b"x")
+        args = {"testSetId": "ts1", "documentClass": "W2"}
+        if object_keys is not None:
+            args["objectKeys"] = object_keys
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match="exactly one objectKey"):
+                test_set_index.generate_draft_labels({"input": args})
+
+        mock_lambda.invoke.assert_not_called()
+
+    def test_generate_draft_labels_forces_a_class_onto_one_single_section_document(
+        self, labeling_env
+    ):
+        """The case forcing exists for still reaches the runner."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        self._seed_reextract_packet(s3, [("Payslip", "draft-machine")])
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(read=lambda: b'{"testRunId": "ts1-one"}')
+            }
+            mock_boto3.client.return_value = mock_lambda
+            test_set_index.generate_draft_labels(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKeys": ["packet.pdf"],
+                        "documentClass": "W2",
+                    }
+                }
+            )
+
+        payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
+        assert payload["arguments"]["input"]["documentClass"] == "W2"
+
+    def test_reextract_without_a_class_still_runs_on_a_multi_section_document(
+        self, labeling_env
+    ):
+        """No forced class means an ordinary re-run: nothing is stamped up front."""
+        table, s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        before = self._seed_reextract_packet(
+            s3, [("Payslip", "draft-machine"), ("W2", "draft-machine")]
+        )
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(read=lambda: b'{"testRunId": "ts1-rerun"}')
+            }
+            mock_boto3.client.return_value = mock_lambda
+            result = test_set_index.reextract_test_set_document(
+                {"input": {"testSetId": "ts1", "objectKey": "packet.pdf"}}
+            )
+
+        assert result["jobId"] == "ts1-rerun"
+        payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
+        assert "documentClass" not in payload["arguments"]["input"]
+        for key, body in before.items():
+            stored = s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            assert stored == body, f"{key} was rewritten"
+
     def test_reextract_demotes_a_reviewed_label_so_the_harvest_can_replace_it(
         self, labeling_env
     ):
@@ -4170,19 +4339,14 @@ class TestTestSetResolver:
         assert "reextractTestSetDocument" in allowed
         assert "getDraftLabelJob" in allowed
 
-    def test_the_resolvers_scope_check_is_the_shared_rule_with_its_profile_resolver(
-        self,
-    ):
+    def test_the_resolvers_scope_check_is_the_shared_rule(self):
         """`_assert_set_access` is what every branch calls: it must be the shared rule
-        (`assert_can_access_test_set`) given this resolver's profile resolution, or a
-        Reviewer would be decided by a different rule here than in getFileContents."""
+        (`assert_can_access_test_set`) as is, or a caller would be decided by a
+        different rule here than in getFileContents."""
         source = pathlib.Path(test_set_index.__file__).read_text(encoding="utf-8")
         body = source[source.index("def _assert_set_access(") :]
         body = body[: body.index("\ndef ")]
-        assert (
-            "assert_can_access_test_set(event, test_set_id, set_profile=_scope_profile)"
-            in body
-        )
+        assert "assert_can_access_test_set(event, test_set_id)" in body
 
     def test_every_annotator_field_asserts_per_set_scope(self):
         """Group membership alone would expose other teams' sets.
@@ -10710,7 +10874,7 @@ class TestSectionDrafts:
 
     @pytest.mark.parametrize("group", ["Reviewer", "Viewer"])
     def test_other_roles_are_refused_by_group(self, drafts_env, group):
-        with pytest.raises(Exception, match="Unauthorized"):
+        with pytest.raises(PermissionError, match="Unauthorized"):
             test_set_index.handler(_draft_event([group], "x@example.com"), None)
 
     def test_a_stale_base_revision_is_refused(self, drafts_env):
@@ -10879,3 +11043,2592 @@ class TestSectionDrafts:
         test_set_index.handler(_draft_event(["Annotator"]), None)
         after = summarize_document(s3, "test-set-bucket", "ts1", "a.pdf")
         assert after == before
+
+
+def _baseline_bytes(s3, object_key="packet.pdf", test_set_id="ts1"):
+    """Every baseline section file of a document, key -> exact bytes."""
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
+    return {
+        o["Key"]: s3.get_object(Bucket="test-set-bucket", Key=o["Key"])["Body"].read()
+        for o in s3.list_objects_v2(Bucket="test-set-bucket", Prefix=prefix).get(
+            "Contents", []
+        )
+    }
+
+
+@pytest.mark.unit
+class TestReextractOneSection:
+    """#1699: re-extract one section of a multi-section document under a new class.
+
+    The run re-processes the whole document with its grouping forced — every other
+    section keeps the pages, class and id its baseline records — and the harvest
+    replaces only the targeted section's label. Every other section's file must be
+    byte-identical before and after, reviewed or not.
+    """
+
+    #: Section 1 is reviewed, 2 is a draft, 3 is authored ground truth (no
+    #: labelSource); section 3's pages are in a manual reading order.
+    PACKET = [
+        ("1", "Payslip", "reviewed-human", [0, 1]),
+        ("2", "W2", "draft-machine", [2]),
+        ("3", "Bank-checks", None, [5, 3, 4]),
+    ]
+
+    def _seed(self, table, s3, packet=None):
+        _seed_test_set(table, "ts1", fileCount=1)
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/packet.pdf", Body=b"x")
+        for sid, cls, source, pages in packet or self.PACKET:
+            body = {
+                "document_class": {"type": cls},
+                "split_document": {"page_indices": pages},
+                "inference_result": {f"{cls}_field": f"old-{sid}"},
+            }
+            if source:
+                body["labelSource"] = source
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=f"ts1/baseline/packet.pdf/sections/{sid}/result.json",
+                Body=json.dumps(body, indent=2).encode(),
+            )
+        return _baseline_bytes(s3)
+
+    def _reextract(self, section_id, document_class="Bank-statement", run_id="run2"):
+        """Call the resolver with the runner stubbed; return (result, runner input)."""
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(
+                    read=lambda: json.dumps({"testRunId": run_id}).encode()
+                )
+            }
+            mock_boto3.client.return_value = mock_lambda
+            args = {"testSetId": "ts1", "objectKey": "packet.pdf"}
+            if document_class is not None:
+                args["documentClass"] = document_class
+            if section_id is not None:
+                args["sectionId"] = section_id
+            result = test_set_index.reextract_test_set_document({"input": args})
+        payload = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])
+        return result, payload["arguments"]["input"]
+
+    def _refused(self, section_id, document_class="Bank-statement"):
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            args = {"testSetId": "ts1", "objectKey": "packet.pdf"}
+            if document_class is not None:
+                args["documentClass"] = document_class
+            if section_id is not None:
+                args["sectionId"] = section_id
+            with pytest.raises(ValueError) as caught:
+                test_set_index.reextract_test_set_document({"input": args})
+        mock_lambda.invoke.assert_not_called()
+        return str(caught.value)
+
+    @staticmethod
+    def _past_the_regroup_refusal():
+        """Re-group as if the run were not in flight.
+
+        ``updateTestSetDocumentSections`` refuses while a labeling job is still to
+        write the document (#1728). The harvest's own check is still needed behind
+        that refusal — a job past the stale age does not block, and the baseline
+        has other writers — so these tests reach it directly.
+        """
+        return patch.object(
+            test_set_index, "_label_job_to_write", return_value=(None, None)
+        )
+
+    def _run_pipeline(self, table, s3, run_input, run_id="run2"):
+        """Stand in for the pipeline: one result per section the run was told to
+        build, as the classification step would build them from the grouping."""
+        grouping = decode_forced_sections(run_input["documentSections"])
+        assert grouping, "the run was given no grouping"
+        sections = []
+        for entry in grouping:
+            key = f"{run_id}/packet.pdf/sections/{entry['section_id']}/result.json"
+            body = {
+                "document_class": {"type": entry["classification"]},
+                "split_document": {"page_indices": entry["page_indices"]},
+                "inference_result": {"new_field": f"new-{entry['section_id']}"},
+                "explainability_info": [{"new_field": {"confidence": 0.9}}],
+            }
+            s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+            sections.append(
+                {
+                    "Id": entry["section_id"],
+                    "OutputJSONUri": f"s3://output-bucket/{key}",
+                }
+            )
+        _seed_completed_run(
+            table, run_id, "ts1", ["packet.pdf"], {"packet.pdf": sections}
+        )
+        return grouping
+
+    def test_the_run_keeps_every_other_section_and_corrects_one(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        _result, run_input = self._reextract("2")
+
+        assert decode_forced_sections(run_input["documentSections"]) == [
+            {"section_id": "1", "classification": "Payslip", "page_indices": [0, 1]},
+            {
+                "section_id": "2",
+                "classification": "Bank-statement",
+                "page_indices": [2],
+            },
+            {
+                "section_id": "3",
+                "classification": "Bank-checks",
+                "page_indices": [5, 3, 4],
+            },
+        ]
+        assert run_input["objectKeys"] == ["packet.pdf"]
+        # Not a whole-document class: a pipeline that read only `document-class`
+        # would merge every section into one.
+        assert "documentClass" not in run_input
+
+    def test_the_grouping_is_in_page_order_whatever_the_ids(self, labeling_env):
+        """Sections are listed from S3 in key order ("1", "10", "2"), which need not
+        be page order; the run builds them in page order, as classification would,
+        because consumers read a section's position in the list."""
+        table, s3 = labeling_env
+        self._seed(
+            table,
+            s3,
+            [
+                ("1", "Payslip", "draft-machine", [4]),
+                ("10", "W2", "draft-machine", [0, 1]),
+                ("2", "Bank-checks", "draft-machine", [2, 3]),
+            ],
+        )
+
+        _result, run_input = self._reextract("2")
+
+        grouping = decode_forced_sections(run_input["documentSections"])
+        assert grouping
+        assert [(g["section_id"], g["page_indices"]) for g in grouping] == [
+            ("10", [0, 1]),
+            ("2", [2, 3]),
+            ("1", [4]),
+        ]
+
+    def test_only_the_targeted_section_changes_after_the_run(self, labeling_env):
+        """The acceptance criterion, end to end through the resolver and the harvest:
+        the targeted section gets the new class and fields; every other section is
+        byte-identical, the reviewed one included, and nothing is pruned."""
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "COMPLETED"
+        after = _baseline_bytes(s3)
+        assert sorted(after) == sorted(before)
+        target = "ts1/baseline/packet.pdf/sections/2/result.json"
+        for key in before:
+            if key != target:
+                assert after[key] == before[key], f"{key} changed"
+        written = json.loads(after[target])
+        assert written["document_class"]["type"] == "Bank-statement"
+        assert written["inference_result"] == {"new_field": "new-2"}
+        assert written["split_document"]["page_indices"] == [2]
+        assert written["labelSource"] == "draft-machine"
+
+    def test_a_reviewed_target_is_demoted_and_replaced(self, labeling_env):
+        """Asking for a re-extract after a class correction asserts the reviewed
+        values are wrong, as for a single-section document — but only for the
+        section asked about."""
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        result, run_input = self._reextract("1")
+        stamped = json.loads(
+            _baseline_bytes(s3)["ts1/baseline/packet.pdf/sections/1/result.json"]
+        )
+        assert stamped["labelSource"] == "draft-machine"
+        assert stamped["document_class"]["type"] == "Bank-statement"
+        self._run_pipeline(table, s3, run_input)
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        after = _baseline_bytes(s3)
+        target = "ts1/baseline/packet.pdf/sections/1/result.json"
+        assert json.loads(after[target])["inference_result"] == {"new_field": "new-1"}
+        assert json.loads(after[target])["split_document"]["page_indices"] == [0, 1]
+        for key in before:
+            if key != target:
+                assert after[key] == before[key], f"{key} changed"
+
+    def test_before_the_run_only_the_targeted_file_is_written(self, labeling_env):
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        self._reextract("2")
+
+        after = _baseline_bytes(s3)
+        target = "ts1/baseline/packet.pdf/sections/2/result.json"
+        assert {k for k in before if after[k] != before[k]} == {target}
+
+    def test_the_job_records_its_section(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        self._reextract("3")
+
+        job = table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#run2"})["Item"]
+        assert job["sectionId"] == "3"
+        assert job["objectKeys"] == ["packet.pdf"]
+
+    def test_a_run_that_lost_the_section_fails_rather_than_reporting_success(
+        self, labeling_env
+    ):
+        """Nothing written plus COMPLETED would put "Re-extracted as X" on screen
+        beside the old fields."""
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        result, _run_input = self._reextract("2")
+        uri = _seed_pipeline_result(s3, "run2/packet.pdf/sections/1/result.json", {})
+        _seed_completed_run(
+            table,
+            "run2",
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        after = _baseline_bytes(s3)
+        for key in before:
+            if not key.endswith("/2/result.json"):
+                assert after[key] == before[key], f"{key} changed"
+
+    @pytest.mark.parametrize(
+        "drift",
+        [
+            {"document_class": {"type": "W2"}},
+            {"split_document": {"page_indices": [2, 3]}},
+            {"split_document": {}},
+        ],
+        ids=["another-class", "other-pages", "no-pages"],
+    )
+    def test_a_run_that_ignored_the_grouping_writes_nothing(self, labeling_env, drift):
+        """A run that never applied the grouping — Bedrock Data Automation mode does
+        not run the classification step that applies it — can still produce a
+        section with the targeted id, covering other pages or under another class.
+        Harvesting it would put another span's fields into this label."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        stamped = _baseline_bytes(s3)
+        self._run_pipeline(table, s3, run_input)
+        key = "run2/packet.pdf/sections/2/result.json"
+        body = json.loads(s3.get_object(Bucket="output-bucket", Key=key)["Body"].read())
+        body.update(drift)
+        s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert _baseline_bytes(s3) == stamped
+        # The reason is the job's error, not a generic count.
+        assert "did not keep section 2 as asked" in job["error"]
+
+    def test_a_reordered_section_is_not_the_section_asked_for(self, labeling_env):
+        """Page order is reading order, which graded packet scoring compares, so a
+        result covering the same pages in another order is refused too."""
+        table, s3 = labeling_env
+        packet = [*self.PACKET[:2], ("3", "Bank-checks", "draft-machine", [5, 3, 4])]
+        self._seed(table, s3, packet)
+
+        result, run_input = self._reextract("3")
+        stamped = _baseline_bytes(s3)
+        self._run_pipeline(table, s3, run_input)
+        key = "run2/packet.pdf/sections/3/result.json"
+        body = json.loads(s3.get_object(Bucket="output-bucket", Key=key)["Body"].read())
+        body["split_document"] = {"page_indices": [3, 4, 5]}
+        s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert _baseline_bytes(s3) == stamped
+
+    def test_a_target_with_no_output_fails_the_job(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        item = table.get_item(Key={"PK": "doc#run2/packet.pdf", "SK": "none"})["Item"]
+        for section in item["Sections"]:
+            if section["Id"] == "2":
+                section.pop("OutputJSONUri")
+        table.put_item(Item=item)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+
+    def test_a_regroup_during_the_run_is_not_overwritten(self, labeling_env):
+        """Re-grouping renumbers sections. Were it to happen while the run is in
+        flight (see _past_the_regroup_refusal), by the time the harvest runs the
+        targeted id could name other pages;
+        writing the result there would put two sections on one page."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        # Split section 1 (pages 0, 1) in two: section 2 is now page 1.
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0],
+                            },
+                            {
+                                "sectionId": "new",
+                                "documentClass": "Payslip",
+                                "pageIndices": [1],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "Bank-statement",
+                                "pageIndices": [2],
+                            },
+                            {
+                                "sectionId": "3",
+                                "documentClass": "Bank-checks",
+                                "pageIndices": [5, 3, 4],
+                            },
+                        ],
+                    }
+                }
+            )
+        regrouped = _baseline_bytes(s3)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert "was changed while it was being re-extracted" in job["error"]
+        assert _baseline_bytes(s3) == regrouped
+
+    def test_pages_moved_into_the_section_during_the_run_are_not_overwritten(
+        self, labeling_env
+    ):
+        """Same id, same corrected class, but a page moved into it while the run was
+        in flight: the result covers only the old pages, so it is not written."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "Bank-statement",
+                                "pageIndices": [1, 2],
+                            },
+                            {
+                                "sectionId": "3",
+                                "documentClass": "Bank-checks",
+                                "pageIndices": [5, 3, 4],
+                            },
+                        ],
+                    }
+                }
+            )
+        moved = _baseline_bytes(s3)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert _baseline_bytes(s3) == moved
+
+    def test_a_section_removed_during_the_run_is_not_recreated(self, labeling_env):
+        """Merged away while the run was in flight: writing the result would bring
+        the section back over pages the reviewer just gave to another one."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0, 1, 2, 5, 3, 4],
+                            }
+                        ],
+                    }
+                }
+            )
+        merged = _baseline_bytes(s3)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert "was removed while it was being re-extracted" in job["error"]
+        assert _baseline_bytes(s3) == merged
+
+    def test_a_concurrent_pass_keeps_the_specific_reason(self, labeling_env):
+        """Two polls harvest the same RUNNING job; the second loses the conditional
+        write, merges the first's progress and must not replace its reason with
+        the generic one."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        key = "run2/packet.pdf/sections/2/result.json"
+        body = json.loads(s3.get_object(Bucket="output-bucket", Key=key)["Body"].read())
+        body["document_class"] = {"type": "W2"}
+        s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+        job_key = {"PK": "testset#ts1", "SK": f"labeljob#{result['jobId']}"}
+        stale = table.get_item(Key=job_key)["Item"]
+
+        first = test_set_index._harvest_label_job(dict(stale))
+        assert "did not keep section 2 as asked" in first["error"]
+        with patch.object(
+            test_set_index,
+            "_write_draft_labels_for_doc",
+            side_effect=RuntimeError("S3 slow"),
+        ):
+            test_set_index._harvest_label_job(dict(stale))
+
+        stored = table.get_item(Key=job_key)["Item"]
+        assert stored["status"] == "FAILED"
+        assert "did not keep section 2 as asked" in stored["error"]
+
+    @pytest.mark.parametrize(
+        "status, section_id, expected",
+        [
+            ("RUNNING", "2", "run2"),
+            ("COMPLETED", "2", "run2"),
+            ("FAILED", None, "run1"),
+            ("FAILED", "2", "run1"),
+        ],
+        ids=[
+            "running-section-job",
+            "completed-section-job",
+            "failed-whole-document-job",
+            "failed-section-job",
+        ],
+    )
+    def test_which_run_a_document_is_reviewed_on(
+        self, labeling_env, status, section_id, expected
+    ):
+        """A failed job is passed over, section-scoped or not: it labeled nothing,
+        so none of its copies is marked as a test-set document (#1728). A job in
+        flight or completed resolves as it always did."""
+        table, _s3 = labeling_env
+        for run_id, created, extra in (
+            ("run1", "2000-01-01T00:00:00Z", {"status": "COMPLETED"}),
+            ("run2", "2000-01-02T00:00:00Z", {"status": status}),
+        ):
+            item = {
+                "PK": "testset#ts1",
+                "SK": f"labeljob#{run_id}",
+                "testSetId": "ts1",
+                "jobId": run_id,
+                "objectKeys": ["packet.pdf"],
+                "createdAt": created,
+                **extra,
+            }
+            if run_id == "run2" and section_id:
+                item["sectionId"] = section_id
+            table.put_item(Item=item)
+
+        per_doc, _default = test_set_index._run_id_by_object_key("ts1")
+
+        assert per_doc == {"packet.pdf": expected}
+
+    def test_a_poll_before_the_copier_lists_the_run_waits(self, labeling_env):
+        """Measured on a live stack: the first poll, under a second after the job
+        was created, found a run with no file list yet and completed the job with
+        nothing harvested. Until the copier records the files the job waits."""
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        result, _run_input = self._reextract("2")
+        table.put_item(
+            Item={
+                "PK": f"testrun#{result['jobId']}",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": [],
+                "Status": "QUEUED",
+            }
+        )
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "RUNNING"
+        target = "ts1/baseline/packet.pdf/sections/2/result.json"
+        assert {k for k in before if _baseline_bytes(s3)[k] != before[k]} == {target}
+
+    def test_a_class_changed_during_the_run_is_not_overwritten(self, labeling_env):
+        """Same pages, a newer class chosen in Edit Page Grouping while the run was
+        in flight: the reviewer's later choice wins."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        self._run_pipeline(table, s3, run_input)
+        with self._past_the_regroup_refusal():
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {
+                                "sectionId": "1",
+                                "documentClass": "Payslip",
+                                "pageIndices": [0, 1],
+                            },
+                            {
+                                "sectionId": "2",
+                                "documentClass": "W2",
+                                "pageIndices": [2],
+                            },
+                            {
+                                "sectionId": "3",
+                                "documentClass": "Bank-checks",
+                                "pageIndices": [5, 3, 4],
+                            },
+                        ],
+                    }
+                }
+            )
+        changed = _baseline_bytes(s3)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert _baseline_bytes(s3) == changed
+
+    def test_a_failed_section_job_is_not_the_documents_review_run(self, labeling_env):
+        """The queue keys a document's review on its newest run's copy, and a failed
+        section-scoped run's copy may not have the baseline's sections."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        result, run_input = self._reextract("2")
+        # The run that drafted the labels, earlier than the re-extract.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#run1",
+                "testSetId": "ts1",
+                "jobId": "run1",
+                "status": "COMPLETED",
+                "objectKeys": ["packet.pdf"],
+                "createdAt": "2000-01-01T00:00:00Z",
+            }
+        )
+        self._run_pipeline(table, s3, run_input)
+        key = "run2/packet.pdf/sections/2/result.json"
+        body = json.loads(s3.get_object(Bucket="output-bucket", Key=key)["Body"].read())
+        body["document_class"] = {"type": "W2"}
+        s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        assert job["status"] == "FAILED"
+
+        per_doc, _default = test_set_index._run_id_by_object_key("ts1")
+        assert per_doc == {"packet.pdf": "run1"}
+
+    @pytest.mark.parametrize(
+        "kwargs, extra",
+        [
+            ({"section_id": None}, {}),
+            ({"section_id": "1"}, {"documentClass": "W2"}),
+            ({"section_id": "1"}, {"objectKeys": ["packet.pdf", "other.pdf"]}),
+        ],
+        ids=["no-section", "with-a-class", "two-documents"],
+    )
+    def test_a_grouping_describes_one_document_and_one_section(
+        self, labeling_env, kwargs, extra
+    ):
+        table, s3 = labeling_env
+        self._seed(table, s3)
+        args = {"testSetId": "ts1", "objectKeys": ["packet.pdf"], **extra}
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_boto3.client.return_value = mock_lambda
+            with pytest.raises(ValueError, match="forced section grouping"):
+                test_set_index.generate_draft_labels(
+                    {"input": args}, forced_sections='[["1","W2","0"]]', **kwargs
+                )
+        mock_lambda.invoke.assert_not_called()
+
+    def test_the_job_records_what_the_section_must_come_back_as(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        self._reextract("3")
+
+        job = table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#run2"})["Item"]
+        assert job["sectionClass"] == "Bank-statement"
+        assert [int(p) for p in job["sectionPages"]] == [5, 3, 4]
+
+    def test_an_authored_target_keeps_its_values(self, labeling_env):
+        """Authored ground truth is never overwritten by a machine draft; the
+        class correction lands and the harvest leaves the fields alone."""
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        result, run_input = self._reextract("3")
+        self._run_pipeline(table, s3, run_input)
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        after = _baseline_bytes(s3)
+        target = "ts1/baseline/packet.pdf/sections/3/result.json"
+        assert json.loads(after[target])["inference_result"] == {
+            "Bank-checks_field": "old-3"
+        }
+        assert json.loads(after[target])["document_class"]["type"] == "Bank-statement"
+        for key in before:
+            if key != target:
+                assert after[key] == before[key], f"{key} changed"
+
+    def test_a_whole_document_class_on_a_packet_names_the_alternative(
+        self, labeling_env
+    ):
+        """Refused as before (#1672), and the message says what to do instead."""
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        message = self._refused(None)
+
+        assert "merge all 3 sections into one" in message
+        assert "pass sectionId to re-extract a single section" in message
+        assert _baseline_bytes(s3) == before
+
+    @pytest.mark.parametrize(
+        "section_id, document_class, reason",
+        [
+            ("9", "W2", "has no section '9'"),
+            ("../1", "W2", "Invalid sectionId"),
+            ("1/../2", "W2", "Invalid sectionId"),
+            ("2", None, "needs a documentClass"),
+            ("2", "W2;rm", "Invalid document class"),
+        ],
+    )
+    def test_a_bad_request_writes_nothing(
+        self, labeling_env, section_id, document_class, reason
+    ):
+        table, s3 = labeling_env
+        before = self._seed(table, s3)
+
+        assert reason in self._refused(section_id, document_class)
+        assert _baseline_bytes(s3) == before
+
+    @pytest.mark.parametrize(
+        "broken, reason",
+        [
+            ({"split_document": {"page_indices": []}}, "records no pages"),
+            ({"split_document": {}}, "records no pages"),
+            ({"document_class": {}}, "has no class"),
+            ({"document_class": None}, "has no class"),
+        ],
+    )
+    def test_another_section_that_cannot_be_reproduced_refuses_the_run(
+        self, labeling_env, broken, reason
+    ):
+        """Every section is rebuilt from its baseline, so one the run could not keep
+        as it is would be regrouped or lost."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+        key = "ts1/baseline/packet.pdf/sections/3/result.json"
+        body = json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+        )
+        body.update(broken)
+        s3.put_object(Bucket="test-set-bucket", Key=key, Body=json.dumps(body).encode())
+        before = _baseline_bytes(s3)
+
+        assert reason in self._refused("2")
+        assert _baseline_bytes(s3) == before
+
+    def test_a_grouping_too_large_for_object_metadata_is_refused(self, labeling_env):
+        table, s3 = labeling_env
+        packet = [(str(n), "C" * 90, "draft-machine", [n - 1]) for n in range(1, 41)]
+        before = self._seed(table, s3, packet)
+
+        assert "object metadata" in self._refused("2", "W2")
+        assert _baseline_bytes(s3) == before
+
+    def test_the_public_generate_operation_cannot_force_a_grouping(self, labeling_env):
+        """``forced_sections`` is keyword-only; a ``documentSections`` key in the
+        operation's input reaches nothing."""
+        table, s3 = labeling_env
+        self._seed(table, s3)
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(read=lambda: b'{"testRunId": "run3"}')
+            }
+            mock_boto3.client.return_value = mock_lambda
+            test_set_index.generate_draft_labels(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKeys": ["packet.pdf"],
+                        "documentSections": '[["1","W2","0-5"]]',
+                        "sectionId": "1",
+                    }
+                }
+            )
+
+        run_input = json.loads(mock_lambda.invoke.call_args.kwargs["Payload"])[
+            "arguments"
+        ]["input"]
+        assert "documentSections" not in run_input
+        job = table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#run3"})["Item"]
+        assert "sectionId" not in job
+
+    def test_a_single_section_document_keeps_the_whole_document_form(
+        self, labeling_env
+    ):
+        """Unchanged: a forced class with no sectionId on one section."""
+        table, s3 = labeling_env
+        self._seed(table, s3, [("1", "Payslip", "draft-machine", [0, 1])])
+
+        _result, run_input = self._reextract(None, "W2")
+
+        assert run_input["documentClass"] == "W2"
+        assert "documentSections" not in run_input
+
+
+#: The #1699 fixtures (a three-section packet, the resolver call with the runner
+#: stubbed, and a pipeline that builds the sections it was told to), reused rather
+#: than copied.
+_SECTION_FIXTURES = TestReextractOneSection()
+
+
+def _fail_the_section_run(table, s3, run_input, run_id="run2"):
+    """Run the section-scoped pipeline, then make it come back with the wrong class,
+    which is what a pipeline that ignored the forced grouping produces."""
+    _SECTION_FIXTURES._run_pipeline(table, s3, run_input, run_id=run_id)
+    key = f"{run_id}/packet.pdf/sections/2/result.json"
+    body = json.loads(s3.get_object(Bucket="output-bucket", Key=key)["Body"].read())
+    body["document_class"] = {"type": "W2"}
+    s3.put_object(Bucket="output-bucket", Key=key, Body=json.dumps(body))
+
+
+def _reextract_on_a_legacy_set(section_id):
+    """``_reextract`` for a set whose pointer names a run with no job record.
+
+    The resolver reads that run's configuration through ``boto3``, which the stub
+    replaces; the configuration is not what these tests are about.
+    """
+    with patch.object(
+        test_set_index, "_resolve_set_config_version", return_value=(None, None)
+    ):
+        return _SECTION_FIXTURES._reextract(section_id)
+
+
+@pytest.mark.unit
+class TestReviewRunWithoutEarlierJobRecords:
+    """#1728 item 1: which run a document is reviewed on when the set has no
+    ``labeljob#`` record older than a failed section-scoped re-extract.
+
+    Starting a job repoints the set's ``labelJobId`` at it, so the pointer names the
+    failed run; falling back to the pointer made that run the review run, whose copy
+    of the document may not have the baseline's sections.
+    """
+
+    def _queue_entry(self, s3):
+        _build_queue_summaries(s3)
+        result = test_set_index.get_annotation_queue({"testSetId": "ts1"}, None)
+        return {d["objectKey"]: d for d in result["documents"]}
+
+    def test_authored_ground_truth_has_no_review_run_after_a_failed_reextract(
+        self, labeling_env
+    ):
+        """No drafting run ever processed the document, so it has no pipeline copy
+        to review; the failed run's copy is not one."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3)
+
+        result, run_input = _SECTION_FIXTURES._reextract("2")
+        _fail_the_section_run(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        assert job["status"] == "FAILED"
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta["labelJobId"] == "run2", "precondition: the pointer names it"
+
+        assert self._queue_entry(s3)["packet.pdf"]["reviewObjectKey"] is None
+        assert (
+            test_set_index._claim_state_for_documents(
+                "ts1", meta, [{"objectKey": "packet.pdf"}]
+            )
+            == {}
+        )
+
+    def test_a_legacy_drafting_run_stays_the_review_run_after_a_failed_reextract(
+        self, labeling_env
+    ):
+        """A set drafted before job records existed names its run only through the
+        pointer. Starting the re-extract overwrites that pointer, so the job keeps
+        the run it replaced."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelJobId = :j",
+            ExpressionAttributeValues={":j": "run0"},
+        )
+        table.put_item(
+            Item={
+                "PK": "doc#run0/packet.pdf",
+                "SK": "none",
+                "ObjectStatus": "COMPLETED",
+            }
+        )
+
+        result, run_input = _reextract_on_a_legacy_set("2")
+        _fail_the_section_run(table, s3, run_input)
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert self._queue_entry(s3)["packet.pdf"]["reviewObjectKey"] == (
+            "run0/packet.pdf"
+        )
+
+    def test_a_legacy_run_still_covers_the_documents_a_reextract_did_not_name(
+        self, labeling_env
+    ):
+        """A successful one-document re-extract on a legacy set used to leave every
+        other document with no review run at all, because the pointer fallback
+        applied only while the set had no job records."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3)
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": "metadata"},
+            UpdateExpression="SET labelJobId = :j, fileCount = :n",
+            ExpressionAttributeValues={":j": "run0", ":n": 2},
+        )
+        s3.put_object(Bucket="test-set-bucket", Key="ts1/input/other.pdf", Body=b"x")
+        s3.put_object(
+            Bucket="test-set-bucket",
+            Key="ts1/baseline/other.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {"document_class": {"type": "W2"}, "labelSource": "draft-machine"}
+            ).encode(),
+        )
+        for name in ("packet.pdf", "other.pdf"):
+            table.put_item(
+                Item={
+                    "PK": f"doc#run0/{name}",
+                    "SK": "none",
+                    "ObjectStatus": "COMPLETED",
+                }
+            )
+
+        result, run_input = _reextract_on_a_legacy_set("2")
+        _SECTION_FIXTURES._run_pipeline(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        assert job["status"] == "COMPLETED"
+
+        entries = self._queue_entry(s3)
+        assert entries["packet.pdf"]["reviewObjectKey"] == "run2/packet.pdf"
+        assert entries["other.pdf"]["reviewObjectKey"] == "run0/other.pdf"
+
+    def test_a_replaced_pointer_that_names_a_recorded_job_is_not_a_legacy_run(
+        self, labeling_env
+    ):
+        """Only a run with no job record of its own is a legacy drafting run. If the
+        oldest record's replaced pointer names another recorded job (clock skew
+        between two starts), that job covers only the documents it names."""
+        table, _s3 = labeling_env
+        for run_id, created, extra in (
+            ("runA", "2000-01-01T00:00:00Z", {"previousLabelJobId": "runB"}),
+            ("runB", "2000-01-02T00:00:00Z", {}),
+        ):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "objectKeys": ["a.pdf"] if run_id == "runA" else ["b.pdf"],
+                    "createdAt": created,
+                    **extra,
+                }
+            )
+
+        per_doc, default = test_set_index._run_id_by_object_key("ts1", {})
+
+        assert per_doc == {"a.pdf": "runA", "b.pdf": "runB"}
+        assert default is None
+
+
+def _seed_running_job(table, job_id, object_keys, **extra):
+    item = {
+        "PK": "testset#ts1",
+        "SK": f"labeljob#{job_id}",
+        "testSetId": "ts1",
+        "jobId": job_id,
+        "status": "RUNNING",
+        "total": len(object_keys),
+        "labeled": 0,
+        "objectKeys": object_keys,
+        "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    item.update(extra)
+    table.put_item(Item=item)
+
+
+@pytest.mark.unit
+class TestHarvestErrorEndsTheJob:
+    """#1728 item 4: a document whose results cannot be copied is not success.
+
+    The harvest deliberately does not count such a document as pending, so that one
+    that fails every time cannot hold the job open. Nor did it count it as failed,
+    so a one-document job — every re-extract — ended COMPLETED with nothing written,
+    and the editor reported the re-extract as done over unchanged fields.
+    """
+
+    def _seed_unreadable_result(self, table, s3, files=("a.pdf",)):
+        _seed_test_set(table, "ts1", fileCount=len(files))
+        sections = {
+            # A section whose result object does not exist: get_object raises the
+            # ordinary NoSuchKey, not one of the cases the harvest names.
+            name: [{"Id": "1", "OutputJSONUri": f"s3://output-bucket/run1/{name}/gone"}]
+            for name in files
+        }
+        _seed_completed_run(table, "run1", "ts1", list(files), sections)
+        _seed_running_job(table, "run1", list(files))
+
+    def test_a_one_document_job_whose_copy_raises_fails_with_the_reason(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        self._seed_unreadable_result(table, s3)
+
+        result = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": "run1"}
+        )
+
+        assert result["status"] == "FAILED"
+        assert result["labeled"] == 0
+        assert "a.pdf" in result["error"]
+        assert "could not be copied" in result["error"]
+        assert result["failedDocuments"] == 1
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+        assert meta["labelJobStatus"] == "FAILED"
+
+    def test_a_job_that_labeled_something_still_completes(self, labeling_env):
+        """Unchanged: one document copied and one that raised is a partial success,
+        and the one that raised is retried while the job is in flight."""
+        table, s3 = labeling_env
+        self._seed_unreadable_result(table, s3, files=("a.pdf", "b.pdf"))
+        uri = _seed_pipeline_result(s3, "run1/b.pdf/sections/1/result.json", {"x": 1})
+        table.update_item(
+            Key={"PK": "doc#run1/b.pdf", "SK": "none"},
+            UpdateExpression="SET Sections = :s",
+            ExpressionAttributeValues={":s": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+
+        result = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": "run1"}
+        )
+
+        assert result["status"] == "COMPLETED"
+        assert result["labeled"] == 1
+        assert result["failedDocuments"] == 0
+
+
+@pytest.mark.unit
+class TestRegroupWhileALabelingJobRuns:
+    """#1728 item 3: re-grouping a document is refused while a labeling job is still
+    to write its labels.
+
+    The harvest writes the run's sections over the baseline, so a grouping saved in
+    between is overwritten by a whole-document run (and its extra sections pruned),
+    and makes a section-scoped run fail. A job that has already written the
+    document, a job on other documents and a job too old to finish do not block.
+    """
+
+    SINGLE = [("1", "Payslip", "draft-machine", [0, 1])]
+    REGROUP = [
+        {"sectionId": "1", "documentClass": "Payslip", "pageIndices": [0]},
+        {"sectionId": "new", "documentClass": "W2", "pageIndices": [1]},
+    ]
+
+    def _regroup(self):
+        return test_set_index.update_test_set_document_sections(
+            {
+                "input": {
+                    "testSetId": "ts1",
+                    "objectKey": "packet.pdf",
+                    "sections": self.REGROUP,
+                }
+            }
+        )
+
+    def _start_whole_document_reextract(self, table, s3, status="RUNNING"):
+        """A whole-document re-extract whose run has listed the document and has
+        not finished processing it."""
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, _run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        table.put_item(
+            Item={
+                "PK": f"testrun#{result['jobId']}",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": ["packet.pdf"],
+                "Status": "RUNNING",
+            }
+        )
+        table.put_item(
+            Item={
+                "PK": f"doc#{result['jobId']}/packet.pdf",
+                "SK": "none",
+                "ObjectStatus": status,
+                "Sections": [],
+            }
+        )
+        return result, _baseline_bytes(s3)
+
+    def test_refused_while_a_reextract_is_still_to_write_the_document(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        _result, stamped = self._start_whole_document_reextract(table, s3)
+
+        with pytest.raises(ValueError) as caught:
+            self._regroup()
+
+        message = str(caught.value)
+        assert "packet.pdf" in message
+        assert "still has labels to be written" in message
+        assert "Edit Page Grouping again" in message
+        assert _baseline_bytes(s3) == stamped
+
+    def test_allowed_once_the_job_has_written_the_document(self, labeling_env):
+        """The check drives the harvest first, so a run that has finished but that
+        nobody has polled since does not block."""
+        table, s3 = labeling_env
+        result, _stamped = self._start_whole_document_reextract(table, s3)
+        key = f"{result['jobId']}/packet.pdf/sections/1/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {"document_class": {"type": "W2"}, "inference_result": {"x": "new"}}
+            ),
+        )
+        uri = f"s3://output-bucket/{key}"
+        table.update_item(
+            Key={"PK": f"doc#{result['jobId']}/packet.pdf", "SK": "none"},
+            UpdateExpression="SET ObjectStatus = :s, Sections = :sec",
+            ExpressionAttributeValues={
+                ":s": "COMPLETED",
+                ":sec": [{"Id": "1", "OutputJSONUri": uri}],
+            },
+        )
+
+        written = self._regroup()
+
+        assert [s["sectionId"] for s in written["sections"]] == ["1", "2"]
+        job = table.get_item(
+            Key={"PK": "testset#ts1", "SK": f"labeljob#{result['jobId']}"}
+        )["Item"]
+        assert job["status"] == "COMPLETED"
+
+    @staticmethod
+    def _seed_run_in_progress(table, run_id, files):
+        """A run whose documents are all still processing, so harvesting its job
+        leaves the job RUNNING. Without the run record the harvest fails the job,
+        and a check that is never reached would pass for the wrong reason."""
+        table.put_item(
+            Item={
+                "PK": f"testrun#{run_id}",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": files,
+                "Status": "RUNNING",
+            }
+        )
+        for name in files:
+            table.put_item(
+                Item={
+                    "PK": f"doc#{run_id}/{name}",
+                    "SK": "none",
+                    "ObjectStatus": "RUNNING",
+                    "Sections": [],
+                }
+            )
+
+    def _job_status(self, table, run_id):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": f"labeljob#{run_id}"})[
+            "Item"
+        ]["status"]
+
+    def test_a_job_on_other_documents_does_not_block(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        self._seed_run_in_progress(table, "run9", ["other.pdf"])
+        _seed_running_job(table, "run9", ["other.pdf"])
+
+        assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "RUNNING"
+
+    def test_a_job_too_old_to_finish_does_not_block(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        old = datetime.now(timezone.utc) - timedelta(
+            hours=test_set_index.STALE_LABEL_JOB_HOURS + 1
+        )
+        self._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(
+            table,
+            "run9",
+            ["packet.pdf"],
+            createdAt=old.isoformat().replace("+00:00", "Z"),
+        )
+
+        assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "RUNNING"
+
+    def test_a_job_that_wrote_this_document_and_waits_on_others_does_not_block(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        self._seed_run_in_progress(table, "run9", ["other.pdf"])
+        table.update_item(
+            Key={"PK": "testrun#run9", "SK": "metadata"},
+            UpdateExpression="SET Files = :f",
+            ExpressionAttributeValues={":f": ["other.pdf", "packet.pdf"]},
+        )
+        _seed_running_job(
+            table, "run9", ["other.pdf", "packet.pdf"], harvestedFiles=["packet.pdf"]
+        )
+
+        assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "RUNNING"
+
+    def test_a_job_the_harvest_fails_does_not_block(self, labeling_env):
+        """A job whose run record is gone is failed by the harvest without naming
+        the document; it will never write it."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        _seed_running_job(table, "run9", ["packet.pdf"])
+
+        assert len(self._regroup()["sections"]) == 2
+        assert self._job_status(table, "run9") == "FAILED"
+
+    def test_a_section_reextract_in_flight_blocks_too(self, labeling_env):
+        table, s3 = labeling_env
+        before = _SECTION_FIXTURES._seed(table, s3)
+        _result, run_input = _SECTION_FIXTURES._reextract("2")
+        stamped = _baseline_bytes(s3)
+        assert stamped != before
+        table.put_item(
+            Item={
+                "PK": "testrun#run2",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": [],
+                "Status": "QUEUED",
+            }
+        )
+
+        with pytest.raises(ValueError, match="still has labels to be written"):
+            test_set_index.update_test_set_document_sections(
+                {
+                    "input": {
+                        "testSetId": "ts1",
+                        "objectKey": "packet.pdf",
+                        "sections": [
+                            {"sectionId": "1", "pageIndices": [0, 1]},
+                            {"sectionId": "2", "pageIndices": [2]},
+                            {"sectionId": "3", "pageIndices": [5, 3, 4]},
+                        ],
+                    }
+                }
+            )
+        assert _baseline_bytes(s3) == stamped
+
+
+@pytest.mark.unit
+class TestWholeDocumentClassNotApplied:
+    """#1728 item 6: a whole-document re-extract whose run did not apply the class.
+
+    Only the classification step applies a forced class, and Bedrock Data Automation
+    mode does not run it, so the run comes back classified by BDA. Writing that over
+    the baseline replaced the class the reviewer had just corrected and reported the
+    re-extract as done. It now fails the way a section re-extract does: nothing is
+    written, and the error says why and what to do instead.
+    """
+
+    SINGLE = [("1", "Payslip", "draft-machine", [0, 1])]
+
+    def _harvest_with_class(self, table, s3, returned_class, packet=None):
+        _SECTION_FIXTURES._seed(table, s3, packet or self.SINGLE)
+        result, run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        assert run_input["documentClass"] == "W2"
+        stamped = _baseline_bytes(s3)
+        key = f"{result['jobId']}/packet.pdf/sections/1/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {
+                    "document_class": {"type": returned_class},
+                    "split_document": {"page_indices": [0, 1]},
+                    "inference_result": {"new_field": "new"},
+                }
+            ),
+        )
+        _seed_completed_run(
+            table,
+            result["jobId"],
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": f"s3://output-bucket/{key}"}]},
+        )
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+        return job, stamped
+
+    def test_a_run_that_ignored_the_class_writes_nothing_and_says_why(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+
+        job, stamped = self._harvest_with_class(table, s3, "Payslip")
+
+        assert job["status"] == "FAILED"
+        assert "'Payslip'" in job["error"] and "'W2'" in job["error"]
+        assert "Bedrock Data Automation" in job["error"]
+        assert _baseline_bytes(s3) == stamped
+        label = json.loads(stamped["ts1/baseline/packet.pdf/sections/1/result.json"])
+        assert label["document_class"]["type"] == "W2"
+
+    def test_a_run_that_applied_the_class_is_written(self, labeling_env):
+        table, s3 = labeling_env
+
+        job, _stamped = self._harvest_with_class(table, s3, "W2")
+
+        assert job["status"] == "COMPLETED"
+        label = json.loads(
+            _baseline_bytes(s3)["ts1/baseline/packet.pdf/sections/1/result.json"]
+        )
+        assert label["inference_result"] == {"new_field": "new"}
+
+    def test_authored_ground_truth_is_not_held_to_the_class(self, labeling_env):
+        """Nothing of the run is written over authored ground truth, so what class
+        it came back as does not matter: the correction stands and the job
+        completes, as it does when the run applied the class."""
+        table, s3 = labeling_env
+
+        job, stamped = self._harvest_with_class(
+            table, s3, "Payslip", packet=[("1", "Payslip", None, [0, 1])]
+        )
+
+        assert job["status"] == "COMPLETED"
+        assert _baseline_bytes(s3) == stamped
+
+    def test_the_job_records_the_class_it_forced(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+
+        _SECTION_FIXTURES._reextract(None, "W2")
+
+        job = table.get_item(Key={"PK": "testset#ts1", "SK": "labeljob#run2"})["Item"]
+        assert job["forcedClass"] == "W2"
+
+
+@pytest.mark.unit
+class TestReviewFollowups1728:
+    """Cases the PR #1737 review measured as wrong or untested."""
+
+    SINGLE = TestWholeDocumentClassNotApplied.SINGLE
+
+    def test_a_failed_whole_document_reextract_is_not_the_review_run(
+        self, labeling_env
+    ):
+        """Its run has a copy of the document under the pipeline's own class, and
+        the harvest never marks that copy as a test-set document, so a review saved
+        on it would reach nothing."""
+        table, s3 = labeling_env
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#run1",
+                "testSetId": "ts1",
+                "jobId": "run1",
+                "status": "COMPLETED",
+                "objectKeys": ["packet.pdf"],
+                "createdAt": "2000-01-01T00:00:00Z",
+            }
+        )
+        with patch.object(
+            test_set_index, "_resolve_set_config_version", return_value=(None, None)
+        ):
+            job, _ = TestWholeDocumentClassNotApplied()._harvest_with_class(
+                table, s3, "Payslip"
+            )
+        assert job["status"] == "FAILED"
+
+        per_doc, _default = test_set_index._run_id_by_object_key("ts1", {})
+
+        assert per_doc == {"packet.pdf": "run1"}
+
+    def test_a_missing_result_is_a_copy_failure_not_an_ignored_class(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, _run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        _seed_completed_run(
+            table,
+            result["jobId"],
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": "s3://output-bucket/gone"}]},
+        )
+
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert "could not be copied" in job["error"]
+        # The reason is S3's, not an artefact of reading a result that is not there.
+        assert "NoSuchKey" in job["error"]
+        assert "Bedrock Data Automation" not in job["error"]
+
+    def test_every_section_must_come_back_as_the_forced_class(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self.SINGLE)
+        result, _run_input = _SECTION_FIXTURES._reextract(None, "W2")
+        stamped = _baseline_bytes(s3)
+        sections = []
+        for sid, cls in (("1", "W2"), ("2", "Payslip")):
+            key = f"{result['jobId']}/packet.pdf/sections/{sid}/result.json"
+            s3.put_object(
+                Bucket="output-bucket",
+                Key=key,
+                Body=json.dumps(
+                    {"document_class": {"type": cls}, "inference_result": {"x": sid}}
+                ),
+            )
+            sections.append({"Id": sid, "OutputJSONUri": f"s3://output-bucket/{key}"})
+        _seed_completed_run(
+            table, result["jobId"], "ts1", ["packet.pdf"], {"packet.pdf": sections}
+        )
+
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "FAILED"
+        assert "'Payslip'" in job["error"]
+        assert _baseline_bytes(s3) == stamped
+
+    def test_the_legacy_run_survives_a_second_reextract(self, labeling_env):
+        """The legacy run is the one the OLDEST job replaced; a later job's replaced
+        pointer names the job before it."""
+        table, _s3 = labeling_env
+        for run_id, created, previous, keys in (
+            ("run2", "2000-01-02T00:00:00Z", "run0", ["a.pdf"]),
+            ("run3", "2000-01-03T00:00:00Z", "run2", ["b.pdf"]),
+        ):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "objectKeys": keys,
+                    "createdAt": created,
+                    "previousLabelJobId": previous,
+                }
+            )
+
+        per_doc, default = test_set_index._run_id_by_object_key("ts1", {})
+
+        assert per_doc == {"a.pdf": "run2", "b.pdf": "run3"}
+        assert default == "run0"
+
+
+@pytest.mark.unit
+class TestRegroupRefusalEdges:
+    """More job shapes for the re-group refusal (#1728 item 3)."""
+
+    _helpers = TestRegroupWhileALabelingJobRuns()
+
+    def test_a_whole_set_job_with_no_named_documents_blocks(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        self._helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", [])
+
+        with pytest.raises(ValueError, match="still has labels to be written"):
+            self._helpers._regroup()
+
+    def test_a_job_that_gave_up_on_this_document_does_not_block(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        self._helpers._seed_run_in_progress(table, "run9", ["other.pdf"])
+        table.update_item(
+            Key={"PK": "testrun#run9", "SK": "metadata"},
+            UpdateExpression="SET Files = :f",
+            ExpressionAttributeValues={":f": ["other.pdf", "packet.pdf"]},
+        )
+        _seed_running_job(
+            table, "run9", ["other.pdf", "packet.pdf"], failedFiles=["packet.pdf"]
+        )
+
+        assert len(self._helpers._regroup()["sections"]) == 2
+        assert self._helpers._job_status(table, "run9") == "RUNNING"
+
+    def test_a_harvest_that_raises_is_not_reported_as_progress(self, labeling_env):
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        self._helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+
+        with patch.object(
+            test_set_index, "_harvest_label_job", side_effect=RuntimeError("boom")
+        ):
+            with pytest.raises(ValueError) as caught:
+                self._helpers._regroup()
+
+        message = str(caught.value)
+        assert "could not be checked" in message
+        # Logged, not returned: an exception can carry account and resource names.
+        assert "boom" not in message
+        assert "Try again" in message
+        assert "right now" not in message
+
+    def test_every_job_shares_one_harvest_budget(self, labeling_env):
+        """The save must answer inside the dispatcher's timeout, so two in-flight
+        jobs do not each get a fresh harvest budget."""
+        table, s3 = labeling_env
+        _SECTION_FIXTURES._seed(table, s3, self._helpers.SINGLE)
+        for run_id in ("run8", "run9"):
+            self._helpers._seed_run_in_progress(table, run_id, ["other.pdf"])
+            _seed_running_job(table, run_id, [])
+        deadlines = []
+
+        def record(job, deadline=None):
+            deadlines.append(deadline)
+            done = dict(job)
+            done["status"] = "COMPLETED"
+            return done
+
+        with patch.object(test_set_index, "_harvest_label_job", side_effect=record):
+            self._helpers._regroup()
+
+        assert len(deadlines) == 2
+        assert deadlines[0] == deadlines[1]
+        assert deadlines[0] - time.monotonic() <= (
+            test_set_index.QUEUE_HARVEST_TIME_BUDGET_SECONDS
+        )
+
+
+@pytest.mark.unit
+class TestLegacyDraftingRunInSetResolvers:
+    """#1746: when a set's pointer named a run with no job record, starting a
+    re-extract repoints the pointer and keeps that run only as the job's
+    ``previousLabelJobId``. The configuration and fingerprint resolvers count it, as
+    the review-run resolver does, rather than resolving from the one-document run
+    alone."""
+
+    def _seed_reextracted_legacy_set(self, table, legacy_run, reextract_run=None):
+        """Drafted by ``legacy_run`` (no job record), then one document re-extracted
+        by ``runR``, whose job keeps the replaced pointer. ``reextract_run`` is the
+        re-extract's run record, or None when it is gone."""
+        _seed_test_set(table, "ts1", fileCount=2, labelJobId="runR")
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#runR",
+                "testSetId": "ts1",
+                "jobId": "runR",
+                "status": "COMPLETED",
+                "objectKeys": ["a.pdf"],
+                "previousLabelJobId": "runL",
+                "createdAt": "2026-01-02T00:00:00Z",
+            }
+        )
+        table.put_item(Item={"PK": "testrun#runL", "SK": "metadata", **legacy_run})
+        if reextract_run is not None:
+            table.put_item(
+                Item={"PK": "testrun#runR", "SK": "metadata", **reextract_run}
+            )
+
+    def test_the_drafting_runs_include_the_legacy_run_first(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(table, {"ConfigVersion": "prof-A"})
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._drafting_run_ids("ts1", meta) == ["runL", "runR"]
+
+    def test_a_reextract_under_another_profile_makes_the_set_mixed(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(
+            table, {"ConfigVersion": "prof-A"}, {"ConfigVersion": "prof-B"}
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            None,
+            "mixed",
+        )
+
+    def test_the_legacy_run_names_the_profile_when_the_reextract_run_is_gone(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(table, {"ConfigVersion": "prof-A"})
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            "prof-A",
+            "drafting-run",
+        )
+
+    def test_an_unstamped_legacy_run_makes_the_fingerprint_partial(self, labeling_env):
+        """The upgrade shape: labels drafted before the stamp existed, one document
+        re-extracted after. The re-extract's fingerprint is not the set's."""
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(
+            table,
+            {"ConfigVersion": "prof-A"},
+            {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpR"},
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_fingerprint("ts1", meta, "prof-A") == (
+            None,
+            "partial",
+        )
+
+    def test_a_differently_stamped_legacy_run_makes_the_fingerprint_mixed(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_reextracted_legacy_set(
+            table,
+            {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpL"},
+            {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpR"},
+        )
+        meta = table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+        assert test_set_index._resolve_set_fingerprint("ts1", meta, "prof-A") == (
+            None,
+            "mixed-revisions",
+        )
+
+    def test_a_replaced_pointer_naming_a_recorded_job_is_not_counted_twice(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        for run_id, created, extra in (
+            ("runA", "2000-01-01T00:00:00Z", {"previousLabelJobId": "runB"}),
+            ("runB", "2000-01-02T00:00:00Z", {}),
+        ):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": "COMPLETED",
+                    "createdAt": created,
+                    **extra,
+                }
+            )
+
+        assert test_set_index._drafting_run_ids("ts1", {}) == ["runA", "runB"]
+
+    def test_a_job_record_with_no_job_id_is_named_by_its_key(self, labeling_env):
+        table, _ = labeling_env
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#runK",
+                "testSetId": "ts1",
+                "status": "COMPLETED",
+                "createdAt": "2026-01-01T00:00:00Z",
+            }
+        )
+
+        assert test_set_index._drafting_run_ids("ts1", {}) == ["runK"]
+
+    def test_a_set_with_no_job_record_is_named_by_its_pointer(self, labeling_env):
+        assert test_set_index._drafting_run_ids("ts1", {"labelJobId": "runL"}) == [
+            "runL"
+        ]
+        assert test_set_index._drafting_run_ids("ts1", {}) == []
+
+
+@pytest.mark.unit
+class TestUndatedLabelJobIsStale:
+    """#1746: a job record with no readable ``createdAt`` cannot be aged. Every job
+    this resolver starts is stamped, so such a record is not a job in flight, and
+    reading it as fresh let it block re-grouping and hold missing documents pending
+    for good. A harvest whose write landed after a label reset deleted the job used
+    to create one; it no longer can (#1757, :class:`TestHarvestAfterALabelReset`),
+    and a record already in that shape is still read as stale."""
+
+    def test_a_job_recreated_by_a_harvest_after_a_reset_does_not_block_regrouping(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        helpers = TestRegroupWhileALabelingJobRuns()
+        _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
+        helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        # The record as such a harvest left it: its own write, with no createdAt
+        # and no document list.
+        table.put_item(
+            Item={
+                "PK": "testset#ts1",
+                "SK": "labeljob#run9",
+                "status": "RUNNING",
+                "labeled": 0,
+                "harvestedFiles": [],
+                "failedFiles": [],
+            }
+        )
+
+        assert len(helpers._regroup()["sections"]) == 2
+
+    @pytest.mark.parametrize("created", [None, "", "not-a-timestamp"])
+    def test_an_undated_job_is_stale(self, created):
+        job = {"jobId": "run9"}
+        if created is not None:
+            job["createdAt"] = created
+        assert test_set_index._label_job_is_stale(job) is True
+
+    def test_a_fresh_job_is_not_stale(self):
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        assert test_set_index._label_job_is_stale({"createdAt": now}) is False
+
+    @staticmethod
+    def _undate(table, run_id):
+        table.update_item(
+            Key={"PK": "testset#ts1", "SK": f"labeljob#{run_id}"},
+            UpdateExpression="REMOVE createdAt",
+        )
+
+    def test_an_undated_job_does_not_block_regrouping(self, labeling_env):
+        table, s3 = labeling_env
+        helpers = TestRegroupWhileALabelingJobRuns()
+        _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
+        helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+        self._undate(table, "run9")
+
+        assert len(helpers._regroup()["sections"]) == 2
+
+    def test_an_undated_job_gives_up_on_a_document_with_no_tracking_record(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        table.put_item(
+            Item={
+                "PK": "testrun#run9",
+                "SK": "metadata",
+                "TestSetId": "ts1",
+                "Files": ["a.pdf"],
+                "Status": "RUNNING",
+            }
+        )
+        _seed_running_job(table, "run9", ["a.pdf"])
+        self._undate(table, "run9")
+
+        result = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": "run9"}
+        )
+
+        assert result["status"] == "FAILED"
+        assert result["failedDocuments"] == 1
+
+
+@pytest.mark.unit
+class TestHarvestAfterALabelReset:
+    """#1757: a label reset deletes a set's job records. A harvest that read a job
+    before the reset and writes after it must not bring the record back: the
+    recreated record has no ``createdAt`` and no document list, so it reads as a
+    whole-set job, and its status write would put the set's label state back."""
+
+    KEY = {"PK": "testset#ts1", "SK": "labeljob#run9"}
+
+    def _job_read_then_reset(self, table):
+        """The job as a harvest read it, after which the set's labels are reset."""
+        job = table.get_item(Key=self.KEY)["Item"]
+        test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+        # Non-vacuity: the reset really did delete the record the harvest holds.
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        return job
+
+    def _meta(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+    def _seed_running(self, table, s3):
+        helpers = TestRegroupWhileALabelingJobRuns()
+        _SECTION_FIXTURES._seed(table, s3, helpers.SINGLE)
+        helpers._seed_run_in_progress(table, "run9", ["packet.pdf"])
+        _seed_running_job(table, "run9", ["packet.pdf"])
+        return helpers
+
+    def test_a_harvest_does_not_recreate_a_job_the_reset_deleted(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        job = self._job_read_then_reset(table)
+
+        with pytest.raises(test_set_index.ResourceNotFound):
+            test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        meta = self._meta(table)
+        assert "labelJobStatus" not in meta
+        assert meta["labelState"] == "unlabeled"
+
+    def test_a_completed_harvest_does_not_mark_the_reset_set_drafted(
+        self, labeling_env
+    ):
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        uri = _seed_pipeline_result(
+            _s3, "run9/a.pdf/sections/1/result.json", {"vendor": "Acme"}
+        )
+        _seed_completed_run(
+            table,
+            "run9",
+            "ts1",
+            ["a.pdf"],
+            {"a.pdf": [{"Id": "1", "OutputJSONUri": uri}]},
+        )
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = self._job_read_then_reset(table)
+
+        with pytest.raises(test_set_index.ResourceNotFound):
+            test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        meta = self._meta(table)
+        assert meta["labelState"] == "unlabeled"
+        assert "labelJobStatus" not in meta
+
+    def test_failing_a_job_does_not_recreate_it(self, labeling_env):
+        """With no run record the harvest fails the job, through its own write."""
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = self._job_read_then_reset(table)
+
+        with pytest.raises(test_set_index.ResourceNotFound):
+            test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+        assert "labelJobStatus" not in self._meta(table)
+
+    def test_failing_a_job_that_still_exists_still_fails_it(self, labeling_env):
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = table.get_item(Key=self.KEY)["Item"]
+
+        result = test_set_index._harvest_label_job(job, deadline=None)
+
+        assert result["status"] == "FAILED"
+        stored = table.get_item(Key=self.KEY)["Item"]
+        assert stored["status"] == "FAILED"
+        assert stored["createdAt"] == job["createdAt"]
+        assert self._meta(table)["labelJobStatus"] == "FAILED"
+
+    def test_a_reset_before_the_last_write_attempt_is_still_read_as_a_reset(
+        self, labeling_env
+    ):
+        """The write budget's last attempt re-reads the record too, so a deletion
+        that lands then is reported as the job being gone, not as a lost race."""
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        job = self._job_read_then_reset(table)
+
+        with patch.object(test_set_index, "_MAX_HARVEST_WRITE_ATTEMPTS", 1):
+            with pytest.raises(test_set_index.ResourceNotFound):
+                test_set_index._harvest_label_job(job, deadline=None)
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+    def test_another_write_failure_while_failing_a_job_is_not_read_as_a_reset(
+        self, labeling_env
+    ):
+        table, _s3 = labeling_env
+        _seed_test_set(table, "ts1", fileCount=1)
+        _seed_running_job(table, "run9", ["a.pdf"])
+        job = table.get_item(Key=self.KEY)["Item"]
+        throttled = test_set_index.DynamoDBError(
+            "throttled", "ProvisionedThroughputExceededException"
+        )
+
+        with patch.object(
+            test_set_index.db_client, "update_item", side_effect=throttled
+        ):
+            with pytest.raises(test_set_index.DynamoDBError) as caught:
+                test_set_index._fail_label_job(job, "Labeling run failed")
+
+        assert not isinstance(caught.value, test_set_index.ResourceNotFound)
+        assert caught.value is throttled
+
+    def _reset_before_harvesting(self, table, only_the_job=False):
+        """Run the real harvest, with the reset landing just after the caller read
+        the job. ``only_the_job`` deletes just the job record, the part of the
+        reset this is about, for a caller that needs the baseline still there."""
+        real = test_set_index._harvest_label_job
+
+        def harvest(job, deadline=None):
+            if only_the_job:
+                table.delete_item(Key=self.KEY)
+            else:
+                test_set_index.reset_test_set_labels({"testSetId": "ts1"})
+            return real(job, deadline=deadline)
+
+        return patch.object(test_set_index, "_harvest_label_job", side_effect=harvest)
+
+    def test_the_progress_poll_reports_the_job_gone(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+
+        with self._reset_before_harvesting(table):
+            with pytest.raises(test_set_index.ResourceNotFound) as caught:
+                test_set_index.get_draft_label_job(
+                    {"testSetId": "ts1", "jobId": "run9"}
+                )
+
+        assert str(caught.value) == "Labeling job 'run9' not found"
+
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+    def test_the_queue_does_not_report_a_job_the_reset_deleted(self, labeling_env):
+        table, s3 = labeling_env
+        self._seed_running(table, s3)
+        meta = self._meta(table)
+
+        with self._reset_before_harvesting(table):
+            reported = test_set_index._harvest_active_label_job("ts1", meta)
+
+        assert reported is None
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+    def test_a_job_the_reset_deleted_does_not_block_regrouping(self, labeling_env):
+        table, s3 = labeling_env
+        helpers = self._seed_running(table, s3)
+
+        with self._reset_before_harvesting(table, only_the_job=True):
+            # Non-vacuity: the guard really reached the harvest.
+            result = helpers._regroup()
+            assert test_set_index._harvest_label_job.call_count == 1
+
+        assert len(result["sections"]) == 2
+        assert table.get_item(Key=self.KEY).get("Item") is None
+
+
+@pytest.mark.unit
+class TestFailedJobIsNotADraftingRun:
+    """#1757: a labeling job ends FAILED only when it labeled nothing, so its run
+    drafted none of the set's labels. Counting it as a drafting run let one failed
+    re-extract under another profile make the set read as mixed, which leaves it
+    with no single profile."""
+
+    @staticmethod
+    def _seed(table, jobs, runs):
+        """``jobs``: (run id, status, extra) oldest first; ``runs``: run id ->
+        run-record attributes."""
+        _seed_test_set(table, "ts1", fileCount=2, labelJobId=jobs[-1][0])
+        for day, (run_id, status, extra) in enumerate(jobs, start=1):
+            table.put_item(
+                Item={
+                    "PK": "testset#ts1",
+                    "SK": f"labeljob#{run_id}",
+                    "testSetId": "ts1",
+                    "jobId": run_id,
+                    "status": status,
+                    "createdAt": f"2026-01-{day:02d}T00:00:00Z",
+                    **extra,
+                }
+            )
+        for run_id, attrs in runs.items():
+            table.put_item(Item={"PK": f"testrun#{run_id}", "SK": "metadata", **attrs})
+
+    def _meta(self, table):
+        return table.get_item(Key={"PK": "testset#ts1", "SK": "metadata"})["Item"]
+
+    def _seed_failed_reextract(self, table, failed_profile="prof-B"):
+        self._seed(
+            table,
+            [
+                ("runA", "COMPLETED", {}),
+                ("runF", "FAILED", {"objectKeys": ["a.pdf"]}),
+            ],
+            {
+                "runA": {"ConfigVersion": "prof-A", "ConfidenceFingerprint": "fpA"},
+                "runF": {
+                    "ConfigVersion": failed_profile,
+                    "ConfidenceFingerprint": "fpF",
+                },
+            },
+        )
+
+    def test_a_failed_job_is_not_a_drafting_run(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._drafting_run_ids("ts1", self._meta(table)) == ["runA"]
+
+    def test_a_failed_reextract_under_another_profile_leaves_the_set_single(
+        self, labeling_env
+    ):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._resolve_set_config_version("ts1", self._meta(table)) == (
+            "prof-A",
+            "drafting-run",
+        )
+
+    def test_a_failed_reextract_does_not_mix_the_fingerprint(self, labeling_env):
+        table, _ = labeling_env
+        self._seed_failed_reextract(table, failed_profile="prof-A")
+
+        assert test_set_index._resolve_set_fingerprint(
+            "ts1", self._meta(table), "prof-A"
+        ) == ("fpA", "drafting-run")
+
+    @pytest.mark.parametrize("scope", [None, ["prof-A"]], ids=["unscoped", "in-scope"])
+    def test_a_reviewer_is_refused_whatever_their_profile_scope(
+        self, labeling_env, scope, caplog
+    ):
+        """Test-set work belongs to Annotators: a Reviewer-only caller is refused
+        through the resolver's own access check, even with the set's drafting profile
+        (or every profile) in scope, and the refusal is a `PermissionError`."""
+        from idp_common.testset_scope import TestSetAccessDenied
+
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+        event = _caller("rev@example.com", "Reviewer")
+
+        with (
+            patch(
+                "idp_common.config_scope.resolve_allowed_config_versions",
+                return_value=scope,
+            ),
+            caplog.at_level("WARNING"),
+        ):
+            with pytest.raises(TestSetAccessDenied) as refused:
+                test_set_index._assert_set_access(event, "ts1")
+        assert isinstance(refused.value, PermissionError)
+        assert "Forbidden" in caplog.text
+        assert "ScopeProfile" not in self._meta(table)
+
+    def test_the_review_run_is_unchanged(self, labeling_env):
+        """#1737 already passed over a FAILED job when choosing a document's review
+        run; leaving it out of the drafting runs must not move that choice."""
+        table, _ = labeling_env
+        self._seed_failed_reextract(table)
+
+        assert test_set_index._run_id_by_object_key("ts1", self._meta(table)) == (
+            {},
+            "runA",
+        )
+
+    def test_a_failed_oldest_job_still_names_the_run_before_it(self, labeling_env):
+        """A failed job's ``previousLabelJobId`` is still a record of the run that
+        drafted the set before it."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runF", "FAILED", {"previousLabelJobId": "runL"})],
+            {"runF": {"ConfigVersion": "prof-B"}, "runL": {"ConfigVersion": "prof-A"}},
+        )
+        meta = self._meta(table)
+
+        assert test_set_index._drafting_run_ids("ts1", meta) == ["runL"]
+        assert test_set_index._resolve_set_config_version("ts1", meta) == (
+            "prof-A",
+            "drafting-run",
+        )
+        assert test_set_index._run_id_by_object_key("ts1", meta) == ({}, "runL")
+
+    def test_a_job_still_in_flight_is_a_drafting_run(self, labeling_env):
+        """Only a FAILED job is left out: a running re-extract is drafting labels."""
+        table, _ = labeling_env
+        self._seed(
+            table,
+            [("runA", "COMPLETED", {}), ("runR", "RUNNING", {"objectKeys": ["a.pdf"]})],
+            {"runA": {"ConfigVersion": "prof-A"}, "runR": {"ConfigVersion": "prof-B"}},
+        )
+
+        assert test_set_index._resolve_set_config_version("ts1", self._meta(table)) == (
+            None,
+            "mixed",
+        )
+
+
+def _regroup_event(sections, object_key="a.pdf", groups=("Admin",)):
+    return {
+        "info": {"fieldName": "updateTestSetDocumentSections"},
+        "arguments": {
+            "input": {
+                "testSetId": "ts1",
+                "objectKey": object_key,
+                "sections": sections,
+            }
+        },
+        "identity": {
+            "claims": {"cognito:groups": list(groups), "email": "admin@example.com"}
+        },
+    }
+
+
+@pytest.mark.unit
+class TestExtractedAsClass:
+    """#1816: the class a section's fields were extracted under, kept on its label.
+
+    A regroup that changes a section's class records the class its fields were
+    extracted under as ``extractedAsClass``; it follows the fields through the
+    renumbering, survives a second change, goes when the class is changed back, and is
+    returned per section. Driven through the handler, on real (moto) S3.
+    """
+
+    KEY = "ts1/baseline/a.pdf/sections/{}/result.json"
+
+    def _seed(self, s3, sections=None):
+        sections = sections or {
+            "1": ("Invoice", [0, 1], "reviewed-human"),
+            "2": ("W2", [2], "draft-machine"),
+        }
+        for sid, (cls, pages, source) in sections.items():
+            s3.put_object(
+                Bucket="test-set-bucket",
+                Key=self.KEY.format(sid),
+                Body=json.dumps(
+                    {
+                        "document_class": {"type": cls},
+                        "split_document": {"page_indices": pages},
+                        "inference_result": {"field": f"value-from-{sid}"},
+                        "labelSource": source,
+                    }
+                ).encode(),
+            )
+
+    def _label(self, s3, sid):
+        return json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=self.KEY.format(sid))[
+                "Body"
+            ].read()
+        )
+
+    @staticmethod
+    def _regroup(*sections):
+        return test_set_index.handler(
+            _regroup_event(
+                [
+                    {"sectionId": sid, "documentClass": cls, "pageIndices": pages}
+                    for sid, cls, pages in sections
+                ]
+            ),
+            None,
+        )
+
+    def test_the_first_change_records_the_class_the_fields_came_from(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        self._seed(s3)
+
+        result = self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+
+        assert self._label(s3, "1")["extractedAsClass"] == "Invoice"
+        assert "extractedAsClass" not in self._label(s3, "2")
+        assert [s["extractedAsClass"] for s in result["sections"]] == ["Invoice", None]
+
+    def test_a_second_change_keeps_the_first_class(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        self._seed(s3)
+
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        result = self._regroup(("1", "Payslip", [0, 1]), ("2", "W2", [2]))
+
+        assert self._label(s3, "1")["extractedAsClass"] == "Invoice"
+        assert self._label(s3, "1")["document_class"]["type"] == "Payslip"
+        assert result["sections"][0]["extractedAsClass"] == "Invoice"
+
+    def test_changing_back_removes_it(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        self._seed(s3)
+
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        self._regroup(("1", "Payslip", [0, 1]), ("2", "W2", [2]))
+        result = self._regroup(("1", "Invoice", [0, 1]), ("2", "W2", [2]))
+
+        assert "extractedAsClass" not in self._label(s3, "1")
+        assert result["sections"][0]["extractedAsClass"] is None
+
+    def test_a_save_that_changes_only_another_section_keeps_it(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        self._seed(s3)
+
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        self._regroup(("1", "W2", [0, 1]), ("2", "Invoice", [2]))
+
+        assert self._label(s3, "1")["extractedAsClass"] == "Invoice"
+        assert self._label(s3, "2")["extractedAsClass"] == "W2"
+
+    def test_it_follows_the_fields_when_pages_move_and_sections_are_renumbered(
+        self, drafts_env
+    ):
+        _table, s3, _store, _label = drafts_env
+        self._seed(s3)
+
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        # Page 0 joins section 2, which now starts first: it is written as section 1,
+        # and the old section 1, with its fields and its record, as section 2.
+        result = self._regroup(("1", "W2", [1]), ("2", "W2", [0, 2]))
+
+        first, second = self._label(s3, "1"), self._label(s3, "2")
+        assert first["inference_result"] == {"field": "value-from-2"}
+        assert "extractedAsClass" not in first
+        assert second["inference_result"] == {"field": "value-from-1"}
+        assert second["extractedAsClass"] == "Invoice"
+        assert [s["extractedAsClass"] for s in result["sections"]] == [None, "Invoice"]
+
+    def test_an_added_section_records_nothing(self, drafts_env):
+        _table, s3, _store, _label = drafts_env
+        self._seed(s3)
+
+        self._regroup(("1", "Invoice", [0]), ("9", "W2", [1]), ("2", "W2", [2]))
+
+        added = self._label(s3, "2")
+        assert added["inference_result"] == {}
+        assert "extractedAsClass" not in added
+
+    def test_a_draft_follows_with_the_same_record(self, drafts_env):
+        """The editor opens a section's draft when it has one, so a draft saved before
+        the regroup is rewritten with the record, and without it once changed back."""
+        _table, s3, store, _label = drafts_env
+        self._seed(s3)
+        test_set_index.handler(
+            _draft_event(
+                ["Admin"],
+                "admin@example.com",
+                sectionId="1",
+                data=json.dumps({"inference_result": {"field": "edited"}}),
+            ),
+            None,
+        )
+
+        def draft_of_1():
+            (entry,) = [
+                d
+                for d in store.get("ts1", "a.pdf")["sectionDrafts"]
+                if d["section_id"] == "1"
+            ]
+            return json.loads(
+                s3.get_object(Bucket="test-set-bucket", Key=entry["s3_key"])[
+                    "Body"
+                ].read()
+            )
+
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        assert draft_of_1()["extractedAsClass"] == "Invoice"
+        assert draft_of_1()["inference_result"] == {"field": "edited"}
+
+        self._regroup(("1", "Invoice", [0, 1]), ("2", "W2", [2]))
+        assert "extractedAsClass" not in draft_of_1()
+
+    def _save_draft_of_1(self):
+        test_set_index.handler(
+            _draft_event(
+                ["Admin"],
+                "admin@example.com",
+                sectionId="1",
+                data=json.dumps({"inference_result": {"field": "edited"}}),
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _draft_of_1(s3, store):
+        (entry,) = [
+            d
+            for d in store.get("ts1", "a.pdf")["sectionDrafts"]
+            if d["section_id"] == "1"
+        ]
+        return json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=entry["s3_key"])["Body"].read()
+        )
+
+    def test_a_write_back_clears_it_from_the_sections_draft_too(self, drafts_env):
+        """The editor opens a section's draft when it has one, and a re-extract keeps
+        drafts: a draft still naming the old class would bring the note back over the
+        re-extracted section."""
+        _table, s3, store, _label = drafts_env
+        self._seed(
+            s3,
+            {
+                "1": ("Invoice", [0, 1], "draft-machine"),
+                "2": ("W2", [2], "draft-machine"),
+            },
+        )
+        self._save_draft_of_1()
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        assert self._draft_of_1(s3, store)["extractedAsClass"] == "Invoice"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key="run/a.pdf/sections/1/result.json",
+            Body=json.dumps(
+                {
+                    "document_class": {"type": "W2"},
+                    "split_document": {"page_indices": [0, 1]},
+                    "inference_result": {"w2": "new"},
+                }
+            ).encode(),
+        )
+
+        test_set_index._write_draft_labels_for_doc(
+            "test-set-bucket",
+            "ts1",
+            "a.pdf",
+            [
+                {
+                    "Id": "1",
+                    "OutputJSONUri": "s3://output-bucket/run/a.pdf/sections/1/result.json",
+                }
+            ],
+            only_section_id="1",
+            only_section_expected=("W2", [0, 1]),
+        )
+
+        assert "extractedAsClass" not in self._label(s3, "1")
+        draft = self._draft_of_1(s3, store)
+        assert "extractedAsClass" not in draft
+        # The draft keeps the reviewer's edits, as a re-extract keeps drafts.
+        assert draft["inference_result"] == {"field": "edited"}
+        assert self._label(s3, "2").get("extractedAsClass") is None
+
+    def test_an_uploaded_labels_class_correction_clears_it_and_its_drafts(
+        self, drafts_env
+    ):
+        """``uploaded`` is authored ground truth too: the harvest never writes it, so
+        the class correction is the re-extract's last word on it."""
+        _table, s3, store, _label = drafts_env
+        self._seed(
+            s3,
+            {"1": ("Invoice", [0, 1], "uploaded"), "2": ("W2", [2], "draft-machine")},
+        )
+        self._save_draft_of_1()
+        self._regroup(("1", "W2", [0, 1]), ("2", "W2", [2]))
+        assert self._label(s3, "1")["extractedAsClass"] == "Invoice"
+
+        test_set_index._set_baseline_document_class(
+            "test-set-bucket",
+            "ts1",
+            "a.pdf",
+            "W2",
+            ["ts1/baseline/a.pdf/sections/1/result.json"],
+        )
+
+        label = self._label(s3, "1")
+        assert label["labelSource"] == "uploaded"
+        assert "extractedAsClass" not in label
+        assert "extractedAsClass" not in self._draft_of_1(s3, store)
+
+
+@pytest.mark.unit
+class TestReextractClearsExtractedAsClass:
+    """#1816: a re-extract of a section ends its ``extractedAsClass``.
+
+    A draft or reviewed section keeps it until the harvest writes the run's fields
+    back; authored ground truth, which the harvest never writes, loses it when the
+    re-extract corrects its class.
+    """
+
+    def _seed_stamped(self, table, s3):
+        helper = TestReextractOneSection()
+        helper._seed(table, s3)
+        for sid, stamp in (("1", "Invoice"), ("2", "Invoice"), ("3", "Invoice")):
+            key = f"ts1/baseline/packet.pdf/sections/{sid}/result.json"
+            body = json.loads(
+                s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+            )
+            body["extractedAsClass"] = stamp
+            s3.put_object(
+                Bucket="test-set-bucket", Key=key, Body=json.dumps(body).encode()
+            )
+        return helper
+
+    @staticmethod
+    def _label(s3, sid):
+        key = f"ts1/baseline/packet.pdf/sections/{sid}/result.json"
+        return json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+        )
+
+    @pytest.mark.parametrize("sid", ["1", "2"])
+    def test_a_draft_or_reviewed_section_keeps_it_until_the_write_back(
+        self, labeling_env, sid
+    ):
+        table, s3 = labeling_env
+        helper = self._seed_stamped(table, s3)
+
+        result, run_input = helper._reextract(sid)
+        # The run has not finished: the fields on the label are still the old ones.
+        assert self._label(s3, sid)["extractedAsClass"] == "Invoice"
+
+        helper._run_pipeline(table, s3, run_input)
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        written = self._label(s3, sid)
+        assert written["inference_result"] == {"new_field": f"new-{sid}"}
+        assert "extractedAsClass" not in written
+        # Every other section keeps its own.
+        for other in {"1", "2", "3"} - {sid}:
+            assert self._label(s3, other)["extractedAsClass"] == "Invoice"
+
+    def test_authored_ground_truth_loses_it_when_its_class_is_corrected(
+        self, labeling_env
+    ):
+        table, s3 = labeling_env
+        helper = self._seed_stamped(table, s3)
+
+        helper._reextract("3")
+
+        authored = self._label(s3, "3")
+        assert "labelSource" not in authored
+        assert authored["inference_result"] == {"Bank-checks_field": "old-3"}
+        assert "extractedAsClass" not in authored
+        assert self._label(s3, "1")["extractedAsClass"] == "Invoice"
+
+
+@pytest.mark.unit
+class TestReextractDiscardsTheSectionsDraft:
+    """D34: a re-extract that writes a section back deletes that section's draft.
+
+    The editor opens a section's draft in place of its label, and Process Changes
+    applies it, so a kept draft would put the edits made over the old fields back
+    over the re-extracted ones. A Generate draft labels run keeps drafts, and every
+    other section's draft is untouched. Real handlers (reextractTestSetDocument,
+    generateDraftLabels, then the getDraftLabelJob harvest) on moto S3/DynamoDB.
+    """
+
+    EDITED = {"inference_result": {"field": "edited"}}
+
+    def _seed(self, drafts_env):
+        table, s3, store, _label = drafts_env
+        helper = TestReextractOneSection()
+        helper._seed(table, s3)
+        store.upsert_summary(
+            "ts1",
+            {
+                "objectKey": "packet.pdf",
+                "inputKey": "ts1/input/packet.pdf",
+                "labelSource": "draft-machine",
+            },
+        )
+        labels = test_set_index._labels()
+        for sid in ("1", "2"):
+            labels.save_draft(
+                "ts1",
+                "packet.pdf",
+                sid,
+                {**self.EDITED, "extractedAsClass": "Old"},
+                0,
+                editor=LabelEditor(name="ann", email="ann@example.com"),
+            )
+        return helper, table, s3
+
+    @staticmethod
+    def _draft(sid):
+        labels = test_set_index._labels()
+        found = [d for d in labels.drafts("ts1", "packet.pdf") if d.section_id == sid]
+        if not found:
+            return None
+        body = labels.s3.get_object(Bucket=labels.bucket, Key=found[0].s3_key)
+        return json.loads(body["Body"].read())
+
+    @staticmethod
+    def _label(s3, sid):
+        key = f"ts1/baseline/packet.pdf/sections/{sid}/result.json"
+        return json.loads(
+            s3.get_object(Bucket="test-set-bucket", Key=key)["Body"].read()
+        )
+
+    def test_the_written_sections_draft_is_gone_and_the_others_kept(self, drafts_env):
+        helper, table, s3 = self._seed(drafts_env)
+
+        result, run_input = helper._reextract("2")
+        # Not yet written back: the draft is still there.
+        assert self._draft("2") is not None
+        helper._run_pipeline(table, s3, run_input)
+        job = test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert job["status"] == "COMPLETED"
+        assert self._label(s3, "2")["inference_result"] == {"new_field": "new-2"}
+        assert self._draft("2") is None
+        assert _draft_keys(s3, "ts1/drafts/packet.pdf/sections/2/") == []
+        # Section 1 was not written back, so its draft is exactly as saved.
+        assert self._draft("1") == {**self.EDITED, "extractedAsClass": "Old"}
+        assert len(_draft_keys(s3, "ts1/drafts/packet.pdf/sections/1/")) == 1
+
+    def test_a_generate_draft_labels_run_keeps_the_draft(self, drafts_env):
+        helper, table, s3 = self._seed(drafts_env)
+
+        with patch.object(test_set_index, "boto3") as mock_boto3:
+            mock_lambda = MagicMock()
+            mock_lambda.invoke.return_value = {
+                "Payload": MagicMock(
+                    read=lambda: json.dumps({"testRunId": "run3"}).encode()
+                )
+            }
+            mock_boto3.client.return_value = mock_lambda
+            result = test_set_index.generate_draft_labels(
+                {"input": {"testSetId": "ts1", "objectKeys": ["packet.pdf"]}}
+            )
+        key = "run3/packet.pdf/sections/2/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {
+                    "document_class": {"type": "W2"},
+                    "split_document": {"page_indices": [2]},
+                    "inference_result": {"new_field": "new-2"},
+                }
+            ),
+        )
+        _seed_completed_run(
+            table,
+            "run3",
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "2", "OutputJSONUri": f"s3://output-bucket/{key}"}]},
+        )
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert self._label(s3, "2")["inference_result"] == {"new_field": "new-2"}
+        # Kept, losing only the class stamp the run's output no longer matches.
+        assert self._draft("2") == self.EDITED
+        assert self._draft("1") == {**self.EDITED, "extractedAsClass": "Old"}
+
+    def test_a_whole_document_reextract_deletes_its_draft_too(self, drafts_env):
+        table, s3, store, _label = drafts_env
+        helper = TestReextractOneSection()
+        helper._seed(table, s3, [("1", "Invoice", "draft-machine", [0, 1])])
+        store.upsert_summary(
+            "ts1",
+            {
+                "objectKey": "packet.pdf",
+                "inputKey": "ts1/input/packet.pdf",
+                "labelSource": "draft-machine",
+            },
+        )
+        test_set_index._labels().save_draft(
+            "ts1",
+            "packet.pdf",
+            "1",
+            self.EDITED,
+            0,
+            editor=LabelEditor(name="ann", email="ann@example.com"),
+        )
+
+        result, run_input = helper._reextract(None, document_class="W2")
+        assert "documentSections" not in run_input
+        key = "run2/packet.pdf/sections/1/result.json"
+        s3.put_object(
+            Bucket="output-bucket",
+            Key=key,
+            Body=json.dumps(
+                {
+                    "document_class": {"type": "W2"},
+                    "split_document": {"page_indices": [0, 1]},
+                    "inference_result": {"new_field": "new-1"},
+                }
+            ),
+        )
+        _seed_completed_run(
+            table,
+            "run2",
+            "ts1",
+            ["packet.pdf"],
+            {"packet.pdf": [{"Id": "1", "OutputJSONUri": f"s3://output-bucket/{key}"}]},
+        )
+        test_set_index.get_draft_label_job(
+            {"testSetId": "ts1", "jobId": result["jobId"]}
+        )
+
+        assert self._label(s3, "1")["inference_result"] == {"new_field": "new-1"}
+        assert self._draft("1") is None
+        assert _draft_keys(s3, "ts1/drafts/packet.pdf/") == []

@@ -17,7 +17,9 @@ from idp_common.config.class_names import is_valid_class_name, sanitize_class_na
 from idp_common.config.class_settings import carry_forward_authored_settings
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.config.revisions import RevisionNotRecordedError
 from idp_common.config.schema_constants import X_AWS_IDP_MULTI_INSTANCE
+from idp_common.discovery.discovered_text import clean_schema_text
 from idp_common.utils.s3util import S3Util
 
 logger = logging.getLogger(__name__)
@@ -463,6 +465,10 @@ class ClassesDiscovery:
                 ),
             }
 
+        except RevisionNotRecordedError:
+            # A refused profile save (#1778) is not a document-processing failure;
+            # keep its type and message for the job status.
+            raise
         except Exception as e:
             logger.error(
                 f"Error processing document {input_prefix}: {e}", exc_info=True
@@ -560,6 +566,8 @@ class ClassesDiscovery:
                 ),
             }
 
+        except RevisionNotRecordedError:
+            raise
         except Exception as e:
             logger.error(
                 f"Error processing document with ground truth {input_prefix}: {e}",
@@ -593,6 +601,11 @@ class ClassesDiscovery:
         # rather than degrading. Prompt instructions are guidance; this is the
         # guarantee.
         synthesized = self._normalize_class_id(new_class)
+        # Descriptions and examples are model-written and reach the UI and every
+        # later classification and extraction prompt for this profile, so they are
+        # kept to plain text here, on the one write path both discovery flows share.
+        # Only the discovered class is cleaned; existing, authored classes are not.
+        clean_schema_text(new_class)
 
         # Get class identifier for the new class
         new_class_id = new_class.get("$id") or new_class.get("x-aws-idp-document-type")

@@ -28,40 +28,41 @@ The web interface allows real-time configuration updates without stack redeploym
 - **Evaluation Methods**: Set evaluation methods and thresholds for each attribute
 - **Summarization**: Configure model, prompts, parameters, and enable/disable document summarization via the `enabled` property
 
-### Configuration Versions
+### Configuration Profiles
 
-The solution supports **multiple named configuration versions**, enabling you to maintain independent configuration snapshots for A/B testing, environment separation, and iterative prompt tuning — all without redeploying the stack. Each version stores a complete, self-contained configuration. The active version determines which configuration is used for new document processing.
+The solution supports **multiple named configuration profiles**, enabling you to maintain independent configurations for A/B testing and environment separation — all without redeploying the stack. Each profile stores a complete, self-contained configuration, and every save of a profile records an immutable **revision**, so iterative prompt tuning happens inside one profile rather than across a series of new names. The active profile determines which configuration is used for new document processing.
 
 Key capabilities:
-- **Create, edit, and delete** configuration versions with unique names and descriptions
-- **Activate** any version to make it the default for new processing
-- **Compare** versions side-by-side to see differences (exportable as CSV/JSON)
-- **Track** which version was used for each processed document and test run
-- **Select** a specific version when uploading documents, running tests, or using the CLI
+- **Create, edit, and delete** configuration profiles with unique names and descriptions
+- **Activate** any profile to make it the default for new processing
+- **Compare** profiles side-by-side to see differences (exportable as CSV/JSON)
+- **Revision history** — view, compare, label and restore earlier revisions of a profile; restoring is forward-only, so no save is ever lost
+- **Track** which profile (and revision) was used for each processed document and test run
+- **Select** a specific profile when uploading documents, running tests, or using the CLI (`--config-profile`, with `--config-revision` to pin a revision)
 
-#### Managed Configuration Versions
+#### Managed Configuration Profiles
 
-The stack automatically deploys **managed configuration versions** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
+The stack automatically deploys **managed configuration profiles** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
 
-- **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution
+- **Overwritten on stack updates** — always reflect the latest defaults shipped with the solution (each update that changes one is recorded as a new revision)
 - **Save disabled** — the Save button is disabled and an info banner explains the config is stack-managed
-- **Delete disabled** — managed versions cannot be deleted in the UI or via the API
+- **Delete disabled** — managed profiles cannot be deleted in the UI or via the API
 - **Editable copies** — use **Create profile** in the Configuration Profiles table to create a custom, editable copy
 - **Not importable** — managed configs are stored separately (`config_library/managed_config/`) and do not appear in the configuration import browser
-- **Test Studio integration** — when a test set is selected, the matching managed config version is auto-selected
+- **Test Studio integration** — when a test set is selected, the matching managed configuration profile is auto-selected
 
 For comprehensive documentation, see [configuration-profiles.md](configuration-profiles.md).
 
 ### Configuration Management Features
 
-- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed version, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save current edits as new profile, and BDA sync) are grouped under an **Actions** menu next to Save changes. To create a new profile from an existing one's *saved* state, use **Create profile** in the Configuration Profiles table instead.
-- **Unsaved Changes Indicator**: Individual fields with unsaved edits display an orange dot next to the field label, and an info banner with a "Discard changes" button appears when the configuration form has unsaved edits (shown on all versions, including the stack-managed `default`).
+- **Save Changes**: Save your current configuration changes. The button is **enabled only when you have unsaved changes** (comparing your edits against the last saved configuration); when it's disabled on a stack-managed profile, hovering it explains why. After a successful save, a confirmation banner **and** a brief success toast (top-right notification area) are shown. Less-frequent actions (Export, Save as default, Restore default (All), Save current edits as new profile, and BDA sync) are grouped under an **Actions** menu next to Save changes. To create a new profile from an existing one's *saved* state, use **Create profile** in the Configuration Profiles table instead.
+- **Unsaved Changes Indicator**: Individual fields with unsaved edits display an orange dot next to the field label, and an info banner with a "Discard changes" button appears when the configuration form has unsaved edits (shown on all profiles, including the stack-managed `default`).
 - **Browser Navigation Guard**: The browser warns before leaving the page when unsaved configuration changes exist (both on browser close/refresh and SPA navigation).
-- **Save as Default**: Save your current version's configuration as the new default baseline. This replaces the existing default configuration. **Warning**: Default configurations may be overwritten during solution upgrades - export your configuration first for backup.
-- **Restore Default (All)**: Reset the current version's configuration back to the default values, replacing all customizations.
+- **Save as Default**: Save the current profile's configuration as the new `default` baseline. The configuration it replaces is kept in `default`'s revision history. Stack upgrades also write to `default` (each as a new revision), so keep long-lived customizations in a custom profile rather than in `default`.
+- **Restore Default (All)**: Reset the current profile's configuration back to the default values, replacing all customizations. The save is recorded as a revision, so the customizations can be restored from **Configuration revisions…**.
 - **Refresh**: Reload the configuration from the server. Use this to sync your view with the latest saved configuration, discard unsaved local changes, or verify your configuration after external updates.
 - **Export Configuration**: Download your current configuration to local files in JSON or YAML format with customizable filenames. Use this to backup configurations before upgrades or share configurations between environments.
-- **Import Configuration**: Upload configuration files from your local machine OR import from the Configuration Library:
+- **Import Configuration** (**Import** in the Configuration Profiles table, Admin only): Create a **new profile** from a configuration file on your local machine OR from the Configuration Library:
   - **From Local File**: Upload configuration files from your computer in JSON or YAML format with automatic format detection and validation
   - **From Configuration Library**: Browse and import pre-configured document processing workflows from the solution's built-in configuration library
     - **Library Scope**: Shows the configurations under `config_library/unified/`, which cover both processing modes
@@ -69,9 +70,9 @@ For comprehensive documentation, see [configuration-profiles.md](configuration-p
     - **README Preview**: View markdown-formatted documentation before importing to understand configuration purpose and features
     - **Format Indicators**: Visual badges show file format (YAML/JSON) and README availability
     - **Library Contents**: Includes sample configurations like lending-package-sample, bank-statement-sample and rvl-cdip
-  - **Important**: Importing a configuration **replaces** your existing custom configuration entirely. Any prior customizations not included in the imported file will be reset to defaults. Export your current configuration first if you want to preserve it.
+  - **Existing profiles are untouched**: the imported configuration becomes a new profile you name in the import dialog.
 
-Configuration changes are validated and applied immediately, with rollback capability if issues arise. See [web-ui.md](web-ui.md) for details on using the administration interface.
+Configuration changes are validated and applied immediately; to roll back a save, restore an earlier revision from **Configuration revisions…**. See [web-ui.md](web-ui.md) for details on using the administration interface.
 
 ### Configuration Management via CLI
 
@@ -452,7 +453,7 @@ summarization:
 
 ## Confidence (Assessment) Configuration
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
@@ -517,8 +518,11 @@ extraction:
 > `list_batch_size` is the one knob. Any leftover `granular.*` keys still validate
 > but are ignored — no config edit required.
 
-**For large documents**, prefer **Advanced (agentic) extraction** — it shards both
-extraction and confidence assessment and yields the best-calibrated confidence.
+**For sections that can hold more than about 400 list rows**, prefer **Advanced
+(agentic) extraction** — it shards both extraction and confidence assessment, and on
+the v0.6.14 benchmark it returned every row where Simple mode returned part of an
+800-row list on 8 of 13 runs at the shipped default
+([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
 
 ### Classification confidence (`classification.combined.llm.confidence.*`)
 
@@ -621,6 +625,26 @@ How the settings apply:
 For how platform components post messages, see the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
+## Bulk Skip All Reviews Limit
+
+[Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
+once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
+Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
+limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  bulk_skip_sync_limit: 50  # 1-100: documents a bulk Skip All Reviews runs at once
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
+
+Like the Inbox settings, it is read from the **active** configuration profile, cached
+for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
+the default if the configuration cannot be read.
+
 ## Stack Parameters
 
 Key parameters that can be configured during CloudFormation deployment:
@@ -644,7 +668,7 @@ Key parameters that can be configured during CloudFormation deployment:
 
 ### Integration and Tracing Parameters
 - `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
-- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
+- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: false). See [mcp-server.md](mcp-server.md) for details.
 - `EnableECRImageScanning`: Enable automatic vulnerability scanning for the pattern stack's Lambda container images in ECR (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
 ### Processing Parameters
@@ -953,8 +977,36 @@ Inside one shard, several durations draw on the same invocation:
 | Agentic `read_timeout` | 600 s | One socket read on the **streamed** extraction call — time to first response event, then each inter-event gap |
 | Confidence `read_timeout` | 300 s | One **non-streamed** `converse`, which bounds the whole response rather than a gap, so it is legitimately larger. Inside the shard invocation whenever confidence runs in `separate` mode |
 | botocore attempts per call | 1 | botocore retries a read timeout *itself*, multiplying either timeout above inside a single call, where no deadline check can see it |
+| Strands attempts per model call | 1 | Strands' default retry strategy sleeps up to 124 s on a throttle inside a single model call, and starts again after every successful one, where neither the allowance below nor the deadline can see it |
 | Retry backoff allowance | 90 s | Total time the retry ladder around the agent call may spend asleep, across all attempts |
 | Lambda `Timeout` | 900 s | The whole invocation — Lambda's maximum, so it cannot be widened |
+
+With botocore held to one attempt, `BedrockClient`'s own ladder is what retries a
+transient network failure on the non-streamed `converse`: a read or connect timeout, a
+failed connection, and a connection dropped before the response arrived
+(`ConnectionClosedError`), including a connection reset or cut short while the
+response body is being read, which botocore reports the same way. The last of these
+used to fail the call on its first attempt.
+The retry ladder around the agentic extraction call retries the same four failures
+when they happen before the response arrives, including when the Strands agent reports
+one wrapped in its own exception, which it does for every model call after the first
+tool use. Before, that ladder did not retry a dropped or failed connection at all, and
+retried such a read timeout only on the first model call of each attempt. It also
+retries a connection reset partway through a streamed response, which is safe because
+the Strands agent keeps no part of a response it could not finish reading and runs no
+tool from it. It is also the only thing that retries a throttle: the extraction's
+Strands agent is built with its own throttle retries off, because with them on, persistent throttling
+kept one call asleep for 834 s of a 900 s invocation, and a throttle met 30 s before
+the deadline still slept 124 s. Throttling that outlasts the 90 s allowance is raised as
+a transient error, which the extraction task's Step Functions retrier runs again,
+rather than ending in a Lambda timeout. A streamed response that is reset partway is not metered: Bedrock reports a
+response's token usage only at its end, so the interrupted response's tokens are
+unknown. When the extraction then completes, every usage Bedrock did report is
+metered, including that of the earlier model calls of the attempt the reset ended.
+When the retry ladder gives up instead, nothing from that invocation is metered,
+although Bedrock billed the model calls that completed; the task retrier then runs
+the shard again. Throttling between 90 s and the length of the invocation now ends
+that way, where before it was usually ridden out inside the invocation.
 
 What keeps a shard inside its invocation is **not** that these numbers sum to less than
 900 — they do not. It is that the retry ladder refuses to *begin* an attempt the size of
@@ -1330,7 +1382,7 @@ same setting would give different answers for different documents in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page's **Preview prompts** button opens a prompt preview that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 
@@ -1345,11 +1397,61 @@ renders as a single `%`.
 A `{NAME}` the step does not recognise is also left as written rather than
 emptied, so a prompt can refer to literal brace-wrapped text.
 
+## Comments in a prompt
+
+A prompt template can document itself with comments written as `{# ... #}`. They are
+removed when the processing steps load their configuration, so no comment text
+reaches the model:
+
+```yaml
+task_prompt: |-
+  {# Must return JSON with "class" and "document_boundary".
+     Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. #}
+  <task-description> Classify the page. </task-description>
+  ...
+```
+
+- A comment runs from `{#` to the next `#}` and can span several lines.
+- A line that holds only a comment is removed together with its line break, so
+  commenting a prompt does not add blank lines to it.
+- A `{#` with no closing `#}` is not a comment and is sent as written.
+- A placeholder or `<<CACHEPOINT>>` written inside a comment does not count:
+  `idp-cli config-validate` and the processing steps judge the prompt without its
+  comments, so a placeholder that appears only in a comment is reported missing.
+- The comments stay in the stored configuration: the configuration editor, the
+  Prompt Preview's Raw Template tabs and `idp-cli config-download` show them, and the
+  rendered Prompt Preview shows the prompt as sent, without them.
+- Values filled into a prompt are never touched, so a document whose own text
+  contains `{#` is sent unchanged.
+- In a folded YAML block (`>-`), leave a blank line after a comment that starts the
+  prompt. Without it YAML folds the comment into the first line of text, and the
+  prompt is sent starting with a space.
+- Code that builds a configuration itself and hands it straight to a service (a
+  notebook or script, rather than the deployed stack) should load it with
+  `idp_common.config.get_config`, or pass it through
+  `idp_common.prompt_comments.strip_prompt_comments_in_config` first, rather than
+  relying on the service. Classification, extraction and assessment remove
+  comments from a configuration handed to them, and few-shot example prompts are
+  stripped where they are built; the other services remove them from task
+  prompts only, so a system prompt written with comments would otherwise be sent
+  with them.
+- **Upgrading.** `{#` followed later by `#}` was not special before, so a stored
+  prompt that already contains that pair (for example an example in Jinja syntax)
+  now has the text between them removed from what is sent. Search your
+  configuration for `{#` before upgrading, and rewrite any such text, for example
+  as `{ #`.
+
+Comments work in every prompt field (OCR, classification, extraction,
+confidence, summarization, rule validation, evaluation, discovery and chat) and to
+the prompt keys of a class schema, such as `x-aws-idp-class-prompt`. The default
+classification prompts use comments to state their contract: the output each must
+ask for, the placeholders it can use, and where `<<CACHEPOINT>>` goes.
+
 ## Prompt Optimization
 
 ### Bedrock Prompt Caching
 
-The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. It applies to the classification, extraction, assessment and summarization calls.
+The solution supports Bedrock prompt caching of the static portion of a prompt, which can lower its cost. It applies to the classification, extraction, assessment and summarization calls.
 
 #### How It Works
 
@@ -1368,7 +1470,7 @@ extraction:
     {DOCUMENT_TEXT}
 ```
 
-Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. This can significantly reduce token costs and improve response times.
+Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum (below) is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)). No benchmark in this repository has measured caching's effect on response time.
 
 #### Best Practices
 
@@ -1378,9 +1480,9 @@ Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across
 
 #### Benefits
 
-- **Cost Savings**: Cached tokens cost significantly less than regular input tokens
-- **Performance**: Reduced processing time for cached content
-- **Token Efficiency**: Particularly beneficial for long system prompts or few-shot examples
+- **Cost**: A cache read is billed at 0.1× the input price on most Claude models, 0.05× on Claude Sonnet 5.5 and Opus 5.5, and 0.25× on Nova (per-model rates are in `config_library/pricing.yaml`). A cache write is billed at 1.25× on Claude models and at no charge on Nova, so on Claude a prefix that is written and not read again within five minutes costs more than no caching ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once))
+- **Share of the bill**: Only the prefix is discounted. On the `ocr-benchmark` corpus the prefix was about 1,000–2,900 of roughly 7,800 input tokens per document, so the discount applies to that fraction of the input rather than to the whole bill ([prompt caching study §6](./benchmarking/studies/prompt-caching.md#6-end-to-end-effect-on-cost))
+- **Where it matters most**: long system prompts or few-shot examples, where the prefix is a large share of each request
 
 #### Minimum cacheable prefix — per model, and not monotonic
 
@@ -1794,12 +1896,12 @@ Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model,
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
   validation:
-    enabled: true                          # on by default since v0.7
+    enabled: true                          # on by default since config format 0.7
     fail_action: escalate                  # default is 'warn' (free); escalate costs money
     escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
 
-> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> **Moved in config format 0.7.** This block was `extraction.agentic.validation`. It now lives at
 > `extraction.validation` because Simple extraction runs the same validate-and-retry
 > path, so the setting is no longer agentic-only. Stored configurations are migrated
 > automatically on read — no action is required.

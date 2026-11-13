@@ -467,7 +467,12 @@ class TestRouteForReview:
 
     @pytest.mark.parametrize(
         ("disposition", "outcome"),
-        [("rejected", "rejected"), ("removed", "complete"), ("complete", "complete")],
+        [
+            ("rejected", "rejected"),
+            ("removed", "complete"),
+            ("skipped", "complete"),
+            ("complete", "complete"),
+        ],
     )
     def test_the_finalize_run_of_a_disposed_item_is_recognised(
         self, disposition, outcome, monkeypatch
@@ -533,3 +538,99 @@ class TestReasonEdges:
     def test_an_array_whose_items_are_not_a_schema_humanises_the_name(self):
         schema = {"properties": {"Rows": {"type": "array", "items": "x"}}}
         assert field_label(schema, "Rows[0].unit_price") == "Unit price"
+
+
+def _missing(name, threshold=None):
+    return {
+        "attribute_name": name,
+        "confidence": None,
+        "confidence_threshold": threshold,
+    }
+
+
+def _with_missing(section, *missing):
+    section.missing_required_fields = list(missing)
+    return section
+
+
+@pytest.mark.unit
+class TestMissingRequiredReasons:
+    """A required field left absent (#1527) sends a document to the Default queue."""
+
+    def test_a_missing_required_field_is_a_reason_ranked_first(self):
+        doc = _document(
+            _with_missing(
+                _section("1", _alert("Total", 0.5)),
+                _missing("Name", 0.9),
+                _missing("Address.City"),
+            )
+        )
+        reasons = build_reasons(doc, _config(threshold=0.7), mode="pipeline")
+        assert [(r.kind, r.field, r.score, r.threshold) for r in reasons] == [
+            ("missing_required", "Name", 0.0, 0.9),
+            ("missing_required", "Address.City", 0.0, 0.7),
+            ("low_confidence", "Total", 0.5, 0.8),
+        ]
+
+    def test_it_applies_in_bda_mode_too(self):
+        doc = _document(_with_missing(_section("1", confidence=0.99), _missing("Name")))
+        [reason] = build_reasons(doc, _config(), mode="bda")
+        assert (reason.kind, reason.field) == ("missing_required", "Name")
+
+    def test_the_switch_turns_it_off(self):
+        config = _config()
+        config.hitl.route_missing_required_fields = False
+        doc = _document(_with_missing(_section("1"), _missing("Name")))
+        assert build_reasons(doc, config, mode="pipeline") == []
+
+    def test_an_entry_without_a_path_is_ignored(self):
+        doc = _document(_with_missing(_section("1"), {"confidence": None}, "bad"))
+        assert build_reasons(doc, _config(), mode="pipeline") == []
+
+    def test_a_document_with_only_missing_fields_is_held_in_default(self):
+        store = _Store()
+        decision = _route(
+            _document(_with_missing(_section("1"), _missing("Name"))), store
+        )
+        assert decision.mode == "queues" and decision.hold is True
+        assert len(store.holding) == 1
+
+    def test_with_the_switch_off_it_completes_without_review(self):
+        store = _Store()
+        config = _config()
+        config.hitl.route_missing_required_fields = False
+        decision = _route(
+            _document(_with_missing(_section("1"), _missing("Name"))),
+            store,
+            config=config,
+        )
+        assert decision.mode == "queues" and decision.hold is False
+        assert store.holding == []
+
+    def test_legacy_hitl_does_not_trigger_on_missing_fields(self):
+        section = _with_missing(_section("1"), _missing("Name"))
+        assert routing.legacy_section_triggers(section, hitl_enabled=True) is False
+
+    def test_the_kind_is_accepted_by_both_published_models(self):
+        from idp_common.review_queues.models import ReviewReason, StatusReason
+
+        for model in (ReviewReason, StatusReason):
+            reason = model(
+                kind="missing_required",
+                section_id="1",
+                field="Name",
+                score=0.0,
+                threshold=0.8,
+            )
+            assert reason.kind == "missing_required"
+
+    def test_the_configuration_default_is_on(self):
+        from idp_common.config.models import HITLConfig
+
+        assert HITLConfig().route_missing_required_fields is True
+        assert (
+            HITLConfig(
+                route_missing_required_fields=False
+            ).route_missing_required_fields
+            is False
+        )

@@ -29,10 +29,33 @@ if str(_TESTS_DIR) not in sys.path:
 # CodeBuild `make setup` has installed it, but the gate runs pytest from the repo
 # root with no PYTHONPATH — so add the in-repo package for a local/dev run.
 # Without this the whole Step 14 hook-package suite silently SKIPS via
-# importorskip, and a skipped test protects nothing.
+# importorskip, and a skipped test protects nothing. It goes first, ahead of
+# PYTHONPATH and site-packages. Appended, it lost to a copy earlier on the path (a
+# PYTHONPATH entry, a regular install or a static .pth editable install, #1747), and
+# the provenance guard below then refused the run (#1758).
 _IDP_COMMON_DIR = _SDLC_DIR.parent.parent / "lib" / "idp_common_pkg"
 if _IDP_COMMON_DIR.is_dir() and str(_IDP_COMMON_DIR) not in sys.path:
-    sys.path.append(str(_IDP_COMMON_DIR))
+    sys.path.insert(0, str(_IDP_COMMON_DIR))
+
+
+#: The pipeline variables that select what an integration run does. The scheduled
+#: runs set them on the WHOLE pipeline, so the fast-check jobs that run these
+#: tests inherit them too, and a test calling main() would then act as the weekly
+#: run it is sitting in: on the eu-central-1 schedule, `IDP_TEST_REGION` made six
+#: tests fail and the run never reached its deploy. A test that needs one sets it.
+CI_RUN_SELECTORS = (
+    "CI_PIPELINE_SOURCE",
+    "IDP_TEST_REGION",
+    "IDP_RUN_PROBES",
+    "IDP_IAC",
+    "IDP_RUN_TERRAFORM_MIGRATION",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_run_selectors(monkeypatch):
+    for name in CI_RUN_SELECTORS:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture

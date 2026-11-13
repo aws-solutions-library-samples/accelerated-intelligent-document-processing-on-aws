@@ -2,6 +2,9 @@
 title: "Custom Model Fine-Tuning"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Custom Model Fine-Tuning
 
 This guide explains how to fine-tune Nova models for document classification using the IDP Accelerator.
@@ -38,7 +41,7 @@ flowchart LR
 
 Custom Model Fine-tuning is available to **Admin** and **Author** roles. The two mutations (`createFinetuningJob`, `deleteFinetuningJob`) are enforced server-side, in layers: the REST API's Cognito user-pool authorizer rejects an unauthenticated caller with a 401 before any code runs, the dispatcher rejects a malformed argument shape with a 400, and **authorization itself is enforced inside the resolver Lambda** (`nested/api-resolvers/src/lambda/finetuning_jobs_resolver/index.py`), which intersects the caller's `cognito:groups` claim with `{"Admin", "Author"}` and raises a `PermissionError` that the dispatcher returns as a 403. So Reviewer and Viewer roles cannot create or delete jobs even via direct API calls. The `@aws_cognito_user_pools(cognito_groups: [...])` directives in `nested/api-resolvers/src/api/schema.graphql` remain the declarative source of truth for the expected group policy — `make api-test-static` (`scripts/sdlc/scan_api_rbac.py`, checked against `scripts/api_rbac_expectations.yaml`) verifies each resolver's check against them — but nothing evaluates those directives at runtime. Two of the three query APIs — `listFinetuningJobs` and `getFinetuningJob` — are open to all authenticated users, and the UI only exposes the Custom Models page to Admin and Author. `listAvailableModels` and `validateTestSetForFinetuning` are **not reachable at all**: the resolver implements both, but the dispatcher's routing table does not name them and the manifest it authorizes against has no entry for them, so default-deny answers 403 to every caller including Admin. The UI calls neither. See [RBAC](./rbac.md) for the canonical description of where authorization is enforced.
 
-> **Note on config-version scoping**: Fine-tuning jobs are currently global — they are not filtered by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via "Create Config Version"), the config-version scope is enforced — the Author can only target versions within their scope. See [RBAC](./rbac.md) for the full permission matrix.
+> **Note on configuration-profile scoping**: Fine-tuning jobs are currently global — they are not filtered by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration profile (via "Create Config Profile"), the profile scope is enforced — the Author can only target profiles within their scope. See [RBAC](./rbac.md) for the full permission matrix.
 
 ## Prerequisites
 
@@ -84,149 +87,17 @@ The job will progress through these stages:
 
 Once a fine-tuning job completes:
 
-1. Go to **Configuration** → **Versions**
-2. Create or edit a configuration version
+1. Go to **Configuration** › **View/Edit Configuration**
+2. Create or open a profile in the Configuration Profiles table
 3. In the model selector, you'll see your custom models under "Custom Models"
 4. Select your fine-tuned model
 5. Save the configuration
 
-## Using the CLI
+## Using the CLI or SDK
 
-### Validate a Test Set
-
-```bash
-idp-cli finetuning validate --test-set docsplit
-```
-
-Output:
-```
-Test Set Validation Results:
-  Valid: Yes
-  Documents: 150
-  Classes: 8
-  Train/Validation Split: 135/15
-
-Class Distribution:
-  drivers_license: 25
-  bank_statement: 30
-  pay_stub: 20
-  w2: 15
-  utility_bill: 20
-  insurance_card: 15
-  tax_return: 15
-  other: 10
-
-Warnings:
-  - Class 'other' has relatively few examples (10)
-```
-
-### Create a Fine-Tuning Job
-
-```bash
-idp-cli finetuning create \
-  --test-set docsplit \
-  --base-model us.amazon.nova-pro-v1:0 \
-  --name my-classifier
-```
-
-Output:
-```
-Fine-tuning job created:
-  Job ID: abc123-def456-...
-  Status: VALIDATING
-  
-Monitor progress with:
-  idp-cli finetuning status --job-id abc123-def456-...
-```
-
-### Check Job Status
-
-```bash
-idp-cli finetuning status --job-id abc123-def456-...
-```
-
-Output:
-```
-Fine-Tuning Job Status:
-  Job ID: abc123-def456-...
-  Name: my-classifier
-  Status: TRAINING
-  Base Model: Nova Pro
-  
-  Timeline:
-    Created: 2024-01-15 10:00:00
-    Training Started: 2024-01-15 10:05:00
-    
-  Training Metrics:
-    Training Loss: 0.05
-    Validation Loss: 0.08
-```
-
-### List All Jobs
-
-```bash
-idp-cli finetuning list
-```
-
-### Delete a Job
-
-```bash
-idp-cli finetuning delete --job-id abc123-def456-...
-```
-
-### List Available Models
-
-```bash
-idp models list
-```
-
-Output:
-```
-Base Models:
-  - us.amazon.nova-2-lite-v1:0 (Nova 2 Lite - recommended)
-  - us.amazon.nova-2-pro-v1:0 (Nova 2 Pro - recommended)
-  - us.amazon.nova-lite-v1:0 (Nova Lite v1 - legacy)
-  - us.amazon.nova-pro-v1:0 (Nova Pro v1 - legacy)
-
-Custom Models:
-  - my-classifier (Nova Pro) - Active
-  - docsplit-v2 (Nova Lite) - Active
-```
-
-## Using the SDK
-
-```python
-from idp_sdk import IDPClient
-
-client = IDPClient()
-
-# Validate a test set
-validation = client.finetuning.validate_test_set("docsplit")
-print(f"Valid: {validation.is_valid}")
-print(f"Documents: {validation.document_count}")
-print(f"Classes: {validation.class_count}")
-
-# Create a fine-tuning job
-job = client.finetuning.create_job(
-    test_set_id="docsplit",
-    base_model="us.amazon.nova-pro-v1:0",
-    name="my-classifier"
-)
-print(f"Job ID: {job.id}")
-
-# Wait for completion (with progress updates)
-completed_job = client.finetuning.wait_for_completion(
-    job.id,
-    poll_interval=60  # Check every minute
-)
-print(f"Status: {completed_job.status}")
-print(f"Model ARN: {completed_job.custom_model_deployment_arn}")
-
-# List available models
-models = client.models.list_available_models()
-for model in models.custom_models:
-    print(f"  {model.name} ({model.base_model})")
-```
+Neither the IDP CLI (`idp-cli`) nor the IDP SDK (`idp_sdk`) has fine-tuning
+commands or methods. Create and monitor jobs in the UI (above), or call the API
+operations listed under [API Reference](#api-reference).
 
 ## Best Practices
 
@@ -293,7 +164,15 @@ Custom Model Deployments use on-demand pricing, so you only pay when the model i
 
 ## API Reference
 
-### GraphQL Queries
+These operations are reached through the solution's REST API, as
+`POST /op/<operation>` on the API Gateway dispatcher with a JSON body of the form
+`{"arguments": {...}}`. No GraphQL service runs and no GraphQL document is sent. They
+are written below in the syntax of `nested/api-resolvers/src/api/schema.graphql`,
+the typed contract the UI's types and the dispatcher's argument validation are
+generated from, because that is where each operation's arguments and returned fields
+are declared.
+
+### Queries
 
 The last two below, `validateTestSetForFinetuning` and `listAvailableModels`, are
 documented as the schema declares them; they are **not routable today** (see the
@@ -369,7 +248,7 @@ query ListAvailableModels {
 }
 ```
 
-### GraphQL Mutations
+### Mutations
 
 ```graphql
 # Create fine-tuning job

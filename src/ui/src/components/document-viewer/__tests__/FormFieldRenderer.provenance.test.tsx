@@ -12,10 +12,13 @@
  * which values are trustworthy.
  */
 
+import React from 'react';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { valueSourceLabel } from '../../common/labels';
 import FormFieldRenderer from '../FormFieldRenderer';
+import JSONEditorTab from '../JSONEditorTab';
 
 /**
  * Confidence reaches the renderer through the assessment's explainability data,
@@ -108,5 +111,72 @@ describe('FormFieldRenderer value provenance', () => {
 
     expect(screen.getByText(/Confidence: 100\.0%/)).toBeInTheDocument();
     expect(screen.getByText('Predicted:')).toBeInTheDocument();
+  });
+
+  it('labels a test-set value (labelSource reviewed-human) as ground truth, not "Predicted"', () => {
+    renderField({ valueLabel: valueSourceLabel('reviewed-human') });
+
+    expect(screen.getByText('Ground truth:')).toBeInTheDocument();
+    expect(screen.queryByText('Predicted:')).not.toBeInTheDocument();
+  });
+
+  it('keeps "Your value:" for an edited ground-truth value', () => {
+    renderField({ valueLabel: valueSourceLabel('draft-machine'), predictionChanges: EDITED });
+
+    expect(screen.getByText('Your value:')).toBeInTheDocument();
+    expect(screen.queryByText('Ground truth:')).not.toBeInTheDocument();
+  });
+
+  it('passes the ground-truth label down to nested object and array fields', () => {
+    render(
+      <FormFieldRenderer
+        fieldKey="Document Data"
+        value={{ Holder: { Name: 'Ann' }, Accounts: ['123'] }}
+        onChange={vi.fn()}
+        isReadOnly={false}
+        path={[]}
+        valueLabel={valueSourceLabel('uploaded')}
+      />,
+    );
+
+    expect(screen.getAllByText('Ground truth:')).toHaveLength(2);
+    expect(screen.queryByText('Predicted:')).not.toBeInTheDocument();
+  });
+});
+
+describe('valueSourceLabel', () => {
+  it('uses prediction wording when there is no label source', () => {
+    expect(valueSourceLabel(null)).toEqual({ value: 'Predicted:', changed: 'Your value:', panelTitle: 'Predicted Results' });
+    expect(valueSourceLabel(undefined).value).toBe('Predicted:');
+  });
+
+  it.each(['draft-machine', 'reviewed-human', 'synthetic', 'uploaded'])('uses ground-truth wording for %s', (source) => {
+    expect(valueSourceLabel(source)).toEqual({ value: 'Ground truth:', changed: 'Your value:', panelTitle: 'Ground truth' });
+  });
+});
+
+describe('JSONEditorTab values panel title', () => {
+  const renderTab = (props: Partial<React.ComponentProps<typeof JSONEditorTab>> = {}) =>
+    render(
+      <JSONEditorTab
+        predictionData={{ inference_result: {} }}
+        baselineData={null}
+        isReadOnly
+        showBaseline={false}
+        isBaselineAvailable={false}
+        loadingEvaluation={false}
+        {...props}
+      />,
+    );
+
+  it('defaults to "Predicted Results"', () => {
+    renderTab();
+    expect(screen.getByText('Predicted Results')).toBeInTheDocument();
+  });
+
+  it('shows the given title for ground truth', () => {
+    renderTab({ predictionTitle: valueSourceLabel('reviewed-human').panelTitle });
+    expect(screen.getByText('Ground truth')).toBeInTheDocument();
+    expect(screen.queryByText('Predicted Results')).not.toBeInTheDocument();
   });
 });

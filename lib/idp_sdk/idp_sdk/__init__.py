@@ -23,6 +23,10 @@ Example:
     >>> client.config.create(features="min", output="config.yaml")
 """
 
+from ._core import terraform_stack as _terraform_stack
+from ._core.terraform_deploy import (
+    default_pointer_url as default_terraform_pointer_url,
+)
 from .client import IDPClient
 from .exceptions import (
     IDPConfigurationError,
@@ -65,6 +69,7 @@ from .models import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -102,6 +107,8 @@ from .models import (
     ManifestDocument,
     ManifestResult,
     ManifestValidationResult,
+    McpCredential,
+    McpCredentialIssued,
     MultiDocDiscoveryResult,
     # Stack models
     OrphanedResourceCleanupResult,
@@ -124,13 +131,31 @@ from .models import (
     StackState,
     StopWorkflowsResult,
     TemplateTransformResult,
+    TenantAccessPoint,
+    # Tenancy models
+    TenantApplyResult,
+    TenantAuditFinding,
+    TenantAuditResult,
+    TenantInfo,
+    TenantListResult,
+    TenantPlanAction,
+    TenantPlanItem,
+    TenantPolicyDeployResult,
+    TenantPolicyResult,
+    TenantUserGrant,
+    TenantVerifyCheck,
+    TenantVerifyOutcome,
+    TenantVerifyResult,
+    TerraformMigrationPlanResult,
+    TerraformMigrationResource,
+    TerraformMigrationStepResult,
     TestComparisonResult,
     TestRunResult,
     UseAsBaselineResult,
     classify_document_state,
 )
 
-__version__ = "0.6.13"
+__version__ = "0.6.15"
 
 from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 
@@ -145,6 +170,8 @@ __all__ = [
     "IDPValidationError",
     "IDPResourceNotFoundError",
     "IDPTimeoutError",
+    # Terraform: the latest-module pointer beside a template URL
+    "default_terraform_pointer_url",
     # Enums
     "StackState",
     "DocumentState",
@@ -213,6 +240,7 @@ __all__ = [
     "SearchDocumentReference",
     # Config models
     "ConfigCreateResult",
+    "ConfigMigrateResult",
     "ConfigValidationResult",
     "ConfigDownloadResult",
     "ConfigUploadResult",
@@ -241,4 +269,28 @@ __all__ = [
     "LoadTestResult",
     "TestRunResult",
     "TestComparisonResult",
+    # Tenancy models
+    "TenantApplyResult",
+    "TenantAuditFinding",
+    "TenantAuditResult",
+    "TenantInfo",
+    "TenantListResult",
+    "TenantPlanAction",
+    "TenantPlanItem",
+    "TenantAccessPoint",
+    "TenantPolicyDeployResult",
+    "TerraformMigrationPlanResult",
+    "TerraformMigrationResource",
+    "TerraformMigrationStepResult",
+    "TenantPolicyResult",
+    "TenantVerifyCheck",
+    "TenantVerifyOutcome",
+    "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
+    "TenantVerifyResult",
 ]
+
+# Lets every CloudFormation lookup by --stack-name resolve a Terraform
+# deployment through its label stack. See _core/terraform_stack.py.
+_terraform_stack.install()

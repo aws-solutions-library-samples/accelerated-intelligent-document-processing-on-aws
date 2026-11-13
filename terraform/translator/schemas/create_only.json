@@ -1,0 +1,287 @@
+{
+ "source": "cfn-lint 1.51.0 provider schemas, us-east-1",
+ "types": {
+  "AWS::ApiGateway::Account": [],
+  "AWS::ApiGateway::Authorizer": [
+   "RestApiId"
+  ],
+  "AWS::ApiGateway::Deployment": [
+   "DeploymentCanarySettings",
+   "RestApiId"
+  ],
+  "AWS::ApiGateway::GatewayResponse": [
+   "ResponseType",
+   "RestApiId"
+  ],
+  "AWS::ApiGateway::Method": [
+   "HttpMethod",
+   "ResourceId",
+   "RestApiId"
+  ],
+  "AWS::ApiGateway::Resource": [
+   "ParentId",
+   "PathPart",
+   "RestApiId"
+  ],
+  "AWS::ApiGateway::RestApi": [],
+  "AWS::ApiGateway::Stage": [
+   "RestApiId",
+   "StageName"
+  ],
+  "AWS::Bedrock::DataSource": [
+   "DataSourceConfiguration/Type",
+   "KnowledgeBaseId",
+   "VectorIngestionConfiguration/ChunkingConfiguration",
+   "VectorIngestionConfiguration/ParsingConfiguration"
+  ],
+  "AWS::Bedrock::KnowledgeBase": [
+   "KnowledgeBaseConfiguration/KendraKnowledgeBaseConfiguration",
+   "KnowledgeBaseConfiguration/SqlKnowledgeBaseConfiguration/RedshiftConfiguration/QueryEngineConfiguration",
+   "KnowledgeBaseConfiguration/SqlKnowledgeBaseConfiguration/RedshiftConfiguration/StorageConfigurations",
+   "KnowledgeBaseConfiguration/SqlKnowledgeBaseConfiguration/Type",
+   "KnowledgeBaseConfiguration/Type",
+   "KnowledgeBaseConfiguration/VectorKnowledgeBaseConfiguration",
+   "StorageConfiguration"
+  ],
+  "AWS::CloudFormation::CustomResource": [
+   "ServiceToken"
+  ],
+  "AWS::CloudFormation::WaitConditionHandle": [],
+  "AWS::CloudFront::Distribution": [],
+  "AWS::CloudFront::OriginAccessControl": [],
+  "AWS::CloudFront::ResponseHeadersPolicy": [],
+  "AWS::CloudWatch::Alarm": [
+   "AlarmName"
+  ],
+  "AWS::CloudWatch::Dashboard": [
+   "DashboardName"
+  ],
+  "AWS::CodeBuild::Project": [
+   "Name"
+  ],
+  "AWS::Cognito::IdentityPool": [],
+  "AWS::Cognito::IdentityPoolRoleAttachment": [
+   "IdentityPoolId"
+  ],
+  "AWS::Cognito::UserPool": [],
+  "AWS::Cognito::UserPoolClient": [
+   "GenerateSecret",
+   "UserPoolId"
+  ],
+  "AWS::Cognito::UserPoolDomain": [
+   "Domain",
+   "UserPoolId"
+  ],
+  "AWS::Cognito::UserPoolGroup": [
+   "GroupName",
+   "UserPoolId"
+  ],
+  "AWS::Cognito::UserPoolIdentityProvider": [
+   "ProviderName",
+   "ProviderType",
+   "UserPoolId"
+  ],
+  "AWS::Cognito::UserPoolResourceServer": [
+   "Identifier",
+   "UserPoolId"
+  ],
+  "AWS::Cognito::UserPoolUser": [
+   "ClientMetadata",
+   "DesiredDeliveryMediums",
+   "ForceAliasCreation",
+   "MessageAction",
+   "UserAttributes",
+   "UserPoolId",
+   "Username",
+   "ValidationData"
+  ],
+  "AWS::Cognito::UserPoolUserToGroupAttachment": [
+   "GroupName",
+   "UserPoolId",
+   "Username"
+  ],
+  "AWS::DynamoDB::Table": [
+   "ImportSourceSpecification",
+   "TableName"
+  ],
+  "AWS::EC2::Instance": [
+   "AvailabilityZone",
+   "CpuOptions",
+   "ElasticGpuSpecifications",
+   "ElasticInferenceAccelerators",
+   "EnclaveOptions",
+   "HibernationOptions",
+   "HostResourceGroupArn",
+   "ImageId",
+   "Ipv6AddressCount",
+   "Ipv6Addresses",
+   "KeyName",
+   "LaunchTemplate",
+   "LicenseSpecifications",
+   "NetworkInterfaces",
+   "PlacementGroupName",
+   "PrivateIpAddress",
+   "SecurityGroups",
+   "SubnetId"
+  ],
+  "AWS::EC2::LaunchTemplate": [
+   "LaunchTemplateName"
+  ],
+  "AWS::EC2::SecurityGroup": [
+   "GroupDescription",
+   "GroupName",
+   "VpcId"
+  ],
+  "AWS::ECR::Repository": [
+   "EncryptionConfiguration",
+   "EncryptionConfiguration/EncryptionType",
+   "EncryptionConfiguration/KmsKey",
+   "RepositoryName"
+  ],
+  "AWS::Events::Rule": [
+   "Name"
+  ],
+  "AWS::Glue::Crawler": [
+   "Name"
+  ],
+  "AWS::Glue::Database": [
+   "DatabaseName"
+  ],
+  "AWS::Glue::SecurityConfiguration": [
+   "Name"
+  ],
+  "AWS::Glue::Table": [
+   "CatalogId",
+   "DatabaseName",
+   "Name"
+  ],
+  "AWS::GuardDuty::MalwareProtectionPlan": [],
+  "AWS::IAM::InstanceProfile": [
+   "InstanceProfileName",
+   "Path"
+  ],
+  "AWS::IAM::ManagedPolicy": [
+   "Description",
+   "ManagedPolicyName",
+   "Path"
+  ],
+  "AWS::IAM::Policy": [],
+  "AWS::IAM::Role": [
+   "Path",
+   "RoleName"
+  ],
+  "AWS::KMS::Alias": [
+   "AliasName"
+  ],
+  "AWS::KMS::Key": [],
+  "AWS::Lambda::EventInvokeConfig": [
+   "FunctionName",
+   "Qualifier"
+  ],
+  "AWS::Lambda::EventSourceMapping": [
+   "EventSourceArn",
+   "SelfManagedEventSource",
+   "StartingPosition",
+   "StartingPositionTimestamp"
+  ],
+  "AWS::Lambda::Function": [
+   "FunctionName",
+   "PackageType",
+   "TenancyConfig"
+  ],
+  "AWS::Lambda::LayerVersion": [
+   "CompatibleArchitectures",
+   "CompatibleRuntimes",
+   "Content",
+   "Description",
+   "LayerName",
+   "LicenseInfo"
+  ],
+  "AWS::Lambda::Permission": [
+   "Action",
+   "EventSourceToken",
+   "FunctionName",
+   "FunctionUrlAuthType",
+   "InvokedViaFunctionUrl",
+   "Principal",
+   "PrincipalOrgID",
+   "SourceAccount",
+   "SourceArn"
+  ],
+  "AWS::Lambda::Url": [
+   "Qualifier",
+   "TargetFunctionArn"
+  ],
+  "AWS::Logs::LogGroup": [
+   "LogGroupName"
+  ],
+  "AWS::OpenSearchServerless::AccessPolicy": [
+   "Name",
+   "Type"
+  ],
+  "AWS::OpenSearchServerless::Collection": [
+   "CollectionGroupName",
+   "EncryptionConfig",
+   "Name",
+   "StandbyReplicas",
+   "Tags",
+   "Type",
+   "VectorOptions",
+   "VectorOptions/ServerlessVectorAcceleration"
+  ],
+  "AWS::OpenSearchServerless::SecurityPolicy": [
+   "Name",
+   "Type"
+  ],
+  "AWS::S3::Bucket": [
+   "BucketName",
+   "BucketNamePrefix",
+   "BucketNamespace"
+  ],
+  "AWS::S3::BucketPolicy": [
+   "Bucket"
+  ],
+  "AWS::SNS::Subscription": [
+   "Endpoint",
+   "Protocol",
+   "TopicArn"
+  ],
+  "AWS::SNS::Topic": [
+   "FifoTopic",
+   "TopicName"
+  ],
+  "AWS::SQS::Queue": [
+   "FifoQueue",
+   "QueueName"
+  ],
+  "AWS::SQS::QueuePolicy": [],
+  "AWS::SSM::Parameter": [
+   "Name"
+  ],
+  "AWS::Scheduler::Schedule": [
+   "Name"
+  ],
+  "AWS::SecretsManager::Secret": [
+   "Name"
+  ],
+  "AWS::StepFunctions::StateMachine": [
+   "StateMachineName",
+   "StateMachineType"
+  ],
+  "AWS::WAFv2::IPSet": [
+   "Name",
+   "Scope"
+  ],
+  "AWS::WAFv2::LoggingConfiguration": [
+   "ResourceArn"
+  ],
+  "AWS::WAFv2::WebACL": [
+   "Name",
+   "Scope"
+  ],
+  "AWS::WAFv2::WebACLAssociation": [
+   "ResourceArn",
+   "WebACLArn"
+  ]
+ }
+}

@@ -2,6 +2,9 @@
 title: "EU Region Model Support and Mapping"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # EU Region Model Support and Mapping
 
 ## Overview
@@ -18,6 +21,7 @@ The following table shows all US to EU model mappings currently configured in th
 | `us.amazon.nova-pro-v1:0` | `eu.amazon.nova-pro-v1:0` | Direct mapping |
 | `us.amazon.nova-premier-v1:0` | `eu.anthropic.claude-sonnet-4-6` | **Fallback mapping.** Nova Premier reached end of life on 2026-09-14 and cannot be selected any more; the row remains so that a configuration stored before its removal is rewritten onto a working model when the stack is deployed in an EU region |
 | `us.amazon.nova-2-lite-v1:0` | `eu.amazon.nova-2-lite-v1:0` | Direct mapping |
+| `us.cohere.embed-v4:0` | `eu.cohere.embed-v4:0` | Direct mapping. The multi-document discovery embedding default (`discovery.multi_document.embedding_model_id`). Both produce 1024-dimension vectors |
 | `us.anthropic.claude-3-haiku-20240307-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | **Fallback mapping.** Claude 3 Haiku is end-of-life in both regions, so the row exists to move a configuration stored before its removal onto the current Haiku-class model |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Direct mapping |
 | `us.anthropic.claude-haiku-5-5` | `eu.anthropic.claude-haiku-5-5` | Direct mapping. No `:1m` pair, because 1M is this model's default context window rather than an opt-in |
@@ -115,6 +119,14 @@ Based on the mappings above, the following EU models are supported:
 - `eu.amazon.nova-lite-v1:0`
 - `eu.amazon.nova-pro-v1:0`
 
+#### Cohere Embedding Models
+- `eu.cohere.embed-v4:0` — multi-document discovery embeddings. Checked live on
+  2026-10-30 in `eu-central-1`, `eu-west-1`, `eu-west-2`, `eu-west-3` and
+  `eu-north-1` by calling `BedrockClient.generate_embedding` with a page image,
+  which returned 1024-dimension embeddings in each; `us.cohere.embed-v4:0` was
+  rejected as an invalid model identifier in `eu-central-1`. Verify your own
+  Region with `aws bedrock list-inference-profiles --region <region>`
+
 #### Anthropic Claude Models
 - `eu.anthropic.claude-haiku-4-5-20251001-v1:0`
 - `eu.anthropic.claude-haiku-5-5`
@@ -184,10 +196,10 @@ The UpdateConfiguration lambda processes default configurations as follows:
 
 ### Third-Party Models (US-Only)
 
-The following third-party models are available in US regions only and have no EU cross-region inference profiles. In EU deployments, the Meta Llama 4 models fall back to Claude Sonnet 4.5, while the single-region models (Gemma, Nemotron) are not available and should not be selected:
+The following third-party models are available in US regions only and have no EU cross-region inference profiles. In EU deployments, the Meta Llama 4 models fall back to Claude Sonnet 4.6, while the single-region models (Gemma, Nemotron) are not available and should not be selected:
 
-- **Meta Llama 4 Maverick 17B**: `us.meta.llama4-maverick-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` (fallback)
-- **Meta Llama 4 Scout 17B**: `us.meta.llama4-scout-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` (fallback)
+- **Meta Llama 4 Maverick 17B**: `us.meta.llama4-maverick-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-6` (fallback)
+- **Meta Llama 4 Scout 17B**: `us.meta.llama4-scout-17b-instruct-v1:0` → `eu.anthropic.claude-sonnet-4-6` (fallback)
 - **Google Gemma 3 27B IT**: `google.gemma-3-27b-it` — single-region only, no EU availability
 - **NVIDIA Nemotron Nano 12B v2**: `nvidia.nemotron-nano-12b-v2` — single-region only, no EU availability
 - **Qwen3 VL 235B A22B**: `qwen.qwen3-vl-235b-a22b` — single-region only, no EU availability
@@ -208,11 +220,53 @@ The following US models do not have direct EU equivalents:
 2. **Test Thoroughly**: Test document processing with actual EU model endpoints
 3. **Monitor Logs**: Check UpdateConfiguration lambda logs for model swap confirmations
 
-### Recommended EU Models
+### Default EU Models
 
-- **Fastest**: `eu.amazon.nova-lite-v1:0`
-- **Balanced**: `eu.amazon.nova-pro-v1:0`
-- **Best Quality**: `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`
+This repository holds no measurement that ranks models against each other in EU
+regions, so this page does not label any EU model as the fastest or the best
+quality. What it can state is what an EU stack runs when you do not choose: the
+system defaults name mostly `us.` models, and the UpdateConfiguration Lambda
+rewrites each `us.` id through the mapping table above after merging the defaults
+with the selected preset. The default preset (`lending-package-sample`) overrides
+none of them, so an EU deployment of it uses the following models for document
+processing and chat:
+
+| Step | Default EU model |
+|------|------------------|
+| Classification | `eu.amazon.nova-2-lite-v1:0` |
+| Extraction | `eu.anthropic.claude-sonnet-5` |
+| Confidence assessment | `eu.amazon.nova-lite-v1:0` |
+| Confidence and extraction-validation escalation | `eu.anthropic.claude-sonnet-5:1m` |
+| Summarization | `eu.anthropic.claude-sonnet-5:1m` |
+| Chat with Document | `eu.anthropic.claude-opus-4-8:1m` |
+| Agent companion chat | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` |
+
+OCR uses Amazon Textract by default, so no Bedrock model is involved in that step
+unless you set `ocr.backend` to `bedrock`. Each mapping in this table is a direct
+mapping, not a fallback. The table does not cover every default: evaluation, the
+error analyzer, rule validation and discovery also name default models, which are
+rewritten the same way, and a `global.` id such as the rule-discovery default
+`global.anthropic.claude-sonnet-4-6` is left unchanged, because a global cross-region profile is not tied to
+one geography.
+
+Some models are written in code rather than stored in a configuration, and are
+used only when no configuration names one: Chat with Document when neither the
+chat nor the summarization section sets a model, the multi-document discovery
+steps (including the reflection report written when discovered classes are saved),
+schema authoring and catalog matching in synthetic data generation, and the SDK
+and CLI's local discovery, which reads the system defaults directly instead of a
+deployed configuration. Each of these
+uses the model the deploy-time mapping would have written for the stack's
+Region, so an EU stack gets the `eu.` profile. The agents' fallbacks, used when
+an agent's configured model cannot be read, follow the same rule, and so does a
+classification call whose model was cleared, which falls back to Nova 2 Lite:
+`eu.amazon.nova-2-lite-v1:0` in an EU Region and the `us.` profile elsewhere.
+
+Claude Sonnet 4.5 (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`) remains
+selectable but is not the default for any step in a commercial-partition
+configuration. An AWS Health notice puts it in legacy
+from 2026-10-08 with end of life on 2027-04-08, and a legacy model receives no
+further Service Quota increases, so do not choose it for a new configuration.
 
 ## Troubleshooting
 

@@ -254,6 +254,13 @@ FIELD_FUNCTION_MAP: Dict[str, str] = _load_field_function_map()
 # regardless of which field name routed to it.
 FIELD_ALIASES: Dict[str, str] = {
     "getFilePresignedUrl": "getFileContents",
+    # MCP service credentials (McpCredentialManagerFunction). Not routable when MCP
+    # is disabled: the map entry is then an empty ARN.
+    "createMcpCredential": "listMcpCredentials",
+    "updateMcpCredential": "listMcpCredentials",
+    "rotateMcpCredential": "listMcpCredentials",
+    "revokeMcpCredential": "listMcpCredentials",
+    "setMcpCredentialTenant": "listMcpCredentials",
     # Both presign fields alias the same resolver, which dispatches on fieldName.
     # An alias rather than a FIELD_FUNCTION_MAP entry, which would grow the SSM
     # parameter towards its 8 KB Advanced-tier limit; measure the headroom with
@@ -314,6 +321,10 @@ FIELD_ALIASES: Dict[str, str] = {
     "putConfigPrefixMapping": "deleteConfigVersion",
     "deleteConfigPrefixMapping": "deleteConfigVersion",
     "resolveConfigPrefixMapping": "deleteConfigVersion",
+    # Tenant declarations, served by the same configuration resolver.
+    "listTenants": "deleteConfigVersion",
+    "putTenant": "deleteConfigVersion",
+    "deleteTenant": "deleteConfigVersion",
     "getConfigVersion": "deleteConfigVersion",
     "getConfigVersions": "deleteConfigVersion",
     "getConfigurationLibraryFile": "deleteConfigVersion",
@@ -345,12 +356,19 @@ FIELD_ALIASES: Dict[str, str] = {
     "completeSectionReview": "claimReview",
     "releaseReview": "claimReview",
     "skipAllSectionsReview": "claimReview",
+    # Bulk Skip All Reviews jobs and Send to review: BulkReviewResolverFunction.
+    "getBulkReviewJob": "bulkSkipAllReviews",
+    "listBulkReviewJobs": "bulkSkipAllReviews",
+    "cancelBulkReviewJob": "bulkSkipAllReviews",
+    "deleteBulkReviewJob": "bulkSkipAllReviews",
+    "sendToReview": "bulkSkipAllReviews",
     "saveSectionReviewEdits": "claimReview",
     # createUser (UserManagementFunctionArn)
     "updateUser": "createUser",
     "deleteUser": "createUser",
     "listUsers": "createUser",
     "getMyProfile": "createUser",
+    "setUserTenant": "createUser",
     # createFinetuningJob (FinetuningJobsResolverFunctionArn)
     "deleteFinetuningJob": "createFinetuningJob",
     "getFinetuningJob": "createFinetuningJob",

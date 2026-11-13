@@ -505,6 +505,7 @@ def match_unmapped(
 REQUIRED_TOOLS = {
     "jq": "reads the committed package-lock.json files to build the Node manifest",
     "uv": "resolves the loose Python pins the lockfiles do not cover",
+    "git": "lists the dependency files the repository holds, so gitignored copies are not audited",
 }
 
 

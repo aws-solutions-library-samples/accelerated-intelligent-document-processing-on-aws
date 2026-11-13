@@ -13,6 +13,8 @@ This guide covers how to deploy, build, publish, and test the GenAI Intelligent 
 
 The GenAI IDP Accelerator can be deployed using either the AWS CloudFormation console (recommended for first-time users) or the IDP CLI (recommended for automation and programmatic deployments).
 
+It can also be deployed with Terraform or OpenTofu, from a module generated from these same CloudFormation templates with every release. Terraform support is experimental; see [Terraform Deployment](./terraform.md) for how to get the module, deploy it from your own configuration or with `idp-cli deploy --terraform`, and what differs from a CloudFormation deployment. Teams moving from the separate `genai-idp-terraform` repository should also read [Migrating from genai-idp-terraform](./terraform-migration.md).
+
 ### Administrator Access Requirements
 
 **Important**: Deploying the GenAI IDP Accelerator requires administrator access to your AWS account. However, for organizations that want to enable non-administrator users to deploy and manage IDP stacks, we provide an optional CloudFormation service role approach:
@@ -32,8 +34,6 @@ For the full breakdown of AWS services and the IAM permission scopes required fo
 | US East (N.Virginia) | us-east-1 | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | EU Central (Frankfurt)      | eu-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | Canada (Central)      | ca-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
-
-> ⚠️ The **Canada (Central)** button serves artifacts from v0.6.12 onward. Until that release is published it answers a CloudFormation "template not found" error; deploy an earlier release from source instead (see [Canada (Central) Region Model Support](./canada-region-model-support.md)).
 
 2. Review the template parameters and provide values as needed
 3. Check the acknowledgment box and click **Create stack**
@@ -57,6 +57,8 @@ For the full breakdown of AWS services and the IAM permission scopes required fo
 For programmatic deployment, updates, and batch processing, use the IDP CLI.
 
 #### Install the CLI
+
+`make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
 
 ```bash
 make setup-venv
@@ -153,6 +155,8 @@ Copy the repo to your computer. Either:
 The easiest way to build, publish, and deploy from source in a single command is using the IDP CLI with the `--from-code` option. This builds all artifacts, publishes them to S3, and deploys the CloudFormation stack — all in one step.
 
 #### Install the CLI
+
+`make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
 
 ```bash
 make setup-venv

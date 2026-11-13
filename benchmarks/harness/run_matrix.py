@@ -215,7 +215,8 @@ def prepare_native_configs(cells, release):
     dict to upload, and ``problems`` lists every reason a version cannot be run on
     ``release`` (a git tag such as ``v0.6.12``). The caller must stop on any problem.
 
-    Each config is the cell's file with the pre-0.9 flat classification keys added
+    When ``release`` predates config format 0.9 (v0.6.12 and earlier), each config
+    is the cell's file with the pre-0.9 flat classification keys added
     (``compat/classification_flat.py``), so the previous release reads the cell's
     classification settings instead of dropping the nested blocks and running its
     code defaults. The current reader resolves the same file to the same combined
@@ -225,6 +226,10 @@ def prepare_native_configs(cells, release):
     release would drop, or any flat setting it resolves to a different value, is a
     problem rather than a warning, because a dropped setting does not fail the run —
     it produces a complete set of numbers for a configuration that never ran.
+
+    When ``release`` declares the nested v0.9 blocks itself (v0.6.13 onward), the
+    cell's file is uploaded unchanged and checked for dropped keys only: adding the
+    flat keys there would make that release convert them on read and let them win.
     """
     if _COMPAT not in sys.path:
         sys.path.insert(0, _COMPAT)
@@ -232,15 +237,27 @@ def prepare_native_configs(cells, release):
     import release_model_check
 
     lib_root = release_model_check.extract_release_lib(release)
+    nested = release_model_check.reads_nested_classification(lib_root)
+    print(
+        f"  {release} reads "
+        + (
+            "the nested classification blocks: configs are uploaded as generated"
+            if nested
+            else "the pre-0.9 flat classification keys: they are added to each config"
+        )
+    )
     prepared, problems = {}, []
     for c in {cc["version"]: cc for cc in cells}.values():
         with open(c["path"]) as fh:
             cfg = yaml.safe_load(fh)
-        try:
-            compat, notes = classification_flat.with_flat_classification(cfg)
-        except classification_flat.CompatError as exc:
-            problems.append(f"{c['version']}: {exc}")
-            continue
+        if nested:
+            compat, notes = cfg, []  # read fresh from the file above
+        else:
+            try:
+                compat, notes = classification_flat.with_flat_classification(cfg)
+            except classification_flat.CompatError as exc:
+                problems.append(f"{c['version']}: {exc}")
+                continue
         for note in notes:
             print(f"  !! {c['version']} on {release}: {note}")
         for err in release_model_check.check_config(compat, lib_root):
@@ -751,7 +768,8 @@ def main():
         "--native-upload",
         action="store_true",
         help="Write configs verbatim to the ConfigurationTable (bypass idp-cli's "
-        "migration), with the pre-0.9 flat classification keys added. REQUIRED for "
+        "migration), with the pre-0.9 flat classification keys added when the "
+        "--validate-against-release tag predates config format 0.9. REQUIRED for "
         "older stacks. Needs --validate-against-release.",
     )
     ap.add_argument(

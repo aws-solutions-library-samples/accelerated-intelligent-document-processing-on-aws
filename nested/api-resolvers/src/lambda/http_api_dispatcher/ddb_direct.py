@@ -14,6 +14,7 @@ Tables are passed via environment variables set by CloudFormation:
 - ``TRACKING_TABLE_NAME``
 - ``DISCOVERY_TABLE_NAME``
 - ``AGENT_TABLE_NAME``
+- ``USERS_TABLE_NAME`` (the caller's configuration scope, for the document reads)
 
 Agent-job rows are user-scoped with ``PK = "agent#<userId>"`` / ``SK = jobId``
 where ``userId`` is the caller's email (AppSync ``identity.username``) falling
@@ -30,9 +31,16 @@ from typing import Any, Dict
 import boto3
 from boto3.dynamodb.conditions import Key
 
+from idp_common import document_scope
+
 logger = logging.getLogger(__name__)
 
 _dynamodb = boto3.resource("dynamodb")
+
+# Per-container cache of callers' configuration scopes, the shape and TTL every
+# other consumer of ``config_scope`` uses. A scope change is an administrative act
+# with that module's 60-second bound.
+_user_scope_cache: Dict[str, Any] = {}
 
 _VALID_DISCOVERY_STATUSES = {
     "PENDING",
@@ -268,14 +276,60 @@ def _agent_table():
 # --------------------------------------------------------------------------- #
 # Documents (TrackingTableDataSource — DynamoDB-direct under AppSync)
 # --------------------------------------------------------------------------- #
+def _caller_scope(event: Dict[str, Any]):
+    """The caller's configuration scope (``None`` for unrestricted), or a refusal.
+
+    An Admin returns before any lookup. Under ``TenantIsolationMode=Strict`` an
+    unscoped non-admin resolves to a scope that matches nothing.
+    """
+    return document_scope.resolve_caller_scope(
+        document_scope.caller_claims(event),
+        users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+        dynamodb=_dynamodb,
+        cache=_user_scope_cache,
+    )
+
+
 def _get_document(event: Dict[str, Any]) -> Any:
-    """GetItem PK="doc#<ObjectKey>", SK="none" — returns the raw item (VTL parity)."""
+    """GetItem PK="doc#<ObjectKey>", SK="none" — returns the raw item (VTL parity).
+
+    Refused for a scoped caller unless the document's configuration profile is in
+    their scope. The row this reads is the document's tracking metadata — section
+    and page URIs, class and the model-written class reasoning, reviewer identities
+    — so returning it out of scope would hand the caller the keys the object-read
+    path's own scope check is there to bound. A scoped caller asking for a key no
+    document has is refused with the same message as an out-of-scope one, rather
+    than answered ``null``, so the answer does not say whether the key exists.
+    """
     object_key = event["arguments"]["ObjectKey"]
     resp = _tracking_table().get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
-    return _to_native(resp.get("Item"))
+    item = resp.get("Item")
+    scope = _caller_scope(event)
+    if scope is not None:
+        version = document_scope.config_version_of_item(item)
+        document_scope.assert_document_in_scope(
+            object_key, scope, config_version_of=lambda _key: version
+        )
+    return _to_native(item)
+
+
+def _refuse_scoped_date_partition_read(field: str, event: Dict[str, Any]) -> None:
+    """Refuse a raw date-partition read to any caller with a configuration scope.
+
+    These return the tracking table's index rows for a time window as stored — every
+    document in it, whatever its profile — and the rows carry the object key and no
+    profile, so they cannot be filtered without a second read per row. The web UI
+    does not call them (``listDocuments`` is the scope-filtered listing), so a
+    scoped caller is refused outright rather than served a filtered page. That
+    leaves them available to Admins and, in ``Off`` mode, to unscoped users, exactly
+    as before; under strict isolation every non-admin is scoped, so they become
+    Admin-only.
+    """
+    document_scope.refuse_if_scoped(_caller_scope(event), operation=field)
 
 
 def _list_documents_date_hour(event: Dict[str, Any]) -> Dict[str, Any]:
+    _refuse_scoped_date_partition_read("listDocumentsDateHour", event)
     args = event.get("arguments", {})
     now = time.gmtime()
     date = args.get("date") or time.strftime("%Y-%m-%d", now)
@@ -300,6 +354,7 @@ def _list_documents_date_hour(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _list_documents_date_shard(event: Dict[str, Any]) -> Dict[str, Any]:
+    _refuse_scoped_date_partition_read("listDocumentsDateShard", event)
     args = event.get("arguments", {})
     now = time.gmtime()
     date = args.get("date") or time.strftime("%Y-%m-%d", now)

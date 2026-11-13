@@ -83,6 +83,35 @@ _EDITABLE_STATUSES = {
 _SCOPE_EXEMPT_GROUPS = {"Admin", "Author"}
 _SCOPED_GROUP = "Annotator"
 
+# A Reviewer works production review only: test-set documents are worked by
+# Annotators. A caller holding Reviewer and none of these is refused a document that
+# carries a `TestSetId` (`_refuse_reviewer_on_test_set`).
+_REVIEWER_GROUP = "Reviewer"
+_TEST_SET_WORK_GROUPS = {"Admin", "Author", "Annotator"}
+_REVIEWER_TEST_SET_REFUSAL = "Unauthorized: test-set documents are worked by Annotators"
+
+
+def _is_reviewer_only(groups):
+    """Reviewer, and none of Admin, Author or Annotator."""
+    return _REVIEWER_GROUP in groups and not _TEST_SET_WORK_GROUPS.intersection(groups)
+
+
+def _refuse_reviewer_on_test_set(operation, groups, test_set_id):
+    """Refuse a Reviewer-only caller a document that belongs to a test set.
+
+    A decision about the OBJECT, so it raises `ResourceAccessDenied` (a
+    `PermissionError`, 403, ``authzControl: "resource"``), as this resolver's other
+    per-object refusals do.
+    """
+    if test_set_id and _is_reviewer_only(groups):
+        logger.warning(
+            "Forbidden: reviewer may not %s a test-set document; test-set documents "
+            "are worked by Annotators",
+            operation,
+        )
+        raise ResourceAccessDenied(_REVIEWER_TEST_SET_REFUSAL)
+
+
 # Built on first use, not at import. The scope check is the only thing in this module
 # that reads DynamoDB directly, and a resource built at import time binds before a
 # test's mock (or moto) is in place.
@@ -149,7 +178,9 @@ def _assert_annotator_scope(event, object_key):
     groups = (event.get("identity") or {}).get("claims", {}).get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
-    if _SCOPED_GROUP not in groups or _SCOPE_EXEMPT_GROUPS.intersection(groups):
+    if _SCOPE_EXEMPT_GROUPS.intersection(groups):
+        return
+    if _SCOPED_GROUP not in groups and not _is_reviewer_only(groups):
         return
 
     from idp_common.testset_scope import (
@@ -172,6 +203,10 @@ def _assert_annotator_scope(event, object_key):
         ) from e
 
     test_set_id = (item.get("Item") or {}).get("TestSetId")
+    if _is_reviewer_only(groups):
+        # A Reviewer re-groups production documents only; same read, no second one.
+        _refuse_reviewer_on_test_set("re-group", groups, test_set_id)
+        return
     if not test_set_id:
         # A production document: an Annotator may re-group it only while holding its
         # review-queue item, within their profile scope (`_assert_holds_review_item`).
@@ -251,6 +286,58 @@ def _assert_holds_review_item(event, object_key):
         raise ResourceAccessDenied(
             "Access denied: this document is outside your allowed configuration scope"
         )
+
+
+def _assert_production_document_in_profile_scope(event, object_key):
+    """Refuse a non-Admin caller a production document outside their profile scope.
+
+    The test-set rules above decide who may re-group a test-set document. A
+    production document (no ``TestSetId``) is governed by ``allowedConfigVersions``,
+    as every other single-document operation is: the document's profile, read from
+    its tracking row, must be one the caller's scope admits. This applies to every
+    non-Admin role the operation admits — a Reviewer, and an Author or Annotator who
+    also holds Reviewer — so it is checked here, once, rather than on each role's
+    branch. A missing row is refused for a scoped caller; a lookup that cannot be
+    answered is refused for every non-Admin caller.
+    """
+    from idp_common import document_scope
+
+    claims = document_scope.caller_claims(event)
+    if document_scope.is_unscoped_caller(claims):
+        return
+    try:
+        scope = document_scope.resolve_caller_scope(
+            claims,
+            users_table_name=os.environ.get("USERS_TABLE_NAME", ""),
+            dynamodb=lambda: boto3.resource("dynamodb"),
+            cache=_user_scope_cache,
+        )
+    except PermissionError as e:
+        raise ResourceAccessDenied(str(e)) from e
+    if scope is None:
+        return
+    try:
+        row = (
+            _tracking_table_resource()
+            .get_item(Key={"PK": f"doc#{object_key}", "SK": "none"})
+            .get("Item")
+        )
+    except Exception as e:  # noqa: BLE001 — fail closed
+        logger.error(
+            "Refusing updateDocumentSections: the document's profile could not be "
+            "read, so the caller's scope could not be evaluated: %s",
+            e,
+        )
+        raise ResourceAccessDenied(document_scope.REFUSAL) from e
+    if row and row.get("TestSetId"):
+        return
+    version = document_scope.config_version_of_item(row)
+    try:
+        if document_scope.is_absent(version):
+            raise PermissionError(document_scope.REFUSAL)
+        document_scope.assert_profile_in_scope(scope, version)
+    except PermissionError as e:
+        raise ResourceAccessDenied(str(e)) from e
 
 
 def _refusal(message):
@@ -360,7 +447,7 @@ def _assert_caller_may_process(event, object_key, document):
             _tracking_table_resource()
             .get_item(
                 Key={"PK": f"doc#{object_key}", "SK": "none"},
-                ProjectionExpression="HITLStatus, HITLReviewOwner",
+                ProjectionExpression="HITLStatus, HITLReviewOwner, TestSetId",
             )
             .get("Item")
             or {}
@@ -372,6 +459,9 @@ def _assert_caller_may_process(event, object_key, document):
         raise ResourceAccessDenied(
             "Unauthorized: your ownership of this review could not be verified"
         ) from e
+
+    # A Reviewer processes production documents only, read off the same row.
+    _refuse_reviewer_on_test_set("process changes on", groups, row.get("TestSetId"))
 
     hitl_status = row.get("HITLStatus")
     view = normalize_hitl_status(hitl_status)
@@ -518,6 +608,7 @@ def update_document_sections(event):
     # (`sections: []` is one, and is what the live RBAC matrix drives this operation
     # with).
     _assert_annotator_scope(event, object_key)
+    _assert_production_document_in_profile_scope(event, object_key)
 
     if not incoming:
         return {

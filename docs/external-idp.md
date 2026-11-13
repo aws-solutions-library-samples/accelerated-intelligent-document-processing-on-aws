@@ -2,6 +2,9 @@
 title: "External Identity Provider (Federation)"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # External Identity Provider (Federation)
 
 This guide covers how to configure an external SAML or OIDC identity provider to federate authentication through Amazon Cognito for the GenAI IDP solution. Federated users sign in through their organization's identity provider and are automatically mapped to Cognito groups (Admin, Author, Reviewer, Annotator, Viewer) based on group claims from the IdP.
@@ -66,12 +69,14 @@ Both work equally well with this solution. Choose based on what your IdP team pr
 ## Annotators and the `allowedTestSets` Scope
 
 `Annotator` maps from an IdP claim exactly like the other four roles, but it is the
-only role where group membership alone grants nothing. An Annotator's access is
-scoped per-object by an `allowedTestSets` list, and that list is assigned in the Web
-UI's User Management screen — the IdP has no way to set it. So a claim-driven
-Annotator arrives with the role and an empty scope, which
+only role whose review work is granted per object rather than by the group. An
+Annotator works a Production review queue only when the queue lists them, and a test
+set only when it is in their `allowedTestSets` list, which an Admin sets in the Web
+UI's User Management screen or adds by listing the Annotator on a Test Studio queue or
+assigning them one of its documents — the IdP has no way to set it. So a claim-driven
+Annotator arrives with the role and an empty test-set scope, which
 [`testset_scope.py`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/testset_scope.py)
-treats as *denied everything*, until an Admin assigns them a test set. See
+treats as *denied every test set*, until an Admin gives them one. See
 [rbac.md](rbac.md) for the full role.
 
 Whether to set `ExternalIdPAnnotatorGroupName` at all is therefore a real choice:
@@ -119,6 +124,23 @@ Two further points of timing, once the IdP is authoritative:
   Authorization is unaffected: every check reads the groups in the caller's token,
   never that stored value. The Cognito console, or `admin-list-groups-for-user`, is
   the authoritative view of current membership.
+
+## Granting Tenants from the Claim
+
+With `TenantGrantSource=IdpClaim` the same claim also decides each user's tenant on
+a multi-tenant stack: at every fresh federated sign-in the trigger matches the claim's
+values against each tenant's **Granted by** values and writes the user's
+configuration scope to that one tenant. A user whose values grant two or more tenants
+is granted none. The parameter requires `ExternalIdPGroupAttributeName`.
+
+Two behaviours differ from the role mapping above. An absent or empty claim **does**
+change something: it grants no tenant and removes the previous one, because losing a
+tenant only reduces access. And a failure to read the tenant declarations or write the
+grant fails the sign-in instead of leaving the old tenant in place. Revocation follows
+the same timing as roles, at the next fresh sign-in, so `RefreshTokenValidityHours`
+bounds how long a removed tenant can persist in an open session. See [Who grants a
+tenant](multi-tenancy.md#who-grants-a-tenant) for the Entra app-roles and Okta
+examples.
 
 ## Storing the OIDC Client Secret
 
@@ -719,7 +741,7 @@ the **`ExternalIdPEmailMutable`** parameter when the stack is created:
 - **Self-service email changes are verification-gated when the attribute is mutable.**
   `email` is in the app client's `WriteAttributes` because it is IdP-mapped, so on a
   mutable pool a native user's own token could rewrite it — and the API resolves
-  config-version scope from the token's `email` claim. Pools created with
+  configuration-profile scope from the token's `email` claim. Pools created with
   `ExternalIdPEmailMutable=true` therefore also set
   `UserAttributeUpdateSettings.AttributesRequireVerificationBeforeUpdate: [email]`, so
   a user-initiated change takes effect only after a code sent to the *new* address is

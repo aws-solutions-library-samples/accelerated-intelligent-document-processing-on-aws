@@ -15,6 +15,7 @@ import CustomModelsJobToolsPanel from '../custom-models/job-tools-panel';
 import DiscoveryToolsPanel from '../discovery/tools-panel';
 import DiscoveryJobToolsPanel from '../discovery/job-tools-panel';
 import UserManagementToolsPanel from '../user-management/tools-panel';
+import ConfigPrefixMappingsToolsPanel from '../config-prefix-mappings/tools-panel';
 
 const ToolsPanel = (): React.JSX.Element => {
   return (
@@ -30,6 +31,8 @@ const ToolsPanel = (): React.JSX.Element => {
       <Route path="discovery" element={<DiscoveryToolsPanel />} />
       <Route path="discovery/job/:jobId" element={<DiscoveryJobToolsPanel />} />
       <Route path="users" element={<UserManagementToolsPanel />} />
+      {/* Above the ":objectKey" catch-all below, or this page shows the document panel. */}
+      <Route path="prefix-mappings" element={<ConfigPrefixMappingsToolsPanel />} />
       <Route path=":objectKey" element={<DocumentDetailsToolsPanel />} />
     </Routes>
   );

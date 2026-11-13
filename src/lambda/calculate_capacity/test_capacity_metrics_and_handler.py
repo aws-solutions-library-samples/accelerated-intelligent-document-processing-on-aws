@@ -1418,8 +1418,9 @@ def test_every_matching_metering_key_in_a_document_is_counted(tracking):
     repeats of one key rather than adding another, so several matching keys on one
     document means the step invoked Bedrock under more than one context or model. Two
     shapes in this repository produce exactly that for extraction: a per-class model
-    override, and an escalation, which records under `Extraction-Escalation` and
-    `ExtractionEscalation` — distinct keys that both satisfy the planner's
+    override, and an escalation, which records under `ExtractionEscalation` (and
+    under `Extraction-Escalation` in Simple-mode rows from earlier releases) — a key
+    distinct from `Extraction` that also satisfies the planner's
     `"extraction" in key` filter. Here 3 and 5 calls are 8 requests for the document.
     Stopping at the first match would count 3, understating the RPM requirement — the
     direction that reports a quota as sufficient when it is not.

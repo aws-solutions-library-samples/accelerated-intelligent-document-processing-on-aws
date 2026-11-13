@@ -942,3 +942,24 @@ def test_govcloud_default_overrides_are_idempotent():
     assert twice["Parameters"]["KnowledgeBaseModelId"]["Default"] == (
         "amazon.nova-pro-v1:0"
     )
+
+
+@pytest.mark.unit
+def test_a_function_url_reference_inside_an_if_branch_is_blanked():
+    """`!If [Cond, "", !GetAtt Url.FunctionUrl]` holds the reference as a LIST
+    element, which a dict-value-only replacement never reaches; the template then
+    keeps a GetAtt to a resource the transform removed."""
+    t = GovCloudTemplateTransformer()
+    node = {
+        "Value": {
+            "Fn::If": [
+                "IsStrict",
+                "",
+                {"Fn::GetAtt": ["StreamUrl", "FunctionUrl"]},
+            ]
+        },
+        "Other": ["keep", {"Fn::Sub": "https://${StreamUrl.FunctionUrl}/x"}],
+    }
+    assert t._blank_function_url_refs(node, {"StreamUrl"}) == 2
+    assert node["Value"] == {"Fn::If": ["IsStrict", "", ""]}
+    assert node["Other"] == ["keep", "https:///x"]

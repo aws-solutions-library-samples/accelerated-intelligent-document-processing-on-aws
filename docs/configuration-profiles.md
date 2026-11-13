@@ -122,7 +122,7 @@ Configuration profiles fall into two categories, indicated by a **Type** badge i
 
 > **Tip:** To customize a managed configuration, click **Create profile** in the Configuration Profiles table and copy the managed profile into a new one. The original managed profile remains untouched and will continue to be updated with solution upgrades. If you have already made edits in the editor against the managed profile, use **Actions → Save current edits as new profile…** instead so those edits come along.
 
-For full details on managed configuration deployment and the config library, see [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions).
+For full details on managed configuration deployment and the config library, see [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles).
 
 ### Use Cases
 
@@ -185,7 +185,7 @@ From the panel you can:
 | **Saved** / **By** | When it was cut and which user saved it (`stack-deployment` for a CloudFormation deploy) |
 | **Notes** | What the save was — e.g. *Reset to default*, *Restored from r3*, *Updated by stack deployment* |
 | **Label** | Optional user marker; also protects the revision from pruning |
-| **Current** badge | The revision the profile's configuration currently reflects |
+| **Current** badge | The revision new documents processed with the profile run. Normally the profile's configuration is exactly this revision; **Differs from profile** beside it means the profile was changed without recording one ([see below](#every-save-of-a-profile-records-the-revision-documents-run)) |
 | **Pinned** badge | Referenced by a test run, so pruning never removes it. Its body still expires `DataRetentionInDays` after it was cut ([Retention](#retention)) |
 
 ### A save that changes nothing records nothing
@@ -323,6 +323,71 @@ unchanged, or changing only its description, cuts nothing.
   changes its configuration. Until then, an Admin can copy it into an editable
   profile with **Create profile** and process its documents under the copy, which
   starts with a revision of its own.
+
+### Every save of a profile records the revision documents run
+
+Discovery (single- and multi-document, in both **Add** and **Replace** save mode),
+BDA blueprint optimization and sync, the Quick Start agent and the Test Set
+Generator's bootstrap all save a profile, and each save records and publishes a
+revision exactly as an editor save does. Replace mode records two: one for clearing
+the existing classes and one for the discovered class.
+
+For a profile that already has revision history, recording the revision is part of
+the save. If it cannot be recorded, the save fails with an error saying so and the
+profile is left as it was, rather than changing what the editor shows while new
+documents keep running the earlier revision. If the failure came after the revision
+was added to the history, that revision stays there, unpublished, with notes that
+begin **Save failed; not published** and say either that the profile was restored to
+the revision new documents still run or that it could not be restored.
+
+`idp-cli` and the SDK find the stack's configuration bucket themselves. Your own
+script or notebook that saves profiles through `idp_common` must set
+`CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`; otherwise saving a
+profile that already has revisions fails with *this process cannot record a
+revision (CONFIGURATION_BUCKET is not set)*.
+
+On versions before this was fixed
+([#1778](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1778)),
+those saves updated the profile without recording a revision. A profile left in that
+state is flagged: the editor shows **New documents do not run this configuration**,
+naming the revision they do run, the revision history marks that revision
+**Differs from profile**, and the revision picker says so beside **Current**. To
+repair it, make any change in the editor and save, which records a revision matching
+what the editor shows; saving it unchanged does not.
+
+### Settings filled in from `default` are recorded as a revision
+
+Every profile is read against the `default` profile: a setting the profile does not
+have takes `default`'s value. That happens most often after an upgrade adds a
+configuration section an older profile never had. When the fill-in changes a profile
+that has revision history, the result is recorded as a new revision by `system`,
+with the notes **Resolved against default: settings this profile did not have were
+filled in from the default profile**, and it becomes the current revision. So the
+editor, the history and what new documents run stay the same configuration.
+
+Some things follow from that:
+
+- Documents submitted after the new revision use `default`'s values for the
+  filled-in settings. Documents already pinned to the earlier revision keep it, and
+  so does a Test Studio run.
+- Once recorded, those values belong to the profile. A later change to the same
+  settings in `default` no longer reaches it, the way it reaches a setting the
+  profile still lacks. To take a later `default` value, set it on the profile
+  yourself.
+- The earlier revision remains in the history unchanged, so **Restore** brings it
+  back if `default`'s values are not wanted for this profile.
+- A stack update that rolls back reverts `default` but keeps the revisions this
+  recorded, because a revision is never removed by a rollback. They are the ones
+  made by `system` with the notes above, in each profile's revision history.
+
+A stack deployment records these revisions, and nothing else does: after it saves
+`default`, it checks each custom profile that has revision history once, and records
+a revision for every profile the fill-in changes. A profile the fill-in does not
+change gets no revision, and neither does one whose stored configuration differs from
+its current revision for some other reason; save that profile yourself. A profile
+already checked costs only a read on later deployments. If a deployment runs short of
+time it stops early, and the next deployment checks the profiles it did not reach;
+until then their documents keep running their current revision.
 
 ### Test Studio: comparing two revisions of one profile
 
@@ -632,7 +697,10 @@ It can also set `x-amz-meta-submission-source`, which is the stronger of the two
 levers — an object carrying it is exempt from mappings **entirely**, so a refusing
 mapping does not refuse it. Neither is reachable through the web UI: the presigned
 POST it mints lists the fields the browser may send, and S3 rejects any other, so a
-UI upload cannot claim to be an internal producer. Bound direct writers with IAM on
+UI upload cannot claim to be an internal producer. [Strict tenant
+isolation](multi-tenancy.md#strict-mode) closes the visibility half of this — a document
+is refused when its key's tenant and its resolved profile's tenant disagree, whatever
+metadata it carries — but not the write itself. Bound direct writers with IAM on
 whatever writes there, and see [RBAC](rbac.md) for what the API layer does and does
 not enforce.
 
@@ -920,11 +988,13 @@ merged. They decide only whether a profile that *cannot* be resolved — because
 the two configurations contradict a cross-field rule — can be returned on its own
 rather than failing the read.
 
-- **Write-back**: the resolved configuration is saved back, so the next read is a
-  direct one and the configuration editor shows the real values rather than empty
-  boxes. It is skipped when nothing changed, and ⚠️ **skipped when the profile's
-  published revision predates the `storedHash` field**, because rewriting the head
-  would destroy the only integrity proof such a revision has.
+- **Write-back**: for a profile with no revision history, the resolved
+  configuration is saved back, so the next read is a direct one and the
+  configuration editor shows the real values rather than empty boxes. It is
+  skipped when nothing changed. ⚠️ A profile **with** revision history is never
+  written on read; a stack deployment records the resolution as a revision
+  instead, as described in
+  [Settings filled in from `default` are recorded as a revision](#settings-filled-in-from-default-are-recorded-as-a-revision).
 - **Whether a profile is stack-managed is not resolved from `default`.** It is the
   profile's own record attribute, so reading a profile never changes it, and a
   write-back keeps it as stored.
@@ -935,7 +1005,12 @@ rather than failing the read.
   shipped one, and the write-back then freezes it into the profile. Set the field
   explicitly on the profile if you want it pinned.
 
-## GraphQL API Reference
+## API Reference
+
+The Web UI calls each operation below through the REST API dispatcher at
+`POST /op/<operation>`. The operation names, parameters and return types are
+declared in `nested/api-resolvers/src/api/schema.graphql`, which is the API
+contract; no GraphQL service runs.
 
 ### Queries
 

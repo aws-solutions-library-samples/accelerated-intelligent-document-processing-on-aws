@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -58,6 +58,33 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 - **Test Studio** — documents submitted by a [Test Studio](test-studio.md) run. Adds a **Test Run** column linking to that run's results, and holds the **Abort**, **Reprocess** and **Delete** actions: a run's results (and the confidence calibration derived from them) are scored against these exact documents, so a run's lifecycle is managed from **Test Executions**, not here.
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
+
+### Review actions on selected documents
+
+Admins and Reviewers get a **Review** menu in the Document List's toolbar (Production
+view; in the Test Studio view it is shown disabled). It holds:
+
+- **Start Review** — claim the selected pending reviews (one opens the document).
+- **Release Review** (Admin) — release the selected claimed reviews.
+- **Skip All Reviews (N selected)** and **Skip All Reviews by profile…** — finish many
+  pending production reviews at once, with a reason, after a count of what will happen
+  (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
+- **Send to review (N selected)** — put finished documents into the Default review
+  queue, with a reason (see [Send to review](human-review.md#send-to-review)).
+
+N counts the selected rows each action applies to; the server decides each document
+and reports a result per document, which can be exported. Larger runs continue as a
+background job under **Home › Jobs**, where every bulk run is listed with its status,
+counts and results, and where a queued or running job can be cancelled and a finished
+one deleted (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
+
+### Adding documents to a test set
+
+Admins can send processed documents straight to a [Test Studio](test-studio.md) test set from the Production view. Select the documents and choose **Add to test set**. The button is enabled once at least one selected document has finished processing.
+
+It opens the same dialog as Test Studio's **Add documents → From processed documents**, with your selection already chosen and a **Test set** field in place of a fixed set. Pick an existing set; a set that is not ready (still being created or updated, or failed) is listed but cannot be picked, and a new set is created in Test Studio first. Selected documents that have not finished processing are left out, and the dialog says how many. Everything else works as it does in Test Studio: a document with no ground truth is added unlabeled and named before you confirm, the dialog warns when that would make a labeled set read as unlabeled, and a document already in the set is skipped. A notice above the table confirms the add once it is queued. See [Adding documents to existing test sets](test-studio.md#adding-documents-to-existing-test-sets).
+
+The action is not shown in the Test Studio view, whose documents are copies made by test runs, or to users who are not Admins. Authors can still add processed documents from Test Studio.
 
 ### Deleting documents
 
@@ -128,7 +155,8 @@ beside it, left to right:
 
 - **Details | Source** — Source shows the original file in place of the page's panels;
   Details brings them back, as you left them.
-- **Reports** — read-only views, each in a dialog: **Summary**, **Evaluation Report**
+- **Reports** — read-only views, each in a dialog of the same width as the edit page's
+  Reports dialogs (Evaluation Report opens wider): **Summary**, **Evaluation Report**
   (see [Evaluation report](#evaluation-report)), **Rule Validation Summary**,
   **Estimated Cost** (the document's metering, priced, with the cost per page in the
   dialog's title; for the roles that may read the pricing, Admin, Author and Viewer) and
@@ -144,8 +172,11 @@ beside it, left to right:
   - **Use As Evaluation Baseline** — copy the document's results into the evaluation
     baseline. The **Evaluation** field shows the copy while it runs and when it is done
     or has failed, and a failed copy is reported.
-  - **Skip All Reviews** — finish a pending review without checking it, with a reason
-    (see [Human review](human-review.md)).
+  - **Skip All Reviews** — finish a pending review without checking it, with a reason;
+    **Resubmit for downstream processing** (ticked by default) re-runs Summarization
+    and Evaluation (see [Human review](human-review.md)).
+  - **Send to review** — put the finished document into the Default review queue, with
+    a reason (see [Send to review](human-review.md#send-to-review)).
   - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
     (ZIP)** — the document's outputs as a ZIP (see
     [Download Document Data](#download-document-data)).
@@ -166,7 +197,7 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 |---|---|
 | Reports (except Estimated Cost), the downloads, Refresh, Details \| Source | every role |
 | Estimated Cost | Admin, Author, Viewer (it reads the stack's pricing) |
-| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Send to review, Start Review | Admin, Reviewer |
 | Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
 | Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
 | Troubleshoot | Admin, Author, Viewer |
@@ -495,7 +526,7 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 
 ## Prompt Preview
 
-The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
+The **Preview prompts** button on the Configuration page (beside **Refresh**) opens the prompt preview, which lets you see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
 
 ![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
 
@@ -514,7 +545,7 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 ### How to Use
 
 1. Navigate to the Configuration page
-2. Click the **Prompt Preview** tab (alongside Configuration, Document Schema, Rule Schema)
+2. Choose **Preview prompts** in the editor's header, beside **Refresh**. It previews the values in the editor, saved or not, and opens over the **Processing Settings**, **Document Schema** and **Policy Schema** tabs
 3. Select a **Processing Step** from the dropdown: the classification step or steps your configured strategy makes (see above), Extraction, Confidence Assessment, or Summarization
 4. For Extraction or Confidence Assessment, select a **Document Class** to preview its schema in the prompt
 5. View the rendered prompts in the Task Prompt and System Prompt sub-tabs
@@ -665,9 +696,9 @@ The "Chat with Document" feature is available at the bottom of the Document Deta
 
 ### Model selection
 
-Chat has its own dedicated configuration section (**Configuration tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
+Chat has its own dedicated configuration section (**Processing Settings tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
 
-The Chat panel includes a **Model** selector that defaults to the `chat.model` configured in the version of the config that was used to process the document. You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
+The Chat panel includes a **Model** selector that defaults to the `chat.model` in the current configuration of the profile that processed the document (its current revision, which may be newer than the one the document ran under). You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
 
 > **OpenAI GPT-5.x in chat:** `openai.gpt-5.4`, `openai.gpt-5.5`, and GPT-5.6 (`openai.gpt-5.6-sol` / `-terra` / `-luna`) are supported for Chat-with-Document and **stream** token-by-token like other models. They run on the `bedrock-mantle` Responses API (US regions only) and are tuned via `chat.reasoning_effort` rather than temperature/top_p. They are hidden from the model selector in EU-region deployments. Note: chat sends the document as **text** (extracted full text), so the PDF-document-block limitation that excludes GPT-5.x from Discovery does not apply here. See [OpenAI GPT-5.x Models](./openai-models.md).
 
@@ -679,7 +710,7 @@ If a document is "too large for chat context window" — i.e. Bedrock returns an
 
 ### Chat history
 
-Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is used for the document contents across successive turns on the same document to reduce latency and cost.
+Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is applied to the document contents across successive turns on the same document, so a turn that follows within five minutes can read them at the cache-read rate instead of the full input price. Its effect on latency has not been measured.
 
 ### Streaming & live status
 
@@ -688,7 +719,7 @@ Chat-with-Document runs as an asynchronous workflow so it can use long-latency l
 1. A **status pill** appears above the input area and transitions as the backend makes progress: **Queued → Loading document text → Querying {model} → Streaming response**.
 2. As soon as the model starts producing output, the assistant bubble appears with a blinking cursor and **tokens stream in** live (throttled to ~200 ms / 200-char batches server-side so the UI stays responsive under heavy throttling).
 3. When generation completes the status pill clears and the bubble finalizes with a timestamp and the model ID used.
-4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-version scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
+4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-profile scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
 
 The session is scoped to your user — other users cannot subscribe to or continue your chat session even if they know the session ID.
 
@@ -710,7 +741,8 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
 - **Navigation.** A user whose only role is Annotator, and a Reviewer with no Admin,
   Author or Viewer role, sees exactly **Home** (**Inbox**, **Tasks**, **Queues**) and
   **Deployment Info**: no **Documents** and no **Extensions**. A Reviewer finds their
-  work in Home › Queues and Home › Tasks, and works every Production queue. A Reviewer
+  work in Home › Queues and Home › Tasks, and works every Production queue and no Test
+  Studio queue; Test Studio queues are for Admins, Authors and Annotators. A Reviewer
   who also holds another role keeps that role's navigation, with Tasks and Queues
   added under **Home**. Other users have **Home** with the **Inbox** only, then the
   usual sections their roles allow: **Documents**, **Assistants**, **Test Studio**,
@@ -775,16 +807,29 @@ The pages are described in [review-queues.md](review-queues.md). In outline:
   disabled with the reason otherwise, for example "Claim this item first"). They are hidden while the original file is shown.
   The page's actions are in one bar at the top, left to right: **Edit | View** (the original
   file in the editor's place); **Reports** (**History**, field edits and review
-  activity; **Summary**; **Processing Report**); **More Actions** (**Use As Evaluation
+  activity; **Summary**; **Processing Report**; each in a dialog of the same width); **More Actions** (**Use As Evaluation
   Baseline**, for Admins and Authors); **Refresh** (read the document again, asking first when there
   are unsaved edits); then **Skip** (queue items, for the assignee, with a reason), **Cancel**
   (leave, discarding unsaved edits after asking), **Save** and **Process Changes**. A
   menu item that doesn't apply yet, such as Summary before a document is finished, is
   disabled with the reason on hover. The info icon opens a panel describing the screen. Process Changes re-runs
   evaluation and summarization on the corrected document, and OCR, classification and
-  extraction are not repeated. It finishes a queue item, and on a direct edit saves
-  the edits and confirms first. For a Test Studio document with authored ground truth,
-  which has no review copy, it only marks the labels reviewed. A direct edit also shows the evaluation
+  extraction are not repeated. It finishes a queue item. What it asks first depends on
+  where you are: on a Production queue item it runs at once; on a direct edit it saves the
+  edits and asks you to confirm the reprocessing (**Confirm Reprocessing**); on a Test
+  Studio item with no draft version of the set open it asks **Open a new version and save
+  ground truth**, because it opens the next version and writes the labels as reviewed
+  ground truth. Test Studio editing is draft-first: **Save** keeps a draft and opens no
+  version, and while a draft version is open the header shows a `v{base} → v{draft}`
+  badge. For a Test Studio document with authored ground truth,
+  which has no review copy, it only marks the labels reviewed. **Edit** and **View** keep
+  their labels when you can't edit: the fields are shown read-only and one notice at the
+  top says why, such as *View only. This item is assigned to {name}.*, with **Claim** in
+  the notice for an item nobody holds (*View only. Claim this item to work on it; it is
+  then assigned to you and shows in Home › Tasks.*), or, for an Admin, **Take over** on
+  an item assigned to someone else (*Assigned to {name}. Take over to edit it and process
+  its changes.*). Each reason under **Review Reason** is a link that moves to its field,
+  and **Next alert** in its header steps through them. A direct edit also shows the evaluation
   baseline when the document has one: the class comparison, **Show Evaluation** to
   compare every field, and baseline editing. An Admin edits an unassigned Production
   item directly (the first saved edit, or Process Changes, assigns it to them) and
@@ -804,20 +849,21 @@ entry points:
 
 - **Bell (top navigation).** The bell shows a badge while you have unread messages and
   opens a menu with your five most recent messages, read and unread, with unread ones
-  flagged. Choosing a message opens the page it links to (or the Inbox page when it has
+  marked **Unread**. Choosing a message opens the page it links to (or the Inbox page when it has
   no link) and marks it read. The menu also offers **Mark all as read** and
   **View all in Inbox**.
 - **Inbox (left navigation).** **Inbox** is the first entry of **Home**, with a badge
   showing the unread count, for every user.
 - **Inbox page.** The Inbox page lists your messages with when they were received,
-  their title (bold while unread; long titles are shortened, with the full title on
-  hover), type and severity. Find messages by text, or filter by read
+  their title (an unread title is bold and a read title is in normal weight; long titles are shortened, with the full title on hover),
+  type and severity. Find messages by text, or filter by read
   state (**All** or **Unread**), type and severity, and sort by any column (severity
   sorts from success to error). Select messages to **Mark as read**, **Mark as unread**
   or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
   (which deletes every read message) without a selection. Each row's actions menu
   (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
-  and marks it read; **Open related page** follows its link.
+  and marks it read; **Open related page** follows its link. The info icon opens a panel
+  describing the page.
 
 **Settings.** The settings button (gear icon) at the top right of the Inbox page opens
 **Inbox settings**, which lists the message types and lets you turn off the ones you
@@ -828,27 +874,27 @@ it is not stored and not counted. Turning a type back on affects new messages on
 share one check for new messages, about every 60 seconds while the browser tab is
 visible. Checking pauses while the tab is hidden and resumes when you return to it.
 New messages update the badges and never raise a pop-up notification. Your own
-actions (marking messages read or unread, deleting them) update the unread count
-on the bell and the navigation badge straight away.
+actions (marking messages read or unread, **Mark all as read**, deleting them) update
+the unread count on the bell and the navigation badge as soon as they complete,
+without waiting for the next check.
 
 **Retention.** Messages are kept for a limited time and up to a per-user cap; when
 the cap is reached, the oldest read messages are removed first. Administrators set
 both in the configuration — see
 [Inbox message retention](configuration.md#inbox-message-retention).
 
-**What arrives in the Inbox.** HITL review queues post three kinds of message to the
-Annotator concerned, for production items and Test Studio documents alike:
+**What arrives in the Inbox.** HITL review queues post four kinds of message, for
+production items and Test Studio documents alike:
 
 | Type (Inbox settings) | Sent when |
 |---|---|
 | **Review item assigned to you** | An Admin assigns an item or document to you. |
 | **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
 | **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+| **Review queue items waiting** | A document enters a review queue. Sent to the queue's members rather than to one Annotator, at most once per queue every 10 minutes. |
 
-Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
-**Review claim expired**. This release does not send them: arrivals in a queue are
-announced to nobody (Admins see waiting work in Review Management), and assignments do
-not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+Inbox settings also list **Review claim expiring** and **Review claim expired**. The
+accelerator does not send them, because assignments do not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
 posting messages should read the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
@@ -865,7 +911,7 @@ hand-type them. There are three entry points:
 - **Report this issue on GitHub (Troubleshoot modal).** After running the
   [Error Analyzer](error-analyzer.md) on a failed document, the Troubleshoot modal
   footer offers **Report this issue on GitHub** — it pre-fills the bug form with the
-  document context (object key, status, config version, execution ARN, and the
+  document context (object key, status, configuration profile, execution ARN, and the
   agent's findings) in addition to the environment details. A **Copy full details**
   button copies the complete environment + findings text to your clipboard for
   pasting anything the URL can't carry (long transcripts are length-capped in the

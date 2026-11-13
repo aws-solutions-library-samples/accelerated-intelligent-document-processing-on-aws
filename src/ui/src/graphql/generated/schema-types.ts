@@ -137,6 +137,78 @@ export type BaseModelInfo = {
   provider: Scalars['String']['output'];
 };
 
+export type BulkDocumentOutcome = {
+  detail?: Maybe<Scalars['String']['output']>;
+  kind: Scalars['String']['output'];
+  objectKey: Scalars['String']['output'];
+  outcome: Scalars['String']['output'];
+};
+
+export type BulkOutcomeCount = {
+  count: Scalars['Int']['output'];
+  outcome: Scalars['String']['output'];
+};
+
+export type BulkReviewJob = {
+  counts: Array<BulkOutcomeCount>;
+  createdAt: Scalars['String']['output'];
+  error?: Maybe<Scalars['String']['output']>;
+  finishedAt?: Maybe<Scalars['String']['output']>;
+  jobId: Scalars['String']['output'];
+  jobType: Scalars['String']['output'];
+  kind: Scalars['String']['output'];
+  limitReached: Scalars['Boolean']['output'];
+  mode: Scalars['String']['output'];
+  note?: Maybe<Scalars['String']['output']>;
+  processed: Scalars['Int']['output'];
+  profile?: Maybe<Scalars['String']['output']>;
+  reason: Scalars['String']['output'];
+  requestedBy: Scalars['String']['output'];
+  resubmit: Scalars['Boolean']['output'];
+  stalled: Scalars['Boolean']['output'];
+  startedAt?: Maybe<Scalars['String']['output']>;
+  status: Scalars['String']['output'];
+  submittedFrom?: Maybe<Scalars['String']['output']>;
+  submittedTo?: Maybe<Scalars['String']['output']>;
+  total: Scalars['Int']['output'];
+};
+
+export type BulkReviewJobPage = {
+  jobs: Array<BulkReviewJob>;
+  nextToken?: Maybe<Scalars['String']['output']>;
+};
+
+export type BulkReviewJobResults = {
+  job: BulkReviewJob;
+  nextToken?: Maybe<Scalars['String']['output']>;
+  results: Array<BulkDocumentOutcome>;
+};
+
+export type BulkSkipAllReviewsInput = {
+  clientRequestId?: InputMaybe<Scalars['String']['input']>;
+  dryRun?: InputMaybe<Scalars['Boolean']['input']>;
+  mode: Scalars['String']['input'];
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKeys?: InputMaybe<Array<Scalars['String']['input']>>;
+  profile?: InputMaybe<Scalars['String']['input']>;
+  reason: Scalars['String']['input'];
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
+  submittedFrom?: InputMaybe<Scalars['String']['input']>;
+  submittedTo?: InputMaybe<Scalars['String']['input']>;
+};
+
+export type BulkSkipAllReviewsResult = {
+  approximate: Scalars['Boolean']['output'];
+  counts: Array<BulkOutcomeCount>;
+  dryRun: Scalars['Boolean']['output'];
+  eligibleCount: Scalars['Int']['output'];
+  jobId?: Maybe<Scalars['String']['output']>;
+  limitReached: Scalars['Boolean']['output'];
+  results: Array<BulkDocumentOutcome>;
+  runMode: Scalars['String']['output'];
+  syncLimit: Scalars['Int']['output'];
+};
+
 export type CalculationDetails = {
   quotasUsed?: Maybe<QuotasUsed>;
 };
@@ -328,6 +400,7 @@ export type ConfigProfileRevisionResponse = {
 
 export type ConfigProfileRevisionsResponse = {
   error?: Maybe<ConfigurationError>;
+  profileMatchesPublished?: Maybe<Scalars['Boolean']['output']>;
   revisions?: Maybe<Array<Maybe<ConfigProfileRevision>>>;
   success: Scalars['Boolean']['output'];
 };
@@ -506,6 +579,7 @@ export type Document = DynamoDbBase & {
   HITLTriggered?: Maybe<Scalars['Boolean']['output']>;
   InitialEventTime?: Maybe<Scalars['AWSDateTime']['output']>;
   Metering?: Maybe<Scalars['AWSJSON']['output']>;
+  MissingRequiredFieldCount?: Maybe<Scalars['Int']['output']>;
   ObjectKey?: Maybe<Scalars['ID']['output']>;
   ObjectStatus?: Maybe<Scalars['String']['output']>;
   PK: Scalars['ID']['output'];
@@ -850,6 +924,37 @@ export type LatestPublishedVersion = {
   templateUrl?: Maybe<Scalars['String']['output']>;
 };
 
+export type McpCredential = {
+  allowedConfigVersions?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  clientId: Scalars['ID']['output'];
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  enabled?: Maybe<Scalars['Boolean']['output']>;
+  expiresAt?: Maybe<Scalars['String']['output']>;
+  kind?: Maybe<Scalars['String']['output']>;
+  lastUsedAt?: Maybe<Scalars['String']['output']>;
+  name?: Maybe<Scalars['String']['output']>;
+  replacedBy?: Maybe<Scalars['String']['output']>;
+  role?: Maybe<Scalars['String']['output']>;
+  rotatedFrom?: Maybe<Scalars['String']['output']>;
+  secretArn?: Maybe<Scalars['String']['output']>;
+  status?: Maybe<Scalars['String']['output']>;
+  tenant?: Maybe<Scalars['String']['output']>;
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+  writeTools?: Maybe<Scalars['Boolean']['output']>;
+};
+
+export type McpCredentialIssued = {
+  clientId: Scalars['ID']['output'];
+  clientSecret: Scalars['String']['output'];
+  credential?: Maybe<McpCredential>;
+  gatewayUrl?: Maybe<Scalars['String']['output']>;
+  oauthScopes?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  secretArn?: Maybe<Scalars['String']['output']>;
+  tokenUrl?: Maybe<Scalars['String']['output']>;
+};
+
 export type MessageContent = {
   text?: Maybe<Scalars['String']['output']>;
 };
@@ -901,16 +1006,19 @@ export type Mutation = {
   addTestSetFromUpload?: Maybe<TestSetUploadResponse>;
   /**
    * Features with a manifest `configPreset`: write the bundled preset to
-   * the host's ConfigurationTable as a new, NON-ACTIVE config version named
-   * `<featureId>-v<version>`. Installation never changes the active config —
-   * an admin reviews and activates the preset from the Configuration UI.
-   * Idempotent: re-applying the same featureId+version overwrites the row,
-   * so CloudFormation stack Updates are safe. IAM-authenticated; called by
+   * the host's ConfigurationTable as the NON-ACTIVE configuration profile
+   * named `<featureId>`; each install or upgrade records a new revision of it.
+   * Installation never changes the active config — an admin reviews and
+   * activates the preset from the Configuration UI. Idempotent: re-applying an
+   * unchanged preset records no revision, so CloudFormation stack Updates are
+   * safe. IAM-authenticated; called by
    * the feature stack's ui-deployer custom resource.
    */
   applyFeatureConfigPreset: FeatureConfigPresetResult;
   assignTestSetDocuments?: Maybe<Array<TestSetDocumentAssignment>>;
   autoDetectSections?: Maybe<Scalars['String']['output']>;
+  bulkSkipAllReviews?: Maybe<BulkSkipAllReviewsResult>;
+  cancelBulkReviewJob?: Maybe<BulkReviewJob>;
   claimNextReviewItem?: Maybe<ClaimNextResult>;
   claimReview?: Maybe<Document>;
   claimReviewItem?: Maybe<ReviewItem>;
@@ -923,9 +1031,11 @@ export type Mutation = {
   createDocument?: Maybe<CreateDocumentOutput>;
   createEmptyTestSet?: Maybe<TestSet>;
   createFinetuningJob?: Maybe<FinetuningJob>;
+  createMcpCredential?: Maybe<McpCredentialIssued>;
   createReviewQueue?: Maybe<ReviewQueueDefinition>;
   createUser?: Maybe<User>;
   deleteAgentJob?: Maybe<Scalars['Boolean']['output']>;
+  deleteBulkReviewJob?: Maybe<Scalars['Boolean']['output']>;
   deleteChatSession?: Maybe<Scalars['Boolean']['output']>;
   deleteConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
   deleteConfigProfileRevision?: Maybe<ConfigProfileRevisionMutationResponse>;
@@ -936,6 +1046,7 @@ export type Mutation = {
   deleteFinetuningJob?: Maybe<Scalars['Boolean']['output']>;
   deleteInboxMessages?: Maybe<InboxMutationResult>;
   deleteReviewQueue?: Maybe<Scalars['Boolean']['output']>;
+  deleteTenant?: Maybe<TenantMutationResponse>;
   deleteTestSets: Scalars['Boolean']['output'];
   deleteTests: Scalars['Boolean']['output'];
   deleteUser?: Maybe<Scalars['Boolean']['output']>;
@@ -953,6 +1064,7 @@ export type Mutation = {
   publishCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   publishTestSetVersion?: Maybe<TestSetVersion>;
   putConfigPrefixMapping?: Maybe<ConfigPrefixMappingMutationResponse>;
+  putTenant?: Maybe<TenantMutationResponse>;
   reassignReviewItem?: Maybe<ReviewItem>;
   reextractTestSetDocument?: Maybe<DraftLabelJob>;
   /** Called by a feature stack's RegisterFeature custom resource once the stack has deployed. */
@@ -974,9 +1086,10 @@ export type Mutation = {
   releaseReviewItem?: Maybe<ReviewItem>;
   removeDocumentsFromTestSet?: Maybe<TestSet>;
   /**
-   * Delete all of a feature's preset config versions on uninstall. A
-   * version that is currently ACTIVE is preserved (never yank the running
-   * config); it is skipped with a warning and the call still succeeds.
+   * Delete a feature's preset configuration profile (and any legacy
+   * `<featureId>-v*` profiles), with their revision history, on uninstall. If
+   * one of them is the ACTIVE profile, `default` is activated first, so the
+   * pipeline never keeps running hooks that point at deleted Lambdas.
    */
   removeFeatureConfigPreset: Scalars['Boolean']['output'];
   removeReviewItem?: Maybe<ReviewItem>;
@@ -987,6 +1100,8 @@ export type Mutation = {
   restoreDefaultModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   restoreDefaultPricing?: Maybe<UpdatePricingResponse>;
   resumeCircuitBreaker?: Maybe<CircuitBreakerStatus>;
+  revokeMcpCredential?: Maybe<McpCredential>;
+  rotateMcpCredential?: Maybe<McpCredentialIssued>;
   saveReviewDraft?: Maybe<ReviewDraft>;
   saveSectionReviewEdits?: Maybe<Document>;
   saveTestSetDocumentSection?: Maybe<TestSetSectionSaveResult>;
@@ -994,7 +1109,10 @@ export type Mutation = {
   sendAgentChatMessage?: Maybe<AgentChatMessage>;
   sendChatDocumentMessage?: Maybe<ChatDocumentMessage>;
   sendTestRunToReview?: Maybe<SendTestRunToReviewResult>;
+  sendToReview?: Maybe<SendToReviewResult>;
   setActiveVersion?: Maybe<UpdateConfigurationResponse>;
+  setMcpCredentialTenant?: Maybe<McpCredential>;
+  setUserTenant?: Maybe<User>;
   skipAllSectionsReview?: Maybe<Document>;
   skipTestSetDocument?: Maybe<TestSetDocumentSkipResult>;
   startMultiDocDiscovery?: Maybe<MultiDocDiscoveryJob>;
@@ -1041,6 +1159,7 @@ export type Mutation = {
   updateDocumentStatus?: Maybe<Document>;
   updateFinetuningJobStatus?: Maybe<FinetuningJob>;
   updateInboxPreferences?: Maybe<InboxPreferences>;
+  updateMcpCredential?: Maybe<McpCredential>;
   updateModelConfigLimits?: Maybe<UpdateModelConfigLimitsResponse>;
   updatePricing?: Maybe<UpdatePricingResponse>;
   updateReviewQueue?: Maybe<ReviewQueueDefinition>;
@@ -1120,6 +1239,16 @@ export type MutationAutoDetectSectionsArgs = {
 };
 
 
+export type MutationBulkSkipAllReviewsArgs = {
+  input: BulkSkipAllReviewsInput;
+};
+
+
+export type MutationCancelBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+};
+
+
 export type MutationClaimNextReviewItemArgs = {
   queueName?: InputMaybe<Scalars['String']['input']>;
   queueProfile?: InputMaybe<Scalars['String']['input']>;
@@ -1185,6 +1314,15 @@ export type MutationCreateFinetuningJobArgs = {
 };
 
 
+export type MutationCreateMcpCredentialArgs = {
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  expiresInDays?: InputMaybe<Scalars['Int']['input']>;
+  name: Scalars['String']['input'];
+  role: Scalars['String']['input'];
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
+};
+
+
 export type MutationCreateReviewQueueArgs = {
   input: ReviewQueueDefinitionInput;
 };
@@ -1200,6 +1338,11 @@ export type MutationCreateUserArgs = {
 
 export type MutationDeleteAgentJobArgs = {
   jobId: Scalars['ID']['input'];
+};
+
+
+export type MutationDeleteBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
 };
 
 
@@ -1252,6 +1395,11 @@ export type MutationDeleteInboxMessagesArgs = {
 
 export type MutationDeleteReviewQueueArgs = {
   id: Scalars['String']['input'];
+};
+
+
+export type MutationDeleteTenantArgs = {
+  tenantId: Scalars['String']['input'];
 };
 
 
@@ -1349,6 +1497,15 @@ export type MutationPutConfigPrefixMappingArgs = {
 };
 
 
+export type MutationPutTenantArgs = {
+  description?: InputMaybe<Scalars['String']['input']>;
+  grantedBy?: InputMaybe<Array<Scalars['String']['input']>>;
+  prefixes: Array<Scalars['String']['input']>;
+  profilePattern: Scalars['String']['input'];
+  tenantId: Scalars['String']['input'];
+};
+
+
 export type MutationReassignReviewItemArgs = {
   assigneeEmail: Scalars['String']['input'];
   cycleId: Scalars['String']['input'];
@@ -1439,6 +1596,17 @@ export type MutationResumeCircuitBreakerArgs = {
 };
 
 
+export type MutationRevokeMcpCredentialArgs = {
+  clientId: Scalars['ID']['input'];
+};
+
+
+export type MutationRotateMcpCredentialArgs = {
+  clientId: Scalars['ID']['input'];
+  overlapDays?: InputMaybe<Scalars['Int']['input']>;
+};
+
+
 export type MutationSaveReviewDraftArgs = {
   baseRevision?: InputMaybe<Scalars['Int']['input']>;
   cycleId: Scalars['String']['input'];
@@ -1474,6 +1642,7 @@ export type MutationSaveTestSetDocumentSectionDraftArgs = {
 
 export type MutationSendAgentChatMessageArgs = {
   enableCodeIntelligence?: InputMaybe<Scalars['Boolean']['input']>;
+  enableExternalMcpAgents?: InputMaybe<Scalars['Boolean']['input']>;
   method?: InputMaybe<Scalars['String']['input']>;
   prompt: Scalars['String']['input'];
   sessionId?: InputMaybe<Scalars['String']['input']>;
@@ -1500,8 +1669,27 @@ export type MutationSendTestRunToReviewArgs = {
 };
 
 
+export type MutationSendToReviewArgs = {
+  note?: InputMaybe<Scalars['String']['input']>;
+  objectKeys: Array<Scalars['String']['input']>;
+  reason: Scalars['String']['input'];
+};
+
+
 export type MutationSetActiveVersionArgs = {
   versionName: Scalars['String']['input'];
+};
+
+
+export type MutationSetMcpCredentialTenantArgs = {
+  clientId: Scalars['ID']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
+};
+
+
+export type MutationSetUserTenantArgs = {
+  email: Scalars['String']['input'];
+  tenantId?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -1509,6 +1697,7 @@ export type MutationSkipAllSectionsReviewArgs = {
   note?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
   reason: Scalars['String']['input'];
+  resubmit?: InputMaybe<Scalars['Boolean']['input']>;
 };
 
 
@@ -1664,6 +1853,16 @@ export type MutationUpdateInboxPreferencesArgs = {
 };
 
 
+export type MutationUpdateMcpCredentialArgs = {
+  allowedConfigVersions?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  clearScope?: InputMaybe<Scalars['Boolean']['input']>;
+  clientId: Scalars['ID']['input'];
+  enabled?: InputMaybe<Scalars['Boolean']['input']>;
+  role?: InputMaybe<Scalars['String']['input']>;
+  writeTools?: InputMaybe<Scalars['Boolean']['input']>;
+};
+
+
 export type MutationUpdateModelConfigLimitsArgs = {
   modelConfigLimits: Scalars['AWSJSON']['input'];
 };
@@ -1740,7 +1939,8 @@ export type MutationUploadSampleDocumentArgs = {
 };
 
 export type MyReviewQueues = {
-  enabledProfiles: Array<Scalars['String']['output']>;
+  bulkSkipSyncLimit: Scalars['Int']['output'];
+  defaultQueueEnabled: Scalars['Boolean']['output'];
   items: ReviewItemPage;
   myClaimCount: Scalars['Int']['output'];
   queues: Array<ReviewQueueSummary>;
@@ -1846,6 +2046,7 @@ export type Query = {
   getAgentChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getAgentJobStatus?: Maybe<AgentJob>;
   getAnnotationQueue?: Maybe<AnnotationQueue>;
+  getBulkReviewJob?: Maybe<BulkReviewJobResults>;
   getChatMessages?: Maybe<Array<Maybe<AgentChatMessage>>>;
   getCircuitBreakerStatus?: Maybe<CircuitBreakerStatus>;
   getConfigProfileRevision?: Maybe<ConfigProfileRevisionResponse>;
@@ -1887,6 +2088,7 @@ export type Query = {
   listAvailableAgents?: Maybe<Array<Maybe<Agent>>>;
   listAvailableModels?: Maybe<AvailableModelsResult>;
   listBucketFiles?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
+  listBulkReviewJobs?: Maybe<BulkReviewJobPage>;
   /**
    * List all features published to the feature bucket (the catalog), whether
    * installed or not. The UI takes the union of this + listInstalledFeatures to
@@ -1913,11 +2115,13 @@ export type Query = {
    * installed extensions via SigV4 — the InstalledFeature type is already @aws_iam.
    */
   listInstalledFeatures?: Maybe<Array<InstalledFeature>>;
+  listMcpCredentials?: Maybe<Array<Maybe<McpCredential>>>;
   listMyReviewWork?: Maybe<ReviewItemPage>;
   listMyTestSetTasks?: Maybe<Array<TestSetTask>>;
   listReviewQueueItems?: Maybe<ReviewItemPage>;
   listReviewQueues?: Maybe<Array<ReviewQueueDefinition>>;
   listSampleDocuments?: Maybe<SampleDocumentListResponse>;
+  listTenants?: Maybe<TenantsResponse>;
   listTestSetQueues?: Maybe<Array<TestSetQueueSummary>>;
   listUsers?: Maybe<UserList>;
   queryKnowledgeBase?: Maybe<Scalars['String']['output']>;
@@ -1973,6 +2177,14 @@ export type QueryGetAnnotationQueueArgs = {
   mineOnly?: InputMaybe<Scalars['Boolean']['input']>;
   objectKey?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
+};
+
+
+export type QueryGetBulkReviewJobArgs = {
+  jobId: Scalars['String']['input'];
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+  outcome?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -2116,6 +2328,12 @@ export type QueryListBucketFilesArgs = {
 };
 
 
+export type QueryListBulkReviewJobsArgs = {
+  limit?: InputMaybe<Scalars['Int']['input']>;
+  nextToken?: InputMaybe<Scalars['String']['input']>;
+};
+
+
 export type QueryListChatSessionsArgs = {
   limit?: InputMaybe<Scalars['Int']['input']>;
   nextToken?: InputMaybe<Scalars['String']['input']>;
@@ -2242,6 +2460,7 @@ export type ReextractTestSetDocumentInput = {
   configVersion?: InputMaybe<Scalars['String']['input']>;
   documentClass?: InputMaybe<Scalars['String']['input']>;
   objectKey: Scalars['String']['input'];
+  sectionId?: InputMaybe<Scalars['String']['input']>;
   testSetId: Scalars['String']['input'];
 };
 
@@ -2357,6 +2576,7 @@ export type ReviewItem = {
   rejectReason?: Maybe<Scalars['String']['output']>;
   reviewStatus: Scalars['String']['output'];
   sections: Array<Scalars['String']['output']>;
+  sentToReview?: Maybe<ReviewSendInfo>;
   state: Scalars['String']['output'];
   version: Scalars['Int']['output'];
 };
@@ -2393,6 +2613,7 @@ export type ReviewQueueDefinition = {
   rejectReasons: Array<Scalars['String']['output']>;
   skipReasons: Array<Scalars['String']['output']>;
   timeLimitMinutes: Scalars['Int']['output'];
+  version?: Maybe<Scalars['Int']['output']>;
 };
 
 export type ReviewQueueDefinitionInput = {
@@ -2406,6 +2627,7 @@ export type ReviewQueueDefinitionInput = {
   rejectReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   skipReasons?: InputMaybe<Array<Scalars['String']['input']>>;
   timeLimitMinutes?: InputMaybe<Scalars['Int']['input']>;
+  version?: InputMaybe<Scalars['Int']['input']>;
 };
 
 export type ReviewQueueHealth = {
@@ -2458,6 +2680,13 @@ export type ReviewSectionDetail = {
   sectionId: Scalars['String']['output'];
 };
 
+export type ReviewSendInfo = {
+  note?: Maybe<Scalars['String']['output']>;
+  reason: Scalars['String']['output'];
+  requestedAt: Scalars['AWSDateTime']['output'];
+  requestedBy: Scalars['String']['output'];
+};
+
 export type ReviewerLoad = {
   claimed: Scalars['Int']['output'];
   email: Scalars['String']['output'];
@@ -2498,6 +2727,7 @@ export type Section = {
   ExclusionReason?: Maybe<Scalars['String']['output']>;
   Id?: Maybe<Scalars['String']['output']>;
   InstanceCount?: Maybe<Scalars['Int']['output']>;
+  MissingRequiredFields?: Maybe<Array<Maybe<ConfidenceThresholdAlert>>>;
   OutputJSONUri?: Maybe<Scalars['String']['output']>;
   PageIds?: Maybe<Array<Maybe<Scalars['Int']['output']>>>;
   ProcessingIssues?: Maybe<Array<Maybe<ProcessingIssue>>>;
@@ -2518,6 +2748,11 @@ export type SendTestRunToReviewResult = {
   skippedCount?: Maybe<Scalars['Int']['output']>;
   testRunId: Scalars['String']['output'];
   testSetId?: Maybe<Scalars['String']['output']>;
+};
+
+export type SendToReviewResult = {
+  counts: Array<BulkOutcomeCount>;
+  results: Array<BulkDocumentOutcome>;
 };
 
 export type StepFunctionExecutionResponse = {
@@ -2588,6 +2823,33 @@ export type SyncBdaIdpResponse = {
   message?: Maybe<Scalars['String']['output']>;
   processedClasses?: Maybe<Array<Maybe<Scalars['String']['output']>>>;
   success: Scalars['Boolean']['output'];
+};
+
+export type Tenant = {
+  createdAt?: Maybe<Scalars['String']['output']>;
+  createdBy?: Maybe<Scalars['String']['output']>;
+  description?: Maybe<Scalars['String']['output']>;
+  grantedBy?: Maybe<Array<Scalars['String']['output']>>;
+  prefixes: Array<Scalars['String']['output']>;
+  profilePattern: Scalars['String']['output'];
+  tenantId: Scalars['String']['output'];
+  updatedAt?: Maybe<Scalars['String']['output']>;
+  updatedBy?: Maybe<Scalars['String']['output']>;
+};
+
+export type TenantMutationResponse = {
+  error?: Maybe<ConfigurationError>;
+  message?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenant?: Maybe<Tenant>;
+};
+
+export type TenantsResponse = {
+  error?: Maybe<ConfigurationError>;
+  grantSource?: Maybe<Scalars['String']['output']>;
+  isolationMode?: Maybe<Scalars['String']['output']>;
+  success: Scalars['Boolean']['output'];
+  tenants?: Maybe<Array<Maybe<Tenant>>>;
 };
 
 export type TestRun = {
@@ -2801,6 +3063,7 @@ export type TestSetSectionDraft = {
 
 export type TestSetSectionGrouping = {
   documentClass?: Maybe<Scalars['String']['output']>;
+  extractedAsClass?: Maybe<Scalars['String']['output']>;
   pageIndices: Array<Scalars['Int']['output']>;
   sectionId: Scalars['String']['output'];
 };
@@ -2992,6 +3255,8 @@ export type User = {
   createdAt?: Maybe<Scalars['AWSDateTime']['output']>;
   email: Scalars['String']['output'];
   persona: Scalars['String']['output'];
+  scopeSource?: Maybe<Scalars['String']['output']>;
+  scopeTenant?: Maybe<Scalars['String']['output']>;
   status?: Maybe<Scalars['String']['output']>;
   userId: Scalars['ID']['output'];
 };

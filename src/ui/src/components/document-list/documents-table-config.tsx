@@ -19,10 +19,11 @@ import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH, documentEditHref, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
-import { isQueueManaged } from '../common/review-status';
+import { isInReviewQueue, isQueueManaged } from '../common/review-status';
 import { renderObjectStatus } from '../common/object-status-renderer';
 import { MALWARE_REFUSED_STATUSES, MALWARE_SCANNING_STATUS } from '../common/malware-scan';
 import CircuitBreakerBadge from './CircuitBreakerBadge';
+import AddToTestSetButton from './AddToTestSetButton';
 import { formatConfigVersionLink } from '../test-studio/utils/configVersionUtils';
 import type { ConfigVersion } from '../test-studio/utils/configVersionUtils';
 import { ABORTABLE_STATUSES } from '../common/document-statuses';
@@ -39,7 +40,8 @@ export interface MappedDocument {
   configRevision?: number | null;
   evaluationStatus: string;
   confidenceAlertCount: number;
-  processingIssueCount: number;
+  missingRequiredFieldCount?: number | null;
+  processingIssueCount?: number | null;
   hitlStatus: string;
   hitlReviewOwner: string;
   hitlReviewOwnerEmail: string;
@@ -71,6 +73,11 @@ interface DocumentsCommonHeaderProps {
   onAbort?: (() => void) | null;
   onClaimReview?: (() => void) | null;
   onReleaseReview?: (() => void) | null;
+  /** The Review menu (built by buildReviewMenuItems) and its handler; absent = no menu. */
+  reviewMenu?: { items: ButtonDropdownProps.Items; visible: boolean; disabledReason?: string } | null;
+  onReviewAction?: ((id: string) => void) | null;
+  /** Opens the add-to-test-set dialog. Null hides the action (it is offered to Admins only). */
+  onAddToTestSet?: (() => void) | null;
   currentUsername?: string;
   loading?: boolean;
   setIsLoading?: (loading: boolean) => void;
@@ -262,10 +269,23 @@ export const COLUMN_DEFINITIONS_MAIN = (
     width: 150,
   },
   {
+    id: 'missingRequiredFieldCount',
+    header: 'Missing Required Fields',
+    // Null when this row does not carry the count (written before the count
+    // existed, or served while the list index backfills after an upgrade): a
+    // dash, not a 0 the row cannot substantiate.
+    cell: (item) => (item.missingRequiredFieldCount == null ? '-' : item.missingRequiredFieldCount),
+    sortingField: 'missingRequiredFieldCount',
+    width: 180,
+  },
+  {
     id: 'processingIssueCount',
     header: 'Processing Issues',
+    // A dash when the row does not carry the count, for the same reason as the
+    // column above; a green 0 would claim the document was checked and clean.
     cell: (item) => {
-      const count = item.processingIssueCount || 0;
+      const count = item.processingIssueCount;
+      if (count == null) return '-';
       return count === 0 ? <StatusIndicator type="success">0</StatusIndicator> : <StatusIndicator type="warning">{count}</StatusIndicator>;
     },
     sortingField: 'processingIssueCount',
@@ -320,6 +340,7 @@ const VISIBLE_CONTENT_OPTIONS = [
       { id: 'configVersion', label: 'Config Profile' },
       { id: 'evaluationStatus', label: 'Evaluation' },
       { id: 'confidenceAlertCount', label: 'Confidence Alerts' },
+      { id: 'missingRequiredFieldCount', label: 'Missing Required Fields' },
       { id: 'processingIssueCount', label: 'Processing Issues' },
       { id: 'hitlStatus', label: 'Review Status' },
       { id: 'hitlReviewOwner', label: 'Review Owner' },
@@ -491,6 +512,24 @@ export const isClaimableForReview = (item: MappedDocument): boolean =>
 export const isReleasableForReview = (item: MappedDocument): boolean =>
   Boolean(item.hitlReviewOwner && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
 
+/**
+ * Whether Skip All Reviews (N selected) counts this document: its review is in a
+ * production queue, or a legacy review is pending that nobody else holds (an Admin
+ * may skip any). An estimate: the server decides each document (queue claimant, Test
+ * Studio provenance and scope are not on the row).
+ */
+export const isSkippableForReview = (item: MappedDocument, currentUsername?: string, isAdmin = false): boolean => {
+  if (isInReviewQueue(item.hitlStatus)) return true;
+  if (!item.hitlTriggered || item.hitlCompleted || isQueueManaged(item.hitlStatus)) return false;
+  return !item.hitlReviewOwner || isAdmin || item.hitlReviewOwner === currentUsername;
+};
+
+/** Whether Send to review counts this document: finished, and in no review. */
+export const isSendableToReview = (item: MappedDocument): boolean =>
+  item.objectStatus === 'COMPLETED' &&
+  !isInReviewQueue(item.hitlStatus) &&
+  !(item.hitlTriggered && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
+
 export const DocumentsCommonHeader = ({
   resourceName = 'Documents',
   selectedItems = [],
@@ -499,10 +538,13 @@ export const DocumentsCommonHeader = ({
   onAbort,
   onClaimReview,
   onReleaseReview,
+  onAddToTestSet,
   onDownloadSelected,
   isDownloadInProgress,
   destructiveDisabledReason,
-  _currentUsername,
+  reviewMenu,
+  onReviewAction,
+  currentUsername: _currentUsername,
   ...props
 }: DocumentsCommonHeaderProps): React.JSX.Element => {
   const onPeriodToLoadChange = ({ detail }: { detail: { id: string } }) => {
@@ -541,9 +583,6 @@ export const DocumentsCommonHeader = ({
   const hasSelectedItems = selectedItems.length > 0;
   // Check if any selected items can be aborted
   const hasAbortableItems = selectedItems.some((item) => ABORTABLE_STATUSES.includes(item.objectStatus));
-  // Check if any selected items can be claimed (pending HITL and not owned)
-  const hasClaimableItems = selectedItems.some(isClaimableForReview);
-  const hasReleasableItems = selectedItems.some(isReleasableForReview);
   // Reprocess re-queues a document directly, bypassing the malware-scanning
   // ingest gate — the refused file is still in the input bucket, so reprocessing
   // a quarantined document would push it into OCR and Bedrock. The resolver
@@ -604,10 +643,22 @@ export const DocumentsCommonHeader = ({
           >
             Download
           </ButtonDropdown>
-          {onClaimReview && (
-            <Button variant="primary" disabled={!hasClaimableItems} onClick={onClaimReview}>
-              Start Review
-            </Button>
+          {onAddToTestSet && <AddToTestSetButton selectedItems={selectedItems} onClick={onAddToTestSet} />}
+          {reviewMenu?.visible && (
+            <ButtonDropdown
+              items={reviewMenu.items}
+              disabled={!!reviewMenu.disabledReason}
+              disabledReason={reviewMenu.disabledReason}
+              onItemClick={({ detail }) => {
+                if (detail.id === 'claim') onClaimReview?.();
+                else if (detail.id === 'release') onReleaseReview?.();
+                else onReviewAction?.(detail.id);
+              }}
+              expandToViewport
+              ariaLabel="Review"
+            >
+              Review
+            </ButtonDropdown>
           )}
           {onAbort && (
             <span title={destructiveDisabledReason || 'Abort processing for selected documents'}>
@@ -639,17 +690,6 @@ export const DocumentsCommonHeader = ({
                 disabled={!!destructiveDisabledReason || !hasSelectedItems}
                 onClick={onDelete}
                 ariaLabel="Delete"
-              />
-            </span>
-          )}
-          {onReleaseReview && (
-            <span title="Release review lock on selected documents">
-              <Button
-                iconName="unlocked"
-                variant="normal"
-                disabled={!hasReleasableItems}
-                onClick={onReleaseReview}
-                ariaLabel="Release Review"
               />
             </span>
           )}

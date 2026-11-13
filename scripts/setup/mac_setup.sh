@@ -1,6 +1,6 @@
 #!/bin/zsh
 # mac_setup.sh - Automated macOS dev environment setup (idempotent, zsh-safe)
-# Usage: chmod +x mac_setup.sh && ./mac_setup.sh
+# Usage, from the repository root: ./scripts/setup/mac_setup.sh
 set -euo pipefail
 
 ARCH="$(uname -m)"

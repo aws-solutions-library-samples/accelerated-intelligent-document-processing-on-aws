@@ -139,20 +139,25 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
   Each call carries up to 2k+1 pages: ×3 at k=1 and ×5 at k=2, in both text and
   image tokens.
 - **`strategy: split_then_classify` drops the class vocabulary from every splitting call
-  and classifies once per section instead of once per page.** A clear win on
-  long documents with few sections; roughly a wash on single-page documents, where it
-  adds a second call to save a prefix that was only paid once. Each call can use
+  and classifies once per section instead of once per page.** By call count it
+  should favour long documents with few sections, though long sections have not been
+  benchmarked; on single-page documents it adds a second call to save a prefix that was
+  only paid once. On 5–20-page packets it measured as a boundary gain and a label loss
+  ([The split-then-classify strategy](#the-split-then-classify-strategy)). Each call can use
   its own model, so splitting can run on a cheap model and classification on a
   stronger one.
 - **A declared document shape skips the boundary work.** Under
   `sectionSplitting: disabled` or `page`, split-then-classify makes no splitting calls:
   the segments are known, so it goes straight to section classification.
-- **The model choice outweighs all of it.** On the benchmark suite Nova 2 Lite,
-  Claude Haiku 4.5 and Claude Sonnet 5 reached the same classification accuracy
-  at $0.007, $0.047 and $0.189 per document respectively — see
-  [`benchmarking/config-guidance.md`](./benchmarking/config-guidance.md) §5.3.
-  With Sonnet 5 as the classifier, classification reached 67% of total document
-  cost on a 9-page benchmark row.
+- **The model choice outweighs all of it.** On the v0.6.14 benchmark grid (133
+  runs per model) Nova 2 Lite, Claude Haiku 5.5 and Claude Sonnet 5 placed the
+  section boundary correctly on 132, 133 and 133 runs, with the same downstream
+  extraction accuracy, at a classification cost of $0.0069, at least $0.0086 and
+  $0.1263 per document respectively. Haiku 5.5's figure is a lower bound, because
+  its banded pricing is held as one flat rate — see
+  [config-guidance §5.3](./benchmarking/config-guidance.md#53-classification-model).
+  Classification was about 1% of the whole per-document bill with Nova 2 Lite and
+  about 16% with Sonnet 5, rising to 35% on one 4-page run.
 
 ### Combinations refused when you save
 
@@ -171,17 +176,24 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
   model's output limit, on a call the selected strategy makes. Each is named by
   its path, for example `classification.split_then_classify.section_classification.llm.model`.
 
+A model that does not accept images is not refused at save time, because no
+list of which models accept images is kept. Bedrock refuses the request instead,
+and the error then names the call's `modality.images` setting, how many images
+were sent and the model. An error about a request being too long, or about its
+images being too large or too many, carries no such sentence: that model accepts
+images, and the remedy is a smaller window or smaller page images.
+
 ## Classification in BDA mode and pipeline mode
 
 `use_bda` chooses which of the two runs. They classify in entirely different
-places, which is why only one of them is configurable here:
+places, which is why the settings on the rest of this page apply to pipeline mode
+only:
 
 ### BDA mode (`use_bda: true`)
 
-- Classification is performed by the BDA (Bedrock Data Automation) project configuration
-- Uses BDA blueprints to define classification rules
-- Not configurable inside the GenAIIDP solution itself
-- Configuration happens at the BDA project level
+- Classification is performed by BDA (Bedrock Data Automation), against the blueprints of the BDA project linked to the configuration profile
+- Each blueprint corresponds to a document class. The classes can be defined in the solution's configuration and pushed to BDA with **Sync to BDA…** on the Configuration page, or defined in BDA and pulled in with **Sync from BDA…** (see [discovery.md](./discovery.md#bdaidp-sync-feature))
+- The pipeline-mode classification settings described on the rest of this page (strategy, granularity, prompts, models) do not apply
 
 ### Pipeline mode (`use_bda: false`)
 
@@ -709,10 +721,29 @@ from the **earlier** window, which is the one that had their preceding context.
 Windows are merged by projecting each window's segments onto per-page verdicts
 and re-running the same fold page-level classification uses, so a windowed packet
 and a page-level document cannot disagree about how verdicts become segments.
-A single window (the common case) uses the model's segments directly.
+A single window (the common case) uses the model's segments directly, unless
+they overlap: when a call returns segments that share pages (a 1–5 segment
+followed by a 2–2 segment, say), each page is kept in the segment the model
+reported **first** — the same rule a windowed packet applies — and a warning names
+the pages. Every page therefore belongs to exactly one section. The later segment
+still starts a new document at the first page it keeps, so two documents of the
+same class that the model let share a page are not joined into one.
 
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.
+
+`window_pages` is a page count, so a window can still be too large for the model
+once its page images are attached: a full window of full-resolution scans can
+exceed a smaller model's input, and the Converse API also limits how many images
+one message may carry, so with images on a large `window_pages` can be refused for
+its image count however few tokens it holds. A window the model refuses as too
+long, or as carrying too many images, is split in two and both halves
+are retried, down to single pages, with the overlap repeated at the junction and
+merged by the same earlier-window rule. Retrying is bounded: the calls made for
+split windows stop at twice the packet's page count, and anything left is reported
+as not classified. Every half that fits is a separate billed call, so if this
+appears in the logs routinely, lower `window_pages` or set `image.target_width` /
+`target_height`. With `window_pages: 0` the window is not split.
 
 **How to pick the two numbers.**
 
@@ -1038,17 +1069,20 @@ processing issue on the section that holds the page, which is where the Sections
 panel renders it and where `ProcessingIssueCount` on the document counts it. The
 severity says how much attention the case deserves:
 
-> **Scope: the combined strategy at page granularity only.** These issues are recorded from
-> the page-level path. Packet granularity and split-then-classify make one decision per
-> segment rather than per page and record none of them; at packet granularity a
-> page the model places in no segment is appended to no section at all, so it
-> produces neither data nor a record. Extending this to the segment-level paths is
-> tracked as follow-up work.
+> **Scope: the combined strategy at page granularity, and section classification under
+> split-then-classify.** On the page-level path every case below is recorded. Under
+> split-then-classify, the section classification step records two of them on the
+> section: `classification_failed` when its call fails (or returns no class with
+> `enforceValidClasses` off), and `classification_invalid_class_fallback` when the
+> fallback class replaced an out-of-vocabulary answer. Packet granularity with the
+> combined strategy records none of them: at packet granularity a page the model
+> places in no segment is appended to no section at all, so it produces neither data
+> nor a record. Extending that path is tracked as follow-up work.
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. **Produced only by `classify_page_sagemaker`**, so it cannot occur in a stack this solution deploys: no template here creates a SageMaker endpoint or UDOP model. You reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the Bedrock backend an exception propagates instead and fails the document, where the error appears in the execution history rather than as an issue | Check the ClassificationFunction log group for the page. If you supplied the endpoint yourself, check its health, model access and quota — otherwise this code indicates a classifier wired up outside the solution's own templates |
-| `classification_page_no_content` | warning | The page had neither usable OCR text nor a loadable page image, so there was nothing to classify. Note this needs *both* to be absent — a blank page normally still has an image, so it does not land here | Check the OCR step for those pages unless they are genuinely empty |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. On the Bedrock backend it is produced in one case: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors | For a read failure, check the page's artifacts in the working bucket and reprocess. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
+| `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 
 One issue per section per cause, listing the page IDs, so a long run of
@@ -1308,7 +1342,7 @@ Four things worth knowing:
   may want a capable multimodal model looking at a whole packet, while
   classifying a clean segment is often a much easier problem a cheaper model
   answers just as well. A custom or fine-tuned classification model
-  (`CustomClassificationModelARN`, or *Create configuration version* on a
+  (`CustomClassificationModelARN`, or *Create Config Profile* on a
   fine-tuning job) is written to section classification.
 - **The halves are metered separately**, as `Splitting/...` and
   `SectionClassification/...` in the cost table and the reporting database,
@@ -1322,9 +1356,15 @@ Four things worth knowing:
   `document_shape.sectionSplitting: disabled` the whole document is one segment, and
   under `page` every page is one, so no splitting call is made.
 
-A segment whose section classification call fails keeps **no class** and is
-reported in the document's errors. Its boundaries are still good, and an
-invented class would propagate into extraction as though it had been decided.
+A segment whose section classification call fails is labelled `unclassified`:
+its section and its pages all read `unclassified`, the failure is in the
+document's errors, and the section carries a `classification_failed` processing
+issue in the Sections panel. Its boundaries are still good, and a real class
+guessed in its place would propagate into extraction as though it had been
+decided. A segment whose answer was outside the vocabulary after every retry gets
+the configured `fallback_class` instead, as on the page-level path, and its section
+carries a `classification_invalid_class_fallback` warning. Extraction treats `unclassified` as classification having determined no
+class, rather than as a class missing from the configuration.
 
 `splitting.method` and `section_classification.method` ship with one value,
 `llm`. A boundary-detection model, embeddings-based classification and external
@@ -1487,8 +1527,14 @@ The durable reasons to pick split-then-classify are not the prefix:
 - **One classification call per *section* instead of per page.** This is the one
   that scales, and it is the opposite of the regime measured above: on a 40-page
   statement, the combined strategy makes 40 classification calls to produce one answer
-  and split-then-classify makes one splitting pass plus one classification call. The
-  longer your sections, the better split-then-classify looks.
+  and split-then-classify makes one splitting pass plus one classification call. That
+  is call arithmetic, not a measurement: long sections have not been benchmarked. On
+  the 5–20-page packets of the v0.6.14 classification benchmark, split-then-classify at
+  packet granularity cost 72% of the default's classification spend per page, placed
+  more section boundaries correctly (0.688 against the default's 0.509), labelled fewer
+  of them correctly (0.854 against 0.926), and reported a confidence that barely
+  separates right pages from wrong ones; at page granularity it cost the same as the
+  default ([config-guidance §5.6](./benchmarking/config-guidance.md#56-classification-granularity-modality-and-strategy)).
 - **A different model per call.** Splitting and classification are
   different problems and the cheapest model that is good at one is often not the
   other. The combined strategy has a single model field for both.
@@ -1511,7 +1557,8 @@ Measure on your own corpus. The two calls are metered separately
 | Confidence unit | Per page | Per segment |
 | Parallelism | Pages run concurrently | Windows run in sequence |
 | Large packets | No practical limit | Windowed; `window_pages: 0` is limited by context |
-| Packets of same-class sections | Excellent (per-page `start` verdict) | Good, and improving with a packet view |
+| Packets of same-class sections | Separated two back-to-back statements correctly, but split a single statement with a reprinted header into one section per page ([measured below](#page-versus-packet-granularity-opposite-failure-modes)) | Kept the single statement whole, but merged the two back-to-back statements into one |
+| Section boundaries on real packets | 0.509 of true sections reproduced (the default: text and images, `combined`) | 0.600–0.710 under the `combined` strategy, at 29–59% of the default's classification cost per page; 19 packets, one run each, so a direction rather than a ranking ([config-guidance §5.6](./benchmarking/config-guidance.md#56-classification-granularity-modality-and-strategy)) |
 
 ## Customizing Classification in Pipeline Mode
 
@@ -1544,6 +1591,11 @@ You can customize classification behavior through the prompts of each call. The
 examples below are written for the combined page call
 (`classification.combined.page`); the packet call, the splitting call and section
 classification have the same two prompts in their own blocks.
+
+Each default classification prompt starts with a `{# ... #}` comment stating its
+contract: the output it must ask for, the placeholders it can use and where
+`<<CACHEPOINT>>` goes. Comments are removed before a prompt is sent; see
+[Comments in a prompt](configuration.md#comments-in-a-prompt).
 
 ### System Prompts
 
@@ -1652,19 +1704,14 @@ shows a fully populated entry.
 
 ## Using CachePoint for Classification
 
-The solution integrates with Amazon Bedrock CachePoint for improved performance:
+The `<<CACHEPOINT>>` delimiter marks the end of the prompt prefix that Amazon Bedrock prompt caching may cache. Only that prefix is cached; model responses are never reused. A cache entry expires five minutes after the start of the request that wrote it, and each read restarts that timer ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once)). No benchmark in this repository has measured caching's effect on latency.
 
-- Caches frequently used prompts and responses
-- Reduces latency for similar classification requests
-- Optimizes costs through response reuse
-- Automatic cache management and expiration
-
-CachePoint is particularly beneficial with few-shot examples, as these can add significant token count to prompts. The `<<CACHEPOINT>>` delimiter in prompt templates separates:
+Few-shot examples make the cacheable prefix larger. The `<<CACHEPOINT>>` delimiter in prompt templates separates:
 
 - **Static portion** (before CACHEPOINT): Class definitions, few-shot examples, instructions
 - **Dynamic portion** (after CACHEPOINT): The specific document being processed
 
-This approach allows the static portion to be cached and reused across multiple document processing requests, while only the dynamic portion varies per document, significantly reducing costs and improving performance.
+This approach allows the static portion to be cached and reused across multiple document processing requests, while only the dynamic portion varies per document. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)).
 
 Example task prompt with CachePoint for few-shot examples:
 
@@ -1970,7 +2017,7 @@ Classification supports few-shot example prompting at either granularity and und
 - **📏 Consistent Output**: Examples establish exact structure and formatting standards
 - **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classifications
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples significantly reduces costs
+- **💰 Cost with Caching**: Prompt caching can lower the cost of the examples when its prefix is read again within five minutes, as it can be when documents with the same configuration are processed close together, and on Claude models raises it when the prefix is written and not read again ([Using CachePoint for Classification](#using-cachepoint-for-classification))
 
 ### Few Shot Example Configuration
 
@@ -2127,9 +2174,9 @@ classification:
 
 ### Token Efficiency Benefits
 
-YAML format provides significant token savings:
+YAML usually needs fewer tokens than the equivalent JSON, though the saving has
+not been measured here and depends on the shape of your data:
 
-- **10-30% fewer tokens** than equivalent JSON
 - No quotes required around keys
 - More compact syntax for nested structures
 - Natural support for multiline content
@@ -2212,16 +2259,18 @@ classification:
 
 | Mode | What the model is asked for | Notes |
 |------|-----------------------------|-------|
-| `topk` (default) | ranked candidate classes with probabilities | Best calibrated, and it answers "what else could this have been?" |
-| `verbalized` | one self-reported 0-1 number | Cheapest and the most overconfident. |
+| `topk` (default) | ranked candidate classes with probabilities | Chosen over `verbalized` on published evidence (below); not compared with it in this repository. It answers "what else could this have been?" |
+| `verbalized` | one self-reported 0-1 number | Asks for less output than `topk`. Published work finds a single self-reported number overconfident; not measured here. |
 | `off` | nothing extra | Costs nothing at all. |
 
-`topk` is the default for a measured reason. Asking for a single number gets
+`topk` is the default for a published reason. Asking for a single number gets
 ~0.95 on everything; making the model enumerate and rank alternatives forces it
 to distribute probability mass instead (Tian et al., *Just Ask for Calibration*,
 EMNLP 2023 — the same reasoning behind extraction's `G1/P1` confidence path). It
 produces exactly the "80 % W-2, 15 % 1099" shape, and the runner-ups are stored
-and shown in the UI.
+and shown in the UI. This repository's
+[classification confidence study](./benchmarking/studies/classification-confidence.md) compared `topk` with `off`
+only; it did not run `verbalized`, so the two scoring modes have not been compared here.
 
 **What it costs:** measured over 298 pages of a 13-class corpus, `topk` added
 **+17 % to the classification step** — which is only ~3 % of total document cost
@@ -2359,11 +2408,12 @@ A single self-reported confidence is usually poorly calibrated — models asked
 because it invites automated escalation on noise. Smaller models are the most
 overconfident, and the default classification model is a small one. That is why
 the shipped mode is `topk` rather than `verbalized`: ranking alternatives against
-each other is what makes the number carry information, where a single
-self-reported figure mostly does not. `off` is for a deployment that will not act
+each other is meant to make the number carry information where a single
+self-reported figure mostly does not. That is the published reasoning above; the
+comparison with `verbalized` has not been run in this repository. `off` is for a deployment that will not act
 on the score — it is the only setting that saves the output tokens.
 
-**This is measured, not asserted.** On 298 pages of a deliberately confusable
+**What has been measured is how informative the `topk` score is.** On 298 pages of a deliberately confusable
 13-class corpus, in `topk` mode ([full study](./benchmarking/studies/classification-confidence.md)):
 
 | | Nova 2 Lite (default) | Claude Haiku 4.5 |

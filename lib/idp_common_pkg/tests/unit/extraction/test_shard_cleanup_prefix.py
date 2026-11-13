@@ -33,7 +33,6 @@ the broken code, since the literal would have been copied from the cleanup side.
 
 from __future__ import annotations
 
-import importlib.util
 import os
 from unittest.mock import MagicMock, patch
 
@@ -45,6 +44,7 @@ from idp_common.extraction.runtime import (
     shard_results_prefix,
 )
 from idp_common.models import Section
+from tests.unit._handler_loading import load_with_xray_stubbed
 
 _SRC = os.path.join(
     os.path.dirname(__file__),
@@ -82,22 +82,7 @@ def _cleanup_of(module):
 
 def _load(module_name: str, filename: str):
     """Load a deployed handler by path with X-Ray's import-time work stubbed."""
-    recorder = MagicMock()
-    recorder.capture.return_value = lambda fn: fn
-    xray_core = MagicMock()
-    xray_core.patch_all = lambda: None
-    xray_core.xray_recorder = recorder
-    with patch.dict(
-        "sys.modules",
-        {"aws_xray_sdk": MagicMock(), "aws_xray_sdk.core": xray_core},
-    ):
-        spec = importlib.util.spec_from_file_location(
-            module_name, os.path.join(_SRC, filename)
-        )
-        assert spec is not None and spec.loader is not None
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-    return module
+    return load_with_xray_stubbed(module_name, os.path.join(_SRC, filename))
 
 
 def _section() -> Section:

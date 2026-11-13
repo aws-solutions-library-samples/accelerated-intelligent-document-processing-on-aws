@@ -153,11 +153,6 @@ UNCOVERED_LAMBDA_TREES: dict[str, tuple[str, int]] = {
         "only during a stack operation and their events are stack metadata",
         3,
     ),
-    "nested/multi-doc-discovery": (
-        "a container-image build helper (docker_build_lambda), not a handler that "
-        "receives an API or pipeline event",
-        0,
-    ),
     "feature-platform/confbench-testset": ("an optional feature extension package", 0),
     "feature-platform/feature-template": (
         "the scaffold a new feature is copied from",
@@ -216,10 +211,6 @@ TREE_INDEPENDENCE: dict[str, dict[str, bool]] = {
         "notBuiltWithMainStack": False,
     },
     "nested/bedrockkb/src": {
-        "notDeployedByParent": False,
-        "notBuiltWithMainStack": False,
-    },
-    "nested/multi-doc-discovery": {
         "notDeployedByParent": False,
         "notBuiltWithMainStack": False,
     },
@@ -1140,14 +1131,13 @@ def test_canonical_importers_carry_an_idp_common_layer():
     this test tells you to vendor the module instead.
 
     This is also the assertion that makes it safe for the template scan to miss a
-    directory. Five directories under ``src/lambda`` are not placed by the CodeUri
-    scan: three (``create_chat_session_resolver``, ``finetuning_data_generator``,
-    ``ipset_updater``) are referenced by no template in the repository at all, and
-    two are not Lambda packages — ``finetuning_state_machine`` holds a Step
-    Functions definition, and ``external_idp_group_mapping`` holds the standalone,
-    unit-tested twin of a handler the parent template deploys as ``InlineCode``.
-    All five read as carrying no layer, which is the conservative answer, and this
-    test is what would fail if one of them nonetheless imported the library.
+    directory. Some directories under ``src/lambda`` are not placed by the CodeUri
+    scan: ``create_chat_session_resolver``, ``finetuning_data_generator`` and
+    ``ipset_updater`` are referenced by no template in the repository at all, and
+    ``finetuning_state_machine`` is not a Lambda package (it holds a Step Functions
+    definition). Each reads as carrying no layer, which is the conservative answer,
+    and this test is what would fail if one of them nonetheless imported the
+    library.
     """
     layers = _layers_by_code_dir()
     broken = []
@@ -1212,7 +1202,7 @@ def test_every_resolver_directory_is_found_in_a_template():
     leading `./`).
 
     Asserted for the resolver tree only, because the same invariant is simply not
-    true of ``src/lambda``: five directories there are not Lambda packages with a
+    true of ``src/lambda``: some directories there are not Lambda packages with a
     CodeUri at all, for the reasons set out on
     ``test_canonical_importers_carry_an_idp_common_layer`` above. Making this test
     tree-wide would therefore mean either failing on those or carrying an exemption

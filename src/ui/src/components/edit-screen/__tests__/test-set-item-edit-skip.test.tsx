@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
@@ -51,17 +52,40 @@ vi.mock('../use-edit-exit', () => ({ default: () => exit, useLeavePath: () => (q
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setErrorMessage: vi.fn(), setSuccessMessage: vi.fn() }) }));
 vi.mock('../../../contexts/settings', () => ({ default: () => ({ settings: {} }) }));
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
-const role = { isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false };
+const role = {
+  isAdmin: false,
+  isAuthor: false,
+  isReviewer: false,
+  isAnnotator: true,
+  canAnnotate: true,
+  canWorkTestSetQueues: true,
+  loading: false,
+};
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
 vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 
 import TestSetItemEdit from '../TestSetItemEdit';
 import { chooseMenuItem } from './edit-bar';
 
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 beforeEach(() => {
   skip.mockReset().mockResolvedValue(undefined);
   exit.mockReset();
-  Object.assign(role, { isAdmin: false, isAuthor: false, isReviewer: false, isAnnotator: true, canAnnotate: true, loading: false });
+  Object.assign(role, {
+    isAdmin: false,
+    isAuthor: false,
+    isReviewer: false,
+    isAnnotator: true,
+    canAnnotate: true,
+    canWorkTestSetQueues: true,
+    loading: false,
+  });
   document.body.innerHTML = '';
 });
 
@@ -76,6 +100,7 @@ describe('Skip on a Test Studio document', () => {
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
+      { wrapper: English },
     );
     buttonByText('Skip')!.click();
     expect(skip).not.toHaveBeenCalled();
@@ -98,6 +123,7 @@ describe('Skip on a Test Studio document', () => {
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
+      { wrapper: English },
     );
     chooseMenuItem('Reports', 'History');
     const tabs = createWrapper(document.body).findTabs()!;
@@ -105,11 +131,12 @@ describe('Skip on a Test Studio document', () => {
   });
 
   it('tells a Reviewer-only caller it is not available for their account', () => {
-    Object.assign(role, { isAnnotator: false, isReviewer: true, canAnnotate: false });
+    Object.assign(role, { isAnnotator: false, isReviewer: true, canAnnotate: false, canWorkTestSetQueues: false });
     render(
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
+      { wrapper: English },
     );
     const alert = createWrapper(document.body).findAlert()!;
     expect(alert.findHeader()!.getElement().textContent).toBe('Not available for your account');

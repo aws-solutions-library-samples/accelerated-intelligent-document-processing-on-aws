@@ -725,3 +725,192 @@ def test_a_sub_only_caller_with_no_pointer_is_denied(mod):
     )
 
     assert resp["statusCode"] == 403
+
+
+# ---- The host's tenant isolation mode ----------------------------------------
+#
+# Read at run time from the SSM parameter the host publishes, not from an imported
+# stack export: an imported export can never change value, so the host could never
+# switch its mode once this feature was installed.
+
+_MODE_PARAM = "/IDP/tenant-isolation-mode"
+
+
+def _set_mode(mod, monkeypatch, value):
+    monkeypatch.setattr(mod, "TENANT_ISOLATION_MODE_PARAMETER", _MODE_PARAM)
+    mod._mode_cache.clear()
+    monkeypatch.setattr(mod, "_ssm", None)
+    if value is not None:
+        boto3.client("ssm", region_name="us-west-2").put_parameter(
+            Name=_MODE_PARAM, Value=value, Type="String", Overwrite=True
+        )
+
+
+@pytest.mark.parametrize("mode,status", [("Off", 200), ("Strict", 404)])
+def test_strict_mode_denies_an_unscoped_caller_the_mapping(
+    mod, monkeypatch, mode, status
+):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc11.pdf", "acme-x")
+    _put_user("open@x", None, user_id="u11")  # a row, but no scope
+    _set_mode(mod, monkeypatch, mode)
+    resp = _get(mod, "/report/doc11.pdf/mapping", email="open@x", groups="[Viewer]")
+    assert resp["statusCode"] == status
+
+
+def test_strict_mode_leaves_an_admin_unrestricted(mod, monkeypatch):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc12.pdf", "acme-x")
+    _set_mode(mod, monkeypatch, "Strict")
+    resp = _get(mod, "/report/doc12.pdf/mapping", email="admin@x", groups="[Admin]")
+    assert resp["statusCode"] == 200
+
+
+def test_an_unreadable_mode_is_read_as_strict(mod, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _Denied:
+        def get_parameter(self, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException"}}, "GetParameter"
+            )
+
+    _set_mode(mod, monkeypatch, None)
+    monkeypatch.setattr(mod, "_ssm", _Denied())
+    assert mod._isolation_mode() == "Strict"
+    # Not cached, so the next request retries.
+    assert "mode" not in mod._mode_cache
+
+
+def test_a_host_without_the_parameter_is_off(mod, monkeypatch):
+    """A host from before tenant isolation publishes no parameter and has no
+    strict mode to honour."""
+    _set_mode(mod, monkeypatch, None)
+    assert mod._isolation_mode() == "Off"
+
+
+def test_the_mode_follows_the_parameter_after_the_ttl(mod, monkeypatch):
+    _set_mode(mod, monkeypatch, "Off")
+    assert mod._isolation_mode() == "Off"
+    boto3.client("ssm", region_name="us-west-2").put_parameter(
+        Name=_MODE_PARAM, Value="Strict", Type="String", Overwrite=True
+    )
+    assert mod._isolation_mode() == "Off"  # cached
+    mode, stamp = mod._mode_cache["mode"]
+    mod._mode_cache["mode"] = (mode, stamp - mod._MODE_TTL_SECONDS - 1)
+    assert mod._isolation_mode() == "Strict"
+
+
+# ---- The host's tenant grant source ------------------------------------------
+#
+# Under TenantGrantSource IdpClaim or Api an unscoped caller is denied whatever the
+# isolation mode, because a user nobody has granted a tenant yet must not read
+# every tenant's mapping. Read from the parameter the host publishes, like the mode.
+
+_GRANT_PARAM = "/IDP/tenant-grant-source"
+
+
+def _set_grant_source(mod, monkeypatch, value):
+    monkeypatch.setattr(mod, "TENANT_GRANT_SOURCE_PARAMETER", _GRANT_PARAM)
+    mod._mode_cache.clear()
+    monkeypatch.setattr(mod, "_ssm", None)
+    if value is not None:
+        boto3.client("ssm", region_name="us-west-2").put_parameter(
+            Name=_GRANT_PARAM, Value=value, Type="String", Overwrite=True
+        )
+
+
+@pytest.mark.parametrize(
+    "source,status", [("Manual", 200), ("IdpClaim", 404), ("Api", 404), (None, 200)]
+)
+def test_an_external_grant_source_denies_an_unscoped_caller_the_mapping(
+    mod, monkeypatch, source, status
+):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc21.pdf", "acme-x")
+    _put_user("open@x", None, user_id="u21")
+    _set_mode(mod, monkeypatch, "Off")
+    _set_grant_source(mod, monkeypatch, source)
+    resp = _get(mod, "/report/doc21.pdf/mapping", email="open@x", groups="[Viewer]")
+    assert resp["statusCode"] == status
+
+
+def test_an_external_grant_source_leaves_an_admin_unrestricted(mod, monkeypatch):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc22.pdf", "acme-x")
+    _set_mode(mod, monkeypatch, "Off")
+    _set_grant_source(mod, monkeypatch, "IdpClaim")
+    resp = _get(mod, "/report/doc22.pdf/mapping", email="admin@x", groups="[Admin]")
+    assert resp["statusCode"] == 200
+
+
+def test_an_unreadable_grant_source_is_read_as_external(mod, monkeypatch):
+    from botocore.exceptions import ClientError
+
+    class _Denied:
+        def get_parameter(self, **_kwargs):
+            raise ClientError(
+                {"Error": {"Code": "AccessDeniedException"}}, "GetParameter"
+            )
+
+    _set_grant_source(mod, monkeypatch, None)
+    monkeypatch.setattr(mod, "_ssm", _Denied())
+    assert mod._grants_are_external() is True
+    assert "grant" not in mod._mode_cache
+
+
+def test_a_host_without_the_grant_parameter_is_manual(mod, monkeypatch):
+    _set_grant_source(mod, monkeypatch, None)
+    assert mod._grants_are_external() is False
+    monkeypatch.setattr(mod, "TENANT_GRANT_SOURCE_PARAMETER", "")
+    assert mod._grants_are_external() is False
+
+
+# ---- A row recording a different Cognito sub ---------------------------------
+#
+# Cognito does not make ``email`` unique, so the address can match a row that
+# records another account's sub. Where an unscoped caller is denied, that row's
+# scope belongs to the other account and is not applied; under Manual with
+# isolation Off it is a restriction and is applied.
+
+
+@pytest.mark.parametrize(
+    "source,mode,status",
+    [
+        ("IdpClaim", "Off", 404),
+        ("Api", "Off", 404),
+        ("Manual", "Strict", 404),
+        ("Manual", "Off", 200),
+    ],
+)
+def test_a_row_recording_another_accounts_sub(mod, monkeypatch, source, mode, status):
+    audit = _make_table()
+    _make_users_table()
+    _seed_mapping_doc(audit, _make_mapping_table(), "doc31.pdf", "acme-x")
+    _put_user("shared@x", ["acme-*"], user_id="u31", sub="sub-first-account")
+    _set_mode(mod, monkeypatch, mode)
+    _set_grant_source(mod, monkeypatch, source)
+
+    second = _get_with_claims(
+        mod,
+        "/report/doc31.pdf/mapping",
+        {
+            "email": "shared@x",
+            "sub": "sub-second-account",
+            "cognito:groups": "[Viewer]",
+        },
+    )
+    assert second["statusCode"] == status
+
+    # The account the row records is unaffected.
+    mod._mode_cache.clear()
+    first = _get_with_claims(
+        mod,
+        "/report/doc31.pdf/mapping",
+        {"email": "shared@x", "sub": "sub-first-account", "cognito:groups": "[Viewer]"},
+    )
+    assert first["statusCode"] == 200

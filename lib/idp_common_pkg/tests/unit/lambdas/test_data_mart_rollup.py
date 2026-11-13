@@ -4345,3 +4345,135 @@ class TestDocumentSectionsDiscovery:
         with self._stub_glue(rollup, [table]):
             result = rollup._discover_document_sections_tables()
         assert result == ["document_sections_invoice"]
+
+
+def _load_with_env(**env):
+    """Load the rollup module with ``IDP_TF_RESOURCE_DIRECTORY`` as given."""
+    with patch.dict(os.environ):
+        os.environ.pop("IDP_TF_RESOURCE_DIRECTORY", None)
+        os.environ.update(env)
+        return _load_module()
+
+
+@pytest.mark.unit
+class TestStackNameTag:
+    """The tag the rollup finds a deployment's functions by.
+
+    A CloudFormation deployment's functions carry CloudFormation's own
+    ``aws:cloudformation:stack-name``; that key is reserved, so a Terraform
+    deployment tags them ``idp:stack-name`` and sets ``IDP_TF_RESOURCE_DIRECTORY``
+    on this function. Getting the default wrong finds no function in every
+    CloudFormation deployment, which is all of them today.
+    """
+
+    def test_a_cloudformation_deployment_uses_cloudformations_tag(self):
+        assert _load_with_env()._STACK_NAME_TAG == "aws:cloudformation:stack-name"
+
+    def test_a_terraform_deployment_uses_the_idp_tag(self):
+        module = _load_with_env(
+            IDP_TF_RESOURCE_DIRECTORY="s3://b/terraform/cfn-resource-directory.json"
+        )
+        assert module._STACK_NAME_TAG == "idp:stack-name"
+
+
+@pytest.mark.unit
+def test_bedrock_pricing_load_skips_a_price_the_pricing_page_reads_differently():
+    """The rollup prices by the rule the save path enforces (#1903).
+
+    ``float()`` read ``nan`` as NaN and ``1_000`` as 1000.0, so a stored price the
+    Pricing page shows as unpriced (``Number('1_000')`` is NaN) was priced here.
+    A model whose only units are invalid is left out, as one with no units is.
+    """
+    from idp_common.config.models import STORED_PRICING_CONTEXT, PricingConfig
+
+    module = _load_with_env(CONFIGURATION_TABLE_NAME="t")
+    merged = PricingConfig.model_validate(
+        {
+            "pricing": [
+                {
+                    "name": "bedrock/m",
+                    "units": [
+                        {"name": "inputTokens", "price": "nan"},
+                        {"name": "outputTokens", "price": "2.0E-6"},
+                        {"name": "cacheReadInputTokens", "price": "1_000"},
+                        {"name": "cacheWriteInputTokens", "price": " 3.0E-6 "},
+                    ],
+                },
+                {
+                    "name": "bedrock/bad",
+                    "units": [{"name": "inputTokens", "price": "inf"}],
+                },
+            ]
+        },
+        context=STORED_PRICING_CONTEXT,
+    )
+    manager = MagicMock()
+    manager.get_merged_pricing.return_value = merged
+    with patch("idp_common.config.ConfigurationManager", return_value=manager):
+        loaded = module._load_bedrock_pricing_from_config()
+    assert loaded == {
+        "bedrock/m": {"outputTokens": 2.0e-6, "cacheWriteInputTokens": 3.0e-6}
+    }
+
+
+@pytest.mark.unit
+def test_bedrock_pricing_load_prices_a_default_model_a_saved_table_omits(
+    monkeypatch,
+):
+    """The rollup reads the per-row merge, not the saved table alone (#1886).
+
+    A stack that saved the Pricing page before a release added a model holds a
+    saved table without it; the hourly Bedrock cost columns must still price it.
+    Runs through the real ``ConfigurationManager`` against moto's DynamoDB.
+    """
+    import boto3
+    from moto import mock_aws
+
+    from idp_common.config import ConfigurationManager
+    from idp_common.config.constants import CONFIG_TYPE_DEFAULT_PRICING
+    from idp_common.config.models import PricingConfig
+
+    default = {
+        "pricing": [
+            {
+                "name": "bedrock/old",
+                "units": [{"name": "inputTokens", "price": "1.0E-6"}],
+            },
+            {
+                "name": "bedrock/new",
+                "units": [{"name": "inputTokens", "price": "3.0E-6"}],
+            },
+        ]
+    }
+    saved = {
+        "pricing": [
+            {
+                "name": "bedrock/old",
+                "units": [{"name": "inputTokens", "price": "2.0E-6"}],
+            }
+        ]
+    }
+    with mock_aws():
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.delenv("CONFIGURATION_BUCKET", raising=False)
+        boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="t",
+            KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "Configuration", "AttributeType": "S"}
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        manager = ConfigurationManager(table_name="t")
+        manager.save_configuration(
+            CONFIG_TYPE_DEFAULT_PRICING, PricingConfig(**default)
+        )
+        manager.save_custom_pricing(PricingConfig(**saved))
+
+        module = _load_with_env(CONFIGURATION_TABLE_NAME="t")
+        loaded = module._load_bedrock_pricing_from_config()
+
+    assert loaded == {
+        "bedrock/old": {"inputTokens": 2.0e-6},
+        "bedrock/new": {"inputTokens": 3.0e-6},
+    }

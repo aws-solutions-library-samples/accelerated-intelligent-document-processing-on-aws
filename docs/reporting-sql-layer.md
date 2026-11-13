@@ -8,7 +8,6 @@ SPDX-License-Identifier: MIT-0
 # Reporting SQL Layer — rollup tables on top of `metering`
 
 **Status:** Shipped (Phase 1).
-**Owner:** Taniya Mathur.
 
 ## 1. Overview
 
@@ -43,7 +42,7 @@ Related module docs (developer tier):
 **Column split — cost vs docs (Phase 1 change).** Cost columns
 (`sum_value`, `sum_cost`) live on `metering_hourly` / `metering_daily`
 because they aggregate cleanly per (service_api, unit). Document-level
-metrics (`n_docs`, `sum_pages`) live on the separate `metering_docs_*`
+metrics (`n_docs`, `sum_pages`, `n_runs`) live on the separate `metering_docs_*`
 tables at the coarser (hour, config_version) grain — `number_of_pages`
 is stamped identically on every metering row for a given document, so
 grouping by `service_api` would fan out the page count by the number
@@ -57,16 +56,45 @@ subquery to collapse the fan-out.
 `sum_value`, `sum_cost`.
 
 **Columns on `metering_docs_hourly` / `metering_docs_daily`** (doc-grain
-volume/pages): `hour_ts` (or `day`), `config_version`, `n_docs`,
-`sum_pages`.
+volume/pages/runs): `hour_ts` (or `day`), `config_version`,
+`document_class`, `n_docs`, `sum_pages`, `n_runs`.
 
-**Naming note — `n_docs` counts differently at hour vs day grain.**
-On `metering_docs_hourly`, `n_docs = COUNT(DISTINCT document_id)`
-within the hour — accurate for that hour. On `metering_docs_daily`,
-`n_docs = SUM(hourly n_docs)`, which counts a document once per hour
-it appeared in — a "doc-hours" count, not a cross-day unique count.
-For strict cross-day unique-doc counts, query raw `metering` with
-`COUNT(DISTINCT document_id)`.
+**`n_docs` counts documents, `n_runs` counts runs.** A run is one
+`(document_id, timestamp)` pair in raw `metering` — a single pass of the
+pipeline over one document. So a document processed once contributes
+`n_docs = 1, n_runs = 1`, and the same document reprocessed later
+contributes `n_docs = 1, n_runs = 2`. "How many documents do we hold?" is
+an `n_docs` question; "how much processing did we do?" is an `n_runs` one,
+and a stack with reprocessing in it answers them with different numbers.
+
+**Naming note — `n_docs` counts differently at hour vs day grain, and
+`n_runs` does not.** On `metering_docs_hourly`, `n_docs = COUNT(DISTINCT
+document_id)` within the cell — accurate for that cell. On
+`metering_docs_daily`, `n_docs = SUM(hourly n_docs)`, which counts a
+document once per hour it appeared in — a "doc-hours" count, not a
+cross-day unique count. For strict cross-day unique-doc counts, query raw
+`metering` with `COUNT(DISTINCT document_id)`.
+
+`n_runs` carries no equivalent caveat, and that is the point of having it:
+a run belongs to exactly **one** `(hour, config_version, document_class)`
+cell, so `SUM(n_runs)` over any set of rows — any range, any grain, either
+table — is the exact run count for that set. `SUM(n_docs)` is only ever an
+upper bound on distinct documents, because a document that spans cells is
+counted once in each. The shape of that error is exact even though its size
+is not: `SUM(n_docs)` over-counts a document by one for every extra cell it
+occupies — each additional hour, configuration version or class it ran
+under — while `SUM(n_runs)` reconciles with raw `metering` exactly. So the
+gap is a function of how much a stack reprocesses, not of how much it
+processes, and the only figure worth having is the one you measure on the
+stack in front of you.
+
+⚠️ The hourly `n_runs` is a `COUNT(DISTINCT timestamp)` taken **per
+document and then summed**, never at cell level. A batch upload stamps
+several documents with the same instant, so a cell-level distinct count
+collapses them and loses one run for every pair of documents that share a
+timestamp — which on a stack fed by batch uploads is most of them. Both
+spellings compile and both return a plausible number, so the difference is
+only visible by reconciling against raw `metering`.
 
 **Where status/timing data actually lives** — NOT on `metering`.
 `metering` carries only cost primitives: `document_id`, `context`,
@@ -87,7 +115,7 @@ by requested range **and by the metric they're asking for**. Cost
 (`sum_value`/`sum_cost`) is on `metering_*`; volume (`n_docs`/`sum_pages`)
 is on `metering_docs_*`:
 
-| Requested range | Cost tier | Volume tier (docs, pages) | Live tail (current partial bucket) |
+| Requested range | Cost tier | Volume tier (docs, pages, runs) | Live tail (current partial bucket) |
 |---|---|---|---|
 | `< 2h` | raw `metering` (partition-pruned to hour) | raw `metering` (`COUNT(DISTINCT document_id)`, `MAX(number_of_pages)` per doc) | n/a — whole window is "current" |
 | `2h – 24h` | `metering_hourly` | `metering_docs_hourly` | raw `metering` for the current hour |
@@ -115,6 +143,10 @@ from reuse — Athena caches SELECT results only.
   completed in the last 24h" — since completion = write time.
 - `initial_event_time` is preserved as a column on the row for
   consumers that need queue-time semantics.
+- Each run of a document writes only its own usage. A reprocess or a
+  finished review lands in the partition of the time it completed and
+  carries the stages that run executed, never the earlier runs' usage
+  again, so the earlier partitions stay correct as they are.
 
 `metering` also gains an `hour` partition key so the current-hour tail
 query in the tier picker partition-prunes to ~40 MB instead of scanning
@@ -514,9 +546,12 @@ code-intelligence agent (`code-intelligence`), quick-start agent
 (`quick-start`), and external MCP agent (`external-mcp`). The
 marketplace idp-monitor's `monitor-agent` picks up the same hook via
 its own repo. The hook is asymmetric-regression-safe (one counter
-dropping doesn't re-emit the other from scratch), thread-safe (state
-update guarded by an internal lock so concurrent `stream_async` calls
-against a reused agent don't tear the delta), and zero-side-skipping
+dropping doesn't re-emit the other from scratch), thread-safe (the
+usage read and the state update are guarded by one internal lock, so
+overlapping invocations sharing one hook neither tear the delta nor
+mistake a stale read for a counter reset; Strands' default
+concurrent-invocation mode already refuses overlapping calls on one
+agent), and zero-side-skipping
 (a 0-valued CloudWatch datum is never emitted). **Latent gap**: the
 hook doesn't yet read `cacheReadInputTokens` / `cacheWriteInputTokens`
 — no in-repo agent has prompt caching enabled today, so the counters
@@ -534,6 +569,12 @@ future dashboards):
   from a consumer.
 - **Pick the tier** by requested range (see §2). Live tail from raw
   `metering` for the current hour/day is expected.
+- **Sum rows per document across runs.** Every metering row is the
+  usage of one run; a document reprocessed later contributes a new set
+  of rows with that run's own usage. The sum over a document's rows is
+  its total; there is no cumulative row to subtract. Rows written for
+  documents reprocessed before this rule was introduced are not
+  rewritten and may repeat an earlier run's usage.
 - **Assume append-only.** A partition, once written, never changes.
   Athena result reuse is safe for sealed partitions — enable it
   explicitly on each `StartQueryExecution` via
@@ -708,7 +749,7 @@ dependency-sensitive; tracks are independent.
 - **Rollup-Lambda layer swap-in-place guard.** Both the rollup and the
   migration Lambdas now use `IDPCommonReportingLayer` for pyarrow +
   `idp_common`. External customers install this feature via
-  CreateFunction (new resource in this release) so the layer attaches
+  CreateFunction so the layer attaches
   cleanly under the 250 MB "combined code + layers" limit. A *future*
   release that swaps the rollup Lambda's runtime shape in-place
   (bundled ↔ layer, or a much larger layer) risks the same

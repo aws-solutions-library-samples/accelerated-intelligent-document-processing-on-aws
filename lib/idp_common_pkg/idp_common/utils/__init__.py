@@ -18,6 +18,13 @@ except ImportError:
 # Import Lambda metering utility
 from .lambda_metering import calculate_lambda_metering
 
+# Metering-map helpers (stdlib-only leaf, so hermetic Lambda tests can load it by
+# path without the rest of this package)
+from .metering import attach_failure_metering as attach_failure_metering
+from .metering import cumulative_metering as cumulative_metering
+from .metering import failure_metering as failure_metering
+from .metering import merge_metering_data as merge_metering_data
+
 # Import settings helper utilities
 from .settings_helper import get_settings, get_setting, clear_cache
 
@@ -84,51 +91,6 @@ def build_s3_uri(bucket: str, key: str) -> str:
         S3 URI in format s3://bucket/key
     """
     return f"s3://{bucket}/{key}"
-
-
-def merge_metering_data(
-    existing_metering: Dict[str, Any], new_metering: Dict[str, Any]
-) -> Dict[str, Any]:
-    """
-    Merge metering data from multiple sources
-
-    Args:
-        existing_metering: Existing metering data to merge into
-        new_metering: New metering data to add
-
-    Returns:
-        Merged metering data
-    """
-    merged = existing_metering.copy()
-
-    for service_api, metrics in new_metering.items():
-        if isinstance(metrics, dict):
-            for unit, value in metrics.items():
-                if service_api not in merged:
-                    merged[service_api] = {}
-
-                # Convert both values to numbers to handle string vs int mismatch
-                try:
-                    existing_value = merged[service_api].get(unit, 0)
-                    # Handle both string and numeric values
-                    if isinstance(existing_value, str):
-                        existing_value = float(existing_value)
-                    if isinstance(value, str):
-                        value = float(value)
-
-                    merged[service_api][unit] = existing_value + value
-                except (ValueError, TypeError) as e:
-                    logger.warning(
-                        f"Error converting metering values for {service_api}.{unit}: existing={merged[service_api].get(unit)}, new={value}, error={e}"
-                    )
-                    # Fallback to new value if conversion fails
-                    merged[service_api][unit] = value
-        else:
-            logger.warning(
-                f"Unexpected metering data format for {service_api}: {metrics}"
-            )
-
-    return merged
 
 
 def extract_json_from_text(text: str) -> str:

@@ -116,11 +116,39 @@ result = discovery.discovery_classes_with_document(
 ## Saving Discovered Schema (Augment vs. Replace)
 
 When `save_to_config=True`, discovered classes are persisted to a target
-configuration version via `ClassesDiscovery._merge_and_save_class()`. This
-method is **always additive**: it reads the version's existing `classes`, keys
+configuration profile via `ClassesDiscovery._merge_and_save_class()`. This
+method is **always additive**: it reads the profile's existing `classes`, keys
 them by `$id` (falling back to `x-aws-idp-document-type`), and inserts each newly
 discovered class — overwriting only a class with the same identifier. It never
 deletes classes the user curated.
+
+### Discovered text is kept to plain text
+
+`discovered_text` cleans what a model wrote before it is saved or shown:
+`clean_schema_text` (every string in a schema, at any depth, except the syntax keys
+`SYNTAX_KEYS` and `-regex` keys; property names are never changed),
+`clean_rule_classes` (rule-class and rule text) and `clean_report` (the reflection
+report, line breaks kept). Text is normalised first (HTML entities decoded, NFKC,
+format characters such as zero-width spaces removed); then URLs, markdown images and
+HTML (including an unclosed tag) are removed, a markdown link keeps its text, and
+lengths are capped (`MAX_DESCRIPTION_CHARS`, `MAX_PROMPT_CHARS`, `MAX_EXAMPLE_CHARS`,
+`MAX_EXAMPLES`, `MAX_REPORT_CHARS`). It is called on `_merge_and_save_class` (both
+class discovery flows), on `DiscoveryAgent.analyze_cluster` and `reflect`, and on the
+rules path (`discovery_rules_from_document` and `to_policy_class`). Existing, authored
+classes in the target profile are not cleaned.
+
+### The multi-document agent's tools are bounded
+
+`DiscoveryAgent.analyze_cluster` binds `ClusterAnalysisTool` to the cluster under
+analysis and `DocumentVisualTool` to that cluster's members and to
+`max_sample_size` distinct documents (viewing one again is free). A request outside
+either bound returns a tool error the agent can read, rather than an image.
+
+### Rules discovery saves only into a named profile
+
+`RulesDiscovery` with a configuration manager (that is, without `config=`) requires
+`version=`. With none it raises `ValueError` before the model runs; there is no
+fallback to the active profile.
 
 ### Multi-record samples produce a suggestion, not a setting (#765)
 
@@ -181,20 +209,20 @@ with `sync_mode: replace`, which replaces surviving classes from the same
 transform output by design — there the BDA project is the declared source of
 truth.
 
-The UI's **Save mode** selector controls whether the target version's schema is
+The UI's **Save mode** selector controls whether the target profile's schema is
 cleared *before* discovery runs:
 
 | Save mode | Behavior |
 |-----------|----------|
 | `augment` (default) | Existing classes are kept; discovered classes are merged in (dedup by `$id`). |
-| `replace` | The target version's schema list is cleared **once, up front** in the discovery upload resolver, then discovery merges the new classes into the now-empty list. |
+| `replace` | The target profile's schema list is cleared **once, up front** in the discovery upload resolver, then discovery merges the new classes into the now-empty list. |
 
 Replace is implemented in the resolver
 (`nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py`,
 `_clear_version_schema()`), **not** inside `_merge_and_save_class()`. Clearing
 once before enqueuing jobs is what makes Replace correct for multi-section and
 multi-document discovery, where a single submission produces *N* jobs that each
-merge one class into the same version — clearing per-job would leave only the
+merge one class into the same profile — clearing per-job would leave only the
 last class. Class discovery clears `classes`; Policy Discovery clears
 `policy_classes`. All other config sections are preserved.
 
@@ -231,6 +259,8 @@ discovery:
 
   # Batch discovery over a document collection (embedding clustering)
   multi_document:
+    # Rewritten at deploy time by update_configuration: eu.cohere.embed-v4:0
+    # in EU Regions, global.cohere.embed-v4:0 in Canada.
     embedding_model_id: us.cohere.embed-v4:0
     analysis_model_id: us.anthropic.claude-sonnet-4-6
 
@@ -251,6 +281,26 @@ silently dropped rather than reported.** `without_ground_truth`,
 `model_id` and `user_prompt`. `rules` is `RuleDiscoveryConfig`, which spells them
 `model` and `task_prompt`. `discovery.rules.model_id` and
 `discovery.without_ground_truth.model` are both unread keys.
+
+### Models written in code follow the Region
+
+A model written in code is not rewritten at deploy time, so a code fallback names
+its US model and passes it through `idp_common.regional_models.regional_default`,
+which returns what the deploy-time swap would have written for the Region:
+`DiscoveryAgent` built with no `analysis_model_id` (as the save step's reflection
+report is) uses `eu.anthropic.claude-sonnet-4-6` in an EU Region, and the SDK's
+local discovery falls back to `eu.amazon.nova-pro-v1:0` in an EU Region and
+`us.amazon.nova-2-lite-v1:0` in Canada when the system defaults name no model.
+The models `base-discovery.yaml` names for the SDK's local path (schema discovery
+with and without ground truth, and section detection under `auto_split`) are
+translated the same way through `regional_models.regional_shipped_model`, because
+that path never runs the deploy-time swap. A model passed by the caller is sent
+as given. `tests/unit/test_regional_shipped_models.py` fails if the YAML names a
+model for one of those sections that `regional_models` does not know.
+Every id passed to it must be in `regional_models.FALLBACK_MODEL_IDS`, and
+`src/lambda/update_configuration/test_eu_region.py` checks each against the swap
+tables. `tests/unit/test_geographic_fallbacks.py` reads every code fallback in the
+tree and fails on one naming a geographic profile directly.
 
 ## Integration with IDP SDK
 

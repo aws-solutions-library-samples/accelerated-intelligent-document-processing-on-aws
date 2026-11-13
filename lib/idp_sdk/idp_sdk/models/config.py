@@ -17,10 +17,45 @@ class ConfigCreateResult(BaseModel):
     )
 
 
+class ConfigMigrateResult(BaseModel):
+    """Result of migrating a configuration file to the current format."""
+
+    yaml_content: str = Field(
+        description=(
+            "The migrated configuration as YAML, headed by a comment naming the "
+            "format version and the source file"
+        )
+    )
+    config_format_version: Optional[str] = Field(
+        default=None,
+        description="The config_format_version the configuration was migrated to",
+    )
+    output_path: Optional[str] = Field(
+        default=None, description="Path where the migrated config was written"
+    )
+
+
 class ConfigValidationResult(BaseModel):
     """Result of configuration validation."""
 
     valid: bool = Field(description="Whether configuration is valid")
+    document_loaded: bool = Field(
+        default=True,
+        description=(
+            "Whether the file was read and parsed as YAML. False when it could not "
+            "be read or is not valid YAML, in which case 'errors' says which, and "
+            "when idp_common cannot be imported at all, since the file is then "
+            "never opened."
+        ),
+    )
+    class_count: Optional[int] = Field(
+        default=None,
+        description=(
+            "Number of document classes the file itself defines, not counting the "
+            "system defaults. None when the file did not load or its top level is "
+            "not a mapping."
+        ),
+    )
     validation_available: bool = Field(
         default=True,
         description=(
@@ -76,7 +111,7 @@ class ConfigUploadResult(BaseModel):
 
     success: bool = Field(description="Whether upload succeeded")
     version: Optional[str] = Field(
-        default=None, description="Configuration version that was uploaded"
+        default=None, description="Configuration profile that was uploaded"
     )
     version_created: bool = Field(
         default=False,
@@ -100,10 +135,10 @@ class ConfigUploadResult(BaseModel):
 
 
 class ConfigActivateResult(BaseModel):
-    """Result of a configuration version activation."""
+    """Result of a configuration profile activation."""
 
     success: bool = Field(description="Whether activation succeeded")
-    activated_version: str = Field(description="The configuration version activated")
+    activated_version: str = Field(description="The configuration profile activated")
     bda_synced: bool = Field(
         default=False,
         description="Whether BDA blueprint sync was performed",
@@ -126,13 +161,22 @@ class ConfigActivateResult(BaseModel):
             "have synced."
         ),
     )
+    bda_unsent_classes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Classes not sent to BDA because none of their fields can be "
+            "represented in a blueprint, and BDA rejects a blueprint with no "
+            "fields. Not a failure, and not counted as synced: no blueprint "
+            "exists for them."
+        ),
+    )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
 
 class ConfigVersionInfo(BaseModel):
-    """Information about a single configuration version."""
+    """Information about a single configuration profile."""
 
-    version_name: str = Field(description="Configuration version name/identifier")
+    version_name: str = Field(description="Configuration profile name")
     is_active: bool = Field(
         default=False, description="Whether this is the currently active version"
     )
@@ -173,10 +217,10 @@ class ConfigVersionInfo(BaseModel):
 
 
 class ConfigListResult(BaseModel):
-    """Result of listing configuration versions."""
+    """Result of listing configuration profiles."""
 
     versions: List[ConfigVersionInfo] = Field(
-        description="List of configuration versions"
+        description="List of configuration profiles"
     )
     count: int = Field(description="Total number of versions returned")
 
@@ -234,11 +278,11 @@ class ConfigRevisionListResult(BaseModel):
 
 
 class ConfigDeleteResult(BaseModel):
-    """Result of deleting a configuration version."""
+    """Result of deleting a configuration profile."""
 
     success: bool = Field(description="Whether deletion succeeded")
     deleted_version: str = Field(
-        description="The configuration version that was deleted"
+        description="The configuration profile that was deleted"
     )
     error: Optional[str] = Field(default=None, description="Error message if failed")
 
@@ -265,6 +309,15 @@ class ConfigSyncBdaResult(BaseModel):
     )
     processed_classes: List[str] = Field(
         default_factory=list, description="Names of processed classes"
+    )
+    unsent_classes: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Classes not sent to BDA because none of their fields can be "
+            "represented in a blueprint, and BDA rejects a blueprint with no "
+            "fields. Not a failure, and not counted as synced: no blueprint "
+            "exists for them."
+        ),
     )
     orphaned_blueprint_arns: List[str] = Field(
         default_factory=list,

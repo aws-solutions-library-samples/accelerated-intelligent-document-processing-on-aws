@@ -25,25 +25,32 @@ pip install -e "lib/idp_common_pkg[review_queues]"
 
 | Module | What it owns |
 |---|---|
-| `statuses.py` | The one declaration of `ReviewStatus` (`in_review`, `complete`, `rejected`), `QueueItemState` and the legacy `HITLStatus` spellings, plus `normalize_hitl_status`. Standard library only, so the layer-free list resolvers can vendor it |
+| `statuses.py` | The one declaration of `ReviewStatus` (`in_review`, `complete`, `rejected`), `QueueItemState` and the legacy `HITLStatus` spellings, plus `normalize_hitl_status`, and the one definition of "review finished" (`is_review_finished`, `FINISHED_HITL_STATUSES`), "review raised" and "legacy review pending" (`is_review_raised`, `is_legacy_review_pending`, and their DynamoDB form `pending_filter_expression`), the Skip All and Send to review reasons, and `MACHINE_RESULT_DISPOSITIONS` (`removed`, `skipped`). Standard library only, so the layer-free list resolvers, `lookup_function` and `backfill_gsi_attributes` vendor it byte for byte as `review_statuses.py` |
 | `models.py` | Pydantic records for the table (`ReviewItemRecord`, `DraftRecord`, `HistoryEntry`), `StatusObject`, `ReviewDecision`, `CallerContext` |
 | `keys.py` | Table key layout and the opaque list cursors |
 | `store.py` | `ReviewStore`: every read and write of `HITLTable`, all conditional on the item `Version` |
 | `annotators.py` | Who the Annotators are: the Cognito `Annotator` group's members (`annotator_emails`, behind `listAnnotators`) and one user's groups (`cognito_user_lookup`, `is_annotator`), used by both assignment paths. Only Annotators are assigned work; Reviewers claim it |
 | `queue_defs.py` | `QueueDefinition` and `QueueDefStore`: the system-wide queues (`PK=QDEF`, `SK=Q#<id>`), each with an `enabled` switch, cached for 30 s; the Default queue is seeded, enabled, whenever it is missing, and a stored Default is never overwritten |
-| `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins every queue; Annotators those whose `eligible_annotators` is empty or names them), failing closed |
+| `directory.py` | `QueueDirectory`: which queues exist and who may work them (Admins and Reviewers every queue; Annotators only those whose `eligible_annotators` names them, so an empty list means no Annotators), failing closed |
 | `reasons.py` | `build_reasons`: why a document is held (its sections' `confidence_threshold_alerts`, and in BDA mode a blueprint confidence under `hitl.confidence_threshold`); reads no S3 |
 | `regrouping.py` | `regroup_refusal`: who may change the page grouping of a document in review (only the holder of its `CLAIMED` item). Used by `updateDocumentSections` |
 | `routing.py` | `review_mode` (the `hitl.enabled` and Default-queue gate) and `route_for_review`: the one routing function both ProcessResults steps call |
 | `tracker.py` | WorkflowTracker integration: activation after phase 1 and completion after the finalize run |
 | `service.py` | `ReviewQueueService`: listing, claims, leases, drafts, dispositions and the supervisor actions behind the review API |
-| `finalize.py` | The finalize token, `FinalizeSender` and `apply_corrections` |
+| `finalize.py` | The finalize token, `DocumentResubmitter` (puts a tracked document back on the DocumentQueue, optionally with a `ResubmitIdempotencyToken`, and raises on failure), `FinalizeSender` (the finalize message, a `DocumentResubmitter` that resets metering) and `apply_corrections` |
 | `status_object.py` | Writing and deleting `<document>/review/status.json` |
 | `notify.py` | Inbox messages (`review.*` notification types); never raises |
 | `testset_labels.py` | `TestSetLabels`: the one writer of a reviewed Test Studio label (`write_reviewed`: `labelSource = reviewed-human`, the `_editHistory` entry with field diffs, capped at `MAX_EDIT_HISTORY_ENTRIES`, the confidence-curve observations, the section's draft deleted), and section drafts (save, list, delete, move). Used by `test_set_resolver` and `complete_section_review` |
 | `section_writes.py` | `assert_section_result_writable`: refuses (`QUEUE_MANAGED`) a direct write of `<document>/sections/<id>/result.json` to the Output bucket while the document is in review, reading its tracking row. Used by `uploadDocument` (`upload_resolver`) |
 | `sweeper.py` | `ReviewSweeper`: assignment reminders and self-healing, run every 5 minutes |
 | `api_models.py` | The camelCase API views and argument models |
+| `legacy_skip.py` | Skip All Reviews on a review outside a queue: `skip_legacy_review` (the conditional `HITLStatus = Review Skipped` write and its `HITLReviewHistory` entry, with `source`, `jobId` and `resubmitted`) and its guards. Takes the tracking table as a Table-protocol object; the caller resubmits. Used by `complete_section_review` and `review_skip` |
+| `review_skip.py` | One document of a bulk Skip All Reviews: `classify` (the outcome from the tracking row and the queue item, shared with the dry run) and `skip_document` (a queue item through `ReviewQueueService.skip_all_reviews`, a legacy review through `legacy_skip`, then the resubmit). Never raises |
+| `send_to_review.py` | `SendToReviewService`: creates a manual (`origin="manual"`) Default-queue item for a finished production document, with the tracking row as the commit point, and `abandon`, which the sweeper also calls for a manual item left `HOLDING` |
+| `bulk_models.py` | The bulk contracts: `BulkOutcome` (the per-document outcomes the UI mirrors), `BulkSkipRequest`, `SendToReviewRequest`, the result and job views, and the limits |
+| `bulk_selection.py` | `PendingReviewQuery`: a profile's pending production reviews in a submitted-date range, one paginated `TypeDateIndex` Query filtered by `pending_filter_expression` |
+| `bulk_jobs.py` | `BulkJobStore` (job, chunk, result, list and lock rows in this table) and `BulkSkipService` (dry run, the inline run on 8 threads within an 11 s admission budget, async jobs, and the worker step: one job at a time, paced against the DocumentQueue, idempotent per document) |
+| `bulk_settings.py` | `effective_sync_limit`: `hitl.bulk_skip_sync_limit` from the active profile, clamped to 1-100 |
 | `testset_summaries.py` | Computing a Test Studio document's summary from its labels in S3 (label source, alert and field counts, the weakest confidence and its threshold, classes, sections) for one document, one page, or a whole set (`summarize_test_set`, which lists `input/` and `baseline/` once each). Used by the test-set resolver and, for whole sets, by `TestSetFileCopierFunction` |
 | `testset_docs.py` | Test Studio documents as queue items: one `TSDOC#<testSetId>` / `D#<objectKey>` item per document with its summary (label source, alert count, lowest confidence, classes, sections, reviewed) and assignment, so a set's queue is one Query while the labels stay in S3. Assign, unassign, skip, the assignee check, and the assigned / unassigned / reminder Inbox notices. Standard library and boto3 only |
 
@@ -97,7 +104,8 @@ In queue mode:
 - **Reasons.** Each of a section's `confidence_threshold_alerts` (computed by
   assessment or extraction in Pipeline mode, and by BDA processing in BDA mode, with
   the field's `x-aws-idp-confidence-threshold` and otherwise
-  `hitl.confidence_threshold`) is a `low_confidence` reason named by its path
+  `hitl.confidence_threshold`, and never raised for a field with no extracted
+  value, see `idp_common.assessment.presence`) is a `low_confidence` reason named by its path
   (`Address.City`, `Rows[0].Amount`), with the alert's confidence and threshold. In
   BDA mode a matched blueprint under `hitl.confidence_threshold` is a
   `blueprint_confidence` reason, and so is a matched blueprint whose confidence is
@@ -106,8 +114,14 @@ In queue mode:
   serialization and in the tracking table (`BlueprintUnscored`, written only when
   true), so a reprocess that reloads the document is held again. A section whose segment matched no blueprint is
   unscored too but is not flagged, so it is not held, as legacy HITL does not mark
-  it. So routing agrees exactly with the alerts users
-  see, and it reads nothing from S3. A malformed alert is skipped. The module must
+  it. With `hitl.route_missing_required_fields` on (the default; on when unset), each
+  of a section's `missing_required_fields` is a `missing_required` reason named by
+  its path, with a score of 0.0 and the entry's threshold, otherwise
+  `hitl.confidence_threshold`, so it sorts ahead of the confidence alerts. Legacy
+  HITL (`legacy_section_triggers`, `bda_segment_triggers`) does not read it. So routing agrees exactly with the alerts users
+  see, and it reads nothing from S3. A malformed alert is skipped. A section's
+  `missing_required_fields` are not reasons and nothing here reads them; they are
+  the input for routing on missing data, which does not exist yet. The module must
   not import `idp_common.assessment`: the Pipeline ProcessResults Lambda installs
   only the `review_queues` extra. Up to 20 reasons are stored per item, worst gap
   first; `reason_count` keeps the total.
@@ -149,10 +163,42 @@ document, so it finishes with the new grouping.
   `listReviewQueues`, `createReviewQueue`, `updateReviewQueue` and
   `deleteReviewQueue`; the web UI doesn't offer `createReviewQueue`. Only Default can't be deleted (`PROTECTED_QUEUE`); an
   Escalation queue an earlier release seeded is an ordinary queue.
-  `ReviewQueueService.delete_queue` moves a queue's `OPEN` and `CLAIMED` items to
-  Default with `move` (unassigned; an assignee is told), re-points its `HOLDING`
-  items at Default, then deletes the definition. It refuses with
-  `QUEUE_FINALIZING` while one of the queue's items is `FINALIZING`.
+  `ReviewQueueService.delete_queue` refuses with `QUEUE_FINALIZING` while one of
+  the queue's items is `FINALIZING`, then deletes the definition, and only then
+  moves the queue's `OPEN` and `CLAIMED` items to Default with `move` (unassigned;
+  an assignee is told) and re-points its `HOLDING` items at Default. So a delete
+  the store refuses (`QUEUE_CHANGED`, or a fault) has moved nothing. A run that
+  stops part-way leaves items in a queue that is no longer defined, which the rest
+  of the service handles (a `HOLDING` item activates into Default; the overview
+  lists the queue); deleting it again moves the rest, and the web UI offers Delete
+  on such a queue while it still holds items.
+- Every definition carries a `version` (`Version` in the table), which
+  `QueueDefStore.put` sets to 1 on create and bumps by one on every update; a
+  definition stored before versions existed reads as 0, and so does one whose
+  `Version` is not a non-negative whole number (logged as
+  `queue_definition_version_invalid`): it stays listed. A write at version 0
+  matches a missing `Version`, one that is not a number, and a number of 0 or
+  below, and stores a well-formed version. A positive fraction is not matched,
+  because a condition expression cannot test for one, so such a queue stays listed
+  but is refused as `QUEUE_CHANGED`; nothing here writes one. `delete` keeps the last
+  version under `QDEFGONE` / `Q#<id>`, and a create under that id continues from it,
+  so a version never repeats for an id. Both are single transactions conditional on
+  the versions they read (the definition's for a delete, the retired one for a
+  create), retried a few times when a concurrent write moves one; a create or
+  delete that cannot settle is refused with `QUEUE_CHANGED`. Given `expected_version`,
+  an update is a conditional write and is refused with `QUEUE_CHANGED`
+  (`ReviewConflict`) when the stored version has moved on, so two Admins' saves
+  built from one read cannot silently overwrite each other; a missing queue is still
+  `UNKNOWN_QUEUE`. Without it, an update replaces what is stored, retrying a few
+  times if a write lands between its consistent read and its put.
+  `updateReviewQueue` passes the input's optional `version` through, or, when an
+  older client sends none, the version of its own consistent read
+  (`read_current`): the client's fields replace what that read found, and it is
+  refused only if another write lands in between, which protects the fields the
+  resolver merges from the stored definition. So the store's own unversioned path
+  is not reached through the API. `listReviewQueues` calls `list(fresh=True)`, a
+  strongly consistent read past the 30 s cache, since it is what an Admin edits
+  from.
 - `create`/`updateReviewQueue` take `enabled`. A new queue is enabled; an update
   that leaves it out keeps the stored value, and a definition stored without it
   reads as enabled. Queues have no confidence threshold: a `confidenceThreshold`
@@ -161,7 +207,16 @@ document, so it finishes with the new grouping.
   routes documents.
 - A queue's `eligible_annotators` is its membership (`QueueDefinition.allows`): an
   Annotator works only the queues that list them, and an empty list means none.
-  Admins work every queue (`QueueDirectory.is_member`).
+  Admins work every queue (`QueueDirectory.is_member`). Taking an Annotator off a
+  queue's list stops them seeing the queue and claiming from it, but an item they
+  already hold stays theirs (`_check_access` admits the holder of a `CLAIMED` item)
+  until they finish or release it, or an Admin unassigns it with
+  `forceReleaseReviewItem`. Queue definitions are cached for 30 s per Lambda
+  instance, so a list change can take that long to reach every instance.
+- For a caller who may not work an item, the access check (`_check_access`: scope,
+  then membership) runs before any argument is checked against the item's queue
+  definition, so `completeReviewItem`'s checklist and `rejectReviewItem`'s reason are
+  only validated for someone allowed to work the item.
 - Work reaches an Annotator two ways. They **claim** an item from one of their
   queues (`claimReviewItem`, `claimNextReviewItem`), or an Admin assigns it with
   `reassignReviewItem` (and unassigns it with `forceReleaseReviewItem`). Either way
@@ -194,8 +249,14 @@ document, so it finishes with the new grouping.
   `list_my_work`, `claim_next`). A listing that leaves items out still pages
   forward, so a page can be short; `claim_next` reads past the items it leaves out,
   up to `CLAIM_NEXT_MAX_PAGES` pages of a queue. `QueueDirectory.in_scope` is for a
-  queue reference, which has no profile, never for an item. A queue's counts
-  (depth, unclaimed) are the queue's, not filtered by scope.
+  queue reference, which has no profile, never for an item. `get_my_queues` applies
+  the same decision to every count: for a scoped caller, a queue's depth, unclaimed
+  and claimed counts, its oldest enqueue time, and the caller's own `claimedByMe` and
+  `myClaimCount` cover only the items the caller's scope admits (one projected
+  QueueIndex pass per queue, `ReviewStore.queue_scope_rows`). Admins and unscoped
+  callers see the whole queue through the cheap counts. The claim cap
+  (`max_claims_per_reviewer`) still counts all of the caller's claims, in scope or
+  not.
 - Admins also have `renewReviewLease`, which the web UI doesn't use.
 - **Test Studio** queues are the test sets. `testset_docs.TestSetDocStore` holds
   each document's summary and assignment (`assignTestSetDocuments`,
@@ -269,9 +330,15 @@ A **section draft** is a section's saved edits that are not reviewed and start n
   untouched.
 - **Lifecycle:** `write_reviewed` deletes the section's draft; `move_drafts` makes
   drafts follow their sections through a regroup, rewriting each draft's
-  `split_document.page_indices` and `document_class.type`, and drops a removed
-  section's; `delete_document_drafts` runs when a document is removed from the set.
-  Skip, Re-extract, Clear draft labels and Reset labels keep drafts. Publishing, the
+  `split_document.page_indices`, `document_class.type` and `extractedAsClass`
+  (`EXTRACTED_AS_CLASS_KEY`: the class the section's fields were extracted under,
+  which the regroup records on the label when it first changes the class and removes
+  when the class is changed back; #1816), and drops a removed section's; `delete_document_drafts` runs when a document is removed from the set.
+  Skip, Clear draft labels and Reset labels keep drafts. A re-extract's write-back
+  deletes the written section's draft (`delete_draft`; the job carries
+  `reextract: true`), since its edits were made over the fields just replaced; a
+  Generate draft labels write-back only removes `extractedAsClass` from it
+  (`clear_draft_extracted_as`, in place, revision unchanged). Publishing, the
   version snapshot, test runs, the content signature and the summaries read
   `baseline/` only.
 
@@ -285,14 +352,68 @@ A **section draft** is a section's saved edits that are not reviewed and start n
 | `takeOverReviewItem` | Admin | an item `CLAIMED` by someone else → `CLAIMED` by the calling Admin, draft kept; a `taken_over` history event, both claim counters moved, and the former holder told (`review.claim_released`). Refused with `NOT_ASSIGNED` for an `OPEN` item (claim it instead), `ALREADY_YOURS` for the Admin's own, and `INVALID_STATE` once the item has left review |
 | `moveReviewItem` | Admin | move to another queue (ends any assignment) |
 | `removeReviewItem` | Admin | an `OPEN` or `CLAIMED` item → `FINALIZING`, disposition `removed`, with an optional note in a `removed` history event; an assignee is released and told. No draft is applied: the document ends `COMPLETED` with its machine results, the item ends `COMPLETE`, the status object is **deleted** rather than written, and `document_reviews` records disposition `removed` |
+| `bulkSkipAllReviews` (`ReviewQueueService.skip_all_reviews`) | Admin, or a Reviewer in scope | an `OPEN` item, the caller's own claim, or (Admin) any claim → `FINALIZING`, disposition `skipped`, finished like `removed` (machine results, status object deleted), with a `skipped` history event carrying the reason (`SKIP_ALL_REASONS`), note, source and job id, and `skip_job_id` on the item. A claimant other than the caller is told. Another reviewer's claim is refused for a Reviewer (`HELD_BY_OTHER`). A finalize message that could not be sent adds a `finalize_send_failed` history event; the sweeper resends it |
 
 A disposition writes `FINALIZING` with a finalize token `rvw-<32 hex>` derived from
 the document, cycle and attempt, then sends one message to the DocumentQueue. The
 queue processor names the finalize execution after the token, so a re-sent message
 collapses into `ExecutionAlreadyExists`. The finalize run starts from a fresh
-metering record. If the message is lost or the run fails, the sweeper resends the
+metering record: when an item is activated, the tracker stores the document's
+cumulative usage up to phase 1 (`cumulative_metering`) on the item as
+`phase1_metering_json`, and the finalize run carries it as its `metering_baseline`.
+The tracking row then holds phase 1 plus the finalize run, while reporting, the
+`DocumentEstimatedCost` metric and the finalize run's version record get the
+finalize run's own usage only. If the message is lost or the run fails, the sweeper resends the
 same token, then retries with a new token up to 3 attempts before
 `FINALIZE_FAILED`.
+
+## Bulk Skip All Reviews jobs
+
+Rows in this table, none with a GSI key:
+
+| PK | SK | Holds |
+|---|---|---|
+| `BRJOB#<jobId>` | `META` | The job: requester, mode and selection, reason, note, resubmit, status (`QUEUED`, `RUNNING`, `SUCCEEDED`, `FAILED`, `CANCELLED`), `Total`, `Processed`, `Counts` per outcome, the page cursor and wake tokens, heartbeat, and `ExpiresAfter` (30 days, or the data retention if shorter) |
+| `BRJOB#<jobId>` | `K#<seq>` | A selected-mode key chunk (25 object keys) |
+| `BRJOB#<jobId>` | `R#<sha256(objectKey)[:32]>` | One document's outcome, put once (`attribute_not_exists(SK)`); the counters move only when the put succeeds |
+| `BRJOBS#U#<reviewerKey>`, `BRJOBS#ALL` | `<createdAt>#<jobId>` | The requester's and the all-jobs (Admin) lists |
+| `BRJOB#ACTIVE` | `LOCK` | The one-running-job lock, with a lease |
+
+A request at or under the inline limit runs in the resolver and is recorded as a
+`SYNC` job; a larger one is an `ASYNC` job advanced by `BulkReviewWorkerFunction` from
+`BulkReviewJobQueue`. A step defers (re-sends itself 60 s later) while another job
+holds the lock or while the DocumentQueue holds at least half of
+`MaxConcurrentWorkflows`, and hands itself to its next wake-up when the invocation runs
+low on time. A legacy resubmit carries `ResubmitIdempotencyToken = rsb-sha256(jobId|key)`,
+which `queue_processor` uses only to name the execution, so a retried step starts no
+second run. A dead-lettered job message, or a step that fails on its last receive,
+marks the job `FAILED`; a job with no heartbeat for 30 minutes reads as `stalled`.
+The requester's scope is snapshotted at submission and intersected with their current
+scope once per step; a by-profile job whose profile leaves the scope fails
+(`scope_revoked`).
+
+`cancel_job` (the requester or an Admin; another user's job reads as not found) sets a
+`QUEUED` or `RUNNING` job to `CANCELLED` with a conditional write, records
+`CancelledBy` and notifies the requester; a finished job is refused (`JOB_FINISHED`).
+The worker reads the status before each page and stops, releasing the lock, so at most
+the page in progress is still skipped. Its start, finish and fail writes are
+conditional on the job still being active, so a cancel is never overwritten.
+`delete_job` deletes a finished job's `META` (conditional on a final status) and its two
+list entries; an active job is refused (`JOB_ACTIVE`). The chunk and result rows are
+unreachable without `META` and expire with it (`ExpiresAfter`), so a job of any size is
+deleted in a bounded number of writes.
+
+## Send to review
+
+`SendToReviewService.send` creates a `HOLDING` item with `origin="manual"` and the
+`manual_request` (reason from `SEND_TO_REVIEW_REASONS`, note, requester, and the
+tracking row's prior `HITLStatus`/`HITLCompleted`), then conditionally marks the
+tracking row `in_review` (the commit point: finished, production, not in a review),
+publishes the `in_review` status object, and moves the item to `OPEN` with the
+document's cumulative usage as `phase1_metering_json`. A failure after the commit point
+is undone by `abandon`, which restores the row, deletes the status object and deletes
+the item; the sweeper does the same for a manual item it finds still `HOLDING`. The
+send reason is shown to reviewers as the item's `sentToReview`.
 
 ## Sweeper
 

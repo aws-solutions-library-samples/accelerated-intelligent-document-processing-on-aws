@@ -182,7 +182,7 @@ than an oversight. Every other Lambda needs a log group with `RetentionInDays`.
 
 All of this is enforced by `scripts/tests/test_lambda_log_groups.py`, which
 gates **every** template in the repo that declares a Lambda (21 of them, and a
-meta-test fails if a new one is added and not listed) on four rules:
+meta-test fails if a new one is added and not listed) on five rules:
 
 1. Every Lambda has a `LoggingConfig` that resolves to a real
    `AWS::Logs::LogGroup` **in the same template** — a typo'd or bare-string
@@ -192,6 +192,23 @@ meta-test fails if a new one is added and not listed) on four rules:
    `Fn::Sub` scalar and list form, `Fn::Join`, `Ref`, `GetAtt`, nested.
 4. A log group's `Condition` matches its function's, so a group is never created
    where its function is absent, nor missing where it is present.
+5. A custom-resource handler (a `ServiceToken` target) with a declared log
+   group has a role that denies `logs:CreateLogGroup` on that group, naming it
+   both as `!GetAtt <Group>.Arn` and as the bare
+   `arn:${AWS::Partition}:logs:...:log-group:${<Group>}`, with no `Condition`
+   and not behind `Fn::If`. CloudFormation sends the handler a
+   `Delete` while deleting the stack, and Lambda delivers that invocation's
+   last lines a few seconds after the function, its role and its group are
+   gone; the delivery recreates the group under the function's role, with no
+   retention and no KMS key (#1754). Ordering cannot fix it, because the
+   function already depends on its group through `LoggingConfig` and so is
+   deleted first. The deny costs nothing while the stack lives, because the
+   group exists before the function does, and naming the group in the role's
+   policy makes the role depend on it, so CloudFormation deletes the group
+   after the role rather than alongside it. On a live delete that delay is
+   what kept every group gone; the deny was not exercised, so treat it as the
+   backstop, not as a proven guarantee. Copy the shape from any
+   `ServiceToken` handler in `template.yaml`.
 
 The exemption list is *verified*, not trusted: an exempt function must be a
 `ServiceToken` target or have its ARN exported via a direct `GetAtt`, and must

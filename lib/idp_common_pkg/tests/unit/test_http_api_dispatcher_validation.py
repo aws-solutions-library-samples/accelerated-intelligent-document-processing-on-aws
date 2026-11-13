@@ -444,8 +444,17 @@ def test_required_arg_count_is_stable(spec):
     forceReleaseReviewItem, reassignReviewItem, moveReviewItem and the rest of
     that family) 117–138, claimTestSetDocument the 139th, and
     takeOverReviewItem the 140th, saveSectionReviewEdits the 141st,
-    saveTestSetDocumentSectionDraft the 142nd)."""
+    saveTestSetDocumentSectionDraft the 142nd, and the two tenant-declaration
+    ops that take a required argument -- putTenant (tenantId, prefixes,
+    profilePattern) and deleteTenant (tenantId) -- 143-144; listTenants takes none,
+    and setUserTenant (email) the 145th; bulk Skip All Reviews adds
+    bulkSkipAllReviews (input), getBulkReviewJob (jobId) and sendToReview
+    (objectKeys, reason), 146-148; listBulkReviewJobs takes none; cancelBulkReviewJob
+    and deleteBulkReviewJob (jobId) 149-150; and the five MCP credential ops that
+    take a required argument -- createMcpCredential (name, role),
+    updateMcpCredential, rotateMcpCredential, revokeMcpCredential and
+    setMcpCredentialTenant (clientId) -- 151-155; listMcpCredentials takes none)."""
     required = [
         f for f, v in spec["fields"].items() if any(a["non_null"] for a in v["args"])
     ]
-    assert len(required) == 142
+    assert len(required) == 155

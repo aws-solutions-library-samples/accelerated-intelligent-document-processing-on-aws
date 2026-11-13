@@ -16,6 +16,7 @@ export const DISCOVERY_PATH = `${DOCUMENTS_PATH}/discovery`;
 export const DISCOVERY_JOB_PATH = `${DOCUMENTS_PATH}/discovery/job`;
 export const USER_MANAGEMENT_PATH = `${DOCUMENTS_PATH}/users`;
 export const CONFIG_PREFIX_MAPPINGS_PATH = `${DOCUMENTS_PATH}/prefix-mappings`;
+export const MCP_CONFIGURATION_PATH = `${DOCUMENTS_PATH}/mcp`;
 export const AGENT_CHAT_PATH = '/agentchat';
 export const WELCOME_PATH = '/welcome';
 /** localStorage key: set when the user dismisses the welcome landing page. */
@@ -40,6 +41,10 @@ export const testSetItemPath = (testSetId: string, objectKey: string): string =>
  */
 export const testSetAnnotateHref = (testSetId: string, objectKey?: string, from?: EditOrigin): string =>
   `#${objectKey ? testSetItemPath(testSetId, objectKey) : testSetQueuePath(testSetId)}${objectKey && from ? `?from=${from}` : ''}`;
+/** `?show=` value that opens a test set's queue with its reviewed documents listed. */
+export const SHOW_REVIEWED = 'reviewed';
+/** Hash-link helper: a test set's queue with its reviewed documents shown, so each can be opened and corrected. */
+export const testSetReviewedHref = (testSetId: string): string => `${testSetAnnotateHref(testSetId)}?show=${SHOW_REVIEWED}`;
 /**
  * Landing page for an annotator assigned to more than one test set (or before
  * their scope has resolved). Lists their queues; a single-set annotator is sent
@@ -152,6 +157,12 @@ export const reviewManagementHref = (view?: ReviewManagementView): string => `#$
 /** Home: every user's Inbox, and an Annotator's Tasks (assigned items) and Queues. */
 export const MY_WORK_PATH = '/my-work';
 export const MY_TASKS_PATH = `${MY_WORK_PATH}/tasks`;
+/** Home › Jobs: bulk Skip All Reviews runs (Admins and Reviewers). */
+export const JOBS_PATH = `${MY_WORK_PATH}/jobs`;
+/** Route path of one bulk review job; mirrors Python's `notifications.links.bulk_job_link`. */
+export const jobDetailPath = (jobId: string): string => `${JOBS_PATH}/${encodeURIComponent(jobId)}`;
+/** Hash-link helper for a bulk review job's page. */
+export const jobDetailHref = (jobId: string): string => `#${jobDetailPath(jobId)}`;
 /** The queues that list the caller as an Annotator (production and Test Studio). */
 export const MY_QUEUES_PATH = `${MY_WORK_PATH}/queues`;
 /** The former My Tasks location; redirects to MY_TASKS_PATH. */

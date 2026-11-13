@@ -383,7 +383,7 @@ def test_every_ranking_and_bounding_parameter_is_pinned() -> None:
     assert (docs_index.REF_CHARS, docs_index.HASH_CHARS) == (300, 12)
     assert docs_index.PAGE_MAX_BYTES == 1024 * 1024
     assert docs_index.INDEX_MAX_BYTES == 32 * 1024 * 1024
-    assert docs_index.SNAPSHOT_MAX_BYTES == 8 * 1024 * 1024
+    assert docs_index.SNAPSHOT_MAX_BYTES == 16 * 1024 * 1024
     assert docs_index.SNAPSHOT_MAX_FILES == 1000
     assert docs_index.INDEX_FORMAT == 1
     assert docs_index.SETUP_ENV == {"PATH": "/usr/bin:/bin", "LANG": "C"}
@@ -1514,6 +1514,17 @@ def test_the_current_tree_snapshots_well_inside_half_its_bounds(
     )
     assert "configuration-profiles.md" in index.pages
     assert snapshot.ref == _git(REPO_ROOT, "rev-parse", "HEAD").strip()
+
+    # The two caps have to agree: a snapshot that fills SNAPSHOT_MAX_BYTES must
+    # build an index load() accepts. Scale this tree's measured index-to-pages
+    # ratio up to the cap, with a quarter's margin for a corpus that indexes
+    # less compactly than this one.
+    saved = docs_index.save(index, tmp_path / "index.json")
+    ratio = saved.stat().st_size / snapshot.bytes
+    assert ratio * docs_index.SNAPSHOT_MAX_BYTES * 1.25 < docs_index.INDEX_MAX_BYTES, (
+        f"an index is {ratio:.2f}x its pages here, so a snapshot at "
+        f"SNAPSHOT_MAX_BYTES would build one too large for INDEX_MAX_BYTES"
+    )
 
 
 # -------------------------------------------------------------------------- CLI

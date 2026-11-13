@@ -61,9 +61,64 @@ def template_group_names(template_path=None):
 ADMIN_AUTH_FLOW = "ALLOW_ADMIN_USER_PASSWORD_AUTH"
 
 
+# CloudFormation resource lookups go through boto3 rather than the CLI so that
+# the SDK's hook can answer them for a Terraform deployment (its stack is a
+# label, and the resources are in its directory); see
+# lib/idp_sdk/idp_sdk/_core/terraform_stack.py. For a CloudFormation stack the
+# result is the same as the CLI's.
+_CFN_VIA_SDK = {
+    "list-stack-resources": "list_stack_resources",
+    "describe-stack-resource": "describe_stack_resource",
+    "describe-stack-resources": "describe_stack_resources",
+    "describe-stacks": "describe_stacks",
+}
+
+
+def _cfn_via_sdk(args, region):
+    import boto3
+    import jmespath
+
+    try:
+        # Importing the SDK attaches its Terraform-deployment hook to every
+        # CloudFormation client created afterwards.
+        import idp_sdk  # noqa: F401
+    except ImportError:
+        pass
+    op = _CFN_VIA_SDK[args[1]]
+    opts = dict(zip(args[2::2], args[3::2]))
+    params = {"StackName": opts["--stack-name"]}
+    if "--logical-resource-id" in opts:
+        params["LogicalResourceId"] = opts["--logical-resource-id"]
+    client = boto3.client("cloudformation", region_name=region)
+    if op == "list_stack_resources":
+        summaries = []
+        for page in client.get_paginator(op).paginate(**params):
+            summaries.extend(page["StackResourceSummaries"])
+        result = {"StackResourceSummaries": summaries}
+    else:
+        result = getattr(client, op)(**params)
+        result.pop("ResponseMetadata", None)
+    # The CLI prints timestamps as ISO strings.
+    result = json.loads(json.dumps(result, default=str))
+    if "--query" in opts:
+        result = jmespath.search(opts["--query"], result)
+    if opts.get("--output") == "text":
+        if result is None:
+            return "None"
+        if isinstance(result, list):
+            return "\t".join("None" if r is None else str(r) for r in result)
+        return str(result)
+    return result
+
+
 def aws(*args, region=None):
     """Run an AWS CLI command. Returns parsed JSON, or the raw string for
     `--output text`. Raises RuntimeError on a non-zero exit."""
+    if len(args) >= 2 and args[0] == "cloudformation" and args[1] in _CFN_VIA_SDK:
+        try:
+            return _cfn_via_sdk(args, region)
+        except Exception as exc:  # noqa: BLE001 - same contract as the CLI path
+            raise RuntimeError(f"aws {' '.join(args)} failed: {exc}") from exc
     cmd = [AWS_BIN, *args]
     if region:
         cmd += ["--region", region]
@@ -241,8 +296,10 @@ def restore_auth_flows(ctx):
 # ----------------------------------------------------------------------------
 def create_cognito_user(ctx, email, group, password):
     """Create a confirmed Cognito user with a permanent password and add it to
-    a group. admin-create-user is tolerant of a pre-existing user (the caller
-    typically uses a random per-run email).
+    a group. admin-create-user is tolerant of a pre-existing user: a caller with a
+    random per-run email rarely meets one, and ``ux_test_session.py``'s long-lived
+    setup meets one on purpose, after the stack's createUser made the user, to give
+    it a known permanent password. The password and group steps are idempotent.
 
     ``group=None`` (or ``""``) creates the user and adds it to **no** group. That
     is a real principal this user pool produces rather than a test convenience:

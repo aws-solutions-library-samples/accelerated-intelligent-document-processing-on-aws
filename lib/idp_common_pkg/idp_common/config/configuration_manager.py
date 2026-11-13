@@ -24,10 +24,12 @@ from .models import (
     ModelConfigLimitsConfig,
     ConfigurationRecord,
     ConfigMetadata,
+    STORED_PRICING_CONTEXT,
 )
 from .merge_utils import (
     deep_update,
     get_diff_dict,
+    overlay_pricing_rows,
 )
 from .constants import (
     ACTIVE_POINTER_KEY,
@@ -40,8 +42,9 @@ from .constants import (
     RESERVED_VERSION_NAMES,
     VALID_CONFIG_TYPES,
     DEFAULT_VERSION,
+    PRE_HISTORY_NOTES,
 )
-from .revisions import ConfigRevisionStore
+from .revisions import ConfigRevisionStore, RevisionNotRecordedError
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +166,14 @@ def _parse_timestamp(value: Any) -> Optional[datetime.datetime]:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=datetime.timezone.utc)
     return parsed
+
+
+#: Notes on the revision recorded when a profile is resolved against `default`
+#: and that changes it (#1782).
+RESOLVED_AGAINST_DEFAULT_NOTES = (
+    "Resolved against default: settings this profile did not have were filled in "
+    "from the default profile"
+)
 
 
 class ConfigurationManager:
@@ -388,8 +399,10 @@ class ConfigurationManager:
         EVERY profile is resolved against the `default` profile: start from
         `default`, then let every key the profile HAS override it. A key it holds
         wins even when empty (absent is not cleared); a key it LACKS is
-        backfilled. The resolved configuration is saved back so the next read is a
-        direct one — see `_backfill_may_be_persisted` for when that is skipped.
+        backfilled. For a profile with no revision history, a resolution that
+        changes it is saved back so the next read is a direct one. For a profile
+        with history nothing is written here; the stack deployment records the
+        resolution as a revision (`record_resolution_against_default`, #1782).
 
         ⚠️ Resolving applies to a "full" profile too, and that is the point rather
         than an accident: "full" means it carried every section AT THE TIME IT WAS
@@ -612,32 +625,21 @@ class ConfigurationManager:
         ) == full_config_fallback.model_dump(mode="python"):
             return merged_config
 
-        # ⚠️ A `cut_revision=False` save rewrites the head WITHOUT refreshing the
-        # published revision's `storedHash`, and for one kind of published
-        # revision that destroys its only integrity proof. See
-        # `config/README.md`: a revision cut before `storedHash` existed is proven
-        # only by the legacy `UpdatedAt <= createdAt` comparison, "and that proof
-        # is gone the first time anything rewrites the head" — after which a
-        # pinned read of it raises once its body expires.
-        #
-        # That hazard existed before this change, but only for legacy sparse
-        # profiles. Resolving every profile against the default would take it to
-        # every profile, once, after any field-adding upgrade — so the write-back
-        # is skipped exactly when it could destroy a proof. Correctness does not
-        # depend on it: the resolution happens on every read regardless, and all
-        # that is lost in the skipped case is the stored record catching up, which
-        # is a convenience for the form.
-        if not self._backfill_may_be_persisted(version):
+        # A profile with revision history runs its published revision, so the
+        # resolution reaches its documents only as a revision, and a read does
+        # not record one: whether a process may write revisions is a property of
+        # its IAM grants, which nothing here can see, and a read from a process
+        # that holds `CONFIGURATION_BUCKET` with read-only access to it would
+        # rewrite the head, consume a revision number and put the head back on
+        # every read. The resolution applies to this read; the stack deployment
+        # records it (`record_resolution_against_default`, #1782).
+        if self.resolve_published_revision(version) is not None:
             return merged_config
 
-        # Save the resolved config back, so the next read is a direct one and so
-        # the UI shows the fields that were backfilled instead of empty boxes —
+        # No revision history: documents run the head, so writing the resolved
+        # configuration back needs no revision. It makes the next read a direct
+        # one and shows the backfilled fields in the form instead of empty boxes,
         # which is what made the split-then-classify failure undiagnosable.
-        #
-        # Not a revision: this is a storage-format rewrite, not a user's edit, and
-        # recording it would make every legacy profile's history start with a
-        # revision nobody made. The same reasoning covers a backfill, which is the
-        # shipped default arriving where there was previously nothing at all.
         try:
             self.save_configuration(
                 CONFIG_TYPE_CONFIG,
@@ -651,58 +653,6 @@ class ConfigurationManager:
             logger.warning(f"Failed to auto-migrate version {version}: {e}")
 
         return merged_config
-
-    def _backfill_may_be_persisted(self, version: str) -> bool:
-        """Whether the resolved configuration may be written back to the head.
-
-        ⚠️ **The one case it must not be is a published revision whose only proof
-        is the legacy one.** A save that cuts no revision does not refresh the
-        published entry's ``storedHash``, so for a revision cut before that field
-        existed, rewriting the head destroys the ``UpdatedAt <= createdAt``
-        comparison that is its sole proof — and a pinned read of it then raises
-        once its body expires (``config/README.md``).
-
-        A published entry that already carries ``storedHash`` is unaffected: its
-        proof is the hash, which does not depend on the head's timestamp. No
-        published revision at all means there is nothing to lose. History being
-        disabled means the same.
-
-        Fails CLOSED on an unreadable index: skipping a convenience write is
-        always recoverable, destroying a proof is not.
-        """
-        try:
-            if not self.revisions.enabled:
-                return True
-            head = self.table.get_item(
-                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"},
-                ProjectionExpression="PublishedRevision",
-            ).get("Item", {})
-            published = head.get("PublishedRevision")
-            if published is None:
-                return True
-            entry = self.revisions.get_entry(version, int(published))
-            if entry is None:
-                # Not retained, so there is no index entry to invalidate.
-                return True
-            if entry.get("storedHash"):
-                return True
-            logger.info(
-                "Not writing the resolved configuration of %s back: its published "
-                "revision r%s predates storedHash, and rewriting the head would "
-                "destroy the only proof it has. The resolution still applies to "
-                "this read.",
-                version,
-                published,
-            )
-            return False
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not establish whether %s's head may be rewritten (%s); "
-                "not writing it back",
-                version,
-                exc,
-            )
-            return False
 
     def save_configuration(
         self,
@@ -844,15 +794,61 @@ class ConfigurationManager:
         else:
             record = ConfigurationRecord(configuration_type=config_type, config=config)
 
+        # A profile that already has a published revision runs that revision: every
+        # new document is pinned to it. A save there that records no revision
+        # changes what the editor shows and not what processing uses, with nothing
+        # failing (#1778), so for such a profile recording the revision is part of
+        # the save. A profile with no history runs its head, and there history
+        # stays best-effort: losing an entry is recoverable, refusing the save is
+        # an outage.
+        # Keyed on PublishedRevision, not on LatestRevision as `_record_revisions`'
+        # backfill test is: a head with a published counter and no LatestRevision
+        # (only reachable by hand) takes the backfill branch, which also cuts and
+        # publishes this save, and the read-back below then applies to it.
+        published_before = (
+            coerce_int((existing_item or {}).get("PublishedRevision"))
+            if config_type == CONFIG_TYPE_CONFIG
+            else 0
+        )
+        # A save that changes nothing cuts no revision anyway (`_record_revisions`),
+        # and rewriting an identical head creates no divergence, so it is not held
+        # to this. Stack deployments re-save every managed profile unchanged.
+        # `existing_record` exists only for a profile save, so the type is
+        # checked first.
+        changes_configuration = config_type == CONFIG_TYPE_CONFIG and (
+            existing_record is None
+            or self._config_to_dict(existing_record.config)
+            != self._config_to_dict(config)
+        )
+        revision_required = bool(
+            config_type == CONFIG_TYPE_CONFIG
+            and version
+            and cut_revision
+            and published_before >= 1
+            and changes_configuration
+        )
+        if revision_required and not self.revisions.enabled:
+            raise RevisionNotRecordedError(
+                f"Refusing to save configuration profile '{version}': it has revision "
+                f"history, and this process cannot record a revision "
+                f"(CONFIGURATION_BUCKET is not set). Saving it would change the "
+                f"profile while new documents keep running r{published_before}."
+            )
+        raw_previous_head = (
+            self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"}
+            ).get("Item")
+            if revision_required
+            else None
+        )
+
         # Write to DynamoDB (adds full config marker automatically)
         stored_hash = self._write_record(record)
 
         if config_type == CONFIG_TYPE_CONFIG and version and cut_revision:
-            # History is best-effort by design: a configuration save must never
-            # fail because the revision could not be recorded. Losing a history
-            # entry is recoverable; refusing a save is an outage.
+            cut: Optional[int] = None
             try:
-                self._record_revisions(
+                cut = self._record_revisions(
                     profile=version,
                     previous=existing_record,
                     config=config,
@@ -861,10 +857,218 @@ class ConfigurationManager:
                     stored_hash=stored_hash,
                     previous_head=existing_item,
                 )
+                if revision_required and cut is not None:
+                    # `set_published` logs rather than raises, so the head's
+                    # counter is the evidence that documents now run this save.
+                    self._require_published(version, cut)
             except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    f"Saved profile '{version}' but could not record its revision: {e}"
-                )
+                if not revision_required:
+                    logger.warning(
+                        f"Saved profile '{version}' but could not record its revision: {e}"
+                    )
+                    return
+                # If the counter has already moved past the revision this save
+                # started from, a revision was published after this head was
+                # written: this save's (the failure came after its publish) or a
+                # concurrent save's. Either way documents no longer run the old
+                # revision, and restoring the old head would recreate the
+                # divergence the other way round.
+                now_published = self._published_counter(version)
+                if now_published is not None and now_published > published_before:
+                    logger.warning(
+                        f"Saved profile '{version}' and r{now_published} is published, "
+                        f"but a later step of recording it failed: {e}"
+                    )
+                    return
+                restored = self._restore_head(version, raw_previous_head)
+                # A failure inside the cut never returned its number; the store
+                # attaches it to the exception.
+                if cut is None:
+                    cut = getattr(e, "allocated_revision", None)
+                if cut is not None:
+                    self._mark_failed_revision(
+                        version, cut, published_before, restored
+                    )
+                raise RevisionNotRecordedError(
+                    f"Could not record a revision for configuration profile "
+                    f"'{version}', so the save was "
+                    + (
+                        "undone"
+                        if restored
+                        else "NOT undone: the profile now differs from the revision "
+                        f"new documents run (r{published_before} or later)"
+                    )
+                    + f". Cause: {e}"
+                ) from e
+
+    def record_resolution_against_default(self, profile: str) -> Optional[int]:
+        """
+        Record what resolving `profile` against `default` changes, as a revision.
+
+        Every profile is read against `default`, and a setting it lacks takes
+        `default`'s value. A pinned read builds `IDPConfig` from the revision body
+        without that resolution, so for a profile with revision history the two
+        differ whenever `default` holds a value the model's own default does not
+        (#1782). This saves the resolved configuration as a revision made by
+        `system`, with `RESOLVED_AGAINST_DEFAULT_NOTES`, and publishes it, so the
+        profile, its history and what new documents run agree.
+
+        It records only when both of these hold, and otherwise writes nothing:
+
+        - **The head is provably the published revision** (`head_matches_published`).
+          The resolution starts from the head, so a head that differs for any
+          other reason would be published under notes that describe only the
+          fill-in. Such a profile is left for a person to save.
+        - **The resolution changes what the published revision runs**, comparing
+          against that revision's body as a pinned read builds it. An already
+          converged profile is then a read, not a rewrite: no new `UpdatedAt`,
+          and a published revision that has only the legacy `UpdatedAt <=
+          createdAt` proof keeps it.
+
+        Only for a process that can write revisions: its one caller is the
+        stack-deployment custom resource, after saving `default`. Raises
+        `RevisionNotRecordedError` like any save that cannot record its revision.
+        Returns the new revision's number, or None when nothing was recorded.
+        """
+        published = self.resolve_published_revision(profile)
+        if published is None:
+            return None
+        if self.head_matches_published(profile) is not True:
+            logger.warning(
+                f"Not recording the resolution of '{profile}' against default: its "
+                f"stored configuration cannot be shown to be r{published}, the "
+                f"revision its documents run"
+            )
+            return None
+        resolved = self.get_merged_configuration(profile)
+        body = self._read_revision_body(profile, published)
+        if resolved is None or body is None:
+            return None
+        runs = IDPConfig(
+            **{
+                k: v
+                for k, v in body.items()
+                if k not in (_FULL_CONFIG_MARKER, "config_type")
+            }
+        )
+        if self._config_to_dict(runs) == self._config_to_dict(resolved):
+            return None
+        self.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            resolved,
+            version=profile,
+            skip_sync=True,
+            created_by="system",
+            revision_notes=RESOLVED_AGAINST_DEFAULT_NOTES,
+        )
+        now = self.resolve_published_revision(profile)
+        return now if now is not None and now != published else None
+
+    #: Notes written onto a revision whose save failed after it was recorded.
+    FAILED_SAVE_NOTES = "Save failed; not published"
+
+    def _mark_failed_revision(
+        self, profile: str, revision: int, published: int, restored: bool
+    ) -> None:
+        """
+        Say on a revision entry that its save failed and it was never published.
+
+        History is append-only, so the entry is kept rather than deleted (#1784):
+        without a note it is an unexplained extra revision beside a failed save,
+        one the editor does not show and no document runs. Best effort, because
+        the restore is what decides correctness.
+        """
+        try:
+            self.revisions.update_entry(
+                profile,
+                revision,
+                notes=(
+                    f"{self.FAILED_SAVE_NOTES}. The profile was restored to "
+                    f"r{published}, which new documents still run."
+                    if restored
+                    else f"{self.FAILED_SAVE_NOTES}. The profile could not be "
+                    f"restored and no longer matches r{published}, which new "
+                    f"documents still run."
+                ),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not mark r{revision} of '{profile}' as a failed save: {e}"
+            )
+
+    def _published_counter(self, profile: str) -> Optional[int]:
+        """The head's `PublishedRevision`, or None if it cannot be read."""
+        try:
+            head = (
+                self.table.get_item(
+                    Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"},
+                    ProjectionExpression="PublishedRevision",
+                ).get("Item")
+                or {}
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        return coerce_int(head.get("PublishedRevision"))
+
+    def _require_published(self, profile: str, revision: int) -> None:
+        """Raise unless the profile head names `revision` (or later) as published."""
+        head = (
+            self.table.get_item(
+                Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"},
+                ProjectionExpression="PublishedRevision",
+            ).get("Item")
+            or {}
+        )
+        published = coerce_int(head.get("PublishedRevision"))
+        # A concurrent save may already have published a later revision, which
+        # also replaced this save's head; only an older counter is a failure.
+        if published < revision:
+            raise RevisionNotRecordedError(
+                f"revision r{revision} was recorded but not published "
+                f"(the profile still names r{published})"
+            )
+
+    def _restore_head(
+        self, profile: str, raw_previous_head: Optional[Dict[str, Any]]
+    ) -> bool:
+        """
+        Put back the head a failed save replaced, keeping its current head fields.
+
+        Every field other writers own (`_PRESERVED_HEAD_FIELDS`) is taken from the
+        head as it is now, not from the one being restored. For the counters that
+        is load-bearing: a failed cut may already have allocated a revision number,
+        and restoring the older `LatestRevision` would hand that number out again
+        and overwrite its body. For the BDA fields it keeps a link made while the
+        save was in flight. Returns whether the head was restored.
+
+        The residual is that this is an unconditional put. A concurrent save that
+        wrote the head after this one and did not move `PublishedRevision` (it
+        failed as well, or has not reached its publish) is overwritten with the
+        older configuration. The caller declines to restore once the counter has
+        moved, which covers a concurrent save that succeeded.
+        """
+        if raw_previous_head is None:
+            return False
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"}
+        try:
+            current = (
+                self.table.get_item(
+                    Key=key, ProjectionExpression=", ".join(_PRESERVED_HEAD_FIELDS)
+                ).get("Item")
+                or {}
+            )
+            item = dict(raw_previous_head)
+            for field in _PRESERVED_HEAD_FIELDS:
+                if field in current:
+                    item[field] = current[field]
+            self.table.put_item(Item=item)
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                f"Could not restore configuration profile '{profile}' after a failed "
+                f"revision: {e}"
+            )
+            return False
 
     def _record_revisions(
         self,
@@ -921,13 +1125,15 @@ class ConfigurationManager:
                     profile,
                     previous_dict,
                     created_by="system",
-                    notes="Configuration as it stood before revision history was enabled",
+                    notes=PRE_HISTORY_NOTES,
                     publish=unchanged,
                     stored_hash=self._stored_hash_of_body(profile, previous_dict)
                     if unchanged
                     else None,
                 )
             except Exception as e:  # noqa: BLE001
+                # Only the pre-history snapshot is lost: control falls through to
+                # the cut below, which still records this save's own revision.
                 logger.warning(
                     f"Could not backfill pre-history revision for '{profile}': {e}"
                 )
@@ -986,6 +1192,33 @@ class ConfigurationManager:
         for entry in entries:
             entry["published"] = entry["revision"] == published_num
         return entries
+
+    def head_matches_published(self, profile: str) -> Optional[bool]:
+        """
+        Whether the profile's configuration is the revision new documents run.
+
+        True when the head holds exactly its published revision, False when it has
+        been changed since that revision was recorded (a save that cut none, as
+        discovery's saves did before #1778), and None when there is nothing to
+        compare: no head, no revision history, history disabled in this process, or
+        no index entry for the published revision. The proof is the one a pinned
+        read applies (`_head_is_revision`): the stored-content hash the revision
+        recorded or, for a revision cut before that hash existed, the head not
+        having been written since. A False is what the editor reports, so that the
+        configuration it shows is never presented as the one documents run.
+        """
+        item = self.table.get_item(
+            Key={"Configuration": f"{CONFIG_TYPE_CONFIG}#{profile}"}
+        ).get("Item")
+        if not item:
+            return None
+        published = coerce_int(item.get("PublishedRevision"))
+        if published < 1:
+            return None
+        entry = self.revisions.get_entry(profile, published)
+        if entry is None:
+            return None
+        return self._head_is_revision(self._decompress_item(item), entry)
 
     def get_revision(self, profile: str, revision: int) -> Optional[Dict[str, Any]]:
         """
@@ -1706,7 +1939,19 @@ class ConfigurationManager:
 
     def get_merged_pricing(self) -> Optional[PricingConfig]:
         """
-        Get the merged pricing configuration (DefaultPricing + CustomPricing deltas).
+        Get the effective pricing configuration: DefaultPricing with CustomPricing laid over it.
+
+        The saved rows are applied per model and per unit
+        (``merge_utils.overlay_pricing_rows``): a saved unit replaces the default
+        unit of the same name, a saved unit or entry the defaults lack is added,
+        and a default entry or unit the saved table does not mention is kept. So a
+        model a later release adds to the defaults is priced on a stack that saved
+        the Pricing page earlier, and a default row deleted in the editor comes
+        back. A saved rate still wins over a later corrected default for the same
+        unit, until the record is deleted (``delete_custom_pricing``).
+
+        Only this reader merges; the stored records are unchanged, and the Pricing
+        page still saves the full table.
 
         Returns:
             Merged PricingConfig with custom overrides applied, or None if not found
@@ -1737,16 +1982,22 @@ class ConfigurationManager:
 
         default_dict = default_config.model_dump(mode="python")
         custom_dict = custom_config.model_dump(mode="python")
+        custom_rows = custom_dict.pop("pricing", None) or []
         merged_dict = deepcopy(default_dict)
         deep_update(merged_dict, custom_dict)
+        merged_dict["pricing"] = overlay_pricing_rows(
+            default_dict.get("pricing") or [], custom_rows
+        )
 
-        logger.info("Merged DefaultPricing with CustomPricing deltas")
-        return PricingConfig(**merged_dict)
+        logger.info("Applied CustomPricing over DefaultPricing")
+        # Both halves were read from storage, so an invalid stored price is
+        # reported and left unpriced rather than failing every cost report.
+        return PricingConfig.model_validate(merged_dict, context=STORED_PRICING_CONTEXT)
 
     def save_custom_pricing(
         self, pricing_deltas: Union[PricingConfig, Dict[str, Any]]
     ) -> bool:
-        """Save custom pricing overrides to DynamoDB."""
+        """Save the custom pricing table to DynamoDB; it is laid over the defaults per row."""
         if isinstance(pricing_deltas, dict):
             pricing_deltas = PricingConfig(**pricing_deltas)
         self.save_configuration(CONFIG_TYPE_CUSTOM_PRICING, pricing_deltas)
@@ -1771,10 +2022,10 @@ class ConfigurationManager:
         """
         Get the effective model config limits (Custom if present, else Default).
 
-        Unlike pricing, Custom is a FULL replacement list rather than deltas:
-        model_limits is an ordered first-match-wins list, so deep_update (which
-        wholesale-replaces lists anyway) cannot express a partial merge that
-        preserves ordering intent.
+        Custom is a FULL replacement list rather than deltas, and deliberately
+        so: model_limits is an ordered first-match-wins list, so a partial merge
+        could not preserve ordering intent. (Pricing, which has no ordering, is
+        merged per model and unit instead; see get_merged_pricing.)
 
         Returns:
             Effective ModelConfigLimitsConfig, or None if no Default is seeded

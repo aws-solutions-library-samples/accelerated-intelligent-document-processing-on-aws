@@ -2,6 +2,9 @@
 title: "Role-Based Access Control (RBAC)"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Role-Based Access Control (RBAC)
 
 ## Overview
@@ -26,9 +29,9 @@ Each role is a Cognito User Pool group (the `AWS::Cognito::UserPoolGroup` resour
 |------|--------------|-------------|
 | **Admin** | `Admin` | Full access to all operations including user management and pricing |
 | **Author** | `Author` | Read + write access to documents, configuration, tests, discovery |
-| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues): claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed; and works every Test Studio queue whose test set's configuration profile is in their `allowedConfigVersions` |
+| **Reviewer** | `Reviewer` | HITL review operations + limited document visibility. A Reviewer-only console (Home: Inbox, Tasks, Queues; Deployment Info). Works every Production review queue (Home: Tasks, Queues), within their `allowedConfigVersions`: claims, saves, finishes and skips its items, as an Annotator does, with no Admin assignment needed. Works Production review queues only: Test Studio queues, labelling and test-set file reads are for Admins, Authors and Annotators |
 | **Viewer** | `Viewer` | Read-only access to documents, configuration, agent chat |
-| **Annotator** | `Annotator` | Works the HITL items an Admin assigns to it: production review items (complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info). No access to the document list, configuration, or test sets outside its assignments; see [Annotators and review queues](#annotators-and-review-queues). |
+| **Annotator** | `Annotator` | Works the review queues that list it in **Eligible Annotators**, Production and Test Studio, claiming their items or taking those an Admin assigns to it: production review items (save, skip, complete, reject) and Test Studio documents (annotate, complete). A minimal console (Home: Inbox, Tasks, Queues; Deployment Info), with no Document List and no configuration pages. No test sets outside its `allowedTestSets`; its document reads are answered within its configuration-profile scope, as for every role. See [Annotators and review queues](#annotators-and-review-queues). |
 
 ### Multi-Group Support
 
@@ -38,20 +41,26 @@ Users can belong to multiple groups. Permissions are the **union** of all group 
 
 `Annotator` exists so ground-truth labeling can be delegated to people who should
 not see the rest of the deployment. It is the only role whose access is granted
-per-object rather than per-feature: an Annotator with no `allowedTestSets` can do
-nothing at all.
+per-object rather than per-feature: an Annotator reaches a test set only when it is
+in their `allowedTestSets`, and a Production review queue only when the queue lists
+them, so an Annotator with neither has no review work at all.
 
-**What an Annotator can reach**
+**What an Annotator can reach in Test Studio**
 
 | Operation | Purpose |
 |---|---|
 | `getAnnotationQueue` | Their worst-first review queue for one assigned set |
 | `getTestSetDocuments` | The documents and label state of an assigned set |
 | `estimateReviewEffort` | The "what your review is buying" panel in the workspace |
-| `reextractTestSetDocument` | Re-run extraction after correcting a document's class |
+| `openTestSetAnnotationDraft` | Open the set version an annotation session commits to |
+| `reextractTestSetDocument` / `getDraftLabelJob` | Re-run extraction after correcting a document's class, and follow it to its outcome |
+| `updateTestSetDocumentSections` | Correct an assigned document's page grouping and section classes |
 | `claimReview` / `releaseReview` / `completeSectionReview` | Claim a document and apply corrected labels |
 | `saveTestSetDocumentSection` / `saveTestSetDocumentSectionDraft` | Apply labels to authored ground truth; save a section's changes as a draft, which is not reviewed and starts nothing |
 | `listInboxMessages` and the other Inbox operations | Their own Inbox messages and mute settings (every role has an Inbox) |
+
+The review-queue operations, Production and Test Studio, are listed under
+[Annotators and review queues](#annotators-and-review-queues).
 
 Everything else in Test Studio — creating sets, publishing versions, generating
 draft labels, resetting labels, deleting — stays Admin/Author. `skipAllSectionsReview`
@@ -60,29 +69,30 @@ owner's decision, not an annotator's.
 
 **Two-layer enforcement.** Group membership only reaches the operation; every one
 of the above additionally asserts the target test set is in the caller's
-`allowedTestSets`, or, for a Reviewer, that the set's configuration profile is in
-their `allowedConfigVersions`. The check is centralized in
+`allowedTestSets`. The check is centralized in
 `idp_common/testset_scope.py::assert_can_access_test_set` and **fails closed** — an
-unreadable users record, a missing attribute, or an empty list all deny an Annotator,
-and a Reviewer whose scope or set profile cannot be read is denied. A set's profile is
-resolved once by the Test Studio resolver (declared, bound, or from its drafting run),
-recorded on the set as `ScopeProfile` so every check reads the same value, and
-resolved again after a new drafting run; a set with no single profile is admitted only
-to Reviewers with no profile restriction. Reaching a
+unreadable users record, a missing attribute, or an empty list all deny an Annotator.
+Admins and Authors own the test sets and are not test-set scoped; any other caller,
+a Reviewer included, is refused. Reaching a
 test-set operation is never the same as being allowed to see a given set.
 
-For the HITL operations the scope is resolved from the document rather than an
-argument: a review document carries the `TestSetId` it came from, and an Annotator
-attempting a document with no `TestSetId` (i.e. ordinary production review work) is
-refused outright.
+For `claimReview`, `releaseReview` and `completeSectionReview` the scope is resolved
+from the document rather than an argument: a review document carries the `TestSetId`
+it came from, and an Annotator attempting a document with no `TestSetId` (a production
+document) is refused outright. An Annotator works production review through the
+review-queue operations instead. The reverse holds for a Reviewer who is not also an
+Admin, Author or Annotator: `claimReview`, `releaseReview`, `skipAllSectionsReview`,
+`saveSectionReviewEdits`, `completeSectionReview`, `processChanges` and
+`updateDocumentSections` refuse them a document that carries a `TestSetId`.
 
 **Where membership and scope come from.** The `Annotator` group itself can be
 assigned in User Management or from an external IdP group claim, by setting
 `ExternalIdPAnnotatorGroupName` — see
 [external-idp.md](external-idp.md#annotators-and-the-allowedtestsets-scope).
-`allowedTestSets` is only ever assigned in User Management, so a federated Annotator
-holds the role with an empty scope — denied everything — until an Admin assigns them
-a test set.
+`allowedTestSets` never comes from the IdP: an Admin sets it in User Management, and
+listing an Annotator on a Test Studio queue, or assigning them one of its documents,
+adds that set. So a federated Annotator holds the role with an empty test-set scope,
+denied every test set, until an Admin does one of those.
 
 **Scope caching.** Lookups are cached briefly per Lambda container. The TTL is
 asymmetric on purpose: a populated scope is held for 5 minutes (bounding how long a
@@ -99,10 +109,10 @@ assigned them (`reassignReviewItem` refuses a Reviewer). A Reviewer has the same
 Production review-queue operations as an Annotator (`getMyReviewQueues`,
 `listReviewQueueItems`, `listMyReviewWork`, `getReviewItem`, `claimReviewItem`,
 `claimNextReviewItem`, `releaseReviewItem`, `saveReviewDraft`, `completeReviewItem`,
-`rejectReviewItem`), within their `allowedConfigVersions`, and the Test Studio
-operations an Annotator has, for every test set whose configuration profile their
-`allowedConfigVersions` admits (every set when they have none), without being listed
-on its queue (`testset_scope.reviewer_may_access_test_set`).
+`rejectReviewItem`), within their `allowedConfigVersions`. A Reviewer works
+Production review queues only: Test Studio queues, labelling and test-set file reads
+are for Admins, Authors and Annotators, so a Reviewer who labels test sets also needs
+the Annotator role.
 
 - **What an Annotator can call.**
   - Their queues: `getMyReviewQueues`, `listReviewQueueItems`, `claimReviewItem`,
@@ -112,7 +122,8 @@ on its queue (`testset_scope.reviewer_may_access_test_set`).
     `NOT_ELIGIBLE`), and only the holder may release an item (`NOT_LEASE_HOLDER`).
     `claimTestSetDocument` is Annotator-only, at the gateway as well as in the
     resolver: Admins assign test-set documents (`assignTestSetDocuments`) rather than
-    claim them. A user in both Admin and Annotator may claim.
+    claim them, and Reviewers work Production queues only. A user in both Admin and
+    Annotator may claim.
   - Within those queues, an Annotator with `allowedConfigVersions` sees and works only
     the Production items whose own profile is in that scope, in every listing as well
     as when an item is opened or claimed.
@@ -127,8 +138,13 @@ on its queue (`testset_scope.reviewer_may_access_test_set`).
     accepted only from the document's assignee; Admins and Authors are exempt. An
     Author is refused a draft of a document with a review copy, whose completion
     (`completeSectionReview`) excludes Authors.
-  - The `ANY_GROUP` operations every role gets: its own profile, the Inbox and
-    document reads.
+  - `updateDocumentSections` (Edit Page Grouping) on a document of a test set in its
+    `allowedTestSets`, or on a production document while it holds the document's
+    review-queue item within its `allowedConfigVersions`; and `getConfigVersion`, which
+    answers it with the profile's class names and descriptions only, for the class
+    dropdown.
+  - The operations every role gets: its own profile (`getMyProfile`, `ANY`), and the
+    Inbox and document reads (`ANY_GROUP`).
 - **What is Admin-only.**
   - Review Management: `listReviewQueues`, `createReviewQueue`, `updateReviewQueue`,
     `deleteReviewQueue`, `updateTestSetQueue`, `listAnnotators`,
@@ -165,104 +181,130 @@ on its queue (`testset_scope.reviewer_may_access_test_set`).
   a convenience, not the boundary: every queue operation applies the caller's
   `allowedConfigVersions` to each item. **Review Studio › Review Management** is
   Admin-only.
-- **Legacy HITL.** The Reviewer role and its operations (`claimReview`,
+- **Legacy HITL.** The Reviewer role works its operations (`claimReview`,
   `releaseReview`, `completeSectionReview`, `skipAllSectionsReview`,
-  `saveSectionReviewEdits`) are unchanged; `saveSectionReviewEdits` is not open to
-  Annotators. `claimReview` and `releaseReview` refuse a finished review
+  `saveSectionReviewEdits`) on production documents only; `saveSectionReviewEdits` is
+  not open to Annotators. `claimReview` and `releaseReview` refuse a finished review
   (`REVIEW_FINISHED`) for every role, `claimReview` also refuses a document no
   review was raised on (`NO_REVIEW_PENDING`) for every role, and
   `skipAllSectionsReview` refuses a caller
   who is not an Admin unless a review was raised on the document and has not
   finished (`REVIEW_FINISHED`, `NO_REVIEW_PENDING`), which is where the web UI offers
-  **Skip All Reviews**.
+  **Skip All Reviews**. Bulk Skip All Reviews (`bulkSkipAllReviews`) applies that rule to
+  every role, Admins included, skips a production review-queue item only when it is
+  waiting or is the caller's own claim (any claim for an Admin), refuses a review
+  another reviewer holds for a caller who is not an Admin (**Held by another
+  reviewer**), and never skips a Test Studio document.
   For every role, `completeSectionReview` and `processChanges` refuse documents that
   are in a production review queue (`QUEUE_MANAGED`), and `uploadDocument` refuses a
   section result of such a document (`<document>/sections/<id>/result.json` in the
   Output bucket). For a Reviewer who is not an Admin, `processChanges` also requires
   owning the document's open review, refuses a finished review or a document that is
   still processing, and applies the caller's `allowedConfigVersions`.
-- **Residual access.** Like every role, an Annotator can call `getDocument` and
-  read document objects through the identity pool's S3 grants, for keys it knows.
-  The review pages are a convenience, not the security boundary.
+- **Residual access.** Like every role, an Annotator can call `listDocuments`,
+  `getDocument` and the object-read operations (`getFileContents`,
+  `getFilePresignedUrl`, `getFilePresignedUrls`) for any document in its
+  configuration-profile scope, which is every document when it has none, although its
+  console offers no Document List. Test Set bucket objects are read only for the test
+  sets in its `allowedTestSets`. The review pages are a convenience, not the security
+  boundary.
 
 ## Permission Matrix
 
 ```
-Feature / API                     Admin   Author   Reviewer   Viewer
-───────────────────────────────────────────────────────────────────────
+Feature / API                     Admin   Author   Reviewer   Viewer   Annotator
+──────────────────────────────────────────────────────────────────────────────────
 DOCUMENTS
-  List documents                   ✅      ✅†      ✅*†      ✅†
-  View document details            ✅      ✅†      ✅*†      ✅†
-  Upload documents                 ✅      ✅       ❌        ❌
-  Delete documents                 ✅      ✅       ❌        ❌
-  Reprocess documents              ✅      ✅       ❌        ❌
-  Abort workflows                  ✅      ✅       ❌        ❌
-  Copy to evaluation baseline      ✅      ✅       ❌        ❌
-  Regroup pages (Edit Page Grouping)  ✅      ❌       ✅        ❌
-  Troubleshoot                     ✅      ✅       ❌        ✅
+  List documents                   ✅      ✅†      ✅*†      ✅†       ✅†
+  View document details            ✅      ✅†      ✅*†      ✅†       ✅†
+  Upload documents                 ✅      ✅       ❌        ❌        ❌
+  Delete documents                 ✅      ✅       ❌        ❌        ❌
+  Reprocess documents              ✅      ✅       ❌        ❌        ❌
+  Abort workflows                  ✅      ✅       ❌        ❌        ❌
+  Copy to evaluation baseline      ✅      ✅       ❌        ❌        ❌
+  Regroup pages (Edit Page Grouping)  ✅      ❌       ✅        ❌        ✅‡
+  Troubleshoot                     ✅      ✅       ❌        ✅        ❌
 
 HITL REVIEW
-  Claim/Release review             ✅      ❌       ✅        ❌
-  Complete section review          ✅      ❌       ✅        ❌
-  Skip all section reviews         ✅      ❌       ✅        ❌
-  Process changes                  ✅      ❌       ✅        ❌
+  Claim/Release review             ✅      ❌       ✅        ❌        ✅‡
+  Complete section review          ✅      ❌       ✅        ❌        ✅‡
+  Skip all section reviews         ✅      ❌       ✅        ❌        ❌
+  Bulk Skip All Reviews, Jobs      ✅      ❌       ✅        ❌        ❌
+  Send to review                   ✅      ❌       ✅        ❌        ❌
+  Process changes                  ✅      ❌       ✅        ❌        ❌
+
+REVIEW QUEUES
+  Work Production queues           ✅      ❌       ✅†       ❌        ✅†‡
+  Manage queues and assign work    ✅      ❌       ❌        ❌        ❌
 
 CONFIGURATION
-  View config profiles             ✅      ✅†      ❌        ✅†
-  View/Edit configuration          ✅      ✅†      ❌        ❌
-  Save as Profile (new profile)    ✅      ❌       ❌        ❌
-  Save as Default                  ✅      ❌       ❌        ❌
-  Delete config profile            ✅      ❌       ❌        ❌
-  Set active profile               ✅      ✅†      ❌        ❌
-  Sync BDA                         ✅      ✅†      ❌        ❌
-  Manage prefix mappings           ✅      ❌       ❌        ❌
+  View config profiles             ✅      ✅†      ❌        ✅†       ❌
+  View/Edit configuration          ✅      ✅†      ❌        ❌        ❌
+  Save as Profile (new profile)    ✅      ❌       ❌        ❌        ❌
+  Save as Default                  ✅      ❌       ❌        ❌        ❌
+  Delete config profile            ✅      ❌       ❌        ❌        ❌
+  Set active profile               ✅      ✅†      ❌        ❌        ❌
+  Sync BDA                         ✅      ✅†      ❌        ❌        ❌
+  Manage prefix mappings           ✅      ❌       ❌        ❌        ❌
 
 CONFIGURATION PROFILE REVISIONS
-  View/compare revisions           ✅      ✅†      ❌        ✅†
-  Restore a revision               ✅      ✅†      ❌        ❌
-  Label a revision                 ✅      ✅†      ❌        ❌
-  Delete a revision                ✅      ❌       ❌        ❌
+  View/compare revisions           ✅      ✅†      ❌        ✅†       ❌
+  Restore a revision               ✅      ✅†      ❌        ❌        ❌
+  Label a revision                 ✅      ✅†      ❌        ❌        ❌
+  Delete a revision                ✅      ❌       ❌        ❌        ❌
 
 DISCOVERY
-  List/run discovery jobs          ✅      ✅       ❌        ❌
+  List/run discovery jobs          ✅      ✅       ❌        ❌        ❌
 
 AGENT CHAT & CODE EXPLORER
-  Chat with agent                  ✅      ✅       ❌        ✅
-  Code intelligence                ✅      ✅       ❌        ✅
+  Chat with agent                  ✅      ✅       ❌        ✅        ❌
+  Code intelligence                ✅      ✅       ❌        ✅        ❌
 
 TEST STUDIO
-  View/run test sets               ✅      ✅       ❌        ❌
-  Create/delete test sets          ✅      ✅       ❌        ❌
+  View/run test sets               ✅      ✅       ❌        ❌        ❌
+  Create/delete test sets          ✅      ✅       ❌        ❌        ❌
+  Work Test Studio queues          ✅      ✅       ❌        ❌        ✅‡
 
 CUSTOM MODEL FINE-TUNING
-  List/view fine-tuning jobs       ✅      ✅       ❌        ❌
-  Create fine-tuning jobs          ✅      ✅       ❌        ❌
-  Delete fine-tuning jobs          ✅      ✅       ❌        ❌
-  List available models            ✅      ✅       ❌        ❌
+  List/view fine-tuning jobs       ✅      ✅       ✅        ✅        ✅
+  Create fine-tuning jobs          ✅      ✅       ❌        ❌        ❌
+  Delete fine-tuning jobs          ✅      ✅       ❌        ❌        ❌
+  List available models            ✅      ✅       ❌        ❌        ❌
 
 CAPACITY PLANNING
-  Calculate capacity               ✅      ✅       ❌        ✅
+  Calculate capacity               ✅      ✅       ❌        ✅        ❌
 
 INBOX
-  Own messages and preferences     ✅      ✅       ✅        ✅
+  Own messages and preferences     ✅      ✅       ✅        ✅        ✅
 
 USER MANAGEMENT
-  List all users                   ✅      ❌       ❌        ❌
-  Create/delete users              ✅      ❌       ❌        ❌
-  Edit user scope                  ✅      ❌       ❌        ❌
-  View own profile                 ✅      ✅       ✅        ✅
+  List all users                   ✅      ❌       ❌        ❌        ❌
+  Create/delete users              ✅      ❌       ❌        ❌        ❌
+  Edit user scope                  ✅      ❌       ❌        ❌        ❌
+  View own profile                 ✅      ✅       ✅        ✅        ✅
 
 PRICING
-  View pricing                     ✅      ✅       ❌        ✅
-  Edit pricing                     ✅      ❌       ❌        ❌
+  View pricing                     ✅      ✅       ❌        ✅        ❌
+  Edit pricing                     ✅      ❌       ❌        ❌        ❌
 
 MODEL LIMITS
-  View model limits                ✅      ✅       ❌        ✅
-  Edit model limits                ✅      ❌       ❌        ❌
+  View model limits                ✅      ✅       ❌        ✅        ❌
+  Edit model limits                ✅      ❌       ❌        ❌        ❌
 
 ✅* = Reviewer sees only docs awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them (server-side filtered); see Document Filtering below
 ✅† = Scoped by allowedConfigVersions if set (see Configuration-Profile Scoping below)
-Regroup pages: the server also admits an Annotator for documents in their test sets; the document page doesn't offer it
+✅‡ = Annotator: only the work given to them (the test sets in their allowedTestSets, the queues that list them, the items they hold); see the row notes below
+
+The Annotator cells say what the REST API admits of the feature as a whole; the row notes name where a transport or a reduced payload differs, and where an Annotator-only user's console, which is Home (Inbox, Tasks, Queues), Deployment Info and a document's edit page, offers less.
+List documents, View document details: an Annotator-only console has no Document List or document page; it opens a document on its edit page (#/documents/<document>/edit), which Tasks and Inbox messages link to
+Regroup pages: an Annotator only on a document of a test set in their allowedTestSets, or on a production document while holding its review-queue item within their allowedConfigVersions; the edit page offers it to an item's holder, the document page only to Admins and Reviewers
+Claim/Release review, Complete section review: an Annotator only on a document of a test set in their allowedTestSets, and Complete section review only on one assigned to them; production documents are refused, and the console takes a Test Studio document from Work Test Studio queues
+Regroup pages, Claim/Release review, Complete section review, Skip all section reviews, Process changes: a Reviewer who is not also an Admin, Author or Annotator only on a production document, never one in a test set
+Work Production queues: list, open, claim, save, skip, finish and reject the items of a Production review queue. A Reviewer works every Production queue and an Annotator the queues that list them; saving, skipping, finishing and rejecting need the claim
+Work Test Studio queues: open a test set's queue and label its documents. An Annotator works only the queues that list them and the sets in their allowedTestSets, and saves or skips only a document assigned to them. Taking a document (claimTestSetDocument) is the Annotator's alone: Admins assign test-set documents, and Admins and Authors label them without taking them. Listing the Test Studio queues (listTestSetQueues) is for Admins and Annotators; an Author opens a set's queue from Test Studio
+View/Edit configuration: getConfigVersion answers a Reviewer or an Annotator with the class names and descriptions only, for the annotation class dropdown
+Chat with agent, Code intelligence: Reviewers and Annotators are refused on the REST API and on the chat-streaming Function URL, which verifies the caller's ID token (see the Agent Chat note below)
+List/view fine-tuning jobs: the API answers every signed-in user (listFinetuningJobs and getFinetuningJob are ANY); the navigation offers Custom Models to Admin and Author only, and an Annotator-only console has no route to it
 ```
 
 ## Configuration-Profile Scoping (Use Case Isolation)
@@ -274,7 +316,7 @@ Non-admin users can optionally be assigned **allowedConfigVersions** — a list 
 ### How It Works
 
 - **Admin users**: Always unrestricted — `allowedConfigVersions` is ignored even if set
-- **All other roles** (Author, Reviewer, Viewer): If `allowedConfigVersions` is set and non-empty, the user can only:
+- **All other roles** (Author, Reviewer, Viewer, Annotator): If `allowedConfigVersions` is set and non-empty, the user can only:
   - See documents processed with those profiles (server-side filtering)
   - See and select those profiles in all profile dropdowns
   - View/edit configuration — and read, compare, restore, and label revisions — for those profiles only
@@ -313,7 +355,7 @@ Scope entries are matched against the profile name with two deliberate rules:
 - **An empty or unset scope means unrestricted.** Scoping is opt-in per user.
 - **A set scope fails closed.** A profile or document with no name to match against
   is denied, not admitted. In particular, a scoped user does **not** see documents
-  that carry no `ConfigVersion` (documents processed before config-version stamping,
+  that carry no `ConfigVersion` (documents processed before profile stamping,
   or whose stamp failed) — an unnamed object cannot be proven in scope.
 
 Entries may be exact names (`lending`) or **glob patterns** (`lending-*`,
@@ -492,39 +534,114 @@ number with no indication. Narrow the date range if a scoped count looks wrong.
 |-------|-------------|
 | **Document List** (server-side) | Both `listDocuments` resolvers filter by the `ConfigVersion` field using `allowedConfigVersions` from UsersTable (fails closed on an unstamped document) |
 | **Document Count** (server-side) | `getDocumentCount` — the header figure beside that list — applies the same two filters, from the same helpers, so it cannot report documents the list does not show |
-| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. ⚠️ Applies to turns that reach the processor through the REST API; chat streamed from the Lambda Function URL is **not** restricted by `allowedConfigVersions` — see [Known Limitations](#known-limitations) |
+| **Document Chat** (server-side) | The chat processor resolves the target document's `ConfigVersion` and refuses out-of-scope (and unstamped) documents. Applies on both chat paths: the REST API, and the streaming Lambda Function URL, which verifies the caller's Cognito ID token and forwards its claims |
+| **Single-Document Operations** (server-side) | Every operation that acts on one document by key — `getDocument`, the three document-version operations, the five review operations on a production document (`claimReview`, `releaseReview`, `skipAllSectionsReview`, `saveSectionReviewEdits`, `completeSectionReview`), `deleteDocument`, `abortWorkflow`, `copyToBaseline`, `processChanges` and `updateDocumentSections` on a production document — refuses a scoped caller when the document's `ConfigVersion` is outside their scope, when it has none, or when no document is tracked for the key, with one non-disclosing message for all three. The shared check is `idp_common.document_scope`; Admins are never looked up. A multi-document request is refused whole if any one key is out of scope, except `bulkSkipAllReviews` and `sendToReview`, which report an out-of-scope document, a key no document is tracked for, and a document with no profile as the same per-document outcome **Not permitted** and act on the rest; a by-profile `bulkSkipAllReviews` is refused whole unless the profile itself is in scope |
+| **Raw Index Reads** (server-side) | `listDocumentsDateHour` and `listDocumentsDateShard` return index rows that carry no profile, so they are refused to any caller with a scope rather than filtered. The web UI does not call them |
+| **Discovery** (server-side) | `uploadDiscoveryDocument` (class and policy discovery), `startMultiDocDiscovery`, `uploadMultiDocDiscoveryZip` and `autoDetectSections` refuse a configuration profile outside the caller's scope before any upload URL is issued or any job is started. `autoDetectSections` with no profile named checks the active profile, which is the one it reads. A discovery job must name the profile it saves into, and **Replace** is refused on the active profile. Admins are never looked up |
+| **Test Studio profile arguments** (server-side) | `generateDraftLabels`, `reextractTestSetDocument` and `estimateReviewEffort` accept an optional `configVersion`; a profile named there must be in the caller's scope unless it is the test set's own profile. With none named, or with the set's own named, that profile is used and the set itself is governed by `allowedTestSets` |
+| **Test Runs** (server-side) | `startTestRun` and `sendTestRunToReview` hold the run's profile to the caller's scope; `getTestRun`, `getTestRunStatus` and `compareTestRuns` refuse a run whose recorded profile is out of scope, and `getTestRuns` filters by it |
 | **Config Profile List** (server-side) | `getConfigVersions` Lambda resolver filters returned profiles |
 | **Config Profile Access** (server-side) | `getConfigVersion` Lambda resolver rejects requests for out-of-scope profiles |
 | **Revision Operations** (server-side) | All five `*ConfigProfileRevision*` operations reject out-of-scope profiles before doing any work |
 | **Revision Bodies in S3** (server-side) | A revision's configuration is stored as an object in the Configuration bucket, so the object-read path applies the same profile check to the **key**: `getFileContents` / `getFilePresignedUrl` match the profile in a `config_revisions/<profile>/` key against `allowedConfigVersions` before reading anything. Without it the revision operations above could be bypassed by asking for the body directly, and the Configuration bucket is no longer readable with the browser's own credentials either |
-| **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it |
+| **Test-Set Objects in S3** (server-side) | The same path applies `allowedTestSets` to every Test Set bucket key (`<test_set_id>/…` — source documents, ground truth, published baseline snapshots), so a scoped Annotator cannot read another test set's documents or labels through it, and a Reviewer or Viewer reads none of them |
 | **Document Objects in S3** (server-side) | `document_scope` finds the document that owns an Input- or Output-bucket key — walking the key's `/` boundaries longest-first against the tracking table — and matches its `ConfigVersion` against `allowedConfigVersions` on all three object-read operations (`getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls`), before any S3 call. Fails closed twice over: a key no tracked document owns is refused, and so is a document carrying no `ConfigVersion`. The refusal text is the same non-disclosing 403 the key check uses, and on the batch operation a single refusal fails the whole request, so it cannot be used to probe which documents are in scope key by key |
-| **Version Dropdowns** (UI) | `useConfigurationVersions` hook filters versions client-side for immediate UX |
-| **Default Version Selection** (UI) | Version pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
+| **Profile Dropdowns** (UI) | `useConfigurationVersions` hook filters profiles client-side for immediate UX |
+| **Default Profile Selection** (UI) | Profile pickers and the View/Edit Configuration page select the active profile when it is in scope, otherwise the first scoped one. A scoped user is never sent to `default` unless their scope admits it |
+
+**What the static scan checks for the server-side rows.** Every operation that
+`scripts/api_rbac_expectations.yaml` flags `scope_checked` or `scope_filtered` is
+held by check **S4** of `make api-test-static`
+([`scripts/sdlc/scan_api_rbac.py`](../scripts/sdlc/scan_api_rbac.py)) to two rules, both read from the code the operation itself can
+reach (its dispatch branch or dispatch-table entry, and that code's call closure):
+
+- **It refers to the caller's scope.** The reachable code names the scope or calls
+  the shared matcher, so a sibling operation in the same module cannot satisfy it.
+- **A `scope_filtered` operation filters each item it returns** (finding kind
+  `S4-per-item`, a FAIL). Following calls from the resolver into `idp_common`,
+  the reachable code must call a recognised per-item scope predicate inside an
+  iteration over results — a comprehension, a loop body or a `filter(...)`
+  predicate — or a whole-list scope filter, and that predicate must itself bottom
+  out at `idp_common.config_scope.scope_allows`. The recognised names are
+  `SCOPE_ITEM_PREDICATES` and `SCOPE_LIST_FILTERS` in the scanner. This is what
+  covers listings served by a library service, such as the review-queue
+  operations, whose filter lives in `ReviewQueueService` rather than in the
+  resolver.
+
+Both are structural checks, not dataflow: they cannot show that the filtered
+collection is the one returned, or that the scope value came from the UsersTable.
+The per-site unit suites and the live scope suite in `make api-test` cover those.
+
+**Which operations have to declare a scope** is check **S10**. S4 can only check
+the operations that opt in, so S10 starts from the other end: any operation whose
+arguments (read from `schema.graphql`, input types included, and from the entry's
+`args:`) name a configuration profile, a stored object or a session must declare how
+that object is scoped. Which kind an argument is comes from the words of its name,
+not from a list of spellings: `profile`, `version` or `revision` (unless the name
+says whose version it is, as `versionId` and `baseRevision` do) is a profile; `key`,
+`uri`, `prefix`, `path` or `bucket` is an object; `session` is a session. A profile
+needs `scope_checked` or `scope_filtered`; an object needs one of those,
+`document_scope_checked` (the object's own recorded or mapped profile is checked),
+`testset_checked` (the test-set scope) or `ownership`; a session needs `ownership`
+or `scope_checked`. On an operation that names both a profile and an object,
+`scope_checked` answers for the profile only. Each
+declaration is itself checked against the code the operation reaches. An operation
+only Admins or IAM principals can call needs none, because neither carries a
+profile scope. Anything else needs a `known_gap` or a per-operation entry in
+`SCOPE_KEYED_ARGUMENT_EXEMPT`, registered with its reason in
+`scripts/tests/gate_exemptions.json`.
 
 ### Affected UI Components
 
-All pages with config version selectors automatically respect scope:
+All pages with configuration profile selectors automatically respect scope:
 
 | Page | Behavior |
 |------|----------|
-| **View/Edit Configuration** | Shows only scoped versions in the Configuration Profiles table. Waits for that list, then opens the active profile if it is in scope, otherwise the first scoped one; a `?version=` link opens its profile directly. When no existing profile is in the user's scope the page says so instead of opening one |
-| **Upload Documents** | Version picker shows only scoped versions |
-| **Discovery** | Version picker shows only scoped versions |
-| **Test Studio** | Test runner version picker shows only scoped versions |
-| **Capacity Planning** | Version picker shows only scoped versions, and says so when none is in the user's scope |
-| **Reprocess Document** | Defaults to document's current ConfigVersion (if in scope) |
-| **Document List** | Server-side filtered — only shows documents matching scoped versions |
+| **View/Edit Configuration** | Shows only scoped profiles in the Configuration Profiles table. Waits for that list, then opens the active profile if it is in scope, otherwise the first scoped one; a `?version=` link opens its profile directly. When no existing profile is in the user's scope the page says so instead of opening one |
+| **Upload Documents** | Profile picker shows only scoped profiles |
+| **Discovery** | Profile picker shows only scoped profiles |
+| **Test Studio** | Test runner profile picker shows only scoped profiles |
+| **Capacity Planning** | Profile picker shows only scoped profiles, and says so when none is in the user's scope |
+| **Reprocess Document** | Defaults to the document's current profile (`ConfigVersion`), if in scope |
+| **Document List** | Server-side filtered — only shows documents matching scoped profiles |
 
 ### Managing User Scope
 
 Admins can manage user scope via the **User Management** page:
 
-1. **Create user with scope**: When creating a new user, optionally select config versions from the multiselect
-2. **Edit user scope**: Click "Edit scope" on any non-Admin user row to add/remove config versions
+1. **Create user with scope**: When creating a new user, optionally select configuration profiles from the multiselect
+2. **Edit user scope**: Click "Edit scope" on any non-Admin user row to add/remove configuration profiles
 3. **Remove scope**: Clear all selections to make a user unrestricted
 
 Admin users' scope cannot be edited (they are always unrestricted).
+
+The above applies when the stack's `TenantGrantSource` is `Manual`, the default. Under
+`IdpClaim` the identity provider's claim writes each user's scope at every fresh
+sign-in, and under `Api` an entitlement system writes it through `setUserTenant`. In
+both modes the scope is exactly one tenant's profile pattern or `!no-tenant-granted`
+(shown as *No tenant granted*, matching no profile), User Management shows it
+read-only with the tenant and its source, `createUser` and `updateUser` refuse a
+configuration-scope change, and a non-Admin with no scope sees nothing even when
+`TenantIsolationMode` is `Off`. See [Who grants a
+tenant](multi-tenancy.md#who-grants-a-tenant).
+
+### API: `setUserTenant` (Admin-only, `TenantGrantSource=Api`)
+
+```graphql
+mutation SetUserTenant($email: String!, $tenantId: String) {
+  setUserTenant(email: $email, tenantId: $tenantId) {
+    userId
+    email
+    allowedConfigVersions
+    scopeSource
+    scopeTenant
+  }
+}
+```
+
+A null `tenantId` grants no tenant. The user must already exist, the tenant must be
+declared, and an Admin is refused. Refused on a stack whose `TenantGrantSource` is not
+`Api`.
 
 ### API: `getMyProfile`
 
@@ -576,7 +693,7 @@ operation declares one of:
 
 | Policy | The dispatcher requires | Count |
 |---|---|---|
-| a group list, e.g. `[Admin, Author]` | one of those groups | 127 |
+| a group list, e.g. `[Admin, Author]` | one of those groups | 143 |
 | `ANY_GROUP` | **any** group the stack creates — so a caller in *no* group is refused | 27 |
 | `ANY` | authentication only; group membership is not consulted | 8 |
 | `IAM_ONLY` | rejects every Cognito caller (backend/IAM principals only) | 2 |
@@ -651,9 +768,13 @@ was processed under, matched against the caller's `allowedConfigVersions`, and t
 axis is now enforced on the object-read path as well as on `listDocuments` — see the
 precise statement of what it closes below. Scoping is opt-in per user, so for a user
 whose `allowedConfigVersions` is unset a Viewer may still read any document a Viewer
-can see. If your documents must be private to their submitter or to a tenant, neither
-group membership nor the profile scope is the axis you want: no record here says which
-user or tenant a document belongs to.
+can see. If your documents must be private to their submitter, neither group
+membership nor the profile scope is the axis you want: no record here says which user
+a document belongs to. Privacy **per tenant** is what [tenant
+declarations](multi-tenancy.md) provide: they tie a tenant's Input-bucket prefixes to
+its profiles, confine each user's scope to one tenant, and — with
+`TenantIsolationMode=Strict` — deny unscoped users and refuse documents that would
+cross a tenant boundary at ingest.
 
 ⚠️ **The group floor gates the API, and the document bytes are now behind it rather
 than beside it.** `CognitoIdentityPoolSetRole` in `template.yaml` attaches a
@@ -743,14 +864,18 @@ so the new bundle works under any live session. If reports of blank page images 
 after an upgrade, have the user reload before suspecting the deployment — and do not
 re-add an S3 grant to the role, which would reopen the read path this closes.
 
-⚠️ **This layer gates the REST route only.** Chat streaming is served by a Lambda
-Function URL that reaches the chat processors directly, without the dispatcher, and
-that transport forwards no `cognito:groups` claim at all. So
-`sendChatDocumentMessage` refuses a caller in no group on the REST route, and
-`POST /chat/document` on the Function URL does not — recorded as `GAP-07` in
-`scripts/api_rbac_expectations.yaml`. The Function URL exists in the commercial
-partition only; on GovCloud the UI falls back to the dispatcher plus polling, where
-the floor applies.
+**This layer gates the REST route, and the chat-streaming Function URL applies the
+same floors itself.** Chat streaming is served by a Lambda Function URL that reaches
+the chat processors directly, without the dispatcher. The browser signs each request
+with Cognito Identity Pool credentials, which prove only that a signed-in user of the
+pool is calling, and also presents its Cognito ID token in the `x-idp-id-token`
+header. The endpoint verifies that token against the user pool's key set (issuer,
+the web UI's app client as audience, `token_use` of `id`, expiry) and answers 401
+without a valid one. It then applies the floors from the verified claims before the
+stream opens: `POST /chat/document` refuses a caller in no group, as
+`sendChatDocumentMessage` does, and `POST /chat/agent` applies the Admin, Author and
+Viewer check. The Function URL exists in the commercial partition only; on GovCloud
+the UI falls back to the dispatcher plus polling.
 
 **An `identity` carried on the event is no longer authoritative for this check.**
 `idp_common.api_adapter` used to pass an event carrying its own `arguments` +
@@ -775,7 +900,7 @@ step; `make api-test-static` fails if the two drift, and the dispatcher treats a
 unreadable or unsupported manifest as deny-all.
 
 This layer is a **floor, not a replacement** for the resolver checks in Layer 2:
-only the resolver can enforce per-object scope (config version, test set,
+only the resolver can enforce per-object scope (configuration profile, test set,
 ownership), so both run. When triaging a 403, the dispatcher logs `Denied
 <field>: ...`; a resolver denial carries the resolver's own message.
 
@@ -851,15 +976,17 @@ enforcement itself is Layer 2.
 | `createFinetuningJob`, `deleteFinetuningJob` | Admin, Author |
 | `processChanges` (a caller who is not an Admin must own the document's open review, the review must not be finished, the document must not be processing, and the document must be inside the caller's configuration-profile scope — the same checks as `saveSectionReviewEdits`, plus the document-status and scope checks) | Admin, Reviewer |
 | `skipAllSectionsReview` | Admin, Reviewer |
-| `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a test-set document assigned to them) |
+| `bulkSkipAllReviews` (by-profile requests refused unless the profile is in the caller's scope; selected documents scoped one by one, see below), `sendToReview` (each document scoped by its own profile) | Admin, Reviewer |
+| `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` (a Reviewer reads, cancels and deletes only the jobs they requested; another user's job reads as not found; an Admin can act on every job) | Admin, Reviewer |
+| `completeSectionReview`, `claimReview`, `releaseReview` | Admin, Reviewer, Annotator (an Annotator only for a document of a test set in their `allowedTestSets`, and `completeSectionReview` only for one assigned to them; a Reviewer only for a production document) |
 | `saveTestSetDocumentSection`, `saveTestSetDocumentSectionDraft`, `skipTestSetDocument`, `updateTestSetDocumentSections` | Admin, Author, Annotator (an Annotator only for a document assigned to them; an Author drafts authored ground truth only) |
 | `saveSectionReviewEdits` (saves a section's corrections without completing the review; a Reviewer must be the document's review owner) | Admin, Reviewer |
-| `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer excluded; also IAM for backend) |
+| `sendAgentChatMessage` | Admin, Author, Viewer (Reviewer and Annotator excluded; also IAM for backend) |
 | `deleteChatSession`, `deleteAgentJob` | Any assigned group (`ANY_GROUP`), further session-scoped; see note below |
 | `markInboxMessages`, `markAllInboxMessagesRead`, `deleteInboxMessages`, `clearReadInboxMessages`, `updateInboxPreferences` | Any assigned group (`ANY_GROUP`); every key is built from the caller's verified identity, so another user's message id is not found |
 | `updateChatSessionTitle`, `updateAgentChatMessage` | **Not reachable.** Both are declared in `schema.graphql` and in neither routing surface (`FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED`), so default-deny refuses them to every caller including Admin. The backend writes DynamoDB directly and does not need them |
 
-> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and bypasses the check. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
+> **Agent Chat authorization**: `sendAgentChatMessage` and `listAvailableAgents` restrict Agent Chat to **Admin, Author, Viewer** (Reviewer and Annotator excluded). The restriction is declared in `schema.graphql` **and** enforced server-side in each resolver via a `_caller_in_groups` check — the single REST route's Cognito authorizer only authenticates, so the group gate lives in the resolver. The IAM backend publish path has no Cognito identity and is not group-checked. `POST /chat/agent` on the chat-streaming Function URL, which commercial deployments stream agent chat through, applies the same check from the caller's verified ID token before the stream opens. `listChatSessions` remains open to any authenticated user, bounded by a DynamoDB key condition on the caller's own partition; `getChatMessages` and the session-scoped **mutations** (`deleteChatSession`, `deleteAgentJob`) additionally require an assigned group.
 >
 > *(Previously the Reviewer exclusion was UI-only — tracked as accepted-risk gap GAP-03 — because AppSync could not combine a `cognito_groups` restriction with `@aws_iam` on one field. AppSync has since been removed, so the real groups are now enforced.)*
 
@@ -867,15 +994,16 @@ enforcement itself is Layer 2.
 
 | Query | Allowed Roles |
 |-------|---------------|
-| `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); server-side row filtering in resolvers on top |
+| `getDocument`, `listDocuments`, `listDocumentsByDateRange` | Any assigned group (`ANY_GROUP`); configuration-profile scope applied server-side on top (see [Scope Enforcement Points](#scope-enforcement-points)) |
 | `getDocumentVersion`, `compareDocumentVersions` | Any assigned group (`ANY_GROUP`) |
 | `getFileContents`, `getFilePresignedUrl`, `getFilePresignedUrls` | Any assigned group (`ANY_GROUP`); bucket allow-list, **plus** per-document scope on the Input and Output buckets — the owning document's configuration profile must be within the caller's `allowedConfigVersions`, which narrows a **scoped** caller only, a caller whose row sets none being deliberately unrestricted. A bucket outside the allow-list, or a document outside a scoped caller's profiles, is **403** `Unauthorized`; the message names neither the bucket, the allow-list, the document, nor whether any of them exist |
 | `getDocumentCount`, `listDocumentVersions`, `listDocumentsDateHour`, `listDocumentsDateShard`, `getStepFunctionExecution` | Any assigned group (`ANY_GROUP`). These return no extracted value themselves, but they return the keys, section and page URIs, extracted-attribute names, model-written page descriptions and execution detail that lead to one, and that chain was measured composing end to end for a caller in no group. `getDocumentCount` and `getStepFunctionExecution` keep their config-version scope on top; both of the narrowings available to them stand down for a self-registered caller, who is not a Reviewer and whose absent UsersTable row means "unrestricted" |
-| `getConfigVersions`, `getConfigVersion`, `getPricing`, `getModelConfigLimits`, `calculateCapacity` | Admin, Author, Viewer |
+| `getConfigVersions`, `getPricing`, `getModelConfigLimits`, `calculateCapacity` | Admin, Author, Viewer |
+| `getConfigVersion` | Admin, Author, Viewer, Reviewer, Annotator. A Reviewer or an Annotator receives only the profile's class names and descriptions, which the annotation class dropdown reads, never the rest of the configuration |
 | `listConfigProfileRevisions`, `getConfigProfileRevision` | Admin, Author, Viewer |
-| `listAvailableAgents` | Admin, Author, Viewer (Reviewer excluded; enforced server-side — see Agent Chat note above) |
+| `listAvailableAgents` | Admin, Author, Viewer (Reviewer and Annotator excluded; enforced server-side — see Agent Chat note above) |
 | `listChatSessions` | All authenticated, session-scoped by a DynamoDB key condition on the caller's own `userId` |
-| `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition, and it **fails open** — it returns true when `CHAT_SESSIONS_TABLE` is unset, and an operator can turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`. Transcripts can quote document content, so the group floor sits under a check that can stand down |
+| `getChatMessages` | Any assigned group (`ANY_GROUP`), plus the session-ownership check. The message read is keyed on `sessionId` alone, so ownership is a separate verification rather than a key condition: the caller must be the owner `ChatSessionOwnersTable` records for the session id (see [Chat sessions belong to the signed-in user](#chat-sessions-belong-to-the-signed-in-user)). It denies when its tables are unconfigured. An operator can still turn it off with `ENFORCE_CHAT_SESSION_OWNERSHIP=false`, and transcripts can quote document content, so the group floor sits under a check that can be switched off |
 | `getAgentChatMessages` | **Not reachable.** It is declared in `schema.graphql` and in neither of the two surfaces the dispatcher routes from — `FIELD_FUNCTION_MAP`/`FIELD_ALIASES` and `ddb_direct._HANDLED` — and it has no entry in the manifest the dispatcher authorizes against, which denies by default. So it returns 403 to every caller including Admin. Schema-only surface; use `getChatMessages` |
 | `submitAgentQuery`, `getAgentJobStatus`, `listAgentJobs` | Admin, Author, Viewer |
 | `listConfigurationLibrary`, `getConfigurationLibraryFile` | Admin, Author, Viewer |
@@ -884,7 +1012,7 @@ enforcement itself is Layer 2.
 | `listFinetuningJobs`, `getFinetuningJob` | All authenticated — whole-deployment job, model and deployment state, with no per-caller scope (the rows record no owner). The UI surfaces them to Admin and Author only. The projection deliberately carries no dataset location, and `finetuning_jobs_resolver/test_projected_keys.py` pins its key set so that cannot change silently |
 | `validateTestSetForFinetuning`, `listAvailableModels` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, so default-deny refuses them to every caller including Admin |
 | `queryKnowledgeBase` | Any assigned group (`ANY_GROUP`); the resolver itself has no group check (GAP-02), so the dispatcher's floor is the only one |
-| `sendChatDocumentMessage` | Any assigned group (`ANY_GROUP`) **on the REST route only** — the chat Function URL reaches the same processor with no group claim (GAP-07). The resolver enforces per-session ownership and forwards the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn. That scope check stands down on the streaming route, which forwards no verified caller — see [Known Limitations](#known-limitations) |
+| `sendChatDocumentMessage` | Any assigned group (`ANY_GROUP`), on the REST route and, from the verified ID token, on the chat Function URL. Both register the session id to the caller or refuse it when another user owns it, and forward the caller's verified claims, from which the processor enforces `allowedConfigVersions` scope on the target document; a scope it cannot evaluate denies the turn |
 | `onChatDocumentMessageUpdate` | **Not reachable.** Declared in `schema.graphql` and routed from nowhere, and the manifest the dispatcher authorizes against carries no subscription fields at all, so default-deny refuses it to every caller including Admin. Its one UI call site is gated off under the `httpapi` transport; replies arrive over the streaming Function URL instead |
 | `listUsers` | **Admin** — it returns every user's email and role. A non-admin reads their own record through `getMyProfile` instead |
 | `getMyProfile` | All authenticated |
@@ -989,7 +1117,7 @@ rather than a silent pass. The polarity has to be this way round: defaulting to
 known coverage gap. Two kinds of refusal are therefore still unattributed **by
 design** — a resolver's own group check, which is a group decision, and the per-object
 controls the live matrix cannot currently reach (`key_scope`'s refusals, the
-config-version scope refusals in the reprocess, upload and list paths, and the
+profile-scope refusals in the reprocess, upload and list paths, and the
 in-band `{success:false,error:{type:"Unauthorized"}}` 200 the configuration and sync
 resolvers return, which the dispatcher passes through and never sees).
 
@@ -1034,7 +1162,7 @@ filtering based on the caller's identity:
 **Document Filtering:**
 - **Admin**: See all documents
 - **Author/Viewer**: See all documents, filtered by `allowedConfigVersions` if scope is set
-- **Reviewer-only**: See only documents awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them, plus config-version scope. A completed or skipped review is listed only for the reviewer who owns it, and only on a document carrying the legacy `HITLTriggered` flag or one whose finished review was claimed again, which sets it back to in progress. `listDocuments`, `getDocumentCount` and `listDocumentsByDateRange` apply the same filter
+- **Reviewer-only**: See only documents awaiting review that are unclaimed (pending, or released back to the queue) or claimed by them, plus configuration-profile scope. A completed or skipped review is listed only for the reviewer who owns it, and only on a document carrying the legacy `HITLTriggered` flag or one whose finished review was claimed again, which sets it back to in progress. `listDocuments`, `getDocumentCount` and `listDocumentsByDateRange` apply the same filter
 
 **Configuration Filtering:**
 - `getConfigVersions`: Returns only profiles in user's scope (or all if unrestricted)
@@ -1045,12 +1173,68 @@ filtering based on the caller's identity:
 - `listUsers`: Admin only — a non-admin is refused it at the dispatcher, not filtered inside it
 - `getMyProfile`: Returns the calling user's own profile (including `allowedConfigVersions`)
 
+### Chat sessions belong to the signed-in user
+
+A chat session id is chosen by the browser and arrives in the request body, and chat
+history is stored under it alone (`ChatMessagesTable`, keyed `PK=sessionId`, shared by
+Agent Chat and Chat-with-Document). So what makes a history read the caller's own is a
+record of whose the id is, kept in `ChatSessionOwnersTable` (keyed `sessionId`,
+holding the owner's Cognito `sub`):
+
+- **The first user of a session id owns it.** Every path that stores a turn —
+  `sendAgentChatMessage`, `sendChatDocumentMessage`, and both routes of the
+  chat-streaming Function URL — registers the id to the caller with a conditional
+  write before it stores anything or starts the turn, and refuses with 403 when the
+  id belongs to another user. The agent chat processor checks again before it builds
+  the orchestrator.
+- **Reading or deleting history needs the recorded owner.** `getChatMessages` and
+  `deleteChatSession` accept only the owner the table records. The caller's own row
+  in the per-user session list (`ChatSessionsTable`) does not count for an id that
+  has an owner, because sending one message under any id creates such a row. Neither
+  operation registers an id nobody has used, so asking about one cannot reserve it.
+- **Conversation memory is keyed on the user and the session**
+  (`conversation#<sub>#<sessionId>` in the agent memory table), so a turn only ever
+  loads the caller's own earlier turns. A turn with no verified user is built with
+  no memory and stores nothing.
+- **The caller is always taken from verified claims.** On the REST API those are the
+  claims API Gateway's Cognito authorizer verified. On the Function URL they come from
+  the Cognito ID token the browser presents in the `x-idp-id-token` header, which the
+  endpoint verifies; a `callerSub` in the request body is ignored.
+
+Sessions written before `ChatSessionOwnersTable` existed have history and no recorded
+owner. Each is registered, on first use, to the caller who holds the earlier record of
+using it: their own `ChatSessionsTable` row, which is keyed by the caller's email
+address (or `cognito:username`), or, on the REST path for Chat-with-Document, the
+ownership row in the document-chat sessions table. A first message from a caller with
+no such record is refused. Two things follow from the earlier record being what it is.
+A row written under another user's session id before this release counts as a record,
+so if two users both hold one, whichever uses the id first after the upgrade owns it.
+And a new account with the same email address as a removed one inherits that address's
+earlier sessions. The streaming document-chat route consults only `ChatSessionsTable`,
+so a document-chat session from before this release that was used only through the
+REST path is refused there to its own owner; the web UI starts a new session id for
+each document chat, so it does not reuse one. Agent conversation memory written under
+the earlier `conversation#<sessionId>` key is no longer read.
+
+The owner row's expiry moves forward on every turn and is kept an hour past the
+retention period, so it outlives the messages written under it.
+`scripts/tests/test_session_keyed_storage.py` reports DynamoDB keys built from a
+session or conversation id with no user component: keys passed to any DynamoDB
+data-plane call in the dict shapes its module docstring lists (literals, `dict(...)`,
+names assigned in the same or an enclosing scope, dicts filled in by subscript,
+`update` or `setdefault`, merges, comprehensions, splats and `self` attributes), key
+conditions and PartiQL parameters, and `#`-joined key strings. A file that
+legitimately keys on the session id alone is listed there with its pinned site count
+and the ownership check it relies on. What the scan cannot see — among others a key
+handed between functions, a session id not named as one, a dict built by another
+function call, and an indirect call — is listed in the same docstring.
+
 ### Layer 3: UI Adaptation (UX Convenience)
 
 The UI adapts based on the user's role and scope:
 - Navigation sidebar shows only relevant features per role
 - Action buttons and menu items (delete, reprocess, upload, save, import, and the document page's actions) are hidden for roles that can never perform them; disabled, with the reason, when they don't apply now (for example a past version, a document in a review queue or still processing, or BDA mode)
-- Version dropdowns are automatically filtered to show only scoped versions
+- Profile dropdowns are automatically filtered to show only scoped profiles
 - The top navigation badge shows the user's role with color coding (blue=Admin, green=Author, grey=Reviewer/Viewer)
 - **Admin-only buttons**: "Save as Profile", "Save as Default" in Configuration; Import/Restore/Save in Pricing and Model Limits
 - **Pricing page**: Shows "View Pricing" (read-only) for non-admin; "Pricing Configuration" (editable) for admin
@@ -1058,13 +1242,61 @@ The UI adapts based on the user's role and scope:
 
 **This layer is NOT a security boundary** — it's purely for user experience. Authentication is enforced at Layer 1 and authorization at Layer 2.
 
+## MCP Tools
+
+The [MCP server](./mcp-server.md) is a third way into the deployment, beside the web
+UI's REST API and the chat streaming endpoint. Its callers are resolved and held to
+the same roles and configuration scope as UI users.
+
+- **Who the caller is.** The AgentCore Gateway validates the caller's Cognito access
+  token. An interceptor Lambda then resolves it: a token from the
+  user-authentication client (`MCPClientId`) is the signed-in user, with the groups
+  in their token and the `allowedConfigVersions` the UI would apply to them; a token
+  from any client-credentials client is a
+  [service credential](./mcp-server.md#service-credentials), with that credential's
+  role and configuration profiles read on every call, so a revoked or expired
+  credential is refused at once. That includes the stack-created client
+  (`MCPConnectorClientId`), listed as "Default (stack-created)": an Author with no
+  configuration scope, registered disabled where tenant isolation applies. The credential operations
+  (`listMcpCredentials`, `createMcpCredential`, `updateMcpCredential`,
+  `rotateMcpCredential`, `revokeMcpCredential`, `setMcpCredentialTenant`) are Admin
+  only. A scoped Admin can grant only profiles inside their own scope, and only a
+  tenant whose profile pattern is inside it. The interceptor passes the result to
+  the MCP handler in a block signed with a key only the two functions can read and bound to
+  one gateway request, and the handler refuses any call whose block it cannot
+  verify.
+- **Which tools a role may call.** Each tool admits the roles of the REST operation
+  it corresponds to, so MCP is never the more permissive way to do the same thing.
+  The interceptor also removes the tools a caller may not call from the tool list.
+
+| Tool | Admin | Author | Reviewer | Viewer | Corresponds to |
+|---|---|---|---|---|---|
+| `search` | ✅ | ✅ | ❌ | ✅ | Agent Chat (`sendAgentChatMessage`); refused to any caller with a configuration scope |
+| `status` | ✅ | ✅ | ✅ | ✅ | `getDocument`; counts only documents in scope |
+| `get_results` | ✅ | ✅ | ✅ | ✅ | `getDocument`; refuses or omits documents outside scope |
+| `process` | ✅ | ✅ | ❌ | ❌ | `uploadDocument`; refuses a destination profile outside scope |
+| `reprocess` | ✅ | ✅ | ❌ | ❌ | `reprocessDocument`; refuses if any named document is outside scope |
+
+Annotator is admitted by none of them: it reaches documents only through test-set
+labelling, whose per-object control has no MCP counterpart.
+
+- **Scope.** A caller with a configuration scope cannot process from an S3
+  location, because the copy is made with the MCP handler's own role, which reads
+  every profile's documents; they send the document as base64 content instead, and
+  may name the profile with the `profile` argument.
+- **Where it is declared.** The table is `MCP_TOOL_POLICY` in
+  `lib/idp_common_pkg/idp_common/mcp_access.py`, mirrored under `mcp_tools:` in
+  `scripts/api_rbac_expectations.yaml`; `make api-test-static` (checks M1 to M5)
+  fails when the two differ, when a tool is registered without a policy, or when a
+  client the gateway admits has no resolution rule.
+
 ## User Management
 
 Admins can create users with any of the five roles via the User Management page. Each user is:
 1. Created in DynamoDB (source of truth)
 2. Synced to Cognito (for authentication)
 3. Added to the appropriate Cognito group (for authorization)
-4. Optionally assigned `allowedConfigVersions` for config-version scoping
+4. Optionally assigned `allowedConfigVersions` for configuration-profile scoping
 
 ### User Table Fields
 
@@ -1076,6 +1308,9 @@ Admins can create users with any of the five roles via the User Management page.
 | `status` | User status (active) |
 | `allowedConfigVersions` | Optional list of Configuration Profile names (or glob patterns) for scoping |
 | `allowedTestSets` | Optional list of test set ids an Annotator may read and annotate. A separate scope axis from `allowedConfigVersions`, not a replacement — a user may carry both. |
+| `scopeSource` | Set when the scope was granted rather than edited: `idp` (the identity provider's claim) or `api` (`setUserTenant`) |
+| `scopeTenant` | The tenant the grant gave, absent when it gave none |
+| `source` | `cognito` on a row the sign-in trigger created for an existing Cognito user, so the user-sync stream does not create a second account |
 | `createdAt` | Creation timestamp |
 
 ## Architecture
@@ -1084,7 +1319,7 @@ Admins can create users with any of the five roles via the User Management page.
 ┌─────────────────────────────────┐
 │  Browser (UI)                   │  Layer 3: Navigation/button hiding + scope filtering (UX only)
 │  useUserRole + getMyProfile     │
-│  useConfigurationVersions       │  ← Filters versions by allowedConfigVersions
+│  useConfigurationVersions       │  ← Filters profiles by allowedConfigVersions
 └────────────┬────────────────────┘
              │ POST /op/{field} (Cognito ID token)
 ┌────────────▼────────────────────┐
@@ -1110,7 +1345,7 @@ Admins can create users with any of the five roles via the User Management page.
 ┌────────────▼────────────────────┐
 │  DynamoDB                       │
 │  TrackingTable (documents)      │
-│  ConfigurationTable (versions)  │
+│  ConfigurationTable (profiles)  │
 │  UsersTable (scope data)        │
 └─────────────────────────────────┘
 ```
@@ -1132,14 +1367,13 @@ To add a new role:
 
 ## Known Limitations
 
-- **Document Chat streamed from the Lambda Function URL** is not restricted by `allowedConfigVersions`, and in commercial regions that is the path the UI takes — it streams whenever a stream URL is configured, which every commercial deployment has. The browser signs those requests with Cognito Identity Pool credentials, and that transport forwards no Cognito claims: its SigV4 principal is a session name shared by every user of the pool, so it proves *a* signed-in user is calling but not which one. The processor will not key an authorization decision to the caller-supplied identity in the request body, because the caller it would restrict is the one choosing the value. So the route reports an explicitly unverified caller, and the processor logs, once per turn, that it did not enforce the scope. The check **does** apply to turns arriving through the REST API, which is the path GovCloud deployments take, since Function URLs are unavailable there. Closing this needs the streaming endpoint to verify a Cognito ID token; tracked as `GAP-07` in `scripts/api_rbac_expectations.yaml` and [issue #920](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/920).
 - **A row that records no Cognito `sub` is still keyed on an email address, which can stop matching it.** Scope is resolved from the immutable `sub` first and the `email` claim second, so a divergence no longer lifts the restriction for any row that records a `sub` — see [Resolving *whose* Scope](#resolving-whose-scope--two-keys-and-the-lookup-fails-closed). A row that does not yet record one falls back to the email join and keeps the original exposure: matching is exact, so a difference in letter case is a miss, while Cognito re-applies the external-IdP attribute mapping on every federated sign-in; on a pool created with `ExternalIdPEmailMutable=true` a user can change their own address, where email verification stops them adopting someone else's but not orphaning their own row. The `sub` is recorded by `createUser` and back-filled by the Cognito sync that runs on every Admin `listUsers`, so in practice a row reaches an administrator with one — but a deployment whose administrator has never opened User Management since upgrading has none. The back-fill matches a Cognito account to its row on the recorded `sub`, the exact address, or the **case-folded** address, so it does **not** reach a row whose address changed beyond case before it ever ran; that row keeps the email-only exposure indefinitely. The scan above lists exactly which rows are in that state. See [External IdP integration](./external-idp.md) for the detail and the mitigations.
 - **User deletion removes the table row before the Cognito account**, warning rather than failing if the second step does not complete. The orphaned Cognito account then has no row, which means unrestricted.
 - **`allowedTestSets` has no `sub` join.** The Annotator test-set axis (`idp_common/testset_scope.py`) still resolves its row from `EmailIndex` alone, and from a fallback chain of claims rather than the `email` claim by itself. Its polarity is the opposite of `allowedConfigVersions` — `assert_can_access_test_set` requires an *explicit* scope, so an Annotator whose row cannot be found is **denied** rather than granted everything — which makes a diverged address an availability problem (a locked annotation queue) rather than a widening one. `scripts/tests/test_scope_lookup_fail_closed.py` discovers this module and carries it in `PENDING_FIX` with its two rules named, so the suppression is visible and removable; giving that axis the same two-key lookup is the follow-up.
-- **Knowledge Base queries** do not currently enforce config-version scope. KB results may include documents from out-of-scope config versions.
-- **Agent Companion Chat** analytics queries (Athena) do not filter by config-version scope.
-- **GetDocument API** (direct document access by URL) does not enforce config-version scope at the resolver level. UI navigation hides out-of-scope documents, but direct API access is not blocked.
-- **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before config-version stamping; reprocessing them under a profile in that user's scope restores visibility.
-- **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to a configuration version (via the "Create Config Version" modal), the config-version scope IS enforced — the Author can only target versions within their scope.
+- **Knowledge Base queries** do not currently enforce configuration-profile scope. KB results may include documents from out-of-scope profiles.
+- **Agent Companion Chat** analytics queries (Athena) do not filter by configuration-profile scope.
+- **Documents with no `ConfigVersion`** are now hidden from scoped users rather than shown (the filters fail closed). If a scoped user reports documents disappearing after an upgrade, those documents were processed before profile stamping; reprocessing them under a profile in that user's scope restores visibility.
+- **Custom Model Fine-tuning** jobs are global — not scoped by `allowedConfigVersions`. A scoped Author can see all fine-tuning jobs and create jobs from any test set. However, when applying a custom model to create a configuration profile (via the "Create Configuration Profile with Custom Model" modal), the profile scope IS enforced — the Author can only target profiles within their scope.
 - **A principal with `s3:PutObject` on the Input bucket chooses its own Configuration Profile.** `uploadDocument` and `uploadSampleDocument` now scope-check the **resolved** profile — covering both the `version` argument and the destination prefix once [prefix mappings](configuration-profiles.md) are in use — but that check lives in the API layer, and a write that does not go through the API never reaches it. An S3 replication rule, a partner role, an appliance, or the SDK running with its own credentials picks its own prefix and its own `x-amz-meta-config-version`, and nothing in this product sees the request. Bound this with the IAM policy on whatever writes to that bucket; the admin UI's mapping table is a routing policy, not an ingest boundary.
+- **Discovery uploads are not scoped per object.** The discovery bucket is a shared workspace for Admins and Authors: an upload records no profile or uploader, so `autoDetectSections` checks the profile it reads but not the document key it is given, and `listDiscoveryJobs` lists every discovery job.
 - These limitations are tracked for Phase 3 implementation.

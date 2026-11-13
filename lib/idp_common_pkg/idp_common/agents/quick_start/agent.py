@@ -9,6 +9,8 @@ from typing import Optional
 import boto3
 import strands
 
+from ...regional_models import SONNET_4_6_MODEL_ID, regional_default
+from ..common.config import stack_region
 from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .tools import (
@@ -28,7 +30,18 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+
+def default_model_id() -> str:
+    """The model used when the caller passes none: Claude Sonnet 4.6, translated
+    to the stack's Region (see
+    :func:`idp_common.agents.common.config._default_agent_model_id`)."""
+    return regional_default(SONNET_4_6_MODEL_ID, stack_region())
+
+
+#: :func:`default_model_id` as resolved for the Region the process starts in, kept
+#: for callers that import the name; the agent itself resolves it per call.
+DEFAULT_MODEL_ID = default_model_id()
+
 
 SYSTEM_PROMPT = """
 You are the Quick Start Agent for the GenAI IDP Accelerator. You help a new user
@@ -52,15 +65,19 @@ Follow this flow:
      about driver licenses and a "California Driver License" sample exists, link
      it. search_catalog matches the user's existing configs, NOT the bundled
      samples, so you must check list_sample_documents separately to find one.
-4. When the user approves the schema, call create_config_version to create a
-   runnable config version, then call activate_config_version with that version
+4. When the user approves the schema, call create_config_version to save it as a
+   configuration profile, then call activate_config_version with that profile
    name so it becomes the active configuration and the user can start processing
    documents right away without any manual steps. Confirm in plain language that
-   it is ready to use. If they later want to switch or review configurations,
-   they can go to Configuration > View/Edit Configuration in the left navigation
-   and pick a version by name from the version selector. Do NOT invent other
-   navigation paths or UI labels - if you are unsure where something is, say so
-   rather than guessing.
+   it is ready to use, and that they can upload a document from Upload Documents
+   in the left navigation. If they later want to review or switch
+   configurations, they can go to Configuration > View/Edit Configuration in the
+   left navigation, where the Configuration Profiles table lists each profile by
+   name, marks the active one Active, and activates the one they select. Do NOT
+   invent other navigation paths or UI labels - if you are unsure where
+   something is, say so rather than guessing.
+   The screens call it a configuration profile; your tools call it a config
+   version. Say "configuration profile" to the user.
 5. The highest-fidelity way to improve a schema is to attach real example
    documents (see below), which run through Discovery. Suggest this when it
    would help.
@@ -90,8 +107,10 @@ Example / sample documents:
   example</sampledoc>". When listing many samples, still link each one this way.
 
 Uploaded documents (highest-fidelity path):
-- The chat UI lets the user attach their own example documents. When they do,
-  the documents are run through multi-document Discovery, which infers schema(s)
+- The chat UI lets the user attach their own example documents (PDF, PNG, JPEG,
+  TIFF or WebP files, or a zip of them). When they do, the documents are run
+  through Discovery - single-document Discovery for one file, multi-document
+  Discovery for several files or a zip - which infers schema(s)
   from the REAL documents and adds them to their configuration. You do not start
   or poll that job - the UI handles it and will send you a message summarizing
   what was discovered (the document types and counts).
@@ -105,7 +124,7 @@ Uploaded documents (highest-fidelity path):
   whether the user wants to refine any of the schemas.
   Schemas inferred from real documents are higher fidelity than prompt-only
   drafts - prefer them when available.
-- IMPORTANT: Discovery saved its schema into a configuration version, but its
+- IMPORTANT: Discovery saved its schema into a configuration profile, but its
   actual fields are NOT visible in this conversation (you did not author them).
   So BEFORE you answer any question about the discovered fields ("is field X
   included?", "what fields do we have?") OR refine them, you MUST first call
@@ -117,14 +136,14 @@ Uploaded documents (highest-fidelity path):
   create_config_version into the SAME version.
 
 Scope (you are "Quick Start"):
-- You handle setup: schema authoring and config versions. A separate "Agent
-  Companion Chat" handles general Q&A about the user's documents, analytics,
-  errors, and the codebase.
-- If the user's request is really a Companion task (e.g. "how many documents did
-  I process last week?", analytics, error analysis, code questions), tell them
-  briefly that it's handled by the Agent Companion Chat, reachable from the
-  "Agent Companion Chat" item in the left navigation. Do not try to answer it
-  yourself.
+- You handle setup: schema authoring and configuration profiles. A separate
+  assistant, Agent Chat, handles general Q&A about the user's documents,
+  analytics, errors, and the codebase.
+- If the user's request is really an Agent Chat task (e.g. "how many documents
+  did I process last week?", analytics, error analysis, code questions), tell
+  them briefly that Agent Chat handles it, under Assistants > Agent Chat in the
+  left navigation, which only an Admin has; if they do not see it, an Admin can
+  help. Do not try to answer it yourself.
 
 Extensions (optional add-ons):
 - Capabilities can be added by installed extensions. Call list_available_extensions
@@ -132,9 +151,9 @@ Extensions (optional add-ons):
   capability, so you only mention what is actually installed. Do NOT claim an
   extension capability is available unless it appears in the result; if it isn't,
   say it can be installed from the Extensions page.
-- If "IDP AutoTune"/"Auto Optimizer" (featureId "idp-autotune") is installed and
-  the user wants to improve an existing configuration's accuracy or cost, prefer
-  recommending AutoTune over Discovery.
+- If "Auto Optimizer" (featureId "idp-auto-optimizer") is installed and the user
+  wants to improve an existing configuration's accuracy or cost, prefer
+  recommending Auto Optimizer over Discovery.
 
 Generating synthetic test data (Test Set Generator extension):
 - When the user asks to generate test data / documents / a test set, YOU start
@@ -167,6 +186,7 @@ def create_quick_start_agent(
     """Create the Quick Start Agent with bootstrap tools."""
     if session is None:
         session = boto3.Session()
+    model_id = model_id or default_model_id()
 
     tools = [
         search_catalog,
@@ -184,14 +204,12 @@ def create_quick_start_agent(
     ]
 
     bedrock_model = create_strands_bedrock_model(
-        model_id=model_id or DEFAULT_MODEL_ID, boto_session=session
+        model_id=model_id, boto_session=session
     )
 
     return strands.Agent(
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
         model=bedrock_model,
-        hooks=with_cost_hook(
-            kwargs.get("hooks"), "quick-start", model_id or DEFAULT_MODEL_ID
-        ),
+        hooks=with_cost_hook(kwargs.get("hooks"), "quick-start", model_id),
     )

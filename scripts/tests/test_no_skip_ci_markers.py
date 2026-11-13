@@ -67,8 +67,9 @@ MARKERS_BEFORE_ENFORCED_FROM = 17
 
 #: The fallback range used when :data:`ENFORCED_FROM` is not in the clone, which is the
 #: normal state of a shallow CI checkout once ``develop`` has moved on. This suite runs
-#: in the ``package_tests`` job on both platforms (it is under ``scripts/tests``, which
-#: ``make test-packages-cicd`` runs): GitHub's clones with ``fetch-depth: 0`` and never
+#: in the ``unit_tests`` job on both platforms (it is under ``scripts/tests``, which
+#: ``make coverage-all-cicd`` runs as the ``scripts`` tree): GitHub's clones with
+#: ``fetch-depth: 0`` and never
 #: needs this, while GitLab's runs at the project's shallow depth and eventually will.
 #:
 #: Scanning what the clone has is the only honest option there — failing would red-line

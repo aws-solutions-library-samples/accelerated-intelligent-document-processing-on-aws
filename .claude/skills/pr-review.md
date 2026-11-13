@@ -114,9 +114,109 @@ documentation, testing, code-review).
   - Config schemas under `config_library/`
   - GraphQL schema and generated types in `src/ui/src/graphql/generated/`
   - Lambda handler event/response contracts
+- Quick Start still works? It is a new user's first experience, and it calls
+  surfaces other pages own, so it breaks with no failing test. If the PR changes
+  the agent chat route or stream, configuration profile creation or activation,
+  the discovery upload resolvers, schema authoring or the class catalog, the
+  Welcome page, side navigation or tour, the Test Set Generator extension, the
+  groups a role holds, or the stack wiring Quick Start reads (the
+  `EnableQuickStartWidget` parameter and the installed-features SSM parameter),
+  check in the diff that Quick Start still handles any contract it changes. If it
+  renames a page, navigation item or product term, check that the Quick Start
+  agent's prompt (`lib/idp_common_pkg/idp_common/agents/quick_start/agent.py`),
+  `docs/quick-start.md` and its stories in `scripts/ux_stories.toml` still match.
+  A change the diff shows Quick Start's side cannot handle (a field it reads
+  renamed or removed, a requirement it does not meet) is 🔴; a backward-compatible
+  change needs nothing; one that may break it, or a prompt, page or story that no
+  longer matches, is 🟡. Where the PR description or commit messages are available,
+  also note whether they say how the Quick Start journey was exercised: open it,
+  describe a document, approve the drafted fields, profile created and activated.
+  The paths are in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)
+
+#### Terraform parity
+
+Every release also ships a Terraform module generated from the CloudFormation
+templates (`terraform/translator/`, documented in `docs/terraform.md` and
+`terraform/README.md`), so a template change is a Terraform change too. Check
+this whenever the PR touches `template.yaml`, `nested/**`, `patterns/**`
+templates, `terraform/**`, the Terraform paths of `idp_sdk`/`idp_cli`, or
+runtime code that looks resources up through CloudFormation.
+
+- **The `Terraform Checks` CI context is green.** `make terraform-check`
+  translates every template variant offline, validates the module on every
+  pinned Terraform and OpenTofu version, then runs `make terraform-scan-diff`
+  (below). If it has not run yet, run it on the PR head; it needs no AWS
+  credentials. The translator's own checks run in `make test` (the
+  `terraform/translator` suite) and fail the PR on any of the cases in the next
+  bullets.
+- **A new resource type, or a property shape the translator does not handle,**
+  fails that gate on purpose. The fix belongs in the translator (a mapping in
+  `aws_mappers*.py` or the vendored `awscc` schema subset, refreshed with
+  `scripts/refresh_awscc_schema.py`, and the create-only list, refreshed with
+  `scripts/refresh_create_only.py`), with a translator test. Flag an entry
+  added to `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`,
+  `STABLE_CUSTOM_OUTPUTS`, `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS`
+  in `translate.py`, to a hand mapper's `ignore_changes` (`SpecMapper` in
+  `aws_mappers.py`, or a lifecycle block a mapper class emits itself), or to
+  `completeness.NOT_APPLICABLE`, without a written reason and a test: each one
+  is a place where Terraform deliberately differs from CloudFormation. A
+  mapper's `ignore_changes` is right only for a property the service cannot
+  change after creation, or one CloudFormation never updates; anywhere else it
+  hides a real change.
+- **A property value that does not reach the Terraform.** The completeness check
+  (`idp_tf/completeness.py`) fails when a value in the template appears nowhere
+  in the HCL emitted for its resource, which is how a hardening setting is lost
+  silently. The right fix is almost always the mapper; a `NOT_APPLICABLE` entry
+  must say where the value went instead.
+- **Upgrade safety.** A Terraform upgrade replaces a resource wherever
+  CloudFormation would, and in a few places CloudFormation would not. For a
+  stateful resource (every type in `idp_tf/safety.py`'s `STATEFUL_TYPES`:
+  tables, buckets, user pools, KMS keys, knowledge bases and data sources, the
+  OpenSearch collection, the secret, the vector-store custom resources, and a
+  parameter with a second writer) check each of these and flag a 🔴 where the
+  PR does not handle it:
+  - **a renamed logical ID or nested stack** needs an entry in
+    `terraform/translator/renames.yaml` (`from`, `to`, `since`, `reason`), from
+    which the release's translation writes a `moved` block. A resource moved
+    between nested stacks with its logical ID unchanged is inferred, unless
+    the same logical ID and type exist elsewhere; then it needs an entry too;
+  - **a changed create-only property** (a name, a key schema, an encryption
+    key) replaces the resource under CloudFormation too: ask what happens to the
+    data on upgrade;
+  - **a create-only property fed by a custom resource's output**, directly or
+    through parameters, outputs or another resource. The translator lists every
+    such edge (`customOutputEdges` in `idp-terraform.json`, and a
+    `custom-output edge:` line in its output) and fails on one into a stateful
+    resource unless `STABLE_CUSTOM_OUTPUTS` says why the handler returns the
+    same value on every Update. Read that reason against the handler: it is a
+    claim about the handler's code.
+
+  `idp-cli deploy --terraform` refuses a plan that deletes or replaces any
+  stateful or retained address (`statefulAddresses` and `retainedAddresses`),
+  so a missed case is refused at deploy rather than lost; that is a backstop,
+  and an upgrade a user has to override with
+  `--terraform-allow-replace-stateful` is still a defect in the PR.
+- **Softer than CloudFormation.** `make terraform-scan-diff` runs a pinned
+  `checkov` over the CloudFormation templates and the generated module and fails
+  on a Terraform finding the CloudFormation side does not have. A new entry in
+  `scripts/terraform_scan_baseline.json` needs a reason for that one check on
+  that one resource; prefer fixing the translation.
+- **Runtime lookups through CloudFormation.** Code calling
+  `DescribeStacks`/`ListStackResources`/`DescribeStackResource(s)`, or filtering on
+  the `aws:cloudformation:stack-name` tag, gets no answer from a Terraform
+  deployment unless it goes through `idp_common.utils.terraform_stack`
+  (`install_if_terraform()`), its function is listed in
+  `TERRAFORM_DIRECTORY_READERS`, and it filters on `idp:stack-name` when
+  `IDP_TF_RESOURCE_DIRECTORY` is set (see `src/lambda/data_mart_rollup/`).
+- **New stack parameters** become Terraform variables with the same
+  constraints and appear read-only on the label stack. `NoEcho` parameters must
+  stay `NoEcho`, which keeps them off the label stack.
+- **Docs.** If the change makes a Terraform deployment behave differently from a
+  CloudFormation one, `docs/terraform.md` says so (its "Differences from
+  CloudFormation" section).
 
 ### 3. Good UX?
 - **Frontend** (`src/ui/`):
@@ -147,6 +247,36 @@ documentation, testing, code-review).
 - New Python/npm dependencies are pinned and from trusted sources
 - `cfn-nag` / `checkov` suppressions include `reason:` metadata
 - No new public S3 buckets, public SNS topics, or open security groups
+
+#### Agent capability
+
+Apply this when the change touches any of: a Strands tool or agent, a system or
+user prompt, a model call, an MCP tool or client, a markdown renderer
+(`SafeMarkdown`, `safe-markdown-policy.ts`, anything rendering model output), the web
+UI content policy, or the IAM grants of a role that runs a model. For each surface
+the change touches, answer three questions from the code, not from the PR text:
+
+1. **What can the model read?** Which tools does it hold, what do they reach with
+   whose credentials, and which data is private (documents, reporting tables,
+   another user's chat, logs, CI credentials)?
+2. **What document-derived or external text reaches it?** Document text and page
+   images, extracted values, reporting rows, log lines, discovered configuration,
+   MCP server responses, a PR's own diff. Any of these can carry instructions.
+3. **Where can its output go?** A rendered page that can request remote resources,
+   the Code Interpreter sandbox, an MCP client or server, a PR comment, a saved
+   configuration that a later model reads.
+
+When all three hold at once (untrusted text in, private data readable, an external
+channel out), something in the code must limit each external channel. A system
+prompt instruction is not such a limit.
+
+Then check that `scripts/tests/agent_capabilities.yaml` was updated to match: a new
+tool or agent has an entry, a changed tool updates its entry's `reads`, `inputs` or
+`outputs`, and a removed control is not still named. `test_agent_capabilities.py`
+fails on an unregistered surface or a missing symbol, but it checks declarations,
+not truth: an entry that understates what a model can read passes it. A manifest
+that was not updated when the capability changed is 🟡 at least; a new
+combination of all three with no control and no recorded `finding` is 🔴.
 
 #### SRT security scan (`make srt-scan`)
 
@@ -266,3 +396,13 @@ Flag these immediately when seen in any diff:
 - `Document` model field removed or renamed without a migration path
 - Wildcards in S3 bucket/object ARNs without `reason:` metadata
 - New/edited SRT suppressions in `scripts/srt/issues.json` without justification
+- A template change that renames a logical ID or nested stack of a stateful
+  resource without a `terraform/translator/renames.yaml` entry, or changes a
+  create-only property of one with nothing said about upgrading existing
+  Terraform deployments
+- A new `AWSCC_PROPERTY_FIXUPS`, `LIFECYCLE_OVERRIDES`, `STABLE_CUSTOM_OUTPUTS`,
+  `PASS_THROUGH_ATTRS` or `TERRAFORM_DIRECTORY_READERS` entry, a hand mapper's
+  `ignore_changes`, or a `completeness.NOT_APPLICABLE` or
+  `scripts/terraform_scan_baseline.json` entry, without a reason and a test
+- Runtime code that walks the stack through CloudFormation APIs or the
+  `aws:cloudformation:stack-name` tag without the Terraform resource-directory path

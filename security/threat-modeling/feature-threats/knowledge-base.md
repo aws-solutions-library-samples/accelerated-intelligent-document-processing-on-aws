@@ -4,8 +4,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.0 |
-| **Last Updated** | 2026-07-28 |
+| **Document Version** | 3.1 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.3 |
 | **Feature** | Bedrock Knowledge Base (RAG Integration) |
 | **Classification** | Internal |
@@ -54,6 +54,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | S3 KB Source Bucket, Bedrock Knowledge Base, OpenSearch Serverless |
 | **Mitigations** | RBAC (Admin-only KB document management), document review before sync, KB versioning, ability to re-sync from clean source, evaluation framework to detect accuracy changes |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### KB.T02: RAG Context Injection
 
@@ -68,6 +69,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Bedrock Knowledge Base, Processing Pipeline Lambdas |
 | **Mitigations** | KB content sanitization, prompt engineering to isolate retrieved context from instructions, output validation, Bedrock Guardrails |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### KB.T03: OpenSearch Serverless Data Exposure
 
@@ -81,7 +83,8 @@ flowchart TD
 | **Likelihood** | Low |
 | **Severity** | Medium |
 | **Affected Components** | OpenSearch Serverless collection |
-| **Mitigations** | OpenSearch Serverless encryption at rest and in transit, IAM-based access policies, network policies restricting access to VPC endpoints, no public access |
+| **Mitigations** | Under `TenantIsolationMode=Strict` or an external `TenantGrantSource`, Knowledge Base queries are Admin-only (`query_knowledgebase_resolver`), because retrieval cannot be confined to one tenant (TEN.T01). With S3 Vectors, the vector manager can pass only the knowledge base's own service role and only to Bedrock (`S3VectorManagerPassRolePolicy` in `nested/bedrockkb/template.yaml`); before 0.6.14 it held `iam:PassRole` on every role in the account. OpenSearch Serverless encryption at rest and in transit, IAM-based access policies, network policies restricting access to VPC endpoints, no public access |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### KB.T04: Excessive RAG Retrieval
 
@@ -96,6 +99,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | Bedrock Knowledge Base, OpenSearch Serverless, Processing Pipeline |
 | **Mitigations** | RAG retrieval result limits (top-K), relevance score thresholds, query scoping, token budget management |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

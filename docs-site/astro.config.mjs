@@ -46,6 +46,8 @@ export default defineConfig({
             { label: "Quick Start", slug: "quick-start" },
             { label: "Deployment", slug: "deployment" },
             { label: "AI-Guided Deployment Walkthrough", slug: "idp-deployment-ai-guide" },
+            { label: "Terraform Deployment (Experimental)", slug: "terraform" },
+            { label: "Migrating from genai-idp-terraform", slug: "terraform-migration" },
             { label: "Headless Deployment", slug: "headless-deployment" },
             { label: "API Gateway Hosting", slug: "apigateway-hosting" },
             { label: "Private Network Deployment", slug: "deployment-private-network" },
@@ -60,6 +62,7 @@ export default defineConfig({
             // so the nav does not read as two competing pages. sync-sidebar.mjs
             // adds any unlisted doc automatically, so leaving it out entirely
             // just means it lands in "New & Uncategorized" on the next run.
+            { label: "Multi-Tenant Isolation", slug: "multi-tenancy" },
             {
               label: "Configuration Versions (renamed)",
               slug: "configuration-versions",

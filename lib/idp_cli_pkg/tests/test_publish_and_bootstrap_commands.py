@@ -103,6 +103,7 @@ class TestPublishOptionTranslation:
             "no_validate": False,
             "verbose": False,
             "lint": True,
+            "terraform": False,
         }
 
     def test_every_flag_reaches_the_build_call(self, runner, tmp_path):
@@ -130,6 +131,7 @@ class TestPublishOptionTranslation:
                     "--no-validate",
                     "--verbose",
                     "--no-lint",
+                    "--terraform",
                 ],
             )
 
@@ -148,6 +150,7 @@ class TestPublishOptionTranslation:
             "no_validate": True,
             "verbose": True,
             "lint": False,
+            "terraform": True,
         }
 
     def test_headless_and_govcloud_together_are_accepted(self, runner, tmp_path):
@@ -232,6 +235,9 @@ class TestPublishResultHandling:
             region="us-east-1",
             headless_template_url="https://s3/idp-headless.yaml",
             govcloud_template_url="https://s3/idp-govcloud.yaml",
+            terraform_module_url=None,
+            terraform_pointer_url=None,
+            terraform_variant_modules={},
         )
 
     def test_a_missing_template_url_becomes_an_empty_string_not_none(
@@ -847,7 +853,7 @@ class TestBootstrapStackMode:
 
     def _patched(self, run_bootstrap_result, *, config_table="IDP-Configuration"):
         client = MagicMock()
-        client.discovery._get_config_table.return_value = config_table
+        client.config._configure_config_env.return_value = config_table
         return (
             patch("idp_sdk.IDPClient", return_value=client),
             patch(
@@ -926,7 +932,10 @@ class TestBootstrapStackMode:
             )
 
         assert result.exit_code == 0, result.output
-        client.discovery._get_config_table.assert_called_once_with("IDP")
+        # The bucket-and-table helper, not the table-only lookup: a bootstrap save
+        # with no CONFIGURATION_BUCKET records no revision (#1778).
+        client.config._configure_config_env.assert_called_once_with("IDP")
+        client.discovery._get_config_table.assert_not_called()
         import os
 
         assert os.environ["CONFIGURATION_TABLE_NAME"] == "IDP-Config-abc123"
@@ -994,7 +1003,7 @@ class TestBootstrapStackMode:
 
     def test_an_exception_exits_one_with_the_message(self, runner):
         client = MagicMock()
-        client.discovery._get_config_table.side_effect = RuntimeError(
+        client.config._configure_config_env.side_effect = RuntimeError(
             "stack IDP not found"
         )
         with (

@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.bedrock import format_prompt, is_openai_responses_model
+from idp_common.config import without_prompt_comments
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     ID_FIELD,
@@ -210,6 +211,17 @@ class ExtractionResult(BaseModel):
     ``extraction_multi_instance_suspected``."""
 
 
+_ESCALATION_FAILED_PREFIX = "escalation call failed: "
+
+ESCALATION_METERING_CONTEXT = "ExtractionEscalation"
+"""Metering context of every validation-escalation model call, in both extraction
+modes, so a cost report shows escalation on one row. Simple mode used
+``Extraction-Escalation`` before this constant existed, so reporting rows stored
+by earlier releases carry that spelling. A reader that has to group escalation
+must accept both; the shipped readers match the ``Extraction`` prefix instead.
+"""
+
+
 def _escalation_failure_reason(exc: BaseException) -> str:
     """One bounded line for ``escalation_decision`` when the escalation call raised.
 
@@ -222,7 +234,7 @@ def _escalation_failure_reason(exc: BaseException) -> str:
     """
     lines = (str(exc) or "").strip().splitlines()
     text = lines[0] if lines else ""
-    return f"escalation call failed: {type(exc).__name__}: {text[:160]}"
+    return f"{_ESCALATION_FAILED_PREFIX}{type(exc).__name__}: {text[:160]}"
 
 
 class ExtractionService:
@@ -248,7 +260,14 @@ class ExtractionService:
         else:
             config_model = config
 
-        self.config = config_model
+        # A configuration handed in directly (not read through
+        # ConfigurationReader) may still carry {# ... #} prompt comments. The
+        # prompts are split on {FEW_SHOT_EXAMPLES} and {DOCUMENT_IMAGE} before
+        # format_prompt sees them, so a placeholder named inside a comment would
+        # split the prompt; remove the comments here, once, for every prompt this
+        # service sends (task, system, confidence, bbox, per-class overrides). A
+        # configuration without comments is kept as the same object.
+        self.config = without_prompt_comments(config_model, as_model=True)
         self.region = region or os.environ.get("AWS_REGION")
 
         # Instance variables for prompt context
@@ -4955,6 +4974,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "values are stored as extracted and the document's status is "
                     "unchanged."
                 )
+            elif escalated and str(
+                validation.get("escalation_decision") or ""
+            ).startswith(_ESCALATION_FAILED_PREFIX):
+                # Escalation raised: in the model call (an escalation model the
+                # agentic path cannot call, say), or while reading its response.
+                # Either way no escalated value was kept. Saying it "did not
+                # resolve it" reported that as a model whose answer was judged,
+                # with the reason only in section metadata.
+                consequence = (
+                    f" Escalation to "
+                    f"{validation.get('escalation_model') or 'the escalation model'}"
+                    f" failed ({validation.get('escalation_decision')}), so"
+                    " nothing from it was kept; the values are stored as extracted."
+                )
             elif escalated:
                 consequence = (
                     " Re-extraction with the escalation model did not resolve it;"
@@ -4983,6 +5016,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         "error_count": error_count,
                         "fail_action": fail_action,
                         "escalated": escalated,
+                        "escalation_decision": validation.get("escalation_decision"),
                         # The first few concrete messages, so the issue is
                         # actionable without opening the section result JSON.
                         "errors": (validation.get("errors") or [])[:5],
@@ -5877,6 +5911,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         retry_content = [*content, {"text": corrective}]
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a call that was made: a response that then fails to parse was still
+        # billed.
+        metering: dict[str, Any] = {}
         try:
             response = bedrock.invoke_model(
                 model_id=escalation_model,
@@ -5886,10 +5924,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 top_k=self.config.extraction.top_k,
                 top_p=self.config.extraction.top_p,
                 max_tokens=None,
-                context="Extraction-Escalation",
+                context=ESCALATION_METERING_CONTEXT,
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
+            metering = response.get("metering", {}) or {}
             text = bedrock.extract_text_from_response(dict(response))
             corrected = json.loads(extract_json_from_text(text))
             corrected, ok, _count, _rec = self._normalize_list_result(
@@ -5903,7 +5942,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5923,7 +5962,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5959,7 +5998,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     decision,
                 )
@@ -5972,10 +6011,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 len(report.errors),
                 len(new_report.errors),
             )
-            return merged, new_report, response.get("metering", {}), True, decision
+            return merged, new_report, metering, True, decision
         except Exception as e:  # noqa: BLE001 - escalation is best-effort
             logger.warning("Simple-mode escalation failed: %s", e)
-            return extracted_fields, report, {}, False, _escalation_failure_reason(e)
+            return (
+                extracted_fields,
+                report,
+                metering,
+                False,
+                _escalation_failure_reason(e),
+            )
 
     def _validate_and_maybe_escalate(
         self,
@@ -6139,6 +6184,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             + full_report.agent_feedback()
         )
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a re-extraction that completed before a later step raised.
+        metering: dict[str, Any] = {}
         try:
             if scope == "field-subset":
                 # Nullable leaves for the same reason as the primary transport model
@@ -6179,7 +6227,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
+                    strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
                 )
@@ -6204,7 +6253,8 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
+                    strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
                 )
@@ -6285,11 +6335,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extra={"error": str(e)},
                 exc_info=True,
             )
+            # A re-extraction that raised carries the usage of the agent turns it
+            # completed on the exception (#1923). Empty when the raise came after
+            # ``structured_output`` returned, whose metering is already bound above.
+            metering = utils.merge_metering_data(metering, utils.failure_metering(e))
             return (
                 extracted_fields,
                 structured_data,
                 full_report,
-                {},
+                metering,
                 scope,
                 False,
                 _escalation_failure_reason(e),
@@ -6433,8 +6487,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if use_agentic and is_openai_responses_model(model_id):
             raise ValueError(
                 f"OpenAI Responses model '{model_id}' is not compatible with agentic "
-                "extraction (extraction.agentic.enabled=true). Set agentic.enabled=false "
-                "or choose a non-OpenAI model. (This is also enforced by "
+                "extraction (extraction.mode: advanced). Set extraction.mode to "
+                "'simple' or choose a model outside the OpenAI GPT-5.x Responses "
+                "family; OpenAI GPT-6 Astra is served through Converse and supports "
+                "agentic extraction. (This is also enforced by "
                 "'idp-cli config-validate'.)"
             )
 
@@ -6749,6 +6805,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     attach_page_images=False,
                     config=self.config,
                     context="Extraction",
+                    strands_throttle_retries=False,
                     checkpoint_callback=self._checkpoint_callback,
                     checkpoint_buffer_data=checkpoint_buffer,
                     custom_instruction=custom_instruction,
@@ -7344,6 +7401,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         document: Document,
         section: Any,
         section_info: SectionInfo,
+        alert_rows_shard_local: bool = False,
     ) -> None:
         """Ground the merged in-shard assessment and stage it for output.
 
@@ -7373,6 +7431,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # integrated large-list coverage reaches 100% like the separate path
         # (which retries inside assess_results_batched). No-op when nothing is
         # missing. Best-effort: never fails extraction.
+        # Whether the alert surface's row indexes are GLOBAL. They are not when
+        # the surface is the shards' own alerts concatenated (the shard merge
+        # marks it): each row index then counts from its shard's first row
+        # (upstream #813), so it cannot be matched against the merged data. The
+        # retry below rebuilds the surface from the merged assessment, which
+        # makes it global again.
+        alert_rows_are_global = not alert_rows_shard_local
         if self._integrated_assessment_enabled():
             try:
                 merged_assessment, regenerated_alerts, split_stats = (
@@ -7388,6 +7453,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 # extends) the incoming surface: extending would re-introduce
                 # the slice-local duplicates this exists to fix (upstream #813).
                 merged_assessment_alerts = regenerated_alerts
+                alert_rows_are_global = True
                 # Surface adaptive batch-splitting activity (only when the
                 # confidence model truncated and batches had to shrink).
                 from idp_common.assessment.batching import split_stats_are_notable
@@ -7444,8 +7510,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         # the same non-indexed finding can arrive several times. Idempotent;
         # imported lazily like the other batching imports in this file.
         from idp_common.assessment.batching import dedupe_alerts
+        from idp_common.assessment.presence import exclude_absent_value_alerts
 
-        section.confidence_threshold_alerts = dedupe_alerts(merged_assessment_alerts)
+        # An absent value raises no confidence alert (#1527) — the same filter the
+        # standalone Assessment step applies where it stores its alerts. Its score
+        # stays in explainability_info; a required absent field is listed in
+        # missing_required_fields by _save_results instead.
+        section.confidence_threshold_alerts = dedupe_alerts(
+            exclude_absent_value_alerts(
+                merged_assessment_alerts,
+                grounded,
+                extracted_fields,
+                row_indexes_are_global=alert_rows_are_global,
+            )
+        )
         output_metadata["assessment_integrated_in_extraction"] = True
         # Counts the list that was actually STORED. Reading the pre-dedupe list
         # here let the recorded count contradict the data next to it — a section
@@ -7729,6 +7807,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         shard_conflicts = None
         merged_assessment = None
         merged_assessment_alerts = None
+        alert_rows_shard_local = False
         assessment_split_stats = None
         # One of this section's agent runs was cut off at the model's output ceiling
         # and its already-validated extraction was salvaged from agent state rather
@@ -7753,6 +7832,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             merged_assessment = result.metering.pop("_merged_assessment", None)
             merged_assessment_alerts = result.metering.pop(
                 "_merged_assessment_alerts", None
+            )
+            alert_rows_shard_local = bool(
+                result.metering.pop("_merged_assessment_alerts_shard_local", False)
             )
             # Adaptive batch-splitting activity from the in-shard assessment
             # (present only when the confidence model truncated its output and
@@ -8017,6 +8099,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 document=document,
                 section=section,
                 section_info=section_info,
+                alert_rows_shard_local=alert_rows_shard_local,
             )
 
         # Structured issues (1.4) + completeness gate (1.3): translate the
@@ -8048,6 +8131,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 geometry_available=self._ocr_geometry_available,
             )
             section_issues = ladder_issues + audit_issues
+
+        # Required fields this section's extraction left absent (#1527), for
+        # every confidence mode — including none, since it is a property of the
+        # values and the class schema. With integrated confidence the entries
+        # carry the field's score; with `separate` the Assessment step rebuilds
+        # this list from the same values once it has scores.
+        from idp_common.assessment.presence import collect_missing_required_fields
+
+        section.missing_required_fields = collect_missing_required_fields(
+            fields_for_output,
+            self._class_schema,
+            self._grounded_assessment if merged_assessment else None,
+        )
 
         # Extraction-completeness issue (BOTH modes): flag empty / suspiciously
         # sparse extractions — e.g. a large list schema field that came back
@@ -8288,6 +8384,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # cause stays the sentence a reader can act on.
             raise
         except Exception as e:
+            # Usage of the model calls the section made before it failed, carried on
+            # the exception because a raise returns nothing (#1923). Merged before
+            # any branch below re-raises under another class.
+            failed_run_metering = utils.failure_metering(e)
+            if failed_run_metering:
+                document.metering = utils.merge_metering_data(
+                    document.metering, failed_run_metering
+                )
             from idp_common.utils.bedrock_utils import (
                 is_image_request_rejection,
                 is_input_token_overflow,
@@ -9024,6 +9128,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         section = self._validate_and_find_section(document, section_id)
         if not section:
             raise ValueError(f"Section {section_id} not found")
+        # A section that already has extraction output (a reprocess) is planned
+        # single-pass, which routes it to the extraction step and its skip branch.
+        # Sharding it would extract it again from scratch: the shard runtime has
+        # no skip of its own (#1686). Same predicate as the extraction handler's.
+        if section.extraction_result_uri and section.extraction_result_uri.strip():
+            logger.info(
+                "plan_section_shards: section %s already has extraction output "
+                "(%s) - single-pass so the extraction step can skip it",
+                section_id,
+                section.extraction_result_uri,
+            )
+            return {"shard_mode": False, "num_shards": 0, "shards": []}
         section_info = self._prepare_section_info(document, section)
         # Diagnostic: what the plan step actually sees for this section — page
         # count on the section, on the resolved section_info, and how many pages

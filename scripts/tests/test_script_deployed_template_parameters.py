@@ -205,6 +205,22 @@ RUNTIME_TEMPLATE_DEPLOYERS = [
         ("MainStackName", "FeatureBucket"),
         id="feature_cli.deploy_cmd→published-extension",
     ),
+    pytest.param(
+        "scripts/security/live_checks/verify_tenant_isolation.py",
+        # Target: the access point template `client.tenancy.generate_policies`
+        # builds for the run. It declares no Parameters, so the stack is created
+        # with none.
+        (),
+        id="verify_tenant_isolation→generated-access-points",
+    ),
+    pytest.param(
+        "lib/idp_sdk/idp_sdk/operations/tenancy.py",
+        # Target: the same generated access point template, deployed by
+        # `client.tenancy.deploy_policies` (`idp-cli tenancy generate-policies
+        # --deploy`). It declares no Parameters, and the call refuses one that does.
+        (),
+        id="tenancy.deploy_policies→generated-access-points",
+    ),
 ]
 
 
@@ -290,6 +306,18 @@ def _required_parameters(rel_path: str) -> set[str]:
     }
 
 
+def _derived_terraform_pre_stack_parameters(rel_path: str) -> dict[str, dict]:
+    import importlib
+    import sys
+
+    sdlc = str(REPO_ROOT / "scripts" / "sdlc")
+    if sdlc not in sys.path:
+        sys.path.insert(0, sdlc)
+    module = importlib.import_module("codebuild_deployment")
+    text = (REPO_ROOT / rel_path).read_text()
+    return module.terraform_deploy_role_template(text)["Parameters"]
+
+
 def _literal_parameter_keys(rel_path: str) -> set[str]:
     """String literals used as a "ParameterKey" value anywhere in the file."""
     tree = ast.parse((REPO_ROOT / rel_path).read_text())
@@ -357,6 +385,12 @@ def test_supplied_parameters_exist_in_template(
         )
 
     declared = set(_template_parameters(template))
+    if script == "scripts/sdlc/codebuild_deployment.py":
+        # A Terraform run deploys the same pre-stack template with a sibling role
+        # added, derived at run time (terraform_deploy_role_template), and that
+        # derived template declares one more parameter. Computed by calling the
+        # derivation rather than listed, so a name it stops declaring fails here.
+        declared |= set(_derived_terraform_pre_stack_parameters(template))
     unknown = _literal_parameter_keys(script) - declared
     assert not unknown, (
         f"{script} passes {sorted(unknown)} to {template}, which does not declare "

@@ -137,22 +137,33 @@ $env:UX_TEST_AWS_ACCOUNT_ID = '<12 digits>'
 
 **`UX_TEST_PERSONAS`** is base64 of a JSON object keyed by Cognito group, each entry
 `{"username": …, "password": …}`, holding every group the flows sign in as. The
-catalogue's personas use Admin, Author and Viewer; a flow whose group has no entry is
-`not_run (persona)`. For **your own stack** instead of `idp-ux-nightly`, create one
-long-lived persona per group **in your own terminal**, never through this session,
-because the command prints the password:
+catalogue's personas use Admin, Author, Viewer and Annotator, and the
+profile-limited Annotator signs in with an entry of its own, `Annotator-scoped`,
+which its persona names as `credentials`. A flow whose entry is missing is
+`not_run (persona)`; it is never signed in with its group's entry instead. For
+**your own stack** instead of `idp-ux-nightly`, create one long-lived persona per
+entry **in your own terminal**, never through this session, because the command
+prints the password:
 
 ```bash
 python3 scripts/ux_test_session.py setup <stack> --group Author --long-lived --region <region>
+python3 scripts/ux_test_session.py setup <stack> --group Annotator --long-lived --region <region>
+python3 scripts/ux_test_session.py setup <stack> --group Annotator --long-lived \
+    --key Annotator-scoped --profiles <profile> --region <region>
 ```
 
 ```powershell
 py scripts\ux_test_session.py setup <stack> --group Author --long-lived --region <region>
+py scripts\ux_test_session.py setup <stack> --group Annotator --long-lived --region <region>
+py scripts\ux_test_session.py setup <stack> --group Annotator --long-lived --key Annotator-scoped --profiles <profile> --region <region>
 ```
 
 Merge each printed `persona` entry into the JSON object, base64 it, and export that.
-Annotator is refused until `--long-lived` supports it. A persona is deleted only
-deliberately, with
+An Annotator, and any persona given `--profiles`, is created through the stack's own
+user management, which writes the users-table row an Annotator and a profile limit
+are read from. That path applies the stack's `AllowedSignUpEmailDomain`, so on a
+stack that sets one, the persona's `example.invalid` address is refused and the
+command stops naming the domain. A persona is deleted only deliberately, with
 `python3 scripts/ux_test_session.py teardown <stack> --email <email> --long-lived --region <region>`.
 
 **Credentials by host.** An SSO or IAM-user session cannot re-assume its own role,
@@ -475,14 +486,37 @@ of its earlier story jobs whether they posted or not, and past that one reply po
 `make ai-ux-test-stories-local MR=<iid>`. The `ai_ux_test_stories_nightly`
 shards run the nightly set against `idp-ux-nightly` after the deploy, and
 `ai_ux_test_stories_digest` writes a digest and, in the scheduled pipeline, compares the
-night with the scheduled nights before it and posts a one-line summary to Slack when
-`UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set. A bad result counts as a regression when a
-second attempt confirms it; one whose confirming re-run did not fit in the night's
-budget or time is listed too, marked unconfirmed in the digest and on Slack, and the
-record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
+night with the scheduled nights before it and posts it to Slack when
+`UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set: a Workflow Builder webhook of its own, never
+the integration build's `SLACK_WEBHOOK_URL`. The shards read the review stack's state
+from the integration build's `codebuild_logs.txt`, the row under the last review-stack
+header in its final MiB before the line that starts the build's Bedrock narrative, which
+is model output and never read, and a night is compared only when that row says the
+stack was updated or already up to date and every audit was clean. A bad result counts
+as a regression when a second attempt confirms it; one whose confirming re-run did not
+fit in the night's budget or time is listed too, marked unconfirmed in the digest and on
+Slack, and the record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
 `nightly` keeps only that kind, and any other value, `off` among them, turns all three
-off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly
-set. Every job is `allow_failure` and none is a gate.
+off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly set.
+Every job is `allow_failure` and none is a gate.
+
+**Reading the Slack post.** The status is the night's outcome from its stories:
+`✅ 13 of 13 passed`; `❌ 2 regressions`, for confirmed regressions only;
+`⚠️ harness problem`, for a harness error or an unclean audit; `⚠️ 11 of 13 passed`,
+when a flow did not pass and none is a confirmed regression; or `⏭️ not run`. Once no
+night has been compared for four nights in a row, tonight included and a night with no
+readable digest counted as not compared, the tally carries a warning instead, as
+`⚠️ 13 of 13 passed, not compared for 4 nights`, because in such a run no regression can
+be flagged. The summary lists every flow by its catalogue title and persona, one icon
+per outcome (✅ done, 🚫 refused as the docs say, ❌ missed the docs' expectation, ⚠️ did
+not finish, 🛠️ harness error, ⏭️ not run): confirmed regressions first, then the other
+flows that did not pass, each saying why in a few words, then the passes with their
+steps. A night that could not be compared, in a shorter run, keeps its ✅ when every
+story passed and says why on its own line, such as "Not compared with earlier nights:
+the review stack's update could not be confirmed." It closes with what the night was
+compared with, its hesitations and dead ends, and its spend against the night's cap, and
+stays within 2,000 characters of plain text by folding passes into "and N more passed"
+before any failure is cut.
 
 ## Writing a story
 
@@ -530,14 +564,27 @@ and never fewer than 30; looks are free up to twice the budget.
 **Personas and expectations (`as`).** Contrast roles only where the permission
 matrix in [`docs/rbac.md`](../../docs/rbac.md#permission-matrix) differs between their
 groups, and name that row in `rbac`: a ratchet checks every persona's cell against
-its expectation (✅ is `allowed`, ❌ is `refused` or `not_offered`). The intent of a
-`refused` or `not_offered` persona must not be completable through any row its group
-is allowed, because a `not_refused` result is a blocker finding and the ratchet
-reads only the named row. Keep one story every role is allowed
+its expectation (✅ is `allowed` with or without its footnote marks `*`, `†` and `‡`,
+❌ is `refused` or `not_offered`). The intent of a `refused` or `not_offered` persona
+must not be completable through any row its group is allowed, because a
+`not_refused` result is a blocker finding and the ratchet reads only the named row.
+Keep one story every role is allowed
 (`read-a-processed-document`): when it fails, the stack is at fault, not a role. A
 correct refusal is not a defect; `refused_as_expected` is that persona's good
 verdict. `mr_as` names the personas an MR tries first; it defaults to the first in
-`as`.
+`as`. The matrix has a column for every group a persona can sign in as, Annotator
+included, and the ratchet holds every persona to its group's cell alike. Its
+Annotator cells say what the REST API admits of the feature as a whole, and an
+Annotator-only console offers less, as the matrix's row notes say: a row such as
+**List documents** is ✅ for an Annotator and has no page in that console, so it is
+the wrong row for an Annotator story, which the ratchet would hold to `allowed`. The
+review stories name **Work Production queues** or **Work Test Studio queues**.
+
+**A persona's own account (`credentials`).** A persona signs in with its group's
+`UX_TEST_PERSONAS` entry unless it names another, as the profile-limited Annotator
+does with `credentials = "Annotator-scoped"`. Name one when the persona's account
+differs from its group's, such as one limited to a profile, and create it with
+`ux_test_session.py setup … --key <that key>`. It changes no story's series.
 
 **Preconditions.** `needs` names fixtures from `[fixtures]`, which the review stack
 must hold (see [The review stack](#the-review-stack-once-by-its-operator)), and
@@ -617,9 +664,13 @@ link, breadcrumbs included, and one with no address, with `#`, to the page it is
 or in a dialog, is judged by its name like any control. On a page whose editor
 may save its own edits, which the review workspace marks with Discard Changes while
 it is editable (and an older deployment with Save draft), it refuses every edit:
-typing, filling, dragging and ticking. Every annotation frame and the configuration
-editor show Discard Changes too, so edits are refused there as well, though nothing
-there is saved without a Save the guard already refuses. It cannot see an unnamed
+typing, filling, dragging and ticking. On such a page it also refuses Edit Page
+Grouping, because on the edit screen of a review-queue item nobody holds, opening
+the grouping board claims the item for the Admin first, as a first save does; from
+a document page's More Actions it opens the board and is let through. Every
+annotation frame and the configuration editor show Discard Changes too, so edits
+are refused there as well, though nothing there is saved without a Save the guard
+already refuses. It cannot see an unnamed
 control anywhere else, a save an edit sets off on a page without that control, a
 full-page form submitted by a Create, Add, New, Assign or Move button (those words
 are refused only inside a dialog, because outside one they open a form or a
@@ -634,16 +685,24 @@ through, because it changes nothing but that persona's own read state. A
 and does not join a tier.
 `scripts/tests/test_ux_story_relay.py` maps every mutation the web UI declares to
 the controls that send it and checks the guard refuses each, so a UI change that
-adds one fails there until its control is accounted for.
+adds one fails there until its control is accounted for. It also finds every call
+in the web UI that claims an item, a callback such as the grouping board's
+`beforeOpen` included, and fails on one that is not mapped to the controls that
+reach it; which control reaches a call is written by hand, since the suite cannot
+follow a handler through the props it is passed down. The MR UX test's review
+runs behind the same guard (`scripts/ux_runner/review_relay.py`), so that one check
+covers both.
 
 ## The review stack (once, by its operator)
 
 `idp-ux-nightly` holds shipped example data only, because frames and screenshots are
 not redacted. Its operator, not a story run, does these once:
 
-1. **Personas.** Long-lived Admin, Author and Viewer personas, created with
-   `scripts/ux_test_session.py setup idp-ux-nightly --group <group> --long-lived --region us-east-1`
-   and merged into the masked CI variable `UX_TEST_PERSONAS`, which is stored at
+1. **Personas.** Long-lived Admin, Author, Viewer, Annotator and Reviewer personas, created with
+   `scripts/ux_test_session.py setup idp-ux-nightly --group <group> --long-lived --region us-east-1`,
+   and a second Annotator limited to the HITL fixture profile, created with
+   `--group Annotator --long-lived --key Annotator-scoped --profiles ux-fixture-hitl`,
+   all merged into the masked CI variable `UX_TEST_PERSONAS`, which is stored at
    environment scope `ux-review`. The story run jobs declare that environment, as
    `ai_ux_test` does, and receive nothing stored at another scope.
 2. **The web URL.** A `UX_TEST_WEB_URL=<the stack's ApplicationWebURL>` line in the
@@ -656,10 +715,17 @@ not redacted. Its operator, not a story run, does these once:
 | Fixture | Seed it | Read by |
 |---|---|---|
 | `complete-document` | `idp-cli process --stack-name idp-ux-nightly --dir samples --file-pattern lending_package.pdf --no-recursive --batch-id ux-fixture-complete --monitor` | stories that open a processed document |
-| `reprocessed-document` | the same with `--batch-id ux-fixture-versions`, then `idp-cli reprocess --stack-name idp-ux-nightly --step extraction --document-ids ux-fixture-versions/lending_package.pdf --force --monitor`; `idp-cli list-versions --stack-name idp-ux-nightly --document-id ux-fixture-versions/lending_package.pdf` then lists two versions | `read-document-history` |
-| `evaluated-document` and `test-run-documents` | the same with `--batch-id ux-fixture-labeled`, then `idp-cli use-as-baseline --stack-name idp-ux-nightly --document-id ux-fixture-labeled/lending_package.pdf`; create a test set from it on Test Studio's **Test Sets** tab (**Create test set** → **From files already in a bucket**, the input bucket, pattern `ux-fixture-labeled/*.pdf`), then run it with `idp-cli process --stack-name idp-ux-nightly --test-set <its name> --monitor` | `judge-field-accuracy`, `tell-production-from-test` |
+| `reprocessed-document` | the same with `--batch-id ux-fixture-versions`, then, once it is `COMPLETED`, `idp-cli reprocess --stack-name idp-ux-nightly --step extraction --document-ids ux-fixture-versions/lending_package.pdf --force --monitor`. After the reprocess finishes, `idp-cli list-versions --stack-name idp-ux-nightly --document-id ux-fixture-versions/lending_package.pdf` must list two versions; with one, the reprocess did not run, so run it again | `read-document-history` |
+| `evaluated-document` and `test-run-documents` | the same with `--batch-id ux-fixture-labeled`, then `idp-cli use-as-baseline --stack-name idp-ux-nightly --document-id ux-fixture-labeled/lending_package.pdf`; create a test set from it on Test Studio's **Test Sets** tab (**Create test set** → **From files already in a bucket**, the input bucket, pattern `ux-fixture-labeled/*.pdf`), then run it with `idp-cli process --stack-name idp-ux-nightly --test-set <test set ID> --monitor`, where the ID is the set's name lower-cased with spaces as hyphens (`UX Fixture Labeled` → `ux-fixture-labeled`). The fixture is ready when the document has its baseline and the test run is finished on Test Studio's **Test Executions** tab | `judge-field-accuracy`, `tell-production-from-test` |
 | `unlabeled-documents` | the same with `--batch-id ux-fixture-unlabeled`, and no baseline | `start-test-set-from-unlabeled` |
-| `feature-platform` | the platform is on by default; install **Sample: Health Insurance Review** from **Extensions → Browse catalog**. Its pipeline hook is what `change-hook-update-setting` looks for, and installing it never changes the active configuration | the two extension stories |
+| `feature-platform` | the platform is on by default; install **Sample: Health Insurance Review** from **Extensions → Browse catalog**. Installing it never changes the active configuration: its pipeline hook is in the configuration profile `sample-health-insurance-review`, which is not active, at `rule_validation.postHook`, and that profile is where `change-hook-update-setting` looks for it | the two extension stories |
+| `review-queue-item` | a profile with HITL on: `idp-cli config-download --stack-name idp-ux-nightly --config-profile default --format full --output hitl.yaml`, set `hitl.enabled: true` and `hitl.confidence_threshold: 0.99` so the sample raises alerts, and `idp-cli config-upload --stack-name idp-ux-nightly --config-file hitl.yaml --config-profile ux-fixture-hitl`; list both Annotator personas in the Default queue's **Eligible Annotators** (**Review Studio › Review Management**, the queue's **Settings**); then `idp-cli process --stack-name idp-ux-nightly --dir samples --file-pattern lending_package.pdf --no-recursive --batch-id ux-fixture-hitl-pending --config-profile ux-fixture-hitl`, which leaves it `HITL_IN_PROGRESS`. `default` keeps HITL off, so no other story's document is held | `find-my-review-work`, `take-a-review`, `assign-review-work` |
+| `assigned-review-item` | the same with `--batch-id ux-fixture-hitl-assigned`, then **Assign to…** the Annotator persona from the Default queue's page | `why-is-it-in-review`, `finish-a-review`, `hand-back-a-review`, `open-an-assignment`, `who-is-reviewing` |
+| `out-of-scope-review-item` | a second HITL profile, `ux-fixture-hitl-other`, uploaded the same way, and the same sample with `--batch-id ux-fixture-hitl-other --config-profile ux-fixture-hitl-other`: a queued document outside `Annotator-scoped`'s limit. No verdict can fail on it: a limited Annotator shown it reaches the same verdict, and the leak surfaces only as a **Docs vs screen** note, because the docs say such an item is not listed | the profile-limited Annotator's flows |
+| `test-set-review-queue` | a labelled test set, such as the one created from `ux-fixture-labeled` above, with at least one document nobody is assigned; list the Annotator persona in that set's queue's **Settings** › **Eligible Annotators**, in **Review Management**'s Test Studio queues | `check-test-labels` |
+
+The HITL stories stop before they claim, assign, skip or finish anything, so these
+documents stay in review between runs.
 
 A flow that finds its fixture missing reports a precondition and is judged
 `not_run (precondition)`, and the nightly digest's Harness health section names each
@@ -705,8 +771,10 @@ Finish with exactly one report, report_done or report_blocked, once what is on s
   rendered, and the reply, or `section.md` in a dry run, says the video was
   withheld. A page that does not show the stack's name, even the review stack's
   own, costs the video the same way, and its line says the stack could not be
-  confirmed as the review stack. No option renders a video of another stack:
-  watch a run on your own stack instead.
+  confirmed as the review stack. Every group's navigation, an Annotator's
+  included, shows Deployment Info, and no other persona's page stands in for one
+  that does not. No option renders a video of another stack: watch a run on your
+  own stack instead.
 - **Screenshots are not held to that check.** A flow's `screens/` are kept whatever
   the stack, so point a run only at a stack holding shipped example data.
   Everything a local run writes is under gitignored `scratch/`: never commit it or

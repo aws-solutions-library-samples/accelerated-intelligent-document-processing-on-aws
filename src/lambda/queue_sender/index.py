@@ -27,6 +27,7 @@ active-profile fallback, the X-Ray annotation and the TTL calculation — none o
 which should exist twice.
 """
 
+import dataclasses
 import json
 import logging
 import os
@@ -34,17 +35,25 @@ from datetime import datetime, timedelta, timezone
 
 import boto3
 from aws_xray_sdk.core import patch_all, xray_recorder
+from botocore.exceptions import ClientError
 
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.prefix_mappings import (
+    SOURCE_REJECTED,
     PrefixMappingStore,
     resolve_config_assignment,
+)
+from idp_common.config.tenants import (
+    TenantStore,
+    ingest_rejection_reason,
+    is_strict_isolation,
 )
 from idp_common.docs_service import create_document_service
 from idp_common.document_versions import delete_current_output_objects
 from idp_common.job_completion import finalize_job_file, parse_job_document_id
 from idp_common.job_service import create_job_service
 from idp_common.models import Document, Status
+from idp_common.testrun_status import RUN_STATUS_TERMINAL
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Patch AWS SDK calls for X-Ray tracing
@@ -225,14 +234,57 @@ def version_kinds_are_comparable(left: str, right: str) -> bool:
 class ScanVerdictBeforeIngestError(Exception):
     """The verdict arrived before the upload event that creates the document row.
 
-    Raised so the EventBridge rule's ``RetryPolicy`` re-delivers. GuardDuty's scan
+    Raised so the verdict is re-delivered. EventBridge invokes this function
+    asynchronously, so a raised error is retried by **Lambda's** asynchronous
+    retries — two of them, about one and then about two minutes apart (made
+    explicit in the template's ``EventInvokeConfig``), after which the event goes
+    to ``QueueSenderDLQ``. The rule target's ``RetryPolicy`` does not apply here:
+    it covers only EventBridge's hand-off to Lambda, which succeeds as soon as
+    Lambda accepts the event. GuardDuty's scan
     is *triggered by* the same ``Object Created`` event this function consumes, so
     the verdict normally cannot precede it — but EventBridge offers no ordering or
     latency guarantee, and GuardDuty's own ``s3Throttled`` flag exists because
     delays happen. Creating the row here instead would race the upload path into
     overwriting a terminal status with ``MALWARE_SCANNING``, which hangs the
     document for good.
+
+    Also raised when the row EXISTS but still describes an earlier upload of the
+    same key — a previous run's terminal state, or a gate still waiting on an
+    older version — while the verdict is for the version the bucket holds now.
+    That is the same race on a reused key: the upload event for this version has
+    not rewritten the row yet. See :func:`_handle_verdict_condition_failure`.
     """
+
+
+#: S3 error codes meaning the key holds no current object at all (deleted, or a
+#: delete marker is current). Not a transient fault: no verdict can describe the
+#: current bytes of a key that has none.
+_NO_CURRENT_OBJECT_ERROR_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+
+
+def current_object_version(bucket: str, object_key: str, kind: str) -> str:
+    """The discriminator of the object currently stored at ``bucket/object_key``.
+
+    Returned in the same form :func:`object_version_of` gives an event, and in
+    the requested KIND (``"v"`` or ``"e"``), so it compares directly with a
+    verdict's discriminator. Building it from only the field of that kind matters:
+    a versioned bucket's ``HeadObject`` returns both a version id and an ETag, and
+    ``object_version_of`` prefers the version id, so a verdict carrying only an
+    ETag would otherwise never compare equal to the current object.
+
+    Returns ``""`` when the key has no current object. Any other failure is
+    raised to the caller, which decides what an unanswerable question means.
+    """
+    try:
+        head = s3.head_object(Bucket=bucket, Key=object_key)
+    except ClientError as e:
+        code = str(e.response.get("Error", {}).get("Code", ""))
+        if code in _NO_CURRENT_OBJECT_ERROR_CODES:
+            return ""
+        raise
+    if kind == "v":
+        return object_version_of({"versionId": head.get("VersionId")})
+    return object_version_of({"eTag": head.get("ETag")})
 
 
 def _put_metric(name: str, value: float = 1.0) -> None:
@@ -519,6 +571,103 @@ def resolve_configuration(document, object_key):
     return assignment
 
 
+class TenantIsolationUnavailable(RuntimeError):
+    """Strict tenant isolation could not be evaluated for one document.
+
+    Raised OUT of the handler, never caught: this function is invoked
+    asynchronously by EventBridge, so Lambda retries the event twice and then sends
+    it to ``QueueSenderDLQ``, which is alarmed. The object stays in the Input
+    bucket and nothing has been written for it yet, so the recovery is a re-upload
+    once the cause is fixed. That is the fail-closed reading: the prefix-mapping
+    read fails open because a routing table being unreadable must not halt ingest,
+    but under strict isolation an unevaluable boundary is exactly the condition
+    the mode exists to refuse.
+    """
+
+
+def _test_run_profile(run_id):
+    """The profile a Test Studio run still in progress is defined by, or ``None``.
+
+    ``testrun#<id>`` / ``metadata`` in the TrackingTable is written by the test
+    runner when a run starts, under the caller's configuration scope, and nothing an
+    uploader controls can create one, which is what makes it evidence for
+    ``ingest_rejection_reason``'s Test Studio exemption rather than one more claim.
+
+    Only a run that has not reached a terminal status counts. The copier writes a
+    run's documents while the run is in flight; a finished run has nothing more to
+    write, so honouring its record afterwards would let anyone who learns a
+    historical run id replay it to place a document under that run's profile. A
+    record with no status at all is refused too: every writer sets one, so its
+    absence is not evidence of anything.
+    """
+    table_name = os.environ.get("TRACKING_TABLE")
+    if not table_name or not run_id:
+        return None
+    item = (
+        _config_table(table_name)
+        .get_item(
+            Key={"PK": f"testrun#{run_id}", "SK": "metadata"},
+            ProjectionExpression="ConfigVersion, #status",
+            ExpressionAttributeNames={"#status": "Status"},
+            ConsistentRead=True,
+        )
+        .get("Item")
+    ) or {}
+    status = item.get("Status")
+    if not status or status in RUN_STATUS_TERMINAL:
+        return None
+    return item.get("ConfigVersion") or None
+
+
+def enforce_tenant_boundary(document, object_key, assignment):
+    """Strict mode: refuse a document whose key and profile belong to different tenants.
+
+    Returns ``assignment`` unchanged when the mode is ``Off`` — with no read of any
+    kind, so an ``Off`` stack is on exactly the path it was on before — or when the
+    boundary holds. Returns a rejected copy carrying the reason when it does not.
+    Raises :class:`TenantIsolationUnavailable` when the check cannot be made.
+    """
+    if not is_strict_isolation():
+        return assignment
+    if assignment is None:
+        # Configuration resolution failed or CONFIG_TABLE is unset. Off mode
+        # continues unpinned; strict mode cannot know which profile the document
+        # would run under, so it cannot say the boundary holds.
+        raise TenantIsolationUnavailable(
+            f"No configuration could be resolved for {object_key}, so its tenant "
+            f"boundary cannot be checked"
+        )
+    if assignment.rejected:
+        return assignment
+    config_table_name = os.environ.get("CONFIG_TABLE")
+    try:
+        tenants = TenantStore(_config_table(config_table_name)).list()
+    except Exception as e:
+        _emit("TenantIsolationLookupFailed")
+        raise TenantIsolationUnavailable(
+            f"Could not read the tenant declarations for {object_key}: {e}"
+        ) from e
+    reason = ingest_rejection_reason(
+        object_key,
+        assignment.profile,
+        tenants,
+        submission_source=document.submission_source,
+        test_run_profile=_test_run_profile,
+    )
+    if not reason:
+        return assignment
+    _emit("TenantBoundaryRejected")
+    logger.warning("Refusing %s: %s", object_key, reason)
+    return dataclasses.replace(
+        assignment,
+        profile=None,
+        revision=None,
+        source=SOURCE_REJECTED,
+        rejected=True,
+        reason=reason,
+    )
+
+
 def _send_to_queue(document, object_key, event_type="DocumentQueued"):
     """Hand a document to the processing queue."""
     doc_json = document.to_json()
@@ -585,12 +734,12 @@ def _purge_stale_outputs(output_bucket, object_key):
         # CloudWatch metric so an operator can alarm on it without
         # depending on log-scraping (matches the round-16 pattern in
         # queue_processor._put_drift_sample). The alternative (raise →
-        # EventBridge async retries exhaust → QueueSenderDLQ) is worse:
+        # Lambda's async retries exhaust → QueueSenderDLQ) is worse:
         # customers would rather see a possibly-stale extraction than
         # have the ingest silently disappear. queue_sender is
         # ``Type: CloudWatchEvent`` (EventBridge Object-Created rule),
-        # so retries/DLQ behavior is EventBridge's async-invoke semantics,
-        # not an SQS DLQ on the source.
+        # so EventBridge invokes it asynchronously and retries/DLQ behavior
+        # is Lambda's async-invoke semantics, not an SQS DLQ on the source.
         logger.error(f"Failed to purge previous output data for {object_key}: {e}")
         _put_metric(METRIC_STALE_OUTPUT_PURGE_FAILED)
 
@@ -674,6 +823,11 @@ def handle_object_created(event):
         )
         assignment = None
 
+    # Outside the fail-open block above, deliberately: under strict isolation an
+    # unevaluable boundary raises out of the handler (see TenantIsolationUnavailable).
+    resolved = assignment
+    assignment = enforce_tenant_boundary(document, object_key, assignment)
+
     if assignment is not None and assignment.rejected:
         # Record the refusal so it is visible in the UI, and stop. Deliberately NOT
         # a silent drop: an operator cannot act on a document that never appeared,
@@ -688,7 +842,11 @@ def handle_object_created(event):
             "statusCode": 200,
             "detail": detail,
             "document_id": document.id,
-            "refused": "config_prefix_mapping_conflict",
+            "refused": (
+                "tenant_boundary"
+                if assignment is not resolved
+                else "config_prefix_mapping_conflict"
+            ),
         }
 
     _purge_stale_outputs(output_bucket, object_key)
@@ -756,8 +914,14 @@ def handle_object_created(event):
     return {"statusCode": 200, "detail": detail, "document_id": document.id}
 
 
-def handle_scan_result(event):
-    """A GuardDuty verdict arrived. Admit the document, or refuse it."""
+def handle_scan_result(event, *, _rewrite_retries_left: int = 1):
+    """A GuardDuty verdict arrived. Admit the document, or refuse it.
+
+    ``_rewrite_retries_left`` bounds the one internal re-run
+    :func:`_handle_verdict_condition_failure` makes when the upload event
+    rewrites the row between a failed compare-and-set and the re-read. It is not
+    part of the event contract; callers leave it at the default.
+    """
     detail = event.get("detail") or {}
     object_details = detail.get("s3ObjectDetails") or {}
     bucket = object_details.get("bucketName") or ""
@@ -840,7 +1004,7 @@ def handle_scan_result(event):
     # below is what must not happen, and it cannot: a rejected assignment leaves
     # `config_version` unpinned, not the status QUEUED.
     try:
-        resolve_configuration(document, object_key)
+        assignment = resolve_configuration(document, object_key)
     except Exception as e:  # noqa: BLE001
         # Fail open, matching the upload path: a configuration-resolution fault
         # must not strand a document that already has a verdict.
@@ -850,7 +1014,7 @@ def handle_scan_result(event):
             e,
             exc_info=True,
         )
-
+        assignment = None
     existing = document_service.get_document(object_key)
     if existing is None:
         # The verdict beat the upload event. Handled the same way as a lost
@@ -860,7 +1024,7 @@ def handle_scan_result(event):
         _put_metric(METRIC_SCAN_VERDICT_BEFORE_INGEST)
         raise ScanVerdictBeforeIngestError(
             f"Malware verdict for {object_key} arrived before its document row "
-            f"existed; relying on the EventBridge rule's RetryPolicy to re-deliver"
+            f"existed; raising so Lambda's asynchronous retry re-delivers it"
         )
     # `or` rather than unconditional assignment: the row is authoritative for
     # these, but a row written by an older release may not carry them, and a
@@ -875,6 +1039,24 @@ def handle_scan_result(event):
     )
     document.test_set_id = existing.test_set_id or document.test_set_id
 
+    # Strict isolation re-checks the tenant boundary here, because the
+    # configuration was just re-resolved: a tenant or mapping change while the scan
+    # was in flight could otherwise admit a document the upload path would have
+    # refused. Unlike a mapping rejection (see above) this one is acted on, since
+    # admitting it would place the document in another tenant's view. Raises, so
+    # the verdict is re-delivered, when the boundary cannot be evaluated.
+    #
+    # It runs AFTER the row overlay above on purpose. `submission_source` decides
+    # the internal-producer and Test Studio branches of the rule, and the copy read
+    # from object metadata is lost whenever that read fails, while the row's is
+    # authoritative -- checking first would refuse a legitimate internal document.
+    boundary = enforce_tenant_boundary(document, object_key, assignment)
+    tenant_refusal = (
+        boundary.reason
+        if boundary is not None and boundary is not assignment and boundary.rejected
+        else None
+    )
+
     document.malware_scan_status = scan_status
     document.malware_scan_result = result_status
     document.malware_scan_threat = threat_name
@@ -888,6 +1070,11 @@ def handle_scan_result(event):
     new_status, reason = decide_admission(
         scan_status, result_status, policy["allow_unscannable"]
     )
+    if tenant_refusal and new_status == Status.QUEUED:
+        new_status = Status.FAILED
+        reason = "tenant boundary"
+        document.config_assignment_error = tenant_refusal
+        document.config_source = SOURCE_REJECTED
     document.status = new_status
     logger.info(
         "Malware verdict for %s: scanStatus=%s result=%s threat=%s reasons=%s "
@@ -914,6 +1101,11 @@ def handle_scan_result(event):
     }
     if threat_name:
         extra_attributes["MalwareScanThreat"] = threat_name
+    if new_status == Status.FAILED and tenant_refusal:
+        # Written with the verdict, in the same conditional update, so the
+        # document shows why it was refused the way an upload-time refusal does.
+        extra_attributes["ConfigAssignmentError"] = tenant_refusal
+        extra_attributes["ConfigSource"] = SOURCE_REJECTED
     if reasons:
         extra_attributes["MalwareScanReasons"] = reasons
 
@@ -990,7 +1182,14 @@ def handle_scan_result(event):
         if getattr(e, "error_code", "") != "ConditionalCheckFailedException":
             raise
         return _handle_verdict_condition_failure(
-            document, object_key, new_status, reason, verdict_version
+            document,
+            bucket,
+            object_key,
+            new_status,
+            reason,
+            verdict_version,
+            event=event,
+            rewrite_retries_left=_rewrite_retries_left,
         )
 
     if new_status == Status.QUEUED:
@@ -1049,7 +1248,7 @@ def handle_scan_result(event):
                 # A condition failure here is the "actually succeeded" case:
                 # another delivery (or the SQS message's own workflow) already
                 # moved the row. Logged but not re-raised, because we are about
-                # to re-raise the original send error for EventBridge to retry.
+                # to re-raise the original send error for Lambda's async retry.
                 code = getattr(revert_error, "error_code", "")
                 if code == "ConditionalCheckFailedException":
                     logger.warning(
@@ -1116,12 +1315,25 @@ def _verdict_attributes(document):
 
 
 def _handle_verdict_condition_failure(
-    document, object_key, new_status, reason, verdict_version
+    document,
+    bucket,
+    object_key,
+    new_status,
+    reason,
+    verdict_version,
+    *,
+    event,
+    rewrite_retries_left,
 ):
-    """The compare-and-set lost. Work out which of the three reasons it was.
+    """The compare-and-set lost. Work out why: each cause needs its own response.
 
-    The condition has two clauses, so a failure has three distinct causes and they
-    call for three different responses — collapsing them would either drop a
+    No row yet, or a row still describing an earlier upload while the verdict is
+    for the object the bucket holds now: retried. A verdict for an object the key
+    no longer holds: discarded as superseded. A row back at MALWARE_SCANNING for
+    this verdict's upload by the time it is re-read: the upload event rewrote it
+    after the compare-and-set ran, so the verdict is handled again from the top.
+    A row that has left the gate for this same upload: a duplicate, or a refusal
+    that must still be applied. Collapsing any of these would either drop a
     verdict that should be retried or re-apply one that should be ignored.
     """
     existing = None
@@ -1134,29 +1346,91 @@ def _handle_verdict_condition_failure(
         _put_metric(METRIC_SCAN_VERDICT_BEFORE_INGEST)
         raise ScanVerdictBeforeIngestError(
             f"Malware verdict for {object_key} arrived before its document row "
-            f"existed; relying on the EventBridge rule's RetryPolicy to re-deliver"
+            f"existed; raising so Lambda's asynchronous retry re-delivers it"
         )
 
     current = getattr(existing.status, "value", existing.status)
     stored_version = existing.malware_scan_version_id or ""
 
-    # SUPERSEDED: the row is still waiting, but for a different upload. Dropped
-    # deliberately — this verdict describes bytes that are no longer in the
-    # bucket, and applying it would admit or refuse the wrong ones. The document
-    # keeps waiting for the verdict belonging to the version actually stored, and
-    # the unapplied-verdict alarm covers the case where that never arrives.
+    # A VERSION MISMATCH: the row describes a different upload of this key than
+    # the verdict does. That alone does not say which of the two is stale, and
+    # assuming the verdict is would be wrong on a reused key: the verdict for a
+    # NEW upload can arrive before that upload's own Object Created event has
+    # rewritten the row, so the row still holds the previous run's terminal state,
+    # or a gate still waiting on an older version. Discarding the verdict then
+    # strands the document, because once the upload event lands and parks the row
+    # at MALWARE_SCANNING for the new version, no further verdict for it is coming.
+    #
+    # So the bucket is asked which version is current, and that decides it:
+    #
+    #   * verdict == current: the ROW is stale. Raise, so the verdict is
+    #     re-delivered once the upload event has caught up, exactly as when no
+    #     row exists at all. This holds whatever status the stale row is in.
+    #   * verdict != current: the verdict is genuinely superseded — it describes
+    #     bytes the key no longer holds — and is discarded. This covers a
+    #     terminal row too: a refusal for bytes that neither the row nor the
+    #     bucket holds has nothing to refuse, and a clean one nothing to admit.
+    #
+    # Only reached when the two discriminators are comparable and differ, so the
+    # true at-least-once duplicate (same version, already applied) and the
+    # kind-mismatch fallback both keep the paths below.
     if (
-        current == Status.MALWARE_SCANNING.value
-        and version_kinds_are_comparable(verdict_version, stored_version)
+        version_kinds_are_comparable(verdict_version, stored_version)
         and stored_version != verdict_version
     ):
+        try:
+            current_version = current_object_version(
+                bucket, object_key, verdict_version.split(":", 1)[0]
+            )
+        except Exception:
+            # ⚠️ Raised, not discarded. If the bucket cannot be asked, this
+            # verdict may be the only one the current upload will ever get, and
+            # dropping it is the permanent-stall shape this branch exists to
+            # remove; a re-delivery costs one more invocation. The
+            # opposite failure — re-delivering a verdict that really was
+            # superseded — is bounded by the retry budget and ends in the
+            # verdict dead-letter path, which is visible.
+            logger.error(
+                "Could not read the current version of %s to decide whether its "
+                "malware verdict (version %r, row holds %r) is current; raising "
+                "so it is re-delivered rather than dropped",
+                object_key,
+                verdict_version,
+                stored_version,
+                exc_info=True,
+            )
+            raise
+        if current_version == verdict_version:
+            logger.warning(
+                "Malware verdict for %s describes the current version %r, but the "
+                "row still holds version %r (status %s): the upload event for "
+                "this version has not landed yet. Raising so it is re-delivered.",
+                object_key,
+                verdict_version,
+                stored_version,
+                current,
+            )
+            _put_metric(METRIC_SCAN_VERDICT_BEFORE_INGEST)
+            raise ScanVerdictBeforeIngestError(
+                f"Malware verdict for {object_key} (version {verdict_version!r}) "
+                f"arrived before its upload event rewrote the document row, which "
+                f"still holds version {stored_version!r}; relying on re-delivery"
+            )
+        # SUPERSEDED: dropped deliberately — this verdict describes bytes that
+        # are no longer in the bucket, and applying it would admit or refuse the
+        # wrong ones. The document keeps waiting for the verdict belonging to the
+        # version actually stored, and the unapplied-verdict alarm covers the
+        # case where that never arrives.
         logger.warning(
             "Superseded malware verdict for %s: it describes version %r but the "
-            "document is now waiting on version %r (the key was re-uploaded). "
-            "Discarding it; the newer upload's own verdict decides.",
+            "key now holds version %r and the document row version %r (status "
+            "%s; the key was re-uploaded). Discarding it; the newer upload's own "
+            "verdict decides.",
             object_key,
             verdict_version,
+            current_version or "<none>",
             stored_version,
+            current,
         )
         _put_metric(METRIC_SCAN_VERDICT_SUPERSEDED)
         return {
@@ -1165,6 +1439,61 @@ def _handle_verdict_condition_failure(
             "malware_verdict": reason,
             "superseded": True,
         }
+
+    # REWRITTEN AFTER THE COMPARE-AND-SET: the row is at MALWARE_SCANNING and,
+    # having got past the branch above, describes this verdict's upload (or the
+    # two discriminators are not comparable). The condition was false when it
+    # was evaluated and its premises hold now, so the upload event finished
+    # rewriting the row in between — on a reused key it replaces the previous
+    # run's row, and the window is the few hundred milliseconds between the
+    # write and this read. Observed live on a reused key, three times in six runs.
+    #
+    # ⚠️ This must not fall through to the duplicate path below. That path reads
+    # "the row has left MALWARE_SCANNING", which is false here, and it returns
+    # 200, so nothing re-delivers: the document waits at the gate for a verdict
+    # that has already been discarded, and it waits for good.
+    #
+    # The verdict is handled again FROM THE TOP rather than by retrying the
+    # same write, because everything before the write was derived from the row
+    # that was there before the rewrite — the overlaid upload time, trace id,
+    # submission source and test-set id, the tenant boundary decided from that
+    # submission source, and whether the condition carries a version clause.
+    # Re-running re-derives all of it from the row the upload just wrote, and
+    # nothing before the write has a side effect. Bounded to one re-run: if the
+    # row moves again, raise and let Lambda's asynchronous retry re-deliver.
+    #
+    # Placed before the unapplied-refusal branch on purpose: a refusing verdict
+    # in this state also has never been applied, and it should be applied
+    # through the compare-and-set like any other, not unconditionally.
+    if current == Status.MALWARE_SCANNING.value:
+        if rewrite_retries_left > 0:
+            logger.warning(
+                "Malware verdict for %s lost its compare-and-set, but the row is "
+                "now MALWARE_SCANNING for version %r (verdict version %r): the "
+                "upload event rewrote it after the condition was evaluated. "
+                "Handling the verdict again.",
+                object_key,
+                stored_version,
+                verdict_version,
+            )
+            return handle_scan_result(
+                event, _rewrite_retries_left=rewrite_retries_left - 1
+            )
+        logger.warning(
+            "Malware verdict for %s lost its compare-and-set twice with the row "
+            "at MALWARE_SCANNING (row version %r, verdict version %r); raising so "
+            "it is re-delivered.",
+            object_key,
+            stored_version,
+            verdict_version,
+        )
+        _put_metric(METRIC_SCAN_VERDICT_BEFORE_INGEST)
+        raise ScanVerdictBeforeIngestError(
+            f"Malware verdict for {object_key} (version {verdict_version!r}) could "
+            f"not be applied: the row is at MALWARE_SCANNING but kept changing "
+            f"under the compare-and-set; raising so Lambda's asynchronous retry "
+            f"re-delivers it"
+        )
 
     # ⚠️ UNAPPLIED REFUSAL: the row left MALWARE_SCANNING *without* this refusal
     # having been recorded. That is not a duplicate, and reading it as one is how

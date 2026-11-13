@@ -36,11 +36,11 @@ defect class this repo has hit repeatedly (see the parity gaps listed in
 
 A GitHub Actions status-check *context* is the job's ``name:`` if it declares
 one, otherwise the job **id**. So the mapping is per job, not per workflow and
-not per step. That matters here: ten of the twelve gates asserted by
+not per step. That matters here: eleven of the thirteen gates asserted by
 ``test_ci_gate_parity.py``'s ``SHARED_GATES`` live in
 ``.github/workflows/developer-tests.yml`` and the other two — the SRT scan and the
-dependency audit — in ``security-checks.yml``. Those workflows hold four and two
-jobs, so the twelve gates produce **six** requireable contexts.
+dependency audit — in ``security-checks.yml``. Those workflows hold six and two
+jobs, so the thirteen gates produce **eight** requireable contexts.
 
 ⚠️ **Requiring only the lint context is weaker than requiring the whole workflow
 once was.** ``developer-tests.yml`` used to be a single job, so requiring the
@@ -62,8 +62,8 @@ job-level YAML parsing will find it. This script therefore also reads the
 ``check_name:`` input of each step, which is the convention the actions used here
 follow. One such context exists today: ``Test Results``, created by
 ``EnricoMi/publish-unit-test-result-action`` in ``developer-tests.yml``. It is
-reported as **advisory**, because its step is conditional (``if: always() &&
-hashFiles(...) != ''``), so on a run that produces no test-results file the check
+reported as **advisory**, because its step is conditional (``if: ${{ !cancelled()
+&& hashFiles(...) != '' }}``), so on a run that produces no test-results file the check
 is never created — the same "required but never reported" hazard as a
 path-filtered workflow. Actions that create a check run under a *default* name,
 with no ``check_name:`` input to read, remain outside this derivation; there are
@@ -135,9 +135,9 @@ rather than an ambiguous one. The ambiguous ``unverifiable`` state is reserved f
 when even the ``branches/{branch}`` read fails.
 
 **Run it against both long-lived branches.** ``develop`` is what pull requests
-target and is this script's default, but ``main`` is the repository's *default*
-branch and the one releases are cut from, and it is equally unprotected. A single
-run answers the question for one branch only.
+target, the repository's default branch and this script's default, but ``main`` is
+the branch releases are cut from, and it is equally unprotected. A single run
+answers the question for one branch only.
 
 Why this is opt-in and non-blocking
 -----------------------------------
@@ -234,10 +234,10 @@ WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 DEFAULT_REPO = (
     "aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws"
 )
-# `develop` is what pull requests target, so it is the default here. It is NOT the
-# repository's default branch — `main` is, and `main` is where releases are cut
-# from — so answering the question for this repository takes two runs. Both are
-# unprotected today; see the module docstring.
+# `develop` is what pull requests target, and the repository's default branch, so
+# it is the default here. Releases are cut from `main`, which matters as much, so
+# answering the question for this repository takes two runs. Both are unprotected
+# today; see the module docstring.
 DEFAULT_BRANCH = "develop"
 SHARED_BRANCHES = ("develop", "main")
 
@@ -1573,8 +1573,8 @@ def print_report(
 
     # One run answers for one branch. Both long-lived branches matter here and
     # only one of them is this script's default, which is how `main` — the
-    # repository's default branch, and the one releases are cut from — went
-    # unexamined while `develop` was being measured.
+    # branch releases are cut from — went unexamined while `develop` was being
+    # measured.
     unread = [name for name in SHARED_BRANCHES if name != branch]
     if unread:
         print(

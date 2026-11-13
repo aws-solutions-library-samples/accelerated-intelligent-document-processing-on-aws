@@ -51,6 +51,40 @@ else:
             return "<redactor unavailable: idp_common not importable>"
 
 
+# Who is calling. The gateway interceptor resolves the caller and adds a signed
+# `_caller` block to the tool arguments; this function verifies it before any tool
+# runs. Without idp_common there is nothing to verify it with, so every tool is
+# refused (fail closed), kept distinguishable from an ordinary refusal in the log.
+_ACCESS_UNAVAILABLE = False
+try:
+    from idp_common import mcp_access
+except ImportError:  # pragma: no cover - only reachable with no agents layer
+    _ACCESS_UNAVAILABLE = True
+    mcp_access = None  # type: ignore[assignment]
+
+# The caller-signing key, read once per container.
+_signing_key: Dict[str, bytes] = {}
+
+
+def _key() -> bytes:
+    import boto3
+
+    secret_id = os.environ.get("CALLER_SIGNING_SECRET_ARN", "")
+    if secret_id not in _signing_key:
+        _signing_key[secret_id] = mcp_access.load_signing_key(
+            boto3.client("secretsmanager", region_name=os.environ.get("AWS_REGION")),
+            secret_id,
+        )
+    return _signing_key[secret_id]
+
+
+def _refused(tool_name: str, message: str) -> Dict[str, Any]:
+    return {
+        "statusCode": 403,
+        "body": json.dumps({"error": message, "tool_name": tool_name}),
+    }
+
+
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
@@ -61,6 +95,9 @@ CODE_UPDATED = "2025-01-09T19:30:00Z"
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """Route MCP tool invocations to appropriate handlers"""
+    # The caller block is popped before anything else reads the event, so no tool
+    # ever sees it as an argument and no log line records it.
+    block = event.pop("_caller", None) if isinstance(event, dict) else None
     logger.info(f"=== Lambda Handler Started ===")
     logger.info(f"Code Version: {CODE_VERSION}")
     logger.info(f"Code Updated: {CODE_UPDATED}")
@@ -99,7 +136,36 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         tool_name = tool_name[1:]
     
     logger.info(f"Tool name from context: {tool_name_full} -> {tool_name}")
-    
+
+    if _ACCESS_UNAVAILABLE:
+        logger.error(
+            f"Rejecting MCP tool {tool_name!r}: idp_common is not importable, so the "
+            f"caller cannot be verified"
+        )
+        return _refused(
+            tool_name,
+            "The caller of this request could not be verified, so MCP tools are "
+            "refused. Check that the function's idp_common layer is attached.",
+        )
+    custom = {}
+    if hasattr(context, "client_context") and context.client_context:
+        custom = getattr(context.client_context, "custom", None) or {}
+    try:
+        caller = mcp_access.verify_caller(
+            block,
+            key=_key(),
+            request_id=str(custom.get("bedrockAgentCoreAwsRequestId") or ""),
+        )
+        mcp_access.authorize_tool(caller, tool_name)
+    except mcp_access.McpAccessRefused as e:
+        logger.warning(f"Rejecting MCP tool {tool_name!r}: {e}")
+        return _refused(tool_name, str(e))
+    except Exception as e:  # noqa: BLE001 - an unreadable key refuses the call
+        logger.error(f"Rejecting MCP tool {tool_name!r}: {e}")
+        return _refused(
+            tool_name, "Unauthorized: the caller of this request could not be verified."
+        )
+
     try:
         logger.info(f"Looking up tool: {tool_name}")
         tool = get_tool(tool_name)
@@ -114,7 +180,9 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             f"{json.dumps(sanitize_event_for_logging(event))}"
         )
         logger.info(f"Tool execution starting...")
-        result = tool.execute(**event)
+        result = mcp_access.with_provenance(
+            tool_name, tool.execute(caller=caller, **event)
+        )
         logger.info(f"Tool execution completed successfully")
         logger.info(f"Result: {json.dumps(result)[:500]}...")  # Log first 500 chars
         

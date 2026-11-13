@@ -133,8 +133,18 @@ rows cost fewer waves, or smaller sections; *lowering*
 buys smaller calls by making more of them.
 
 Two things that will still produce this symptom. **An out-of-memory kill is
-equally exception-free and nothing above bounds memory** — read the kill reason in
-the function's log rather than assuming the wall clock. And the multi-instance
+equally exception-free** — read the kill reason in the function's log
+(`Runtime.OutOfMemory`) rather than assuming the wall clock. Each concurrent batch
+of the confidence pass carries every page image of the section, and measured
+offline each one in flight costs about three times its serialised request, so
+memory grows with `extraction.agentic.max_concurrent_batches`; lowering that setting
+is the remedy for a section with many large page images. A throttled or timed-out
+retry no longer keeps a copy of the request it replaces (#1678), and neither does a
+timed-out retry of the agentic extraction call (#1706). Before that,
+measured offline on a 17-page section with the default ten batches, peak memory went
+from about 1.0 GB with no retries to 3.1 GB with six throttled attempts per call or
+two timed-out ones, and to 7.1 GB with six timed-out ones, past the Assessment
+function's 4,096 MB. And the multi-instance
 shape #894 reports is a different route: each outer row is a whole instance, so the
 pass makes *few* big calls rather than many small ones, which is not the shape
 #1488 bounds, and one instance whose output exceeds the cap cannot be split. For
@@ -597,12 +607,14 @@ Verbose mode provides:
 ### Container-Based Lambda Deployment Issues
 
 Container packaging is not mode-specific. Every image-packaged function in the
-unified pattern stack — on the BDA branch and the pipeline branch alike — plus the
-image-packaged functions in the multi-doc-discovery stack are built by a single
-CodeBuild project (`DockerBuildProject`, named `<StackName>-docker-build`). One
-build builds them all; images are
+unified pattern stack — on the BDA branch and the pipeline branch alike — is built by
+one CodeBuild project (`DockerBuildProject`, named `<StackName>-docker-build`, where
+`<StackName>` is the pattern's nested stack). The multi-doc-discovery nested stack
+builds its own image in a `DockerBuildProject` of its own. In both, images are
 tagged with a content-based version (`IMAGE_VERSION`), so the tag changes only when
-content does, and that is what moves the Lambda functions onto a new image.
+content does, and that is what moves the Lambda functions onto a new image. A
+`DockerBuildRun` resource in each stack starts the build and waits up to
+CloudFormation's one-hour custom-resource limit for it.
 
 ⚠️ **Those images are built in CodeBuild during stack deployment, not on your
 machine.** Publishing runs no `docker` command and needs no local Docker daemon, no
@@ -613,6 +625,7 @@ error is — not your local environment.
 | Issue | Resolution |
 |-------|------------|
 | **Lambda package exceeds 250MB limit** | The large-dependency functions are already image-packaged, which raises the limit to the 10 GB image size. If a ZIP-packaged function hits this, move it to `PackageType: Image` rather than trimming dependencies. |
-| **Docker build or push fails during deployment** | Read the CodeBuild log for the project named `<StackName>-docker-build`. Check Dockerfile syntax and that all referenced files exist |
+| **Docker build or push fails during deployment** | Read the CodeBuild log for the failing build: the unified pattern's project is named `<StackName>-docker-build`, and the multi-doc-discovery stack's is the `DockerBuildProject` resource of that nested stack (list CodeBuild projects and match the stack name). Check Dockerfile syntax and that all referenced files exist |
 | **Image push timeout, or ECR access denied in the build** | The build uses the CodeBuild service role, not your credentials. In VPC-secured mode confirm the ECR API, ECR Docker and S3 endpoints exist and that the build subnets have outbound access for base images — see [VPC Secured Mode](./vpc-secured-mode.md) |
+| **Stack update fails on `DockerBuildRun`, then wedges in `UPDATE_ROLLBACK_FAILED`** | The image build did not finish in time, usually because CodeBuild was slow to start builds, and the rollback's build failed the same way. From the release that fixed [#1824](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1824), a rollback reuses the previous version's images while they are still in ECR instead of rebuilding them, and the multi-doc-discovery build gets the same hour as the unified pattern's. That protects a rollback *to* a release carrying the fix; the rollback runs the previous release's handler. The Test Set Generator extension's stack (`idp-data-generator`, from 0.1.6) also waits the full hour for its AgentCore image build, but still rebuilds on rollback, because its runtime pulls the `latest` image on every update. **Recover:** `aws cloudformation continue-update-rollback --stack-name <StackName>`. If it fails again on the same resource, skip it: `--resources-to-skip <PatternNestedStackName>.DockerBuildRun <MultiDocNestedStackName>.DockerBuildRun`, naming each nested stack by its **logical** id in the parent (`PATTERNSTACK`, `MULTIDOCDISCOVERYSTACK`) and listing only the resources that failed. Skipping leaves the previous version's functions pointing at the images built when it was deployed, so it is safe while those images are still in the stack's ECR repository; check with `aws ecr describe-images` if the update's own build may have completed, since each repository keeps only its most recent images. For the Test Set Generator extension's own stack, do not skip its `DockerBuildRun`: the rollback's rebuild is what puts the previous image back under `latest`, so run `continue-update-rollback` on that stack again once CodeBuild builds start normally. Then retry the update |
 | **Docker daemon not running** | Only affects local Lambda testing (`sam local invoke`), not publishing. Start Docker Desktop or the Docker service before invoking a function locally |

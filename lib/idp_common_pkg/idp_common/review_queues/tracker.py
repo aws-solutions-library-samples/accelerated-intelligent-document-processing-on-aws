@@ -36,7 +36,7 @@ from . import keys, status_object
 from .finalize import is_finalize_token
 from .models import ReviewReportingInfo, RunRef, TrackerReviewContext
 from .queue_defs import DEFAULT_QUEUE_ID
-from .statuses import QueueItemState, ReviewStatus
+from .statuses import MACHINE_RESULT_DISPOSITIONS, QueueItemState, ReviewStatus
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +101,12 @@ def load_context(
 def apply_overrides(ctx: TrackerReviewContext, processed_doc: Any) -> tuple[Any, Any]:
     """Set the review fields on the tracked document.
 
-    Returns ``(tracking_doc, reporting_doc)``. For a finalize run the tracking
-    document carries phase-1 + finalize metering, and the reporting copy only the
-    finalize run's own usage, so reporting never counts phase 1 twice.
+    Returns ``(tracking_doc, reporting_doc)``. For a finalize run the phase-1
+    usage goes into the tracking document's ``metering_baseline``, so the
+    tracking row (baseline + own, see ``cumulative_metering``) carries phase 1 +
+    finalize while ``metering`` keeps only the finalize run's own usage. The
+    reporting copy is taken before the baseline changes and has the same own
+    usage, so reporting never counts phase 1 twice.
     """
     from idp_common.utils import merge_metering_data
 
@@ -122,7 +125,10 @@ def apply_overrides(ctx: TrackerReviewContext, processed_doc: Any) -> tuple[Any,
             phase1 = json.loads(ctx.item.phase1_metering_json)
         except (TypeError, ValueError):
             logger.warning("event=review_phase1_metering_unreadable")
-    processed_doc.metering = merge_metering_data(phase1, processed_doc.metering or {})
+    processed_doc.metering_baseline = merge_metering_data(
+        copy.deepcopy(phase1),
+        copy.deepcopy(getattr(processed_doc, "metering_baseline", {}) or {}),
+    )
     return processed_doc, reporting_doc
 
 
@@ -175,6 +181,7 @@ def after_completion(
 ) -> None:
     """Review writes after the tracker's document, reporting and run-record writes."""
     from idp_common.dynamodb.ttl import calculate_ttl
+    from idp_common.utils import cumulative_metering
 
     now = now or datetime.now(timezone.utc)
     now_ms = int(now.timestamp() * 1000)
@@ -230,9 +237,9 @@ def after_completion(
         active.activated_at = _iso(now)
         active.phase1_run_id = run_ref.run_id if run_ref else None
         active.machine_manifest_uri = run_ref.manifest_uri if run_ref else None
-        metering_json = json.dumps(
-            getattr(document, "metering", None) or {}, default=str
-        )
+        # The cumulative usage up to phase 1 (earlier runs' baseline + this
+        # run's own), which the finalize run carries as its baseline.
+        metering_json = json.dumps(cumulative_metering(document), default=str)
         if len(metering_json) > MAX_METERING_JSON:
             logger.warning(
                 "event=review_phase1_metering_too_large bytes=%d", len(metering_json)
@@ -299,7 +306,9 @@ def after_completion(
         logger.info("event=review_finalize_run_failed status=%s", workflow_status)
         return
     rejected = ctx.outcome == "rejected"
-    removed = item.disposition == "removed"
+    # Removed from review or skipped: completes with the machine results, and the
+    # review status object is deleted.
+    removed = item.disposition in MACHINE_RESULT_DISPOSITIONS
     document_service.update_review_attributes(
         doc_key,
         {

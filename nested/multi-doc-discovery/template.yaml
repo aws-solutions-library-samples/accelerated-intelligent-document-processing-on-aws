@@ -27,6 +27,9 @@ Parameters:
   ConfigurationTableName:
     Type: String
     Description: Configuration DynamoDB table name
+  ConfigurationBucketName:
+    Type: String
+    Description: Configuration S3 bucket name (holds configuration-profile revision bodies under config_revisions/)
   ConfigurationTableArn:
     Type: String
     Description: Configuration DynamoDB table ARN
@@ -76,6 +79,14 @@ Parameters:
     Type: String
     Default: ""
     Description: "(Optional) Session name for sts:AssumeRole into the Bedrock hub-account role."
+  BedrockGuardrailId:
+    Type: String
+    Default: ""
+    Description: "(Optional) Id of an existing Bedrock Guardrail applied to the discovery model calls."
+  BedrockGuardrailVersion:
+    Type: String
+    Default: ""
+    Description: "(Optional) Version of the Bedrock Guardrail named by BedrockGuardrailId."
   VpcId:
     Type: String
     Default: ""
@@ -102,6 +113,11 @@ Conditions:
   HasBedrockHubRoleExternalId: !Not [!Equals [!Ref BedrockHubRoleExternalId, ""]]
   HasBedrockHubRoleSessionName: !Not [!Equals [!Ref BedrockHubRoleSessionName, ""]]
   HasArtifactsBucketKmsKey: !Not [!Equals [!Ref ArtifactsBucketKmsKeyArn, ""]]
+  HasGuardrailConfig:
+    !And [
+      !Not [!Equals [!Ref BedrockGuardrailId, ""]],
+      !Not [!Equals [!Ref BedrockGuardrailVersion, ""]],
+    ]
 
 Resources:
   ##########################################################################
@@ -182,12 +198,14 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
+              # The build logs to DockerBuildLogGroup (LogsConfig below), which
+              # the stack creates first. No logs:CreateLogGroup: a build must not
+              # be able to recreate a deleted group with no retention or key.
               - Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+                Resource: !GetAtt DockerBuildLogGroup.Arn
               - Effect: Allow
                 Action:
                   - ecr:GetAuthorizationToken
@@ -255,6 +273,17 @@ Resources:
                   Resource: !Ref ArtifactsBucketKmsKeyArn
                 - !Ref AWS::NoValue
 
+  # The image build's logs. Without LogsConfig CodeBuild creates
+  # /aws/codebuild/<project> itself, with no retention and no key, and the
+  # stack never deletes it.
+  DockerBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/codebuild/DockerBuildProject"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
   DockerBuildProject:
     Type: AWS::CodeBuild::Project
     Properties:
@@ -270,6 +299,10 @@ Resources:
           - !Ref AWS::NoValue
       Artifacts:
         Type: NO_ARTIFACTS
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DockerBuildLogGroup
       Environment:
         ComputeType: BUILD_GENERAL1_MEDIUM
         Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
@@ -286,8 +319,18 @@ Resources:
             Value: !Ref AWS::URLSuffix
           - Name: ECR_REPO_URI
             Value: !GetAtt ECRRepository.RepositoryUri
+          # The tag carries the content hash of the image's inputs, so each
+          # version's image stays addressable after the next one is pushed. A
+          # rollback can then reuse it, and an upgrade changes every function's
+          # ImageUri, so the functions pick up the new image (#1824).
           - Name: IMAGE_TAG
-            Value: latest
+            Value: !Sub "multi-doc-discovery-${BuildHash}"
+          # Read by the build-run handler (src/lambda/start_codebuild) to verify
+          # the pushed image before the functions are created or updated.
+          - Name: ECR_URI
+            Value: !GetAtt ECRRepository.RepositoryUri
+          - Name: IMAGE_VERSION
+            Value: !Ref BuildHash
       Source:
         Type: S3
         Location: !Sub "${ArtifactBucket}/${SourceZipfile}"
@@ -323,7 +366,30 @@ Resources:
                 # Build context is the zip root so the Dockerfile can COPY both
                 # lib/idp_common_pkg and src/lambda/multi_doc_discovery.
                 - echo "Building Docker image..."
-                - docker build -f nested/multi-doc-discovery/Dockerfile -t $ECR_REPO_URI:$IMAGE_TAG .
+                # A failed image build is usually environmental rather than a
+                # defect in the Dockerfile: a PyPI or ECR connection drop
+                # mid-download surfaces as a hard pip exit 2. One more attempt
+                # turns that into a couple of minutes of delay instead of a failed
+                # stack operation. The retry lives here because the build-run
+                # handler waits on one build id for the whole operation, which
+                # also makes it narrower than the whole-build retry the previous
+                # handler did: only docker build (here) and docker push (below)
+                # are retried, so a failure in another step, such as the ECR
+                # login in pre_build, fails the build.
+                - |
+                  built=0
+                  for attempt in 1 2; do
+                    if docker build -f nested/multi-doc-discovery/Dockerfile -t $ECR_REPO_URI:$IMAGE_TAG .; then
+                      built=1
+                      break
+                    fi
+                    echo "docker build failed (attempt $attempt); retrying in 30s..."
+                    sleep 30
+                  done
+                  if [ "$built" -ne 1 ]; then
+                    echo "ERROR: docker build failed after 2 attempts"
+                    exit 1
+                  fi
             post_build:
               commands:
                 - echo Pushing Docker image to ECR...
@@ -344,7 +410,11 @@ Resources:
                     exit 1
                   fi
                 - echo Build completed on `date`
-      TimeoutInMinutes: 30
+      TimeoutInMinutes: 55
+      # 55: room for both docker build attempts in the build phase above, and
+      # still inside CloudFormation's 60-minute custom-resource limit, so a slow
+      # build fails as a CodeBuild timeout rather than as an unanswered custom
+      # resource. Matches the unified pattern's DockerBuildProject.
       EncryptionKey: !Ref CustomerManagedEncryptionKeyArn
 
   ##########################################################################
@@ -377,12 +447,60 @@ Resources:
                   - codebuild:StartBuild
                   - codebuild:BatchGetBuilds
                 Resource: !GetAtt DockerBuildProject.Arn
+              # Verify the pushed image, and let a rollback find the previous one.
+              - Effect: Allow
+                Action:
+                  - ecr:DescribeImages
+                Resource: !GetAtt ECRRepository.Arn
+              # Read this stack's own status, to tell a rollback from an update
+              # (#1824).
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
               - Effect: Allow
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${DockerBuildRunFunctionLogGroup}"
+                  - !GetAtt DockerBuildRunFunctionLogGroup.Arn
+        # crhelper waits for the build by re-invoking this function from an
+        # EventBridge rule every two minutes, rather than inside one invocation,
+        # so the build has CloudFormation's full hour instead of Lambda's 15
+        # minutes (#1824). The scoping rests on crhelper's own naming, read from
+        # crhelper 2.0.12's resource_helper.py (requirements.txt pins ~=2.0.10):
+        # _put_rule names the rule LogicalResourceId plus eight random
+        # characters, hence rule/DockerBuildRun*, and _add_permission adds the
+        # permission to context.function_name, which is this function. If a
+        # crhelper release changes either, PutRule or AddPermission is denied and
+        # this resource fails on its first deploy rather than silently.
+        - PolicyName: CustomResourcePoller
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                Resource: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/DockerBuildRun*"
+              - Effect: Allow
+                Action:
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                Resource: !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-${StackName}-MultiDocBuildRun"
 
   DockerBuildRunFunction:
     Type: AWS::Serverless::Function
@@ -402,10 +520,14 @@ Resources:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       Handler: index.handler
       Runtime: python3.12
-      CodeUri: ./docker_build_lambda
+      # The same handler the unified pattern's DockerBuildRun uses, so both
+      # container builds wait the same hour and both reuse images on rollback.
+      CodeUri: ../../src/lambda/start_codebuild
       Description: Custom resource handler - triggers CodeBuild for multi-doc discovery image
       MemorySize: 128
-      Timeout: 900
+      # Each invocation only starts or checks the build; the wait is spread over
+      # polls (see CustomResourcePoller above).
+      Timeout: 60
       Role: !GetAtt DockerBuildRunFunctionRole.Arn
       LoggingConfig:
         LogGroup: !Ref DockerBuildRunFunctionLogGroup
@@ -423,8 +545,12 @@ Resources:
       - ECRRepository
     Properties:
       ServiceToken: !GetAtt DockerBuildRunFunction.Arn
-      ProjectName: !Ref DockerBuildProject
+      BuildProjectName: !Ref DockerBuildProject
       BuildHash: !Ref BuildHash
+      ImageVersion: !Ref BuildHash
+      RepositoryName: !Ref ECRRepository
+      ExpectedImages:
+        - "multi-doc-discovery"
 
   ##########################################################################
   # Container Image Lambda Functions (4 heavy functions)
@@ -448,7 +574,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["embed_handler.handler"]
       Description: Multi-doc discovery - generate multimodal embeddings
@@ -532,7 +658,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["cluster_handler.handler"]
       Description: Multi-doc discovery - cluster documents by embedding similarity
@@ -596,7 +722,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["analyze_handler.handler"]
       Description: Multi-doc discovery - analyze cluster with Strands agent
@@ -613,6 +739,12 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrailConfig,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref MultiDocDiscoveryAnalyzeFunctionLogGroup
       Policies:
@@ -645,6 +777,12 @@ Resources:
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
               - !Ref AWS::NoValue
+            - !If
+              - HasGuardrailConfig
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
             - Effect: Allow
               Action: [cloudwatch:PutMetricData]
               Resource: "*"
@@ -673,7 +811,7 @@ Resources:
     Properties:
       PermissionsBoundary: !If [HasPermissionsBoundary, !Ref PermissionsBoundaryArn, !Ref AWS::NoValue]
       PackageType: Image
-      ImageUri: !Sub "${ECRRepository.RepositoryUri}:latest"
+      ImageUri: !Sub "${ECRRepository.RepositoryUri}:multi-doc-discovery-${BuildHash}"
       ImageConfig:
         Command: ["save_handler.handler"]
       Description: Multi-doc discovery - save results and generate reflection
@@ -684,6 +822,7 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           DISCOVERY_BUCKET: !Ref DiscoveryBucketName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           BEDROCK_ASSUME_ROLE_ARN:
             !If [HasBedrockHubRole, !Ref BedrockHubRoleArn, !Ref AWS::NoValue]
@@ -691,9 +830,35 @@ Resources:
             !If [HasBedrockHubRoleExternalId, !Ref BedrockHubRoleExternalId, !Ref AWS::NoValue]
           BEDROCK_ASSUME_ROLE_SESSION_NAME:
             !If [HasBedrockHubRoleSessionName, !Ref BedrockHubRoleSessionName, !Ref AWS::NoValue]
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrailConfig,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref MultiDocDiscoverySaveFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3CrudPolicy:
             BucketName: !Ref DiscoveryBucketName
         - DynamoDBCrudPolicy:
@@ -718,6 +883,12 @@ Resources:
               - Effect: Allow
                 Action: sts:AssumeRole
                 Resource: !Ref BedrockHubRoleArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasGuardrailConfig
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
               - !Ref AWS::NoValue
             - Effect: Allow
               Action: [cloudwatch:PutMetricData]

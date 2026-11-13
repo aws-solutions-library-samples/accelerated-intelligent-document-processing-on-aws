@@ -359,6 +359,33 @@ def _contents(cbd, sweep, with_target):
             "list_policies": [{"Policies": policies}],
         }
 
+    if sweep == "cleanup_stale_terraform_deployments":
+        objects = (
+            [
+                {
+                    "Key": f"{cbd.TERRAFORM_STATE_PREFIX}{DEAD_RUN}/{cbd.TERRAFORM_STATE_KEY}",
+                    "LastModified": old,
+                }
+            ]
+            if with_target
+            else []
+        )
+        return {"list_objects_v2": [{"Contents": objects}]}
+
+    if sweep == "cleanup_stale_terraform_migrations":
+        objects = (
+            [
+                {
+                    "Key": f"{cbd.TERRAFORM_MIGRATION_STATE_PREFIX}{DEAD_RUN}/"
+                    f"{cbd.TERRAFORM_RUN_RECORD}",
+                    "LastModified": old,
+                }
+            ]
+            if with_target
+            else []
+        )
+        return {"list_objects_v2": [{"Contents": objects}]}
+
     if sweep == "cleanup_stale_ci_diagnostics":
         objects = (
             # Keyed by build AND stack, the shape persist_diagnostics_bundle writes.
@@ -411,6 +438,24 @@ _SWEEP_SPECS = {
         "per_item": None,  # delete_apigw_test_vpc returns False; see below
         "quiet_line": "✅ No stale apigw test VPC stacks to reap",
         "age_gate": {"field": "CreationTime", "young_line": "skipping — only"},
+    },
+    "cleanup_stale_terraform_deployments": {
+        "enumerations": ("list_objects_v2",),
+        "per_item": None,  # _reap_terraform_run reports findings; patched below
+        "quiet_line": "✅ No Terraform state left by a dead run",
+        "age_gate": {
+            "field": "LastModified",
+            "young_line": "younger than the age gate",
+        },
+    },
+    "cleanup_stale_terraform_migrations": {
+        "enumerations": ("list_objects_v2",),
+        "per_item": None,  # _reap_terraform_migration reports findings; patched
+        "quiet_line": "✅ No Terraform-migration state left by a dead run",
+        "age_gate": {
+            "field": "LastModified",
+            "young_line": "younger than the age gate",
+        },
     },
     "cleanup_stale_idp_stacks": {
         "enumerations": ("list_stacks",),
@@ -506,7 +551,18 @@ def _install(
         aws.deleted.append(name)
         return (True, "")
 
+    def _reap_terraform_run(name, _bucket, _keys, s3=None):
+        aws.deleted.append(name)
+        return {"findings": [], "timed_out": False}
+
     monkeypatch.setattr(cbd, "delete_apigw_test_vpc", _reap_vpc)
+
+    def _reap_terraform_migration(name, _bucket, _keys, s3=None):
+        aws.deleted.append(name)
+        return {"findings": [], "timed_out": False}
+
+    monkeypatch.setattr(cbd, "_reap_terraform_run", _reap_terraform_run)
+    monkeypatch.setattr(cbd, "_reap_terraform_migration", _reap_terraform_migration)
     monkeypatch.setattr(cbd, "_delete_managed_policy", _reap_policy)
     monkeypatch.setattr(cbd, "_delete_iam_role", _reap_role)
     return aws
@@ -1472,7 +1528,9 @@ def test_a_live_stack_keeps_every_bda_resource_named_for_it(cbd, monkeypatch, sh
 
     assert aws.deleted == [], f"a live stack's BDA resources were reaped: {aws.deleted}"
     assert findings == [], findings
-    assert aws.calls.count("list_stacks") == 1, aws.calls
+    # One listing per CI region: IAM is global, so a run's stacks are looked for
+    # in every region a run can be in (_live_run_regions).
+    assert aws.calls.count("list_stacks") == len(cbd._live_run_regions()), aws.calls
     assert aws.described == [], f"asked CloudFormation by name: {aws.described}"
 
 
@@ -1779,7 +1837,7 @@ def test_the_stacks_are_read_after_the_bda_listings(cbd, monkeypatch):
     assert aws.calls == [
         "list_blueprints",
         "list_data_automation_projects",
-        "list_stacks",
+        *["list_stacks"] * len(cbd._live_run_regions()),
     ], aws.calls
 
 
@@ -1992,6 +2050,16 @@ def _sweeps_that_never_read_the_set():
         "cleanup_stale_ci_diagnostics": (
             "expires evidence bundles in the source bucket after their 30-day "
             "window, which a build writes about a failed run and no stack owns"
+        ),
+        "cleanup_stale_terraform_deployments": (
+            "destroys only deployments whose state a Terraform run wrote under "
+            "terraform-runs/ in the source bucket, and a long-lived stack is a "
+            "CloudFormation stack that writes no such state"
+        ),
+        "cleanup_stale_terraform_migrations": (
+            "tears down only migration runs that recorded themselves under "
+            "terraform-migration-runs/ in the source bucket, through the driver's "
+            "own name checks, and no long-lived stack is a migration run"
         ),
     }
 
@@ -2874,7 +2942,9 @@ def test_the_bda_sweep_never_asks_after_the_long_lived_stack(
 
     assert findings == [], findings
     assert aws.described == [], f"the sweep asked CloudFormation about {aws.described}"
-    assert aws.calls.count("list_stacks") == 1, aws.calls
+    # One listing per CI region: IAM is global, so a run's stacks are looked for
+    # in every region a run can be in (_live_run_regions).
+    assert aws.calls.count("list_stacks") == len(cbd._live_run_regions()), aws.calls
     assert sorted(aws.deleted) == sorted(
         _resources_of("cleanup_stale_bda_blueprints", OLD_RUN_STACK)
     ), aws.deleted
@@ -3553,7 +3623,7 @@ CLIENT_SITES_FLOOR = frozenset(
         ("_expired_retention_markers", "client", "s3"),
         ("_force_delete_vpc_stack_enis", "client", "cloudformation"),
         ("_force_delete_vpc_stack_enis", "client", "ec2"),
-        ("_live_idp_run_prefixes", "client", "cloudformation"),
+        ("_live_idp_run_prefixes_in", "client", "cloudformation"),
         ("cleanup_stale_apigw_test_vpcs", "client", "cloudformation"),
         ("cleanup_stale_bda_blueprints", "client", "bedrock-data-automation"),
         ("cleanup_stale_ci_diagnostics", "client", "s3"),

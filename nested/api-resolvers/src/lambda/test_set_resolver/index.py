@@ -34,6 +34,10 @@ from idp_common.evaluation.confidence_curve import (  # type: ignore
     estimate_for_target,
 )
 from idp_common.evaluation.curve_store import CurveStore  # type: ignore
+from idp_common.forced_sections import (  # type: ignore
+    ForcedSectionsError,
+    encode_forced_sections,
+)
 from idp_common.models import Status  # type: ignore
 from idp_common.review_queues import testset_summaries  # type: ignore
 from idp_common.review_queues.annotators import (  # type: ignore
@@ -62,6 +66,7 @@ from idp_common.review_queues.testset_docs import (  # type: ignore
     validate_time_limit,
 )
 from idp_common.review_queues.testset_labels import (  # type: ignore
+    EXTRACTED_AS_CLASS_KEY,
     MAX_SECTION_LABEL_BYTES,
     DraftMove,
     LabelEditor,
@@ -76,14 +81,16 @@ from idp_common.review_queues.testset_summaries import (  # type: ignore
     summarize_document,
 )
 from idp_common.s3 import find_matching_files  # type: ignore
+from idp_common.testset_label_jobs import (  # type: ignore
+    drafting_run_ids,
+    legacy_drafting_run,
+    oldest_first,
+)
 from idp_common.testset_scope import (  # type: ignore
-    REVIEWER_GROUP,
-    SCOPE_PROFILE_ATTRIBUTE,
     TestSetAccessDenied,
     assert_can_access_test_set,
     caller_email,
     clear_scope_cache,
-    reviewer_may_access_test_set,
 )
 
 # Constants
@@ -125,6 +132,9 @@ def validate_test_set_name(name):
 # than a clean rejection.
 _DOCUMENT_CLASS_RE = re.compile(r"[a-zA-Z0-9 _-]+")
 _DOCUMENT_CLASS_MAX_LEN = 100
+# A baseline section id, which becomes part of an S3 key: the ids the pipeline and
+# update_test_set_document_sections write are short decimal strings.
+_SECTION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def validate_document_class(document_class):
@@ -277,35 +287,9 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
-def _scope_profile(test_set_id):
-    """The set's configuration profile for a Reviewer's scope, recorded on its metadata.
-
-    Resolved once with the full rule (`_resolve_set_config_version`: declared, bound,
-    or from its drafting runs) and kept as ``ScopeProfile`` so the file-read resolver,
-    which cannot resolve it, reads the same value. Empty when the set has no single
-    profile, which no scoped Reviewer is admitted to. A new drafting run drops it
-    (`generate_draft_labels`), so it is resolved again.
-    """
-    meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"}) or {}
-    if SCOPE_PROFILE_ATTRIBUTE in meta:
-        return str(meta.get(SCOPE_PROFILE_ATTRIBUTE) or "")
-    if not meta:
-        return ""
-    profile = _resolve_set_config_version(test_set_id, meta)[0] or ""
-    try:
-        db_client.update_item(
-            key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-            update_expression=f"SET {SCOPE_PROFILE_ATTRIBUTE} = :p",
-            expression_attribute_values={":p": profile},
-        )
-    except Exception as e:  # noqa: BLE001 — the answer stands; recording is best effort
-        logger.warning(f"Could not record the profile of test set {test_set_id}: {e}")
-    return profile
-
-
 def _assert_set_access(event, test_set_id):
-    """`assert_can_access_test_set` with this resolver's full profile resolution."""
-    assert_can_access_test_set(event, test_set_id, set_profile=_scope_profile)
+    """`assert_can_access_test_set` for this caller and test set."""
+    assert_can_access_test_set(event, test_set_id)
 
 
 # Operations a scoped Annotator may reach; every other field here is test-set
@@ -412,22 +396,21 @@ def _dispatch(event, context):
         if field_name in ADMIN_ONLY_FIELDS:
             allowed_groups = ["Admin"]
         elif field_name in ADMIN_AND_ANNOTATOR_FIELDS:
-            allowed_groups = ["Admin", "Annotator", REVIEWER_GROUP]
+            allowed_groups = ["Admin", "Annotator"]
         elif field_name in ANNOTATOR_ONLY_FIELDS:
-            allowed_groups = [ANNOTATOR_GROUP, REVIEWER_GROUP]
+            allowed_groups = [ANNOTATOR_GROUP]
         else:
             allowed_groups = ["Admin", "Author"]
             if field_name in ANNOTATOR_ALLOWED_FIELDS:
-                # Reviewers work every test set their profile scope admits, as
                 # Annotators work the sets they are scoped to; the per-set check is
                 # `_assert_set_access` in each handler.
-                allowed_groups.extend(["Annotator", REVIEWER_GROUP])
+                allowed_groups.extend(["Annotator"])
         if not _caller_in_groups(event, tuple(allowed_groups)):
             logger.warning(
                 f"Forbidden: caller attempted '{field_name}' without "
                 f"{'/'.join(allowed_groups)} group"
             )
-            raise Exception(
+            raise PermissionError(
                 f"Unauthorized: '{field_name}' requires "
                 f"{' or '.join(allowed_groups)} group"
             )
@@ -506,6 +489,10 @@ def _dispatch(event, context):
     elif field_name == "getTestSetVersions":
         return get_test_set_versions(event["arguments"])
     elif field_name == "generateDraftLabels":
+        input_data = event["arguments"].get("input", event["arguments"])
+        _assert_named_profile_in_scope(
+            event, input_data.get("configVersion"), input_data.get("testSetId")
+        )
         return generate_draft_labels(event["arguments"], event)
     elif field_name == "openTestSetAnnotationDraft":
         # Annotator-reachable: group membership alone would let one annotator open a
@@ -526,6 +513,9 @@ def _dispatch(event, context):
         input_data = event["arguments"].get("input", event["arguments"])
         _assert_set_access(event, input_data.get("testSetId") or "")
         _assert_assignee(event, input_data)
+        _assert_named_profile_in_scope(
+            event, input_data.get("configVersion"), input_data.get("testSetId")
+        )
         result = reextract_test_set_document(event["arguments"], event)
         _refresh_summary(input_data.get("testSetId"), input_data.get("objectKey"))
         return result
@@ -536,6 +526,11 @@ def _dispatch(event, context):
     elif field_name == "estimateReviewEffort":
         # Annotator-reachable: group membership alone would expose other sets.
         _assert_set_access(event, event["arguments"].get("testSetId") or "")
+        _assert_named_profile_in_scope(
+            event,
+            event["arguments"].get("configVersion"),
+            event["arguments"].get("testSetId"),
+        )
         return estimate_review_effort(event["arguments"])
     elif field_name == "getAnnotationQueue":
         return get_annotation_queue(event["arguments"], event)
@@ -969,13 +964,47 @@ def _caller_config_scope(event):
         )
     except ScopeLookupError as e:
         logger.error(
-            "Denying addDocumentsToTestSetByKey: configuration scope could not be "
-            "resolved: %s",
+            "Denying a test-set request: configuration scope could not be resolved: %s",
             e,
         )
         raise PermissionError(
             "Unauthorized: your configuration scope could not be verified"
         ) from e
+
+
+def _assert_named_profile_in_scope(event, config_version, test_set_id=None):
+    """Refuse a configuration profile the caller NAMES outside their scope.
+
+    ``generateDraftLabels``, ``reextractTestSetDocument`` and
+    ``estimateReviewEffort`` accept an optional ``configVersion``: the first two run
+    that profile's pipeline over the set's documents, the third reads that profile's
+    calibration curve. A named profile is held to the caller's
+    ``allowedConfigVersions`` as on ``startTestRun`` and ``updateConfiguration``.
+
+    The set's own profile is the exception, named or not: with no ``configVersion``
+    the operation uses it unchecked, because the set itself is governed by
+    ``allowedTestSets`` (``_assert_set_access``), and the web UI names it explicitly
+    on a re-extract. Refusing it when named and serving it when omitted would refuse
+    the UI's ordinary call for no difference in what runs. Only a profile OTHER than
+    the set's own is checked. Admins are not looked up.
+    """
+    if not config_version:
+        return
+    allowed = _caller_config_scope(event)
+    if scope_allows(allowed, config_version):
+        return
+    if test_set_id:
+        meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        if meta and _resolve_set_config_version(test_set_id, meta)[0] == config_version:
+            return
+    logger.warning(
+        "Refusing a test-set operation: the named configuration profile is "
+        "outside the caller's scope"
+    )
+    raise ResourceAccessDenied(
+        f"Unauthorized: configuration profile '{config_version}' is not in your "
+        "allowed scope"
+    )
 
 
 def _document_rows(object_keys):
@@ -1957,10 +1986,23 @@ def _label_jobs(test_set_id):
         if not next_key or next_key == start_key:
             break
         start_key = next_key
-    return sorted(jobs, key=lambda j: str(j.get("createdAt") or ""))
+    return oldest_first(jobs)
 
 
-def _run_id_by_object_key(test_set_id):
+def _drafting_run_ids(test_set_id, meta):
+    """Every test run that drafted labels for a set, oldest first.
+
+    :func:`idp_common.testset_label_jobs.drafting_run_ids` over the set's job
+    records and its ``labelJobId`` pointer. One list for the configuration and the
+    fingerprint resolvers here and for the test-execution aggregation's
+    self-measurement guard, so they agree on which runs drafted a set (#1746,
+    #1757). A FAILED job drafted nothing and is left out of it, as the review-run
+    resolver below passes over one.
+    """
+    return drafting_run_ids(_label_jobs(test_set_id), (meta or {}).get("labelJobId"))
+
+
+def _run_id_by_object_key(test_set_id, meta=None):
     """Which labeling run produced each document's pipeline copy.
 
     Review keys are ``{runId}/{filename}``, so this cannot be a single per-set
@@ -1971,13 +2013,34 @@ def _run_id_by_object_key(test_set_id):
 
     Later jobs win, so a re-extracted document points at its newest run while its
     neighbours keep theirs. A job with no explicit ``objectKeys`` covered the whole
-    set, and is applied as a default for documents no later job names.
+    set, and is applied as a default for documents no later job names. A failed
+    section-scoped re-extract is passed over.
+
+    ``meta`` is the set's metadata item, for sets drafted before job records
+    existed, whose run is named only by the ``labelJobId`` pointer. The pointer is
+    used only while the set has no job record at all: starting a job repoints it,
+    so once one exists the pointer names that job — a failed section re-extract the
+    loop below passes over, on a set with no other record (#1728). The run a job's
+    pointer replaced is kept on the job as ``previousLabelJobId``; when the oldest
+    job's is not itself a recorded job, it is that legacy drafting run, and it is
+    the default for documents no job names.
     """
+    jobs = _label_jobs(test_set_id)
+    if not jobs:
+        return {}, (meta or {}).get("labelJobId") or None
     per_doc = {}
-    default_run = None
-    for job in _label_jobs(test_set_id):
+    default_run = legacy_drafting_run(jobs)
+    for job in jobs:
         run_id = job.get("jobId")
         if not run_id:
+            continue
+        if job.get("status") == "FAILED":
+            # A job is FAILED only when it labeled nothing, so the harvest marked
+            # none of its copies as a test-set document and a review saved on one
+            # would reach nothing. Its copy may not match the labels at all either:
+            # a re-extract whose run ignored the forced grouping or class (Bedrock
+            # Data Automation mode) has the pipeline's own sections and class. The
+            # run before it is still the one that matches the labels.
             continue
         object_keys = job.get("objectKeys") or []
         if object_keys:
@@ -2022,11 +2085,15 @@ def _harvest_active_label_job(test_set_id, meta):
     for job in jobs:
         try:
             harvested.append(_harvest_label_job(job, deadline=deadline))
+        except _LabelJobGone:
+            continue  # deleted by a label reset since it was listed: not a job now
         except Exception as e:  # noqa: BLE001
             logger.error(
                 f"Queue harvest failed for labeling job {job.get('jobId')}: {e}"
             )
             harvested.append(job)
+    if not harvested:
+        return None
 
     # Report the job the UI is tracking when it is one of these, else the newest,
     # so a progress banner follows the run the user started.
@@ -2067,7 +2134,15 @@ def _documents_needing_labels(test_set_id):
     return needs, already
 
 
-def generate_draft_labels(args, event=None):
+def generate_draft_labels(
+    args,
+    event=None,
+    *,
+    forced_sections=None,
+    section_id=None,
+    section_expected=None,
+    reextract=False,
+):
     """Start a labeling job: run the active config over a test set's documents.
 
     Returns immediately with a jobId (the underlying test run id); the caller
@@ -2078,14 +2153,22 @@ def generate_draft_labels(args, event=None):
     Without an explicit ``objectKeys``, only documents that need labels are
     processed; labeling the rest would spend inference on results the harvester
     then refuses to write.
+
+    ``forced_sections``, ``section_id`` and ``section_expected`` are keyword-only and
+    set only by ``reextract_test_set_document`` for a section-scoped re-extract: the
+    encoded grouping the run builds instead of classifying, the one section whose
+    label the harvest replaces, and the class and page indices that section must
+    come back with (``{"class": ..., "pages": [...]}``). They are deliberately not read from ``input``, so
+    the public ``generateDraftLabels`` operation cannot reach them.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
     config_version = input_data.get("configVersion")
     config_revision = input_data.get("configRevision")
     object_keys = input_data.get("objectKeys") or []
-    # Forces the class for this run's documents instead of classifying them. Only
-    # ever set by a single-document re-extract after a class correction.
+    # Forces the class for this run's documents instead of classifying them. Meant
+    # for a single-document re-extract after a class correction, and enforced as
+    # such below: the operation is reachable with this field directly.
     document_class = input_data.get("documentClass")
 
     if not validate_test_set_name(test_set_id):
@@ -2103,6 +2186,27 @@ def generate_draft_labels(args, event=None):
     file_count = int(meta.get("fileCount", 0) or 0)
     if file_count <= 0:
         raise ValueError(f"Test set '{test_set_id}' has no documents to label")
+
+    if forced_sections:
+        # Built by reextract_test_set_document from one document's baseline, so it
+        # describes exactly that document and nothing else.
+        if len(object_keys) != 1 or document_class or not section_id:
+            raise ValueError(
+                "A forced section grouping needs exactly one objectKey and a "
+                "sectionId, and no documentClass"
+            )
+    elif document_class:
+        # A forced class replaces classification for every document in the run, so
+        # it is limited to the one document a reviewer corrected, and to a document
+        # with one section (see _single_section_keys_for_forced_class).
+        if len(object_keys) != 1:
+            raise ValueError(
+                "documentClass forces one class onto a whole document, so it needs "
+                f"exactly one objectKey (got {len(object_keys)})"
+            )
+        _single_section_keys_for_forced_class(
+            os.environ["TEST_SET_BUCKET"], test_set_id, object_keys[0]
+        )
 
     already_labeled = 0
     if not object_keys:
@@ -2138,6 +2242,8 @@ def generate_draft_labels(args, event=None):
         run_input["objectKeys"] = object_keys
     if document_class:
         run_input["documentClass"] = document_class
+    if forced_sections:
+        run_input["documentSections"] = forced_sections
 
     lambda_client = boto3.client("lambda")
     response = lambda_client.invoke(
@@ -2175,6 +2281,28 @@ def generate_draft_labels(args, event=None):
         "createdAt": now,
         "startedBy": started_by,
     }
+    if reextract:
+        # The harvest deletes the draft of each section it writes back: a re-extract
+        # supersedes the edits saved over the fields it replaces (D34). A Generate
+        # draft labels run keeps drafts.
+        job_item["reextract"] = True
+    if document_class:
+        # The harvest writes the run's result only if the run applied this class
+        # (_write_draft_labels_for_doc): Bedrock Data Automation mode does not.
+        job_item["forcedClass"] = document_class
+    if meta.get("labelJobId"):
+        # The pointer is about to name this job. On a set drafted before job
+        # records existed it is the only record of the drafting run, which stays
+        # the review run of every document this job does not replace
+        # (_run_id_by_object_key).
+        job_item["previousLabelJobId"] = meta["labelJobId"]
+    if forced_sections:
+        # The harvest replaces only this section's label, and only if the run kept
+        # it as asked (_harvest_label_job).
+        job_item["sectionId"] = section_id
+        if section_expected:
+            job_item["sectionClass"] = section_expected["class"]
+            job_item["sectionPages"] = list(section_expected["pages"])
     db_client.put_item(job_item)
 
     # Recorded on the set so progress survives the user navigating away. The
@@ -2183,9 +2311,7 @@ def generate_draft_labels(args, event=None):
     # resolved by the runner even when the caller passed none.
     db_client.update_item(
         key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
-        # A new drafting run can change the set's profile, so the recorded one is
-        # dropped and resolved again on next use (`_scope_profile`).
-        update_expression=f"SET labelJobId = :j, labelJobStatus = :s REMOVE {SCOPE_PROFILE_ATTRIBUTE}",
+        update_expression="SET labelJobId = :j, labelJobStatus = :s",
         expression_attribute_values={":j": test_run_id, ":s": "RUNNING"},
     )
 
@@ -2223,11 +2349,23 @@ def reextract_test_set_document(args, event=None):
     it back over the pin. The observable result was the demotion sticking while
     the correction vanished, leaving fields extracted under the old schema beside
     a "Re-extracted as X" success message.
+
+    A whole-document corrected class is refused on a document whose baseline has
+    more than one section. Both writes above are document-wide — the stamp touches
+    every section and the forced run produces a single section over every page — so
+    on a packet a correction to one section would rewrite the class of all of them
+    and then collapse the grouping.
+
+    ``sectionId`` is how one section of a packet is re-extracted instead
+    (:func:`_reextract_one_section`): the run is given the document's whole
+    grouping with only that section's class corrected, and the harvest replaces
+    only that section's label.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
     object_key = input_data["objectKey"]
     document_class = input_data.get("documentClass")
+    section_id = input_data.get("sectionId")
 
     if not validate_test_set_name(test_set_id):
         raise ValueError("Invalid test set id")
@@ -2237,14 +2375,42 @@ def reextract_test_set_document(args, event=None):
             "characters of letters, digits, spaces, hyphens or underscores"
         )
 
+    if section_id is not None and section_id != "":
+        if not isinstance(section_id, str) or not _SECTION_ID_RE.fullmatch(section_id):
+            raise ValueError(
+                "Invalid sectionId: expected up to 64 letters, digits, hyphens or "
+                "underscores"
+            )
+        if not document_class:
+            raise ValueError(
+                "sectionId re-extracts one section under a corrected class, so it "
+                "needs a documentClass"
+            )
+
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    if section_id:
+        return _reextract_one_section(
+            test_set_bucket,
+            test_set_id,
+            object_key,
+            section_id,
+            document_class,
+            meta,
+            input_data.get("configVersion"),
+            event,
+        )
     if document_class:
+        # Refused before the stamp below writes anything; generate_draft_labels
+        # repeats the check for callers that reach it directly.
+        section_keys = _single_section_keys_for_forced_class(
+            test_set_bucket, test_set_id, object_key
+        )
         _set_baseline_document_class(
-            test_set_bucket, test_set_id, object_key, document_class
+            test_set_bucket, test_set_id, object_key, document_class, section_keys
         )
 
     # Reuse the config that drafted the set's labels, so one document is not
@@ -2273,12 +2439,111 @@ def reextract_test_set_document(args, event=None):
             }
         },
         event,
+        reextract=True,
     )
     logger.info(
         f"Re-extracting {object_key} in {test_set_id} as "
         f"'{document_class or 'its existing class'}' via job {result['jobId']}"
     )
     return result
+
+
+def _reextract_one_section(
+    test_set_bucket,
+    test_set_id,
+    object_key,
+    section_id,
+    document_class,
+    meta,
+    config_version,
+    event,
+):
+    """Re-extract one section of a document under a corrected class (#1699).
+
+    The run processes the whole document, but with its grouping forced rather than
+    classified: every section keeps the pages, class and id its baseline records,
+    and the targeted section gets ``document_class``. That keeps the run's copy of
+    the document a faithful one — the review flow keys on it section by section —
+    and the harvest then replaces only the targeted section's label, so every
+    other section's ground truth is left exactly as it was. The cost is that
+    extraction runs over every section, not just the one written back.
+
+    Everything is checked before anything is written: the grouping has to be
+    complete and readable, or the run would not reproduce the document's other
+    sections, and it has to fit in the object metadata that carries it.
+    """
+    existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
+    if section_id not in existing:
+        raise ValueError(
+            f"'{object_key}' has no section '{section_id}'"
+            + (
+                f" (it has {', '.join(sorted(existing, key=_section_sort_key))})"
+                if existing
+                else ""
+            )
+        )
+
+    grouping = []
+    for sid, (_key, parsed) in existing.items():
+        indices = (parsed.get("split_document") or {}).get("page_indices")
+        doc_class = parsed.get("document_class")
+        current_class = doc_class.get("type") if isinstance(doc_class, dict) else None
+        cls = document_class if sid == section_id else current_class
+        if not isinstance(indices, list) or not indices:
+            raise ValueError(
+                f"Section '{sid}' of '{object_key}' records no pages, so a "
+                "re-extract could not keep it as it is. Fix its pages in Edit Page "
+                "Grouping first."
+            )
+        if not cls:
+            raise ValueError(
+                f"Section '{sid}' of '{object_key}' has no class, so a re-extract "
+                "could not keep it as it is. Set its class in Edit Page Grouping "
+                "first."
+            )
+        grouping.append(
+            {"section_id": sid, "classification": cls, "page_indices": indices}
+        )
+    grouping.sort(key=lambda entry: min(entry["page_indices"]))
+    try:
+        encoded = encode_forced_sections(grouping)
+    except ForcedSectionsError as e:
+        raise ValueError(f"Cannot re-extract one section of '{object_key}': {e}") from e
+
+    # Only the targeted section is re-labelled and, if reviewed, demoted; every
+    # other section's file is not written at all.
+    target_key, target = existing[section_id]
+    target_pages = [int(i) for i in target["split_document"]["page_indices"]]
+    _set_baseline_document_class(
+        test_set_bucket, test_set_id, object_key, document_class, [target_key]
+    )
+
+    config_version, _ = _resolve_set_config_version(test_set_id, meta, config_version)
+    result = generate_draft_labels(
+        {
+            "input": {
+                "testSetId": test_set_id,
+                "objectKeys": [object_key],
+                "configVersion": config_version,
+            }
+        },
+        event,
+        forced_sections=encoded,
+        section_id=section_id,
+        section_expected={"class": document_class, "pages": target_pages},
+        reextract=True,
+    )
+    logger.info(
+        f"Re-extracting section {section_id} of {object_key} in {test_set_id} as "
+        f"'{document_class}' via job {result['jobId']}, keeping the other "
+        f"{len(grouping) - 1} section(s) as they are"
+    )
+    return result
+
+
+def _section_sort_key(section_id):
+    """Numeric ids in number order, anything else after them."""
+    return (0, int(section_id), "") if section_id.isdigit() else (1, 0, section_id)
 
 
 # A packet with more sections than this is far more likely to be a client bug than a
@@ -2395,6 +2660,15 @@ def update_test_set_document_sections(args, event=None):
     That means rewriting every section file rather than renaming a few. Writes happen
     before deletes, so an interrupted call leaves an extra stale section — visible,
     and recoverable by re-saving — rather than a missing one.
+
+    ## The class the fields were extracted under
+
+    A class change leaves the fields extracted under the previous class, so the
+    section records that class as :data:`EXTRACTED_AS_CLASS_KEY` (see
+    :func:`_restamp_extracted_as`) and the editor can say so after a reload (#1816).
+    It is part of the section's content, so it follows the fields through the
+    renumbering exactly as they do; it is returned per section so the editor knows
+    it for sections it has not opened.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -2413,6 +2687,31 @@ def update_test_set_document_sections(args, event=None):
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
+
+    in_flight, harvest_failed = _label_job_to_write(test_set_id, object_key)
+    if in_flight and harvest_failed:
+        raise ValueError(
+            f"'{object_key}' still has labels to be written by a re-extract or "
+            f"draft-labeling job (job {in_flight.get('jobId')}), and that job's "
+            "progress could not be checked, so the page grouping was not saved: "
+            "saved now, it could be overwritten by the job. Try again in a few "
+            "minutes; if this keeps happening, the job is failing and an "
+            "administrator can find why in the test-set resolver's logs."
+        )
+    if in_flight:
+        # The harvest writes the run's sections over the baseline: a whole-document
+        # run would overwrite this grouping and prune the sections it adds, and a
+        # section-scoped run would fail on it (#1728). The job may also have
+        # finished and simply not been harvested to this document within the
+        # budget, so the message does not claim it is still running.
+        raise ValueError(
+            f"'{object_key}' still has labels to be written by a re-extract or "
+            f"draft-labeling job (job {in_flight.get('jobId')}), so the page "
+            "grouping was not saved: saved now, it would be overwritten by that "
+            "job or make it fail. Try again in a minute (a re-extract usually "
+            "finishes in under one, and each try also moves the job along), then "
+            "open Edit Page Grouping again."
+        )
 
     test_set_bucket = os.environ["TEST_SET_BUCKET"]
     existing = _read_baseline_sections(test_set_bucket, test_set_id, object_key)
@@ -2437,6 +2736,8 @@ def update_test_set_document_sections(args, event=None):
 
     prefix = f"{test_set_id}/baseline/{object_key}/sections/"
     written_keys = set()
+    # Each written section's EXTRACTED_AS_CLASS_KEY, in ``ordered`` order.
+    extracted_as = []
     for position, section in enumerate(ordered, start=1):
         source_id = str(section.get("sectionId") or "")
         _old_key, content = existing.get(source_id, (None, None))
@@ -2462,6 +2763,7 @@ def update_test_set_document_sections(args, event=None):
 
         document_class = section.get("documentClass")
         if document_class:
+            _restamp_extracted_as(content, document_class)
             doc_class = dict(content.get("document_class") or {})
             doc_class["type"] = document_class
             content["document_class"] = doc_class
@@ -2474,6 +2776,7 @@ def update_test_set_document_sections(args, event=None):
             ContentType="application/json",
         )
         written_keys.add(key)
+        extracted_as.append(content.get(EXTRACTED_AS_CLASS_KEY))
 
     # After the writes, never before: an interruption should leave a stale extra
     # section rather than a hole.
@@ -2490,6 +2793,7 @@ def update_test_set_document_sections(args, event=None):
             to_id=str(position),
             page_indices=[int(i) for i in section["pageIndices"]],
             document_class=section.get("documentClass") or None,
+            extracted_as=extracted_as[position - 1],
         )
         for position, section in enumerate(ordered, start=1)
         if str(section.get("sectionId") or "") in existing
@@ -2518,28 +2822,121 @@ def update_test_set_document_sections(args, event=None):
                 "documentClass": section.get("documentClass"),
                 # As written, so the client's board reflects what is now on disk.
                 "pageIndices": [int(i) for i in section["pageIndices"]],
+                "extractedAsClass": extracted_as[position - 1],
             }
             for position, section in enumerate(ordered, start=1)
         ],
     }
 
 
-def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class_type):
-    """Stamp a corrected class onto every section of a document's baseline.
+def _restamp_extracted_as(content, new_class):
+    """Record on a kept section the class its fields were extracted under (#1816).
 
-    Written before the run so the extraction uses it, and written even for sections
-    the run will overwrite, so a failed run still records the correction.
-
-    A ``reviewed-human`` section is demoted to ``draft-machine`` — the only place a
-    reviewed label is downgraded. The harvest refuses to overwrite reviewed labels,
-    so otherwise a re-extract would report success and leave the wrong-class fields
-    in place; requesting it after a class correction asserts the labels are wrong.
-
-    A baseline with no ``labelSource`` is authored ground truth and is never
-    demoted: nothing predicted it, so there is nothing to correct and overwriting it
-    would replace authoritative data with a machine guess. The class correction
-    still lands, but the label keeps its provenance and the harvest skips it.
+    That is the class already recorded, if an earlier regroup recorded one — the
+    fields have not been re-extracted since, so a second change (Invoice, then W2,
+    then Payslip) still names Invoice — and otherwise the section's class before this
+    save. Removed when the new class is that class: the fields match it again. A
+    section with no class before has nothing to name. Only a re-extract's write-back
+    replaces the fields, and it writes the run's output, which carries no such key;
+    see :func:`_set_baseline_document_class` for the section a re-extract does not
+    write back.
     """
+    recorded = content.get(EXTRACTED_AS_CLASS_KEY)
+    if not isinstance(recorded, str) or not recorded:
+        doc_class = content.get("document_class")
+        recorded = doc_class.get("type") if isinstance(doc_class, dict) else None
+    if isinstance(recorded, str) and recorded and recorded != new_class:
+        content[EXTRACTED_AS_CLASS_KEY] = recorded
+    else:
+        content.pop(EXTRACTED_AS_CLASS_KEY, None)
+
+
+def _clear_draft_extracted_as(test_set_id, object_key, section_id):
+    """Drop EXTRACTED_AS_CLASS_KEY from a section's draft. Best-effort: the label
+    is already written, and a draft that keeps it only shows a note it should not."""
+    try:
+        _labels().clear_draft_extracted_as(test_set_id, object_key, section_id)
+    except Exception as e:  # noqa: BLE001 — see docstring
+        logger.warning(
+            f"Could not update the draft of {test_set_id}/{object_key}#{section_id}: {e}"
+        )
+
+
+def _label_job_to_write(test_set_id, object_key):
+    """The labeling job that is still to write ``object_key``'s labels, or None.
+
+    Returns ``(job, harvest_failed)``: ``harvest_failed`` is True when the job's
+    harvest raised, so the refusal can say so rather than describe a broken harvest
+    as progress. The exception itself is only logged: it can carry account and
+    resource names, and a ValueError's message reaches the caller.
+
+    A job counts while it is in flight, names the document (a job with no
+    ``objectKeys`` covered the whole set) and has neither written nor given up on
+    it. The job is harvested first, so a run that has finished but that nobody has
+    polled since does not count. A job past :data:`STALE_LABEL_JOB_HOURS` does not
+    count either: the harvest gives up on its missing documents at that age, and a
+    job stuck in flight must not block the document for good.
+
+    Every job shares one harvest budget, the queue's, so the save still answers
+    inside the dispatcher's timeout however many jobs are in flight; a job the
+    budget did not reach to the end stays in flight and the save is refused, which
+    the refusal's wording allows for: each try harvests further.
+    """
+    deadline = time.monotonic() + QUEUE_HARVEST_TIME_BUDGET_SECONDS
+    for job in reversed(_label_jobs(test_set_id)):
+        if job.get("status") in ("COMPLETED", "FAILED"):
+            continue
+        keys = job.get("objectKeys") or []
+        if keys and object_key not in keys:
+            continue
+        if _label_job_is_stale(job):
+            continue
+        error = None
+        try:
+            job = _harvest_label_job(job, deadline=deadline)
+        except _LabelJobGone:
+            continue  # deleted by a label reset: it will write nothing
+        except Exception as e:  # noqa: BLE001 — judged on the stored state instead
+            logger.warning(
+                f"Could not advance labeling job {job.get('jobId')} before "
+                f"re-grouping {object_key}: {e}"
+            )
+            error = True
+        if job.get("status") in ("COMPLETED", "FAILED"):
+            continue
+        if object_key in (job.get("harvestedFiles") or []) or object_key in (
+            job.get("failedFiles") or []
+        ):
+            continue
+        return job, error
+    return None, None
+
+
+def _single_section_keys_for_forced_class(test_set_bucket, test_set_id, object_key):
+    """A document's baseline section keys, refusing a document with more than one.
+
+    A forced class is a statement about the whole document. The pipeline applies it
+    to every page and builds ONE section over all of them
+    (``apply_forced_document_class``), the up-front stamp in
+    ``reextract_test_set_document`` touches every section, and the harvest prunes
+    the machine-draft sections the run no longer produces. On a packet that turns
+    one section's correction into a rewrite of every section's class and then a
+    collapse of the grouping (#1672). A document with one section, or none yet, is
+    the case forcing was built for.
+    """
+    keys = _baseline_section_keys(test_set_bucket, test_set_id, object_key)
+    if len(keys) > 1:
+        raise ValueError(
+            f"'{object_key}' has {len(keys)} sections. Changing the class for the "
+            f"whole document would merge all {len(keys)} sections into one and "
+            "discard their ground truth; pass sectionId to re-extract a single "
+            "section instead."
+        )
+    return keys
+
+
+def _baseline_section_keys(test_set_bucket, test_set_id, object_key):
+    """The ``result.json`` key of every section in a document's baseline."""
     prefix = f"{test_set_id}/baseline/{object_key}/sections/"
     paginator = s3_client.get_paginator("list_objects_v2")
     keys = []
@@ -2549,7 +2946,35 @@ def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class
             for obj in page.get("Contents", [])
             if obj["Key"].endswith("/result.json")
         )
+    return keys
 
+
+def _set_baseline_document_class(
+    test_set_bucket, test_set_id, object_key, class_type, keys
+):
+    """Stamp a corrected class onto every section of a document's baseline.
+
+    Written before the run so the extraction uses it, and written even for sections
+    the run will overwrite, so a failed run still records the correction. Its only
+    caller, ``reextract_test_set_document``, refuses a document with more than one
+    section first, because a class stamped on every section of a packet is a
+    corruption rather than a correction.
+
+    A ``reviewed-human`` section is demoted to ``draft-machine`` — the only place a
+    reviewed label is downgraded. The harvest refuses to overwrite reviewed labels,
+    so otherwise a re-extract would report success and leave the wrong-class fields
+    in place; requesting it after a class correction asserts the labels are wrong.
+
+    A baseline with no ``labelSource`` is authored ground truth and is never
+    demoted: nothing predicted it, so there is nothing to correct and overwriting it
+    would replace authoritative data with a machine guess. The class correction
+    still lands, but the label keeps its provenance and the harvest skips it. That
+    makes this write the re-extract's last word on such a section, so it also drops
+    :data:`EXTRACTED_AS_CLASS_KEY`: no write-back will. A draft or reviewed section
+    keeps it until the write-back replaces its fields, so a run that never finishes
+    still says they reflect the previous class.
+    """
+    prefix = f"{test_set_id}/baseline/{object_key}/sections/"
     demoted = 0
     for key in keys:
         try:
@@ -2566,6 +2991,10 @@ def _set_baseline_document_class(test_set_bucket, test_set_id, object_key, class
         if result.get("labelSource") == LABEL_SOURCE_HUMAN:
             result["labelSource"] = LABEL_SOURCE_DRAFT
             demoted += 1
+        elif result.get("labelSource") != LABEL_SOURCE_DRAFT:
+            result.pop(EXTRACTED_AS_CLASS_KEY, None)
+            section_id = key[len(prefix) :].split("/")[0]
+            _clear_draft_extracted_as(test_set_id, object_key, section_id)
         s3_client.put_object(
             Bucket=test_set_bucket,
             Key=key,
@@ -3098,9 +3527,7 @@ def get_annotation_queue(args, event=None):
     # copy of a document, "{runId}/{filename}", not the test-set key. It is returned
     # so no client has to reconstruct that backend key layout.
     # Per document, not one pointer for the set: see _run_id_by_object_key.
-    per_doc_run, default_run = _run_id_by_object_key(test_set_id)
-    if not per_doc_run and not default_run:
-        default_run = meta.get("labelJobId")
+    per_doc_run, default_run = _run_id_by_object_key(test_set_id, meta)
     entries = []
     for doc in documents:
         state = claims.get(doc["objectKey"], {})
@@ -3271,10 +3698,8 @@ def _claim_state_for_documents(test_set_id, meta, documents):
     from the set's most recent labeling run. Without one, nothing is claimed and
     every document reads as available.
     """
-    per_doc_run, default_run = _run_id_by_object_key(test_set_id)
-    if not per_doc_run and not default_run:
-        # Fall back to the set pointer for sets labeled before per-run resolution.
-        default_run = meta.get("labelJobId")
+    # The set pointer is the fallback for sets labeled before per-run resolution.
+    per_doc_run, default_run = _run_id_by_object_key(test_set_id, meta)
     if not per_doc_run and not default_run:
         return {}
 
@@ -3362,15 +3787,7 @@ def _resolve_set_fingerprint(test_set_id, meta, config_version):
     fingerprints = set()
     unstamped = 0
     try:
-        run_ids = [
-            job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
-            for job in _label_jobs(test_set_id)
-        ]
-        # Same legacy fallback as the version resolver: a set drafted before
-        # labeljob# items existed names its run only through the pointer.
-        if not run_ids and meta.get("labelJobId"):
-            run_ids = [meta["labelJobId"]]
-        for run_id in run_ids:
+        for run_id in _drafting_run_ids(test_set_id, meta):
             fingerprint = _run_fingerprint(run_id)
             if fingerprint is None:
                 continue
@@ -3418,6 +3835,7 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
       ``labelJobId`` pointer alone: a one-document re-extract under another
       profile repoints that pointer, and the estimate would otherwise read a curve
       holding none of the set's review observations and call it the set's own.
+      The run list is :func:`_drafting_run_ids`.
     - ``"mixed"`` with ``None`` — the labeling jobs disagree. The caller falls back
       to the set's aggregate curve and can say why.
     - ``None, None`` — nothing identifies a configuration (uploaded labels with no
@@ -3449,8 +3867,7 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
 
     versions = set()
     try:
-        for job in _label_jobs(test_set_id):
-            run_id = job.get("jobId") or str(job.get("SK", "")).split("#", 1)[-1]
+        for run_id in _drafting_run_ids(test_set_id, meta):
             version = _run_version(run_id)
             if version:
                 versions.add(version)
@@ -3464,7 +3881,8 @@ def _resolve_set_config_version(test_set_id, meta, explicit=None):
             f"({sorted(versions)}); no single curve applies"
         )
         return None, "mixed"
-    # Legacy sets recorded only the pointer, not per-run job items.
+    # The jobs could not be read, or no run they name has a record: the pointer is
+    # the last thing that names a run.
     version = _run_version(meta.get("labelJobId"))
     if version:
         return version, "drafting-run"
@@ -3846,14 +4264,22 @@ def _count_baseline_fields(bucket, key):
 
 
 def _label_job_is_stale(job):
-    """True when a job is old enough that a missing document will never arrive."""
+    """True when a job is old enough that a missing document will never arrive.
+
+    A job whose ``createdAt`` is missing or unreadable counts as stale. Every job
+    this resolver starts is stamped, so such a record is not a job it started: the
+    shape arises when a harvest's final write lands after a label reset deleted the
+    job, and recreates the item with only the fields it writes. Reading "cannot be
+    aged" as "fresh" let that record (which names no documents, so covers the whole
+    set) block re-grouping every document for good (#1746).
+    """
     created = str(job.get("createdAt") or "")
     if not created:
-        return False
+        return True
     try:
         started = datetime.fromisoformat(created.replace("Z", "+00:00"))
     except ValueError:
-        return False
+        return True
     age_hours = (datetime.now(started.tzinfo) - started).total_seconds() / 3600.0
     return age_hours >= STALE_LABEL_JOB_HOURS
 
@@ -3894,6 +4320,14 @@ def _harvest_label_job(job, deadline=None):
 
     wanted = set(job.get("objectKeys") or [])
     files = [f for f in (run.get("Files") or []) if not wanted or f in wanted]
+    if not run.get("Files") and wanted:
+        # The run records its file list only once the copier has listed the set,
+        # moments after the job is created. A poll in that window saw no files,
+        # nothing pending, and completed the job with nothing harvested, so a
+        # re-extract reported success over unchanged fields. Until the list exists
+        # the named documents are pending (each has no tracking record yet, which
+        # the stale-job rule below bounds).
+        files = sorted(wanted)
 
     done = set(job.get("harvestedFiles") or [])
     failed = list(job.get("failedFiles") or [])
@@ -3907,6 +4341,11 @@ def _harvest_label_job(job, deadline=None):
     # pending, so counting it would hold the job RUNNING forever.
     pending_files = set()
     out_of_time = False
+    section_failure = None
+    # Documents whose results this pass could not copy, with the reason. Neither
+    # pending nor failed while anything else was labeled (they are retried while
+    # the job is in flight), but they are why a job that labeled nothing failed.
+    harvest_errors = {}
     for file_name in files:
         if file_name in resolved:
             continue
@@ -3955,6 +4394,10 @@ def _harvest_label_job(job, deadline=None):
                 doc.get("Sections") or [],
                 config_version=job.get("configVersion") or doc.get("ConfigVersion"),
                 confidence_fingerprint=run.get("ConfidenceFingerprint") or None,
+                only_section_id=job.get("sectionId") or None,
+                only_section_expected=_section_expected(job),
+                forced_class=job.get("forcedClass") or None,
+                discard_drafts=bool(job.get("reextract")),
             )
             # Keep the queue's summary of this document current as its draft lands.
             _refresh_summary(test_set_id, file_name)
@@ -3972,6 +4415,14 @@ def _harvest_label_job(job, deadline=None):
             # Writing no sections still counts: that means every section was
             # already human-owned, which needs no draft.
             done.add(file_name)
+        except _TargetSectionMissing as e:
+            # A section-scoped run that did not produce its section will not
+            # produce it on a later pass either; waiting would leave a job that
+            # reports success with nothing written. The reason is the job's error,
+            # because it is the one thing the reviewer can act on.
+            logger.warning(f"Draft labeling job {job_id}: {e}; recording it as failed")
+            failed.append(file_name)
+            section_failure = str(e)
         except Exception as e:  # noqa: BLE001 — one bad doc must not fail the job
             # Deliberately not counted pending: a document that fails every time
             # would hold the job RUNNING forever. It is left out of the harvested
@@ -3979,6 +4430,7 @@ def _harvest_label_job(job, deadline=None):
             logger.error(
                 f"Draft labeling: failed to harvest '{file_name}' for job {job_id}: {e}"
             )
+            harvest_errors[file_name] = str(e)
 
     now = datetime.utcnow().isoformat() + "Z"
     job_key = {"PK": f"testset#{test_set_id}", "SK": _label_job_sk(job_id)}
@@ -3994,13 +4446,22 @@ def _harvest_label_job(job, deadline=None):
     expected_failed = sorted(set(job.get("failedFiles") or []))
     for attempt in range(1, _MAX_HARVEST_WRITE_ATTEMPTS + 1):
         labeled = len(done)
+        uncopied = sorted(set(harvest_errors) - done - set(failed))
         if pending_files:
             status = "RUNNING"
-        elif failed and not labeled:
-            # Nothing to harvest and nothing left to wait for.
+        elif (failed or uncopied) and not labeled:
+            # Nothing to harvest and nothing left to wait for. A document whose
+            # results could not be copied counts here: without it a one-document
+            # job (every re-extract) whose copy raised ended COMPLETED with nothing
+            # written, and the editor reported the re-extract as done (#1728).
             status = "FAILED"
         else:
             status = "COMPLETED"
+        # A failed job is terminal, so a document it could not copy will not be
+        # retried; it is recorded as failed so the count says why.
+        failed_files = sorted(
+            set(failed) | (set(uncopied) if status == "FAILED" else set())
+        )
         update_expr = (
             "SET #st = :s, labeled = :n, harvestedFiles = :h, failedFiles = :f"
         )
@@ -4008,14 +4469,29 @@ def _harvest_label_job(job, deadline=None):
             ":s": status,
             ":n": labeled,
             ":h": sorted(done),
-            ":f": sorted(set(failed)),
+            ":f": failed_files,
         }
         if status == "FAILED":
             update_expr += ", #er = :e"
-            expr_values[":e"] = (
-                f"All {len(set(failed))} document(s) failed processing; no labels were "
-                "produced"
-            )
+            if section_failure:
+                expr_values[":e"] = section_failure
+            elif uncopied:
+                name = uncopied[0]
+                expr_values[":e"] = (
+                    f"The results for '{name}' could not be copied into the test set "
+                    f"({harvest_errors[name][:300]}), so nothing was written for it"
+                    + (
+                        f" or for {len(uncopied) - 1} other document(s)"
+                        if len(uncopied) > 1
+                        else ""
+                    )
+                    + ". Repeating it is safe."
+                )
+            else:
+                expr_values[":e"] = (
+                    f"All {len(set(failed))} document(s) failed processing; no "
+                    "labels were produced"
+                )
         if status in ("COMPLETED", "FAILED"):
             update_expr += ", completedAt = :c"
             expr_values[":c"] = now
@@ -4044,7 +4520,8 @@ def _harvest_label_job(job, deadline=None):
         # needs a writer outside this function -- a manual repair or a migration, since
         # every version of this code has stored both sorted.
         condition = (
-            "(attribute_not_exists(#h) OR #h = :exp_h) "
+            f"{_LABEL_JOB_EXISTS} "
+            "AND (attribute_not_exists(#h) OR #h = :exp_h) "
             "AND (attribute_not_exists(#f) OR #f = :exp_f)"
         )
         try:
@@ -4059,8 +4536,6 @@ def _harvest_label_job(job, deadline=None):
         except DynamoDBError as e:
             if e.error_code != "ConditionalCheckFailedException":
                 raise
-            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
-                raise
             # Merge rather than redo. The expensive part of this pass -- reading
             # each document and writing its draft labels to S3 -- has already
             # happened and is idempotent, so a lost conflict must not discard it
@@ -4069,11 +4544,26 @@ def _harvest_label_job(job, deadline=None):
             # the names still outstanding is what keeps the derived status honest
             # without recomputing it from the file list.
             fresh = db_client.get_item(job_key) or {}
+            if not fresh:
+                # The record was deleted, not raced: a label reset removed it. The
+                # set's status is left as the reset wrote it too.
+                logger.info(
+                    f"Draft labeling job {job_id}: the job was deleted while it "
+                    "was being harvested; not recording this pass"
+                )
+                raise _LabelJobGone(job_id)
+            if attempt == _MAX_HARVEST_WRITE_ATTEMPTS:
+                raise
             expected_done = sorted(fresh.get("harvestedFiles") or [])
             expected_failed = sorted(set(fresh.get("failedFiles") or []))
             done |= set(expected_done)
             failed = sorted(set(failed) | set(expected_failed))
             pending_files -= done | set(failed)
+            # The pass that wrote first may have recorded why a section-scoped
+            # re-extract failed; this pass did not see that, and must not replace
+            # the reason with the generic one.
+            if not section_failure and fresh.get("sectionId") and fresh.get("error"):
+                section_failure = fresh["error"]
             logger.info(
                 f"Draft labeling job {job_id}: another harvest wrote first; "
                 f"merging and retrying (attempt {attempt} of "
@@ -4108,7 +4598,7 @@ def _harvest_label_job(job, deadline=None):
             "status": status,
             "labeled": labeled,
             "harvestedFiles": sorted(done),
-            "failedFiles": sorted(set(failed)),
+            "failedFiles": failed_files,
         }
     )
     if status == "FAILED":
@@ -4118,6 +4608,48 @@ def _harvest_label_job(job, deadline=None):
     return updated
 
 
+class _TargetSectionMissing(Exception):
+    """A section-scoped run did not produce the targeted section as it was asked to."""
+
+
+class _LabelJobGone(ResourceNotFound):
+    """The labeling job's record was deleted after it was read (#1757).
+
+    A label reset deletes every job record of the set. A harvest that read the job
+    before the reset and wrote after it used to recreate the record, with no
+    ``createdAt`` and no document list, and put the set's label state back; the job
+    writes are conditional on the record existing, and this is raised instead.
+    """
+
+    def __init__(self, job_id):
+        super().__init__(f"Labeling job '{job_id}' not found")
+
+
+# Every write to an existing job record carries this, so a reset that deleted the
+# record between the writer's read and its write wins (#1757).
+_LABEL_JOB_EXISTS = "attribute_exists(PK)"
+
+
+def _read_json_or_none(bucket, key):
+    """A JSON object from S3, or None when it is absent or unreadable."""
+    try:
+        return json.loads(s3_client.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001 — absent and unreadable both mean "not that section"
+        return None
+
+
+def _section_expected(job):
+    """``(class, page indices)`` a section-scoped job's section must come back with.
+
+    ``None`` for a job that recorded neither (any other job).
+    """
+    cls = job.get("sectionClass")
+    pages = job.get("sectionPages")
+    if not cls and not pages:
+        return None
+    return cls, [int(i) for i in pages or []]
+
+
 def _write_draft_labels_for_doc(
     test_set_bucket,
     test_set_id,
@@ -4125,6 +4657,10 @@ def _write_draft_labels_for_doc(
     sections,
     config_version=None,
     confidence_fingerprint=None,
+    only_section_id=None,
+    only_section_expected=None,
+    forced_class=None,
+    discard_drafts=False,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -4133,7 +4669,43 @@ def _write_draft_labels_for_doc(
 
     Sections a previous run wrote that this one no longer produces are pruned —
     see :func:`_prune_superseded_draft_sections`.
+
+    ``only_section_id`` is set for a section-scoped re-extract: that one section is
+    written and nothing else is read, written or pruned, because the run
+    re-extracted the other sections only to keep its copy of the document whole.
+    Raises :class:`_TargetSectionMissing` when the run produced no such section, or
+    produced it with a class or pages other than ``only_section_expected``. That is
+    what a run that never applied the forced grouping looks like — Bedrock Data
+    Automation mode, for one, does not run the classification step that applies it
+    — and writing its section would put another span's fields into this label.
+
+    ``forced_class`` is set for a whole-document re-extract under a corrected class.
+    Every section that would be written must come back as that class, checked
+    before anything is written, or :class:`_TargetSectionMissing` is raised: a run
+    that did not apply the class (Bedrock Data Automation mode, again) would
+    otherwise replace the class the reviewer just corrected with the one they
+    corrected it from.
+
+    ``discard_drafts`` is set for a re-extract: each section written back loses its
+    draft, whose edits were made over the fields just replaced. Otherwise (a Generate
+    draft labels run) the draft is kept and only loses its EXTRACTED_AS_CLASS_KEY.
     """
+    if only_section_id is not None:
+        sections = [
+            section
+            for section in sections
+            if str(section.get("Id") or section.get("SectionId") or "")
+            == str(only_section_id)
+            and (section.get("OutputJSONUri") or "").startswith("s3://")
+        ]
+        if not sections:
+            raise _TargetSectionMissing(
+                f"the run produced no section '{only_section_id}' for '{file_name}'"
+            )
+    if forced_class is not None:
+        _check_forced_class_applied(
+            test_set_bucket, test_set_id, file_name, sections, forced_class
+        )
     wrote = False
     written_section_ids = set()
     for section in sections:
@@ -4152,6 +4724,45 @@ def _write_draft_labels_for_doc(
         src_bucket, src_key = output_uri[len("s3://") :].split("/", 1)
         body = s3_client.get_object(Bucket=src_bucket, Key=src_key)["Body"].read()
         result = json.loads(body)
+        if only_section_expected is not None:
+            want_class, want_pages = only_section_expected
+            got_class = (result.get("document_class") or {}).get("type")
+            got_pages = [
+                int(i)
+                for i in (result.get("split_document") or {}).get("page_indices") or []
+            ]
+            if got_class != want_class or got_pages != want_pages:
+                raise _TargetSectionMissing(
+                    f"The run did not keep section {section_id} as asked: it came back "
+                    f"as {got_class!r} on page indices {got_pages}, not {want_class!r} "
+                    f"on {want_pages}. Nothing was written. A configuration that uses "
+                    "Bedrock Data Automation does not apply a forced grouping."
+                )
+            # Read again now, not when the run started: the document can be
+            # re-grouped while the run is in flight, and a re-group renumbers
+            # sections, so this id may now name other pages — or keep its pages
+            # under a class the reviewer chose after this run started.
+            current = _read_json_or_none(test_set_bucket, baseline_key)
+            current_pages = [
+                int(i)
+                for i in ((current or {}).get("split_document") or {}).get(
+                    "page_indices"
+                )
+                or []
+            ]
+            current_class = ((current or {}).get("document_class") or {}).get("type")
+            if current is None:
+                raise _TargetSectionMissing(
+                    f"Section {section_id} was removed while it was being "
+                    "re-extracted. Nothing was written."
+                )
+            if current_pages != want_pages or current_class != want_class:
+                raise _TargetSectionMissing(
+                    f"Section {section_id} was changed while it was being "
+                    f"re-extracted (it is now {current_class!r} on page indices "
+                    f"{current_pages}, was {want_class!r} on {want_pages}). Nothing "
+                    "was written; re-extract it again."
+                )
 
         explainability = result.get("explainability_info")
         inference = result.get("inference_result")
@@ -4187,13 +4798,56 @@ def _write_draft_labels_for_doc(
         )
         written_section_ids.add(section_id)
         wrote = True
+        if discard_drafts:
+            # Not best-effort: a draft left in place is what the editor opens and
+            # what Process Changes applies, so a failure here fails the document.
+            _labels().delete_draft(test_set_id, file_name, section_id)
+        else:
+            # The run's output carries no EXTRACTED_AS_CLASS_KEY, so the label above
+            # has none; the section's draft, which the editor opens instead, must not
+            # keep one.
+            _clear_draft_extracted_as(test_set_id, file_name, section_id)
 
-    if wrote:
+    if wrote and only_section_id is None:
         _prune_superseded_draft_sections(
             test_set_bucket, test_set_id, file_name, written_section_ids
         )
 
     return wrote
+
+
+def _check_forced_class_applied(
+    test_set_bucket, test_set_id, file_name, sections, forced_class
+):
+    """Raise :class:`_TargetSectionMissing` unless every section the harvest would
+    write came back as ``forced_class``. Sections it keeps are not checked."""
+    for section in sections:
+        section_id = str(section.get("Id") or section.get("SectionId") or "")
+        output_uri = section.get("OutputJSONUri") or ""
+        if not section_id or not output_uri.startswith("s3://"):
+            continue
+        baseline_key = (
+            f"{test_set_id}/baseline/{file_name}/sections/{section_id}/result.json"
+        )
+        if _existing_label_is_human(test_set_bucket, baseline_key):
+            continue
+        src_bucket, src_key = output_uri[len("s3://") :].split("/", 1)
+        result = _read_json_or_none(src_bucket, src_key)
+        if result is None:
+            # Missing or unreadable, which is not the run ignoring the class: the
+            # writer's own read then fails and reports it as a copy failure.
+            continue
+        got_class = (result.get("document_class") or {}).get("type")
+        if got_class != forced_class:
+            raise _TargetSectionMissing(
+                f"The run did not apply the corrected class: '{file_name}' came back "
+                f"as {got_class!r}, not {forced_class!r}, so nothing was written. A "
+                "configuration that uses Bedrock Data Automation classifies the "
+                "document itself and does not apply a corrected class. The class "
+                "is still corrected on this document; correct its fields by hand, "
+                "or re-extract under a configuration that does not use Bedrock Data "
+                "Automation."
+            )
 
 
 def _prune_superseded_draft_sections(
@@ -4263,15 +4917,30 @@ def _existing_label_is_human(bucket, key):
 
 
 def _fail_label_job(job, message):
-    db_client.update_item(
-        key={
-            "PK": f"testset#{job['testSetId']}",
-            "SK": _label_job_sk(job["jobId"]),
-        },
-        update_expression="SET #st = :s, #er = :e",
-        expression_attribute_names={"#st": "status", "#er": "error"},
-        expression_attribute_values={":s": "FAILED", ":e": message},
-    )
+    """Record the job FAILED, and the set's job status with it.
+
+    Raises :class:`_LabelJobGone`, writing nothing, when the job's record no longer
+    exists: a label reset deleted it, and failing it would recreate it.
+    """
+    try:
+        db_client.update_item(
+            key={
+                "PK": f"testset#{job['testSetId']}",
+                "SK": _label_job_sk(job["jobId"]),
+            },
+            update_expression="SET #st = :s, #er = :e",
+            expression_attribute_names={"#st": "status", "#er": "error"},
+            expression_attribute_values={":s": "FAILED", ":e": message},
+            condition_expression=_LABEL_JOB_EXISTS,
+        )
+    except DynamoDBError as e:
+        if e.error_code != "ConditionalCheckFailedException":
+            raise
+        logger.info(
+            f"Draft labeling job {job['jobId']} was deleted before it could be "
+            f"recorded as failed ({message}); leaving it deleted"
+        )
+        raise _LabelJobGone(job["jobId"]) from e
     db_client.update_item(
         key={"PK": f"testset#{job['testSetId']}", "SK": "metadata"},
         update_expression="SET labelJobStatus = :s",
@@ -5041,8 +5710,7 @@ def skip_test_set_document(args, event=None):
 
 
 def claim_test_set_document(args, event=None):
-    """An Annotator takes a document of a set whose queue lists them; a Reviewer one
-    of any set their profile scope admits.
+    """An Annotator takes a document of a set whose queue lists them.
 
     The document must be unassigned and not yet reviewed. It is assigned to the
     caller exactly as an Admin assignment would (no expiry; the set's time limit
@@ -5055,21 +5723,14 @@ def claim_test_set_document(args, event=None):
     if not object_key or ".." in object_key or object_key.startswith("/"):
         raise ValueError("Invalid object key")
     caller = (caller_email(event) or "").lower()
-    if not caller or not _caller_in_groups(event, (ANNOTATOR_GROUP, REVIEWER_GROUP)):
-        logger.warning(
-            "Rejecting claimTestSetDocument: caller is not an Annotator or a Reviewer"
-        )
-        raise PermissionError(
-            "NOT_ELIGIBLE: only Annotators and Reviewers take test-set documents"
-        )
+    if not caller or not _caller_in_groups(event, (ANNOTATOR_GROUP,)):
+        logger.warning("Rejecting claimTestSetDocument: caller is not an Annotator")
+        raise PermissionError("NOT_ELIGIBLE: only Annotators take test-set documents")
     meta = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
     if not meta:
         raise ResourceNotFound(f"Test set '{test_set_id}' not found")
-    # A Reviewer works every set their profile scope admits (checked before this, in
-    # `_dispatch`), listed or not; an Annotator only the sets whose queue lists them.
-    if not _caller_in_groups(
-        event, (REVIEWER_GROUP,)
-    ) and caller not in _queue_annotators(meta):
+    # An Annotator works only the sets whose queue lists them.
+    if caller not in _queue_annotators(meta):
         logger.warning(
             "Rejecting claimTestSetDocument: caller isn't listed on the queue"
         )
@@ -5203,8 +5864,7 @@ def update_test_set_queue(args):
 
 def list_test_set_queues(event=None):
     """Test Studio queues: every set for an Admin (Review Studio › Review Management),
-    for an Annotator only the sets whose queue lists them, and for a Reviewer every set
-    their profile scope admits (Home › Queues).
+    and for an Annotator only the sets whose queue lists them (Home › Queues).
 
     One read of the sets' metadata items, which carry the counts kept by the
     background summary build, assignments and completed reviews. No S3 reads, and no
@@ -5215,19 +5875,13 @@ def list_test_set_queues(event=None):
     only_listed = bool(event and event.get("identity")) and not _caller_in_groups(
         event, ("Admin",)
     )
-    # A Reviewer also sees every set their profile scope admits, listed or not.
-    is_reviewer = only_listed and _caller_in_groups(event, (REVIEWER_GROUP,))
     out = []
     for item in _load_test_set_records():
         test_set_id = item.get("id") or str(item.get("PK", "")).replace("testset#", "")
         if not test_set_id:
             continue
         if only_listed and caller not in _queue_annotators(item):
-            if not (
-                is_reviewer
-                and reviewer_may_access_test_set(event, test_set_id, _scope_profile)
-            ):
-                continue
+            continue
         status, _count = _ensure_summaries(test_set_id, item)
         out.append(
             {

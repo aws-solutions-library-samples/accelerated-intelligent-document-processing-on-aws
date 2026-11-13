@@ -11,9 +11,12 @@ from .discovery import DiscoveryOperation
 from .document import DocumentOperation
 from .evaluation import EvaluationOperation
 from .manifest import ManifestOperation
+from .mcp import McpOperation
 from .publish import PublishOperation
 from .search import SearchOperation
 from .stack import StackOperation
+from .tenancy import TenancyOperation
+from .terraform import TerraformOperation
 from .testing import TestingOperation
 
 __all__ = [
@@ -28,5 +31,8 @@ __all__ = [
     "PublishOperation",
     "SearchOperation",
     "StackOperation",
+    "McpOperation",
+    "TenancyOperation",
+    "TerraformOperation",
     "TestingOperation",
 ]

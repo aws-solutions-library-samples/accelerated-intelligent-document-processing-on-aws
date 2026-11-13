@@ -57,7 +57,7 @@ created when you enable the Bedrock circuit breaker); two CloudWatch dashboards;
 X-Ray tracing on the document-processing Lambda functions and both state machines, which
 `EnableXRayTracing` turns off in one place if you do not want it; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
-encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 33 TLS-only
+encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 35 TLS-only
 resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
 Cognito authentication with a REST API authorizer; concurrency admission control; and
 per-invocation token and cost metering written to a queryable ledger.
@@ -94,14 +94,15 @@ the optional knowledge base (`nested/bedrockkb/`), and multi-document discovery
 (`nested/multi-doc-discovery/`). Deployment is reproducible from source through
 `publish.py` or the `idp-cli deploy` command.
 
-Monitoring is concrete rather than aspirational. 31 `AWS::CloudWatch::Alarm`
+Monitoring is concrete rather than aspirational. 32 `AWS::CloudWatch::Alarm`
 resources are declared in `template.yaml`, and all alerting for the whole solution runs
-through them — the nested stacks declare none. 30 of the thirty-one alarms publish to the
+through them — the nested stacks declare none. 31 of the thirty-two alarms publish to the
 `AlertsTopic` SNS topic; the remaining one, `BedrockServiceOutageAlarm`, publishes to
 `CircuitBreakerTopic`.
-Eight are conditional, so a default deployment has twenty-three:
-`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, and the seven
-malware-scanning alarms only when `MalwareScanning` is not `DISABLED`. The other
+Nine are conditional, so a default deployment has twenty-three:
+`BedrockServiceOutageAlarm` exists only when you enable the circuit breaker, the seven
+malware-scanning alarms only when `MalwareScanning` is not `DISABLED`, and
+`TenantIsolationLookupFailedAlarm` only when `TenantIsolationMode` is `Strict`. The other
 twenty-three are unconditional. They fall into nine groups:
 
 | Alarm | What it detects |
@@ -217,7 +218,7 @@ Protection verdict, before any execution starts; it is `DISABLED` by default, an
 its detection is signature, YARA and ML based with no behavioural analysis. See
 [malware-scanning.md](./malware-scanning.md).
 
-**Data protection in transit.** 33 resource policies deny requests where
+**Data protection in transit.** 35 resource policies deny requests where
 `aws:SecureTransport` is false, and there is no exception: in `template.yaml`, all
 thirteen S3 bucket policies and all seventeen SQS queue policies carry the deny, plus one
 further queue policy in `patterns/unified/template.yaml` and two in the optional
@@ -259,7 +260,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-164 operations. 154 of them require Cognito group membership and 2
+180 operations. 170 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 27 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -348,8 +349,8 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 131 IAM policy statements are written against `Resource: "*"` — 55 in
-`template.yaml`, 40 in `patterns/unified/template.yaml`, 8 in
+extensions, 131 IAM policy statements are written against `Resource: "*"` — 54 in
+`template.yaml`, 39 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the
 API being called accepts no resource ARN: `cloudwatch:PutMetricData` alone accounts for 29
@@ -458,22 +459,22 @@ clears on its own — expected behavior, not a second fault. See
 **Decoupling and fault isolation.** SQS queues buffer ingestion from processing, so a
 downstream failure or a Bedrock throttle backs up in a queue rather than dropping work.
 The nested-stack split keeps a pipeline change from touching the ingestion, tracking and
-UI resources. It is also what buys room to grow: `template.yaml` declares 355 top-level
+UI resources. It is also what buys room to grow: `template.yaml` declares 375 top-level
 resources against CloudFormation's hard limit of 500 per stack, so if you plan to extend
 the solution through the `feature-platform/` mechanism, that remaining budget is the number
 to watch, and a new extension is better added as its own nested stack than as more
 resources in the parent.
 
-**Durable state.** All thirteen S3 buckets have versioning enabled. Twelve of the fourteen
+**Durable state.** All thirteen S3 buckets have versioning enabled. Fourteen of the sixteen
 DynamoDB tables a default deployment creates have point-in-time recovery enabled. Those
-fourteen are twelve in `template.yaml`, one in `patterns/unified/template.yaml` and one in
+sixteen are fourteen in `template.yaml`, one in `patterns/unified/template.yaml` and one in
 `nested/api-resolvers/template.yaml`. Both exceptions are deliberate and both hold
 ephemeral state: `ConcurrencyTable` holds a single admission counter that is reconciled
 from the true running-execution count rather than restored, and
-`ChatDocumentSessionsTable` holds per-session chat-ownership records under a short TTL, so
-losing it only forces users to start a new chat session. Counting the optional
-`feature-platform/` extensions raises the total to twenty-one tables; all seven extension
-tables have point-in-time recovery enabled.
+`ChatDocumentSessionsTable` holds the document-chat ownership records written before
+`ChatSessionOwnersTable` existed, under a short TTL, and is no longer written. Counting the
+optional `feature-platform/` extensions raises the total to twenty-three tables; all seven
+extension tables have point-in-time recovery enabled.
 
 ### Review checklist
 
@@ -495,7 +496,7 @@ constitute one, because nothing in the stack replicates data across regions.
 
 - **Durable, versioned storage**: all S3 buckets have versioning enabled, so objects
   survive accidental overwrite or deletion and prior versions can be recovered.
-- **Point-in-Time Recovery**: twelve of the fourteen DynamoDB tables a default deployment
+- **Point-in-Time Recovery**: fourteen of the sixteen DynamoDB tables a default deployment
   creates can be restored to any second within the retention window. The two without it are
   `ConcurrencyTable`, whose admission counter is reconciled from the true
   running-execution count rather than restored, and `ChatDocumentSessionsTable`, whose

@@ -1,6 +1,10 @@
 ---
 title: "Feature Platform — Developer Guide"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Feature Platform — Developer Guide
 
 How to build a new **extension** (feature) and add it to the catalog. For the
@@ -155,7 +159,7 @@ The host passes your component a `uiAccessAllowed` boolean, and the reference
 samples use it (`disabled={!uiAccessAllowed}`). That is a **UX affordance, not a
 licence gate**, and it is important not to confuse the two.
 
-> **Renamed in this release.** This field was called `subscriptionActive`, which
+> **Renamed in 0.6.5.** This field was called `subscriptionActive`, which
 > invited precisely the wrong reading. If your extension destructures
 > `subscriptionActive`, rename it — see the upgrade note in `CHANGELOG.md`.
 
@@ -354,8 +358,10 @@ export) so compressed documents resolve.
 Three things to know:
 
 - **Load, don't build.** Constructing a `Document` from scratch drops
-  `metering`, `errors`, `hitl_metadata`, and `processing_issues`. Always
-  load → mutate → return.
+  `metering`, `metering_baseline`, `errors`, `hitl_metadata`, and
+  `processing_issues`. Always load → mutate → return. `metering` is this run's
+  usage and `metering_baseline` the earlier runs'; see
+  [Pipeline hooks](feature-platform.md#pipeline-hooks).
 - **Omitting `updatedDocument` changes nothing.** The document passes through
   byte-identical, so read-only hooks need no changes.
 - **`postExtraction` is section-scoped** (it runs inside the section Map), so
@@ -389,8 +395,8 @@ pipelineHooks:
 **3. Register at install (primary path).** The feature stack resolves those
 logical names to ARNs and calls the host's `registerFeatureHooks` mutation on
 Create (and clears them on Delete) — the same custom-resource pattern as
-`registerFeature`. The host writes them into the active config version's
-`<step>.postHook` lists. Each entry is
+`registerFeature`. The host writes them into the active configuration
+profile's `<step>.postHook` lists. Each entry is
 `{ featureId, arn, order (default 100), onError (default continue), enabled, args }`;
 `onError` is `continue` | `skip-remaining` | `fail`. `fail` aborts the document
 at **every hook point the active processing mode reaches** (see "Gating with
@@ -520,7 +526,7 @@ disabling it.
 
 **Escape hatch (no feature install).** For custom business logic outside the
 feature-install flow, an admin can add `postHook` entries — or fill in the
-`preprocessing` / `postprocessing` sections — in a config version directly (same
+`preprocessing` / `postprocessing` sections — in a configuration profile directly (same
 shapes as above).
 The hook Lambda still needs the `idp:feature-id` tag or a `GENAIIDP-*` name to
 clear the dispatcher's IAM check. This is handy for one-off integrations, but
@@ -530,19 +536,20 @@ added/removed with the stack.
 **Verifying a hook actually fired.** Asserting on your feature's own output
 cannot distinguish "the hook ran and decided nothing" from "the hook was never
 invoked" — from the feature's data store the two look identical. The dispatcher
-reports both the count and the config version it resolved, so check those
+reports both the count and the configuration profile it resolved, so check those
 instead:
 
 ```python
 # From the workflow execution history, at the hook state's exit:
 payload = output["HookResults"]["postRuleValidation"]["Payload"]
 assert payload.get("invoked", 0) > 0, "the dispatcher never invoked the hook"
-assert payload["configVersion"] == expected_version
+assert payload["configVersion"] == expected_profile
 ```
 
 `invoked: 0` with a `configVersion` you did not expect means the hooks are
-registered in a different config version than the one the document resolved —
-activate the right version, or pin it per document via `config_version`.
+registered in a different configuration profile than the one the document
+resolved — activate the right profile, or choose it per document via
+`config_version`.
 
 See [Feature Platform → Pipeline hooks](feature-platform.md#pipeline-hooks) for
 the full contract.

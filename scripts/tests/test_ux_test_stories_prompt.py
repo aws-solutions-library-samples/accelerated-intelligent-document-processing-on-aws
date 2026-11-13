@@ -746,7 +746,7 @@ def test_a_group_outside_the_sign_in_groups_or_an_unknown_kind_is_refused() -> N
     catalogue = _catalogue()
     story = catalogue.story("route-folder-to-profile")
     persona = catalogue.persona("platform-admin")
-    for group in ("Annotator", "Admin Author", ""):
+    for group in ("Operator", "Admin Author", ""):
         with pytest.raises(story_prompt.StoryPromptError, match="group"):
             story_prompt.build_story_prompt(
                 story=story,

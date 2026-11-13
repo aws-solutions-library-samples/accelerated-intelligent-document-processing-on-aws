@@ -76,9 +76,15 @@ The IDP Accelerator exposes document intelligence capabilities through a remote 
 |----------------------|-------------|
 | `MCPServerEndpoint` | The AgentCore Gateway HTTPS endpoint |
 | `MCPTokenURL` | Cognito OAuth token endpoint URL |
-| `MCPConnectorClientId` | Cognito app client ID for the MCP Connector (machine-to-machine (M2M) `client_credentials` flow — no user login required) |
-| `MCPConnectorClientSecret` | Cognito app client secret for the MCP Connector (machine-to-machine (M2M) flow) |
+| `MCPConnectorClientId` | The stack-created client-credentials client's ID (listed on the MCP Configuration page as "Default (stack-created)") |
+| `MCPConnectorClientSecretArn` | The Secrets Manager ARN holding that client's secret |
 | `MCPContentBucket` | S3 bucket for uploading documents (optional, for `process` tool) |
+
+Prefer a [service credential](mcp-server.md#service-credentials) of the connector's own,
+created on the MCP Configuration page: it carries only the role and configuration
+profiles you give it, and its settings entry is shown ready to paste. To use the
+stack-created client instead, read its secret with
+`aws secretsmanager get-secret-value --secret-id <MCPConnectorClientSecretArn>`.
 
 ### Installation
 
@@ -114,8 +120,8 @@ The connector is configured entirely through environment variables. All four aut
 |---------------------|----------|----------------------|-------------|
 | `IDP_MCP_ENDPOINT` | ✅ Yes | `MCPServerEndpoint` | AgentCore Gateway URL |
 | `IDP_MCP_TOKEN_URL` | ✅ Yes | `MCPTokenURL` | Cognito OAuth token endpoint |
-| `IDP_MCP_CLIENT_ID` | ✅ Yes | `MCPConnectorClientId` | Cognito app client ID (machine-to-machine (M2M) `client_credentials` flow — no user login required) |
-| `IDP_MCP_CLIENT_SECRET` | ✅ Yes | `MCPConnectorClientSecret` | Cognito app client secret |
+| `IDP_MCP_CLIENT_ID` | ✅ Yes | a service credential, or `MCPConnectorClientId` | Cognito app client ID (machine-to-machine (M2M) `client_credentials` flow — no user login required) |
+| `IDP_MCP_CLIENT_SECRET` | ✅ Yes | a service credential, or the secret at `MCPConnectorClientSecretArn` | Cognito app client secret |
 
 ### Configuring Cline
 
@@ -131,8 +137,8 @@ Add the following to your Cline MCP settings file (`~/.cline/data/settings/cline
       "env": {
         "IDP_MCP_ENDPOINT": "<MCPServerEndpoint from CloudFormation outputs>",
         "IDP_MCP_TOKEN_URL": "<MCPTokenURL from CloudFormation outputs>",
-        "IDP_MCP_CLIENT_ID": "<MCPConnectorClientId from CloudFormation outputs>",
-        "IDP_MCP_CLIENT_SECRET": "<MCPConnectorClientSecret from CloudFormation outputs>"
+        "IDP_MCP_CLIENT_ID": "<client ID of a service credential (MCP Configuration page)>",
+        "IDP_MCP_CLIENT_SECRET": "<its client secret, shown once when created>"
       },
       "alwaysAllow": [],
       "disabled": false
@@ -179,7 +185,7 @@ After deployment, navigate to the CloudFormation console and copy these output v
 MCPServerEndpoint       →  https://xxx.bedrock-agentcore.us-east-1.amazonaws.com/mcp
 MCPTokenURL             →  https://idp-stack-xxx.auth.us-east-1.amazoncognito.com/oauth2/token
 MCPConnectorClientId    →  abc123def456ghi789
-MCPConnectorClientSecret →  <secret-value>
+MCPConnectorClientSecretArn → arn:aws:secretsmanager:...:secret:<stack>/mcp/credentials/abc123def456ghi789
 MCPContentBucket        →  idp-stack-mcp-content-bucket-xxx
 ```
 
@@ -267,7 +273,33 @@ After saving the configuration, Cline automatically launches the connector proce
 
 ---
 
-### Related Documentation
+## Using MCP clients
+
+An MCP client passes each tool result to its own model, and the IDP server's results
+are mostly text taken from your documents: extracted values, classifications, file
+names, and the analytics agent's answers about them. Operate a client with that in
+mind:
+
+- **Connect the IDP server alongside tools you trust.** Whatever else the client
+  can do (send email, call web APIs, write files), its model can be steered to do
+  with what it read here. Keep the IDP server out of clients that also hold tools
+  you would not want acting on a document's contents.
+- **Results mark which fields are document content.** Each result that carries
+  document text includes a `provenance` field naming those fields
+  (`documentDerived`) and saying to treat them as data to report, not as
+  instructions to follow. The connector shows that note to the model as a separate
+  text block ahead of the result. A client that drops it loses the hint, not the result.
+- **Give each client the least access it needs.** Prefer a service credential with
+  the Viewer role and only the configuration profiles the integration reads. Turn
+  write tools (`process`, `reprocess`) on only where the client must start
+  processing, and keep `search`, which reads across every profile, to clients that
+  need it.
+- **Keep a person in the loop for actions.** Where the client asks before running a
+  tool, leave that on for write tools and for tools of other servers.
+- **Rotate and revoke.** A credential that a client no longer uses should be revoked
+  on the MCP Configuration page; revocation applies to the next request.
+
+## Related Documentation
 
 - [MCP Server](./mcp-server.md) — IDP MCP Server overview and tool reference
 - [Custom MCP Agent](./custom-MCP-agent.md) — Connecting your own MCP servers to the IDP web interface

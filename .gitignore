@@ -11,6 +11,9 @@ model.tar.gz
 # the lock when the holder exits, so a leftover file needs no cleanup. Kept OUT of
 # src/ui deliberately — `ui-lint` caches on a checksum of that directory.
 .ui-deps.lock
+# ESLint's cache for `npm run i18n:lint` (the UI string-debt counting run, issue
+# #1770). Kept out of src/ui for the same reason as the lock file above.
+.ui-i18n-eslintcache
 
 # Build artifacts - backup files from publish.py
 *.pre-build-backup
@@ -210,3 +213,8 @@ pipeline_execution_id.txt
 codebuild_logs.txt
 deployment_summary.txt
 ci_run_options.json
+
+# Working directories `idp-cli deploy --terraform` creates by default
+# (./idp-terraform/<stack-name>). They hold terraform.tfstate, which records
+# account ids, ARNs and sensitive values, and the parameters file.
+idp-terraform/

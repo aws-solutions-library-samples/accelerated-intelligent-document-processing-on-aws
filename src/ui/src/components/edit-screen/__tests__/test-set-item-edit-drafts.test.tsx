@@ -10,6 +10,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { act, render, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,6 +30,7 @@ vi.mock('../../../hooks/use-user-role', () => ({
     isReviewer: false,
     isAnnotator: true,
     canAnnotate: true,
+    canWorkTestSetQueues: true,
     loading: false,
     allowedConfigVersions: null,
   }),
@@ -54,6 +56,13 @@ import {
 } from '../../../graphql/generated';
 import TestSetItemEdit from '../TestSetItemEdit';
 import { STALE_DRAFT_MESSAGE, useTestSetItemEdit } from '../test-set-item-edit-adapter';
+
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const DRAFT_URI = 's3://tsb/ts-1/drafts/a.pdf/sections/1/000002-ab.json';
 const queueReply = () => ({
@@ -102,6 +111,7 @@ const renderItem = async () => {
     <MemoryRouter>
       <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
     </MemoryRouter>,
+    { wrapper: English },
   );
   await waitFor(() => expect(editorProps).not.toBeNull());
 };

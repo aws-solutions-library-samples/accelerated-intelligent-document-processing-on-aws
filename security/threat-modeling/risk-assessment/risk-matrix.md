@@ -4,11 +4,11 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.3 |
-| **Last Updated** | 2026-09-19 |
+| **Document Version** | 3.4 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
-| **Total Threats Identified** | 104 |
+| **Total Threats Identified** | 109 |
 
 ## 1. Risk Scoring Methodology
 
@@ -75,7 +75,7 @@
 | AUTH.T08 | Silently-Ignored Schema Authorization Directives | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T09 | Insecure Direct Object Reference (IDOR / BOLA) | **6** | Authentication/RBAC | Mitigated |
 | AUTH.T16 | Per-Object Authorization Is Opt-In Per Resolver (Default Deny Covers the Group Floor Only) | **6** | Authentication/RBAC | Partially Mitigated (#928 closed; per-object checks remain opt-in) |
-| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Open** (fix pending, #920) |
+| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | **6** | Companion Chat | **Mitigated** (ID token verified, session owner recorded) |
 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | **6** | Feature Platform | Partially Mitigated |
 | HOOK.T06 | Preprocessing Hook Operates on the Raw Source Document and Can Halt or Replace It | **6** | Lambda Hooks | Mitigated |
 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | **6** | Lambda Hooks | **Mitigated** — terminal at all seven hook points (#919 closed) |
@@ -95,6 +95,7 @@
 | SELL.T01 | Service Deployed Into an Account That Does Not Own the Product | **6** | Seller Entitlement Service | Mitigated |
 | SELL.T03 | Resource-Policy Over-Exposure (`Principal: '*'`) | **6** | Seller Entitlement Service | Mitigated |
 | SELL.T08 | Unavailability of the Activation Service Locks Out Paying Customers | **6** | Seller Entitlement Service | Partially Mitigated |
+| TEN.T01 | Cross-Tenant Access in a Shared Stack | **6** | Tenant Isolation | Partially Mitigated |
 | UI.T01 | Cross-Site Scripting (XSS) | **6** | Web UI | Partially Mitigated |
 | UI.T03 | UI API Abuse (REST dispatcher) | **6** | Web UI | Mitigated |
 | UI.T06 | Object Reads Carry No Document Ownership Axis | **6** | Web UI | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
@@ -103,7 +104,7 @@
 
 | Threat ID | Threat | Risk | Component | Status |
 |-----------|--------|------|-----------|--------|
-| AGT.T02 | Arbitrary Code Execution via AgentCore | **4** | Agent Analysis | Mitigated |
+| AGT.T02 | Arbitrary Code Execution via AgentCore | **4** | Agent Analysis | Partially Mitigated |
 | AGT.T03 | Agent Routing Manipulation | **4** | Agent Analysis | Mitigated |
 | AUTH.T01 | Privilege Escalation via Group Manipulation | **4** | Authentication/RBAC | Mitigated |
 | AUTH.T13 | Group Assignment From a User-Writable Attribute (External IdP Mapping) | **4** | Authentication/RBAC | Partially Mitigated |
@@ -129,17 +130,20 @@
 | AUTH.T10 | Token Lifecycle — Post-Logout Token Reuse (Stateless JWT) | **3** | Authentication/RBAC | Accepted |
 | AUTH.T11 | Weak Transport Security (TLS downgrade / cleartext) | **3** | Authentication/RBAC | Mitigated |
 | AUTH.T12 | Missing Input-Shape Validation (Type Confusion via Lost Schema Validation) | **3** | Authentication/RBAC | Mitigated |
-| AUTH.T14 | Alternate Entry Path Bypassing an Operation's Group Check (Streaming Function URL) | **3** | Authentication/RBAC | Partially Mitigated |
+| AUTH.T14 | Alternate Entry Path Bypassing an Operation's Group Check (Streaming Function URL) | **3** | Authentication/RBAC | Mitigated |
 | BDA.T03 | BDA Project Configuration Tampering | **3** | BDA Mode | Mitigated |
 | CHAT.T02 | Conversation Session Hijacking | **3** | Companion Chat | Mitigated |
 | CHAT.T04 | Conversation History Data Exposure | **3** | Companion Chat | Mitigated |
-| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Open** — #920 closed, but the body value is still the effective identity on the deployed transport |
+| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | **3** | Companion Chat | **Mitigated** — no route reads an identity from the request body |
 | FEAT.T04 | Stale or Downgraded Feature Bundle Served to Users | **3** | Feature Platform | Partially Mitigated |
 | HITL.T02 | Reviewer-Controlled Drafts Become the Document's Final Output | **3** | Review Queues | Partially Mitigated |
 | HITL.T04 | Resolvers Serving Annotator Operations Hold Write Grants on Authorization and Workflow State | **3** | Review Queues | Partially Mitigated |
 | HOOK.T03 | Inference Hook Result Tampering | **3** | Lambda Hooks | Mitigated |
 | HOOK.T05 | Privilege Escalation via Hook IAM Role | **3** | Lambda Hooks | Mitigated |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | **3** | Jobs API | **Open** |
+| TEN.T02 | Access-Point Delegation Trusts Every Access Point in the Account | **3** | Tenant Isolation | Partially Mitigated |
+| TEN.T03 | An External Grant Source Decides Tenancy | **3** | Tenant Isolation | Partially Mitigated |
+| TEN.T04 | The Sign-In Trigger Holds UsersTable Write Under `IdpClaim` | **3** | Tenant Isolation | Partially Mitigated |
 | JOB.T03 | Static Client Secret with No Rotation Mechanism | **3** | Jobs API | Partially Mitigated |
 | MCP.T02 | Malicious Tool Injection | **3** | MCP Integration | Mitigated |
 | PII.T02 | Redaction Loop / Re-Entrancy via Input-Bucket Writeback | **3** | PII Anonymization | Partially Mitigated |
@@ -168,6 +172,7 @@
 | RPT.T01 | Reporting Data Tampering | **2** | Reporting/Analytics | Mitigated |
 | RPT.T03 | Glue Catalog Manipulation | **2** | Reporting/Analytics | Mitigated |
 | SELL.T07 | Product-Existence Oracle | **2** | Seller Entitlement Service | Mitigated |
+| TEN.T05 | Tenant Declarations Are an Authorization Input and a Single Point of Failure | **2** | Tenant Isolation | Mitigated |
 | UI.T02 | Presigned Upload URL Abuse | **2** | Web UI | Mitigated |
 | UI.T04 | Hosting Origin Misconfiguration | **2** | Web UI | Mitigated |
 | UI.T05 | Client-Side Configuration Exposure | **2** | Web UI | Mitigated |
@@ -175,11 +180,11 @@
 ## 3. Risk Distribution Summary
 
 ```mermaid
-pie title Risk Distribution (104 Threats)
+pie title Risk Distribution (109 Threats)
     "Critical (8-9)" : 9
-    "High (6-7)" : 31
-    "Medium (3-5)" : 47
-    "Low (1-2)" : 17
+    "High (6-7)" : 32
+    "Medium (3-5)" : 50
+    "Low (1-2)" : 18
 ```
 
 ### By Component
@@ -201,8 +206,9 @@ pie title Risk Distribution (104 Threats)
 | Review Queues | 0 | 0 | 2 | 2 | 4 |
 | SDK/CLI | 1 | 2 | 2 | 0 | 5 |
 | Seller Entitlement Service | 2 | 3 | 4 | 1 | 10 |
+| Tenant Isolation | 0 | 1 | 3 | 1 | 5 |
 | Web UI | 0 | 3 | 1 | 3 | 7 |
-| **Total** | **9** | **31** | **47** | **17** | **104** |
+| **Total** | **9** | **32** | **50** | **18** | **109** |
 
 ### By STRIDE Category
 
@@ -211,26 +217,27 @@ than the threat total.
 
 | STRIDE Category | Threats | Highest Risk |
 |----------------|---------|--------------|
-| **Spoofing** | 16 | Critical |
-| **Tampering** | 40 | Critical |
+| **Spoofing** | 17 | Critical |
+| **Tampering** | 42 | Critical |
 | **Repudiation** | 5 | High |
-| **Information Disclosure** | 40 | Critical |
-| **Denial of Service** | 18 | High |
-| **Elevation of Privilege** | 34 | Critical |
+| **Information Disclosure** | 42 | Critical |
+| **Denial of Service** | 19 | High |
+| **Elevation of Privilege** | 38 | Critical |
 
 ### Mitigation Status
 
 | Status | Count | Description |
 |--------|-------|-------------|
-| **Mitigated** | 64 | Controls implemented and verified |
-| **Partially Mitigated** | 33 | Some controls in place, additional measures recommended |
-| **Open** | 3 | **Real gap with no effective control today — see the open-items list below** |
+| **Mitigated** | 67 | Controls implemented and verified |
+| **Partially Mitigated** | 37 | Some controls in place, additional measures recommended |
+| **Open** | 1 | **Real gap with no effective control today — see the open-items list below** |
 | **Accepted** | 4 | Risk accepted with documented rationale |
 
 #### Open items
 
-These six entries are not six open gaps. **Three are the model's `Open` threats** —
-no effective control today (CHAT.T03, CHAT.T06, JOB.T02). **Two are `Partially
+These six entries are not six open gaps. **One is the model's `Open` threat** —
+no effective control today (JOB.T02). **Two are `Mitigated`** (CHAT.T03, CHAT.T06)
+by the chat streaming endpoint verifying the caller's ID token. **Two are `Partially
 Mitigated` with a named residual** (SDK.T05, boundary attached and `iam:*`
 unchanged; UI.T06, no document-ownership axis). **One is `Mitigated`** (HOOK.T07),
 kept here as the record of what its fix covered rather than as an outstanding item.
@@ -239,8 +246,8 @@ issue is named, but the status stays *Open* until that change merges.
 
 | Threat ID | Threat | Component | Fix in flight |
 |-----------|--------|-----------|---------------|
-| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | Companion Chat | #920 |
-| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | Companion Chat | #920 |
+| CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | Companion Chat | Closed: ID token verified, session owner recorded |
+| CHAT.T06 | Client-Supplied Caller Identity on the Agent Streaming Route | Companion Chat | Closed: no body identity is read |
 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | Lambda Hooks | #919 |
 | JOB.T02 | Jobs API Is Outside the Automated Authorization Test Harness | Jobs API | — |
 | SDK.T05 | Deployment Service Role Is Broad Enough to Reach Account Administrator | SDK/CLI | #927 |
@@ -261,12 +268,13 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 | 7 | MCP.T01 | Data Exfiltration via MCP Tools | 8 | Partially Mitigated |
 | 8 | PM.T06 | Configuration Tampering | 8 | Mitigated |
 | 9 | SELL.T05 | Signing-Key Compromise or Trust Re-Pointing | 8 | Mitigated |
-| 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Open** (fix pending, #920) |
+| 10 | CHAT.T03 | Chat Streaming Function URL — Missing Group and Session-Ownership Enforcement | 6 | **Mitigated** (ID token verified, session owner recorded) |
 | 11 | HOOK.T07 | `onError: fail` Does Not Halt the Workflow at Six of Seven Hook Points | 6 | **Mitigated** (#919 closed) |
 | 12 | UI.T06 | Object Reads Carry No Document Ownership Axis | 6 | **Partially Mitigated** (#1033; residual is the missing ownership axis) |
 | 13 | AUTH.T07 | Config-Version Scope Bypass (Fail-Open Scope Lookup) | 6 | Partially Mitigated |
 | 14 | AUTH.T16 | Per-Object Authorization Is Opt-In Per Resolver (Default Deny Covers the Group Floor Only) | 6 | Partially Mitigated (#928 closed; per-object checks remain opt-in) |
 | 15 | FEAT.T03 | Feature Stack IAM Privilege and Host Resource Access | 6 | Partially Mitigated |
+| 16 | TEN.T01 | Cross-Tenant Access in a Shared Stack | 6 | Partially Mitigated |
 
 ## 5. Recommendations
 
@@ -275,22 +283,16 @@ Ranked by risk score, then by how much work remains (Open → Partially Mitigate
 These are code/config changes, not documentation work, and are ordered by
 effort-to-value:
 
-1. **Chat streaming authorization (CHAT.T03 + CHAT.T06)** — enforce session
-   ownership in both vendored streaming processors (reuse the existing
-   `ownerSub`-vs-`caller_sub` comparison before loading memory) and enforce the
-   Admin/Author/Viewer group on `/chat/agent`. **Fix CHAT.T06 first or together**:
-   `/chat/agent` currently prefers a client-supplied `callerSub` over the SigV4
-   identity, which would silently neuter an ownership check that reads it.
-   Then extend the automated harness to cover this transport — today
-   `make api-test` drives `POST /op/{field}` only, so a regression here is
-   undetectable. Tracked in **issue #920**, implemented in part by PR #954 —
-   which rejects a contradicting client-supplied identity but cannot supply a
-   per-user one on this transport, so both threats stay *Open* here even after it
-   merges. The prerequisite neither issue currently covers is a **verified
-   subject**: the browser presenting its Cognito ID token alongside the signed
-   request.
-2. **Document ownership for read scoping (UI.T06)** — give documents an ownership or
-   tenancy attribute and derive the permitted key from it, instead of trusting the
+1. **Run the chat streaming Function URL cells (CHAT.T03 + CHAT.T06)** — the
+   endpoint now verifies the caller's Cognito ID token, applies the
+   Admin/Author/Viewer group on `/chat/agent` and the group floor on
+   `/chat/document`, and checks each session id against its recorded owner before
+   any memory or history loads. `make api-test` has cells for this transport
+   (`run_chat_session_idor_suite`) that have not yet been run against a
+   deployment.
+2. **Document ownership for read scoping (UI.T06)** — give documents a per-user
+   ownership attribute (tenancy is now expressed through tenant declarations and
+   `TenantIsolationMode: Strict`) and derive the permitted key from it, instead of trusting the
    supplied `s3Uri`. Three of the four controls this needs are in place (#1033): the
    Identity Pool role is narrowed to no S3 at all, so every document read is an API
    call; the bucket allow-list fails closed; and all three axes the product records
@@ -332,7 +334,7 @@ effort-to-value:
    work so `'unsafe-inline'`/`'unsafe-eval'` can be dropped from `script-src`
    (Talos #12 phase 2). The blanket `https:` source is already gone — self-host
    Monaco out of the Web UI bucket to drop the remaining `cdn.jsdelivr.net`
-   source (and `style-src`'s `https:`) as well
+   source (and the same source in `style-src`) as well
 7. **Ground-truth change visibility (RPT.T07)**: surface/alert on baseline
    `_editHistory` mutations for high-value test sets
 8. **Log redaction (AUTH.T15)**: every resolver now applies the one canonical
@@ -347,15 +349,23 @@ effort-to-value:
    [`docs/external-idp.md`](../../../docs/external-idp.md)). What remains is to
    reach the rows the `sub` back-fill cannot match, to give the class gate a rule
    about the matcher, and to bring `idp_common/testset_scope.py` (the
-   `allowedTestSets` axis) onto the same `sub` join. Separately,
-   Chat-with-Document is unrestricted on the streaming transport because a Lambda
-   Function URL forwards no verified per-user caller — that half closes with
-   GAP-07 / **issue #920**, the same ID-token verification CHAT.T03 needs
+   `allowedTestSets` axis) onto the same `sub` join. Chat-with-Document on the
+   streaming transport is scoped the same way as on the REST path: the endpoint
+   forwards the email and sub of the ID token it verifies
 10. **External-IdP group mapping (AUTH.T13)**: keep group assignment sourced from
    provider claims the user cannot edit. All five roles are now mappable
    (**issue #968**); what remains is to set `ExternalIdPAnnotatorGroupName` on any
    federated deployment that uses annotators, since at its empty default
    `Annotator` is managed outside the IdP's joiner/leaver process
+11. **Tenant isolation in a shared stack (TEN.T01, TEN.T02, TEN.T04)**: deploy a
+   shared stack with `TenantIsolationMode=Strict` and run `idp-cli tenancy audit`
+   first, since under the defaults an unscoped non-Admin is unrestricted; restrict
+   `s3:CreateAccessPoint` and `s3:PutAccessPointPolicy` to the access point
+   deployer before switching (the SCP in
+   [Multi-Tenant Isolation](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/multi-tenancy.md)), because the bucket
+   policies delegate to every access point the account owns; and condition the
+   sign-in trigger's UsersTable `UpdateItem` on the scope attributes under
+   `IdpClaim`
 
 ### Ongoing Monitoring
 

@@ -41,13 +41,22 @@ model_id = idp_config.extraction.model
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, and
-model/feature-compatibility guards). Two guards, with deliberately different
+model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
+covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
+the active strategy makes, the per-class model overrides, and the `model` a field
+evaluated with `LLM` names in its method-config. The two embedding fields are left
+out because `pricing.yaml` prices no embedding model, and
+`tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
+`IDPConfig` that is not checked by one of those routes and not one of the two. IDs are compared as written, because the
+Bedrock client routes and sends them unchanged. Like the rest of the check, it does
+nothing when `pricing.yaml` is not on disk, as in a Lambda. Two guards, with
+deliberately different
 scopes — both hard errors at config time rather than an obscure mid-processing
 failure:
 
 | Guard | Rejects | Why |
 |---|---|---|
-| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_agentic_openai` | OpenAI GPT-5.x when extraction is agentic — `extraction.mode: advanced`, or `agentic.enabled` with no `mode` — as resolved by the validated `IDPConfig`, which is what the runtime reads | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
 | `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
 
 Grok is therefore rejected for **discovery** but not for agentic extraction. The
@@ -233,13 +242,33 @@ the model's field default**. The YAML wins on a normal load, so nothing shows un
 a field is *cleared* — and then that one call falls back to the code's opinion
 instead of the value the rest of the profile is running. A cleared model field used
 to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
-profile did not use.
+profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
+translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
+`idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
+the deploy-time swap gives the call's stored siblings. A model key absent from the
+data, rather than cleared, still takes the field default, the US id.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
-`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
-should eventually cover every section; `base-extraction.yaml` and its models are not
-compared yet.
+`scripts/tests/gate_exemptions.json`.
+
+The third property is also held for **every** section, in both patterns, by
+`tests/unit/config/test_system_defaults_value_parity.py`. It compares each value the
+merged system defaults ship with the owning model's default (read from a default
+instance, so a derived value is read as a caller sees it) and with the value a
+default `IDPConfig()` holds at the same path, which is where a parent
+`default_factory` passing its own value would show. A cleared numeric field
+falls back to the field default (`_default_if_none`), so this is the property that
+keeps clearing a field from changing what it does. Two shapes are excused by
+computation, and each is pinned: a top-level setting the two patterns ship
+differently (`PATTERN_DEPENDENT_PATHS`, today `notes` and `use_bda`), and a prompt
+whose code default is empty or `None` — the prompts that carry a code copy are
+listed in `PROMPTS_WITH_A_CODE_COPY` and never take it. Lists of models, such as
+`ocr.features`, are compared whole. Anything else that differs is listed one path
+at a time in `DEFAULT_PARITY_EXEMPT`, each with its reason, and an entry that no
+longer differs fails. The key-set directions are still
+asserted for classification only, and a field the YAML does not ship has no value
+to compare, so this gate says nothing about it.
 
 ## Files
 
@@ -250,6 +279,8 @@ compared yet.
 | `configuration_manager.py` | `ConfigurationManager` — CRUD against the DynamoDB Configuration Table (Default + Custom records), compression, versioning. Takes an optional `region`; see [Region for the underlying clients](#region-for-the-underlying-clients). Also `bda_routing(manager, version, raise_errors, config_revision)`: whether a document under a profile goes down the BDA branch — `use_bda` is set **and** a BDA project is linked to the profile, an unpinned document taking the active profile. `use_bda` is read from the revision the document is pinned to, or from the profile head when it has none; an unreadable pinned revision falls back to the head, as the queue processor's routing does, unless `raise_errors` is set, when it raises. The queue processor's routing rule, stated once for the `processChanges` resolver, which refuses a section or page change to a BDA-mode document. |
 | `migration.py` | Migration of legacy configuration formats to the current JSON-Schema-based format. |
 | `migrations/` | The `config_format_version` hop chain, applied by `migrate_config()` on every read. See [Config format migrations](#config-format-migrations). |
+| `prefix_mappings.py` | Config prefix mappings — which profile a document processes under, decided by its Input-bucket prefix. See [Config prefix mappings](#config-prefix-mappings--prefix_mappingspy). |
+| `tenants.py` | Tenant declarations — the prefix subtrees and profile pattern of each tenant, and the boundary checks over mappings, scopes and ingest. See [Tenant declarations](#tenant-declarations--tenantspy). |
 | `revisions.py` | `ConfigRevisionStore` — immutable numbered snapshots of a Configuration Profile's configuration. See [Configuration Profiles and revisions](#configuration-profiles-and-revisions). |
 | `retired_models.py` | `RETIRED_MODELS` / `is_retired()` — the single registry of Bedrock models past their end-of-life date. See [Retired models](#retired-models). |
 | `constants.py` | Configuration constants, including the reserved profile names and the active-profile pointer key. |
@@ -394,6 +425,55 @@ carried = carry_forward_authored_settings(existing_class, new_class, synthesized
   including `description`. `$id` / `x-aws-idp-document-type` are excluded: those
   are rewritten by the caller's id normalization, which logs its own rename.
 
+## Prompt comments
+
+A prompt template can carry `{# ... #}` comments (#1653). The rules and the
+stripping functions are in the standard-library-only leaf module
+`idp_common/prompt_comments.py` (`strip_prompt_comments`,
+`strip_prompt_comments_in_config`, `is_prompt_key`, `has_prompt_comments`), so the
+Bedrock client can use it without importing this package.
+
+**Where comments are removed, and why there.** Services check, splice and split a
+template *before* they substitute values: classification infers modality from
+whether `{DOCUMENT_IMAGE}` is in the template, the confidence and bounding-box
+blocks are spliced in next to `<<CACHEPOINT>>`, and templates are split on
+`{DOCUMENT_IMAGE}` / `{FEW_SHOT_EXAMPLES}`. A placeholder inside a comment must be
+gone before any of that, so:
+
+- `ConfigurationReader.get_merged_configuration` (behind `get_config`, the runtime
+  loader every processing Lambda uses) returns the configuration with comments
+  removed from every prompt key. A configuration with no comment is returned as the
+  same object; otherwise a new `IDPConfig` is built from a stripped dump and the
+  manager's object is left unchanged.
+- `ConfigurationManager` (the configuration editor's read and save path) is not
+  touched, so stored and exported configurations keep their comments.
+- `validate_config` runs the placeholder and cache-prefix checks on a stripped copy,
+  so a placeholder that appears only in a comment is reported missing.
+- For a configuration handed to a service directly, the services that split or
+  splice a template strip it themselves: `ExtractionService` and
+  `AssessmentService` strip their whole configuration once in `__init__`
+  (`without_prompt_comments`, the reader's helper; a configuration without comments
+  is kept as the same object), and the classification service strips in
+  `_stage_prompt`, in its shipped-default fallback and on the class-confidence
+  block. Few-shot example prompts are stripped where they are built, and
+  `BedrockClient.format_prompt` strips a template it is given.
+- Never strip after substitution (for example in `invoke_model`): document text
+  would already be in the prompt, and a document containing `{#` would be altered.
+- A configuration built in code and passed straight to any other service
+  (summarization, rule validation, evaluation, discovery, chat) has its task
+  prompts stripped by `format_prompt`, but not its system prompts. Load it with
+  `get_config`, or call `strip_prompt_comments_in_config` on it first.
+- The comment pattern is "tempered": a comment always ends at its own first `#}`.
+  The whole-line pattern (`_COMMENT_LINE`) needs that: with a plain lazy `.*?`
+  body under DOTALL, a line such as `{# a #}Keep{# b #}` would fail the required
+  line terminator after the first `#}`, and the engine would extend the comment to
+  the next `#}`, removing `Keep` with it.
+  `test_a_comment_never_extends_past_its_own_close` pins that.
+
+`tests/unit/test_prompt_comments.py` asserts that no comment text reaches a
+classification request with the commented shipped defaults, through the reader and
+with the configuration handed over directly.
+
 ## Configuration records
 
 Configuration is stored in DynamoDB with two record types:
@@ -402,7 +482,20 @@ Configuration is stored in DynamoDB with two record types:
 
 The same Default/Custom pattern is used for auxiliary records:
 - **`DefaultPricing` / `CustomPricing`** (`PricingConfig`) — service pricing for
-  cost estimation; Custom is deep-merged over Default (`get_merged_pricing`).
+  cost estimation, read through `get_merged_pricing`. Custom is laid over
+  Default **per model and per unit** (`merge_utils.overlay_pricing_rows`): a
+  Custom unit replaces the Default unit of the same name on the entry of the same
+  name, a unit or entry Default lacks is added, and a Default entry or unit Custom
+  does not mention is kept. A name repeated in Custom is applied in order, so the
+  last occurrence wins for each unit it names. The Pricing page saves
+  the full table, so a stack that has saved it gets prices for models a later
+  release adds, keeps its saved rate for every unit the table held (including ones
+  it never edited), and cannot delete a Default row: Custom records no deletions.
+  Only the reader merges; the stored records keep their shape, so an earlier
+  release reading the same Custom record replaces Default's list with it as it
+  always did. `delete_custom_pricing` (the page's **Restore default (All)**)
+  returns to Default. `tests/unit/config/test_pricing_row_merge.py` pins this
+  against the shipped `config_library/pricing.yaml`.
 - **`DefaultModelConfigLimits` / `CustomModelConfigLimits`**
   (`ModelConfigLimitsConfig`) — the ordered, first-match-wins list of per-model
   token limits, seeded from `config_library/model_config_limits.yaml`. Because
@@ -445,11 +538,56 @@ Four decisions worth knowing before changing this code:
   "Config#")`.** That filter lists profiles and feeds the scope-filtered dropdowns; a
   revision leaking into it would look like a profile with no configuration.
   `list_config_versions()` additionally skips reserved names.
-- **History is best-effort.** If the revision cannot be recorded, the save still
-  succeeds (logged at WARNING). Losing a history entry is recoverable; refusing a
-  save is an outage. `ConfigRevisionStore.enabled` is False when no
-  `CONFIGURATION_BUCKET` is configured, so older deployments and unit tests keep
-  working unchanged.
+- **Recording the revision is part of the save for a profile that has history.**
+  New documents are pinned to `PublishedRevision`, so a save that records no
+  revision would change what the configuration editor shows and not what
+  processing runs. For a profile that already has a published revision,
+  `save_configuration` therefore raises `RevisionNotRecordedError` (from
+  `idp_common.config.revisions`) instead: before writing anything when the process
+  has no `CONFIGURATION_BUCKET`, and after putting the previous head back when the
+  revision could not be written or published. The restore keeps the head's current
+  counters, so a revision number a failed attempt allocated is not handed out
+  twice. History stays append-only. A revision whose entry the failed save
+  wrote keeps it, with notes beginning `Save failed; not published` that say
+  whether the profile was restored to its published revision or could not be.
+  The store attaches the allocated number to the exception (`allocated_revision`)
+  so this also works for a failure inside the cut. A body whose index entry could
+  not be written is deleted only when the index confirms the entry is absent: a
+  timeout can arrive after the append landed, and an unreadable index leaves the
+  body in place. For a profile with no history yet, documents run the head, and history
+  stays best-effort there: a save succeeds without a revision and logs a WARNING.
+  `ConfigRevisionStore.enabled` is False when no `CONFIGURATION_BUCKET` is
+  configured, so older deployments and unit tests keep working.
+- **Every deployed Lambda that saves a profile has the bucket.** That means
+  `CONFIGURATION_BUCKET` plus `s3:GetObject`/`PutObject`/`DeleteObject` on
+  `config_revisions/*` and `s3:ListBucket` limited to that prefix. The set is
+  derived from source and enforced by
+  `scripts/tests/test_config_profile_writer_wiring.py`, so a new writer is held to
+  it without being listed. That gate reads deployed Lambdas only: a local process
+  (the CLI, the SDK, a notebook) is outside it. The SDK and CLI resolve both the
+  table and the bucket from the stack (`ConfigOperation._configure_config_env`);
+  code that builds a `ConfigurationManager` itself must set
+  `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
+  profile with history raises `RevisionNotRecordedError`.
+- **Resolving against `default` is recorded as a revision, by the deployment.**
+  `get_merged_configuration` resolves every profile against `default`. A pinned
+  read builds `IDPConfig` from the revision body without that resolution, so for a
+  profile with revision history the two differ whenever `default` holds a value
+  the model's own default does not (#1782). For such a profile a read applies the
+  resolution in memory and writes nothing, because whether its process may write
+  revisions depends on IAM grants the code cannot see.
+  `record_resolution_against_default(profile)` saves the resolution as a revision
+  (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
+  it, and its one caller is the stack-deployment custom resource
+  (`update_configuration`'s `resolve_user_profiles_against_default`), which runs
+  it for every custom profile with history after saving `default`. A profile with
+  no history is still written back on read, without a revision.
+- **`head_matches_published(profile)`** says whether the head is the revision new
+  documents run: True, False when the head was changed without a revision (with
+  the same proof a pinned read uses, `_head_is_revision`), or None when there is
+  nothing to compare. `listConfigProfileRevisions` returns it as
+  `profileMatchesPublished`, and the web UI warns on False in the editor, the
+  revision history and the revision picker.
 
 `_record_revisions()` skips the cut entirely when the saved configuration equals
 what was already stored. Every deployment re-saves `default` and each managed
@@ -783,6 +921,69 @@ from the document's own pin (`SOURCE_DOCUMENT_PIN`), and never carries one onto 
 mapping-supplied profile. That is the same hazard `resolve_config_assignment` guards
 internally when it clears the metadata's revision on a profile change, and passing one
 through at the call site would reintroduce it there.
+
+## Tenant declarations — `tenants.py`
+
+A tenant declaration names a set of Input-bucket prefix subtrees and one profile name
+pattern, and ties prefix mappings and configuration scope together into a tenant
+boundary. The user-facing description, including strict mode, is in
+[Multi-Tenant Isolation](../../../../docs/multi-tenancy.md).
+
+| Name | Role |
+|---|---|
+| `TenantStore` | One aggregate item, `TenantIndex#__index`, in the ConfigurationTable, rewritten under the same `IndexSeq` optimistic-concurrency guard as `PrefixMappingStore`. The key does not match `begins_with(Configuration, "Config#")`, so it never lists as a profile. Read failures propagate |
+| `tenant_rejection_reason` | A declaration is well formed and disjoint from the others: folder prefixes (trailing `/`) that neither equal, contain nor sit inside another tenant's, and a pattern of the form `<stem><separator>*` whose stem neither begins nor is begun by another tenant's |
+| `tenant_for_key` / `tenant_for_profile` | Which tenant owns an object key (canonicalized with `prefix_mappings.canonical_key` first) or a profile name. Disjointness makes each a function: at most one answer |
+| `mapping_rejection_reason` / `mappings_rejection_reason` | A prefix mapping inside tenant T must name one of T's profiles, and one outside every tenant must not name a tenant's profile. The plural form checks every existing mapping against a proposed tenant set, which is how saving a tenant over a crossing mapping is refused |
+| `scope_rejection_reason` | An `allowedConfigVersions` value stays inside one tenant. A glob counts as inside tenant T only when its literal head carries T's whole stem; a head that is a prefix of some stem (`a*`, `acme*`, `*`) is refused because it can reach into that tenant |
+| `stored_scopes` / `stored_scopes_rejection_reason` | Every non-Admin user scope stored in the UsersTable (a paginated `Scan` projecting four attributes, user rows only), and whether a proposed tenant set would leave one of them crossing a boundary. A scope is checked only when written, so saving a tenant — through the API, `idp-cli tenancy put` or `apply` — re-checks the stored ones; the refusal names one user and counts the rest |
+| `resolve_grants` | Which tenant a user's claim or entitlement values give them, against each tenant's `grantedBy` values: `GRANT_TENANT` for exactly one, `GRANT_NONE` for none, `GRANT_REFUSED` (with a reason naming the tenants) for two or more — a user is confined to one tenant. Values that grant nothing are ignored. `grantedBy` itself is validated in `tenant_rejection_reason`: at most `MAX_GRANTS_PER_TENANT` values, no surrounding whitespace, no duplicates, and no value granting two tenants |
+| `ingest_rejection_reason` | Strict mode only: the key's tenant and the resolved profile's tenant must be equal, both a tenant or both none. Both-none is accepted only for an internal producer. The one accepted mismatch is a Test Studio run whose stored test-run record names the same profile |
+
+Everything except `TenantStore` is pure — no boto3 and no environment — so each rule
+is tested as a table in `tests/unit/config/test_tenants.py`.
+
+**Strict mode lives in `config_scope`, not here.** `is_strict_isolation()` reads
+`TENANT_ISOLATION_MODE` (the `TenantIsolationMode` stack parameter) per call, and
+`resolve_allowed_config_versions` turns an unscoped caller into
+`[STRICT_UNSCOPED_DENY]` when it is `Strict` — a sentinel no profile name can equal,
+so every consumer of the lookup denies without an edit of its own. It is defined in
+`config_scope` because that file is vendored verbatim into resolvers that carry no
+`idp_common`; `tenants` re-exports it. The sentinel is applied after the
+per-container cache, so a cached answer is re-judged against the current mode: the
+cache holds the row's raw scope and whether that row records a different Cognito
+`sub` than the caller's, never a mode-resolved answer.
+`scripts/tests/test_tenant_isolation_wiring.py` fails if any function that resolves
+scope is deployed without the variable, because an unwired function would silently
+run as `Off`.
+
+**Grant sources live in `config_scope` and `user_scope`.** `TENANT_GRANT_SOURCE` (the
+`TenantGrantSource` parameter) is read per call; under `IdpClaim` or `Api`,
+`unscoped_is_denied()` is true and the lookup denies an unscoped caller exactly as
+strict mode does, and the wiring gate requires the variable on the same consumers.
+
+The lookup binds a row to the caller's Cognito `sub`. The `SUB#` pointer is read
+first; failing that, every `EmailIndex` row for the address is read (Cognito does not
+make `email` unique, and each account sharing an address can have a row) and one is
+chosen in the writer's order: the row recording the caller's `sub`, then a row
+recording none, then any other. A row recording a different `sub` than the caller's,
+reached by either leg, denies the caller wherever `unscoped_is_denied()` is true; under
+`Manual` with isolation off its scope is applied, because there it can only narrow
+access.
+The writer side is [`idp_common/user_scope.py`](../user_scope.py):
+`apply_tenant_grant` writes a `resolve_grants` answer onto a user's row — exactly the
+tenant's `profilePattern`, or `NO_TENANT_GRANTED` (`!no-tenant-granted`, matching no
+profile), never an empty scope — records `scopeSource` and `scopeTenant`, keeps the
+`SUB#` pointer, leaves Admins alone, and creates a missing row marked
+`source: "cognito"` so the user-sync stream does not create a second account. Given a
+`sub`, it finds the row through `find_user_row`, which never returns a row recording a
+different `sub`, and writes the grant and the row's `cognitoSub` in one `UpdateItem`
+conditioned on the row recording no `sub` or this one, so a row never carries a grant
+without the account it belongs to; an account with no row of its own is given one.
+Without a `sub` (an email-only push) an address held by more than one row is refused. The
+pre-token trigger, `user_management`'s `setUserTenant` and the SDK's
+`set_user_tenant` all write through it. The row and pointer invariants it shares with
+`user_management` (`record_cognito_sub`, `is_scoped`) are defined there too.
 
 ## Rollback-safe DynamoDB serialization
 

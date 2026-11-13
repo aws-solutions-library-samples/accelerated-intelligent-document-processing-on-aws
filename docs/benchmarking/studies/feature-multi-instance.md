@@ -2,6 +2,9 @@
 title: "Feature Study: multi-instance sections (#715 / #753)"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Feature study — multi-instance sections
 
 Not a release-vs-release comparison. This is a **feature A/B on one deployed stack

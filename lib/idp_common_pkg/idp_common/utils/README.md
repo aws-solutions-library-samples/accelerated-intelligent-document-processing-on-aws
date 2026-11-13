@@ -12,6 +12,7 @@ The Utils module provides common utility functions used across the IDP pipeline.
 | `build_s3_uri(bucket, key)` | Construct an `s3://bucket/key` URI from components |
 | `parse_s3_uri(s3_uri)` | Parse an S3 URI into `(bucket, key)` tuple |
 | `merge_metering_data(existing, new)` | Merge token usage / metering dictionaries (sums numeric values) |
+| `cumulative_metering(doc)` | A document's cumulative usage: `doc.metering_baseline` (earlier runs) plus `doc.metering` (this run's own), on deep copies. Accepts any object with a `metering` attribute; a missing baseline counts as empty |
 | `get_bedrock_region()` | Get the AWS region for Bedrock API calls |
 | `extract_structured_data_from_text(text)` | Extract JSON or YAML structured data from LLM response text |
 | `sanitize_event_for_logging(event)` | Deep-copy an event with denylisted keys redacted and long content-field strings truncated, for safe `logger` output. ⚠️ **Has vendored copies — see below** |
@@ -44,6 +45,18 @@ combined = merge_metering_data(
     new={"inputTokens": 200, "outputTokens": 75, "requests": 1}
 )
 # Returns: {"inputTokens": 300, "outputTokens": 125, "requests": 2}
+```
+
+Both metering helpers live in the stdlib-only `idp_common/utils/metering.py` and are
+re-exported from `idp_common.utils`. A document's `metering` holds only the current
+run's usage; `queue_processor.start_workflow` moves the usage a resubmitted document
+arrives with into `metering_baseline`. The tracking-table `Metering` attribute stores
+the sum, and reporting and the run record read `metering` alone:
+
+```python
+from idp_common.utils import cumulative_metering
+
+total = cumulative_metering(document)  # baseline + own; neither input is modified
 ```
 
 ### Transient-error classification (`transient_errors`)
@@ -126,6 +139,107 @@ several nested handlers still reports one name and one cause. Rule validation is
 this matters most, because its blocks nest: a transient re-raised for one rule travels
 up through `asyncio.gather` into a document-level `except` that returns a document
 marked failed (#1101).
+
+### What the agentic retry ladder treats as a transport failure
+
+`async_exponential_backoff_retry` retries botocore's four transport failures for a
+call that got no response — `ReadTimeoutError`, `ConnectTimeoutError`,
+`EndpointConnectionError` (a connection refused or unreachable, or an endpoint name that
+did not resolve, so the request never left the process) and `ConnectionClosedError`, a
+connection closed before the response arrived — by **type**, and wherever they sit on the exception's `__cause__` chain. The
+chain matters because Strands delivers the failure in two forms, measured with a real
+Strands 1.48 `Agent` over a real botocore client with only urllib3's `urlopen`
+replaced, on both `converse` and `converse_stream` (production's mode): raw from the
+first model call of an invocation, and wrapped in Strands' `EventLoopException` from the
+model call of any cycle that follows a tool use, which on the agentic extraction path is
+most of them. Neither form carries a name or message that the substring vocabulary
+(`DEFAULT_RETRYABLE_ERRORS`) matches — botocore words a read timeout "Read timeout on
+endpoint URL" — so such a dropped connection was never retried and such a read timeout
+only on the first cycle (#1730). `EndpointConnectionError` was not retried in either
+form until #1745, although the synchronous ladder in `bedrock/client.py` always retried
+it. An endpoint name that never resolves, such as a region without Bedrock, is retried
+too: measured on the production decoration, six or seven attempts and the full 90 s
+backoff allowance before the error is raised, so a misconfigured endpoint costs about
+90 s per agentic call. The handler then classifies `EndpointConnectionError` as
+transient (`transient_errors`), so the task-level retrier runs the shard again.
+
+A failure partway through a streamed response, after botocore has returned the event
+stream, is not rewrapped by botocore. A stall there surfaces as urllib3's
+`ReadTimeoutError`, whose message the substring vocabulary matches. A connection reset
+there surfaces as urllib3's `ProtocolError`, raw or as the `__cause__` of
+`EventLoopException`, and is in the type list for that reason (#1745). Retrying a
+reset that late is safe because Strands 1.48 keeps nothing from a stream it could not
+finish reading: it appends the assistant message, and runs any tool the model asked
+for, only after the last event has been read. Measured with a hand-built event stream
+cut after a complete `toolUse` block and `messageStop`: the tool ran zero times and
+`agent.messages` was unchanged, so the retry resumes exactly the request the reset
+interrupted. The chunks already streamed did reach the agent's callback handler, so
+partial text may be printed twice; nothing else repeats.
+`test_strands_keeps_nothing_from_a_stream_reset_partway` pins that premise, and goes
+red if Strands starts acting on a partial stream.
+
+On agentic extraction a throttle is retried by this ladder alone. Every extraction
+caller passes `strands_throttle_retries=False` to `structured_output_async`, which then
+builds the agent with `retry_strategy=None`, Strands' spelling for one attempt per model
+call, for the reason botocore is held to one attempt: a retry inside the call is one neither the
+cumulative allowance nor the Lambda deadline can see. Strands' default
+`ModelRetryStrategy` sleeps 4, 8, 16, 32 and 64 s on `ModelThrottledException` within a
+single model call, and starts that schedule again after every call that succeeds.
+Measured on the production construction with a real botocore client, only `urlopen`
+replaced and time virtual (#1759): under persistent throttling the call slept 834 s
+across 36 requests, 744 s of it inside Strands, and with 30 s to the deadline it slept
+124 s. With one attempt it sleeps the ladder's 90 s allowance and raises the throttle,
+which `transient_errors` classifies as transient. `retry_strategy` rejects a subclass
+of `ModelRetryStrategy`; a separate Strands hook could read the deadline, but it would
+still be a second ladder outside the allowance. What deferring costs: a section that
+throttling stalls for longer than the allowance is handed to the task-level retrier
+instead of riding it out inside the invocation, and the model calls that invocation
+completed are billed and not metered, because usage is recorded only when the call
+returns. The flag defaults to keeping Strands' strategy, and agentic rules discovery
+(`discovery/rules_discovery.py`) keeps it: that job runs from an SQS-triggered Lambda
+with no published deadline and no Step Functions retrier, so Strands' in-call retries
+are the throttle tolerance it has beyond the ladder's allowance.
+`tests/unit/extraction/test_agentic_throttle_is_retried_once.py` measures both bounds,
+and `tests/unit/extraction/agentic_idp/test_throttle_retry_ownership.py` checks which
+callers' agents carry which strategy, read from the agent Strands built.
+
+**A stream reset partway is not metered, and cannot be.** Bedrock reports a streamed
+response's token usage once, in the `metadata` event after `messageStop` — botocore's
+model of `ConverseStream` gives no other event a usage member — so a stream reset
+before that event reports none and the tokens Bedrock counted for it are unknown here.
+They are not estimated. Every usage Bedrock did report is metered, including the earlier
+model calls of an attempt the reset ended, provided the ladder then succeeds, because
+Strands accumulates usage on the agent across the ladder's invocations;
+`test_a_reset_stream_meters_exactly_the_usage_bedrock_delivered` pins that.
+
+Only `__cause__`, the explicit
+`raise ... from` link, is followed: `__context__` is set on any exception raised while
+another is being handled, so following it would make a deterministic failure raised
+inside an `except` inherit the transience of what was being handled.
+`transient_errors` follows the same rule for the same reason.
+
+### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
+
+`async_exponential_backoff_retry`, the ladder around the agentic extraction call,
+retries in a loop, so each attempt starts after the previous handler has exited and
+the failure is unreachable by then. That alone did not free it: a read timeout or a
+dropped connection leaves a botocore reference cycle behind it
+(`Endpoint._send_request` holds the exception it raises in a local), so the failed
+attempt's serialised request, page images included, stayed in memory until the cyclic
+garbage collector next ran. Measured with a real botocore client and an 8 MB request
+with the collector off, 8, 16, 24 and 32 MB were still held at attempts 2 to 5 of a
+read timeout, whether the botocore error arrived raw or raised `from` a wrapper. The
+retrying branch now
+calls `drop_failed_attempt`, the helper `bedrock/client.py` uses, which detaches the
+tracebacks along the failure's chain and stops at any exception the caller was already
+handling. It lives in the leaf module `idp_common/failed_attempt.py` so that both
+modules can import it without importing each other.
+
+Two things are deliberately left alone, because each measured flat: the `ClientError`
+branch of both decorators (a botocore throttle leaves no cycle), and the synchronous
+`exponential_backoff_retry`, which retries only `ClientError`.
+`tests/unit/utils/test_retry_decorators_release_failed_attempts.py` measures the
+retrying routes and keeps the throttle as its control (#1706).
 
 ### The shard invocation's time budget (`idp_common.timeout_budget`)
 

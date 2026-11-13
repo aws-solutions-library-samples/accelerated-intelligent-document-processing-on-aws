@@ -85,7 +85,7 @@ class QueueRef(BaseModel):
 
 
 class ReviewReason(BaseModel):
-    kind: Literal["low_confidence", "blueprint_confidence"]
+    kind: Literal["low_confidence", "blueprint_confidence", "missing_required"]
     section_id: str
     field: Optional[str] = None
     label: Optional[str] = None
@@ -111,6 +111,19 @@ class _Record(BaseModel):
     def to_attributes(self) -> dict[str, Any]:
         """Stored attributes (PascalCase), ``None`` omitted, floats as Decimal."""
         return to_dynamo(self.model_dump(by_alias=True, exclude_none=True))
+
+
+class ManualRequest(_Record):
+    """Why and by whom a document was sent to review by hand (Send to review)."""
+
+    reason: str
+    note: Optional[str] = None
+    requested_by: str
+    requested_at: str
+    #: The tracking row's ``HITLStatus`` before the send (restored on abandon).
+    prior_hitl_status: Optional[str] = None
+    #: The tracking row's ``HITLCompleted`` before the send (restored on abandon).
+    prior_hitl_completed: Optional[bool] = None
 
 
 class ReviewItemRecord(_Record):
@@ -179,6 +192,12 @@ class ReviewItemRecord(_Record):
     final_run_id: Optional[str] = None
     final_manifest_uri: Optional[str] = None
     finalized_at: Optional[str] = None
+    # Manual send and bulk skip
+    #: ``"manual"`` for an item created by Send to review (no phase-1 run).
+    origin: Optional[Literal["manual"]] = None
+    manual_request: Optional[ManualRequest] = None
+    #: The bulk Skip All Reviews job that skipped the item, if any.
+    skip_job_id: Optional[str] = None
     # Other
     withdrawn_reason: Optional[str] = None
     withdrawn_at: Optional[str] = None
@@ -233,7 +252,7 @@ class RunRef(BaseModel):
 
 
 class StatusReason(BaseModel):
-    kind: Literal["low_confidence", "blueprint_confidence"]
+    kind: Literal["low_confidence", "blueprint_confidence", "missing_required"]
     section_id: str
     field: Optional[str] = None
     label: Optional[str] = None

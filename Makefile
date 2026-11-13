@@ -44,7 +44,7 @@ IDP_FEATURE_CLI := $(PYTHON) -m idp_feature_sdk.cli
 # Keep this list complete, and never split it across multiple pip calls.
 FIRST_PARTY_EDITABLES := \
 	-e "lib/idp_common_pkg[all,dev,test]" \
-	-e lib/idp_sdk \
+	-e "lib/idp_sdk[terraform]" \
 	-e lib/idp_cli_pkg \
 	-e lib/idp_mcp_connector_pkg \
 	-e lib/idp_feature_sdk
@@ -57,7 +57,7 @@ help: ## Show this help message
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; section=""} \
 		/^##@/ { section=substr($$0, 5); next } \
-		/^[a-zA-Z_-]+:.*?## / { \
+		/^[a-zA-Z0-9_-]+:.*?## / { \
 			if (section != "" && section != last_section) { \
 				printf "\n  \033[1m%s\033[0m\n", section; \
 				last_section = section \
@@ -70,9 +70,52 @@ help: ## Show this help message
 .DEFAULT_GOAL := all
 all: lint test ## Run lint + test (default)
 
+# lib/idp_common_pkg/uv.lock, as a constraints file. Without it the install
+# resolved every dependency afresh against the index, so CI tested a different
+# dependency set from the one the lock records — and the one Dependabot bumps and
+# `make dep-audit` audits. Measured on a fresh environment built with each CI's
+# recipe: about half of the packages present in both the environment and the lock
+# were at a version other than the locked one; constrained to this export, none
+# were (#1707).
+#
+# Constraints rather than `uv sync`: the lock is idp_common_pkg's alone, while CI
+# installs all five first-party packages into one environment in one pass. A
+# constraint pins a package only if something asks for it, so the extras each CI
+# selects still decide WHAT is installed and the lock decides AT WHICH VERSION.
+# A package only the other four first-party packages require would therefore not
+# be pinned at all, so idp_common_pkg's `first-party-siblings` dependency group
+# names those and the lock records them too; scripts/tests/test_ci_gate_parity.py
+# fails on a first-party requirement the lock does not record (#1729).
+#
+# --locked, not --frozen: --frozen exports whatever the lock holds even when
+# pyproject.toml has moved on, so a dependency added without re-locking would be
+# left out of the constraints and resolve from the index with every check green.
+# --locked refuses a lock that no longer matches pyproject.toml; the remedy is
+# `uv lock` in lib/idp_common_pkg. Every extra and group is exported because a
+# constraint that nothing requests has no effect.
+#
+# ⚠️ This makes CI test the LOCKED versions. What is deployed does not use the
+# lock: the Lambda requirements and layers that publish.py builds resolve
+# against the index when they are built. So CI is now faithful to the lock, which
+# is what Dependabot bumps and `make dep-audit` audits, and not to a deployed
+# artifact. Closing that gap means building the artifacts from the lock too, which
+# is a separate change.
+#
+# Overridable, and both CI configs set it, so each passes the same file to `-c`.
+LOCK_CONSTRAINTS ?= $(CURDIR)/build/lock-constraints/idp_common_pkg.txt
+
+.PHONY: lock-constraints
+lock-constraints: ## Export lib/idp_common_pkg/uv.lock as a pip constraints file (needs uv)
+	@command -v uv >/dev/null 2>&1 || { \
+		echo -e "$(RED)ERROR: uv is required to read lib/idp_common_pkg/uv.lock, which make setup, make setup-venv and CI install against. Install it with pip install uv, or see https://docs.astral.sh/uv/.$(NC)"; \
+		exit 1; }
+	@mkdir -p "$(dir $(LOCK_CONSTRAINTS))"
+	uv export --locked --project lib/idp_common_pkg --all-extras --all-groups \
+		--no-emit-project --no-hashes --quiet --output-file "$(LOCK_CONSTRAINTS)"
+
 ##@ Setup
 .PHONY: install-first-party
-install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: make install-first-party PIP="uv pip")
+install-first-party: lock-constraints ## Install ALL first-party packages in ONE pip pass, constrained to uv.lock (CI: make install-first-party PIP="uv pip")
 	@# ONE invocation, deliberately — see the dependency-confusion note on
 	@# FIRST_PARTY_EDITABLES above. Splitting this lets pip resolve a
 	@# not-yet-installed sibling ("idp-sdk", "idp_common") from public PyPI, where
@@ -80,12 +123,18 @@ install-first-party: ## Install ALL first-party packages in ONE pip pass (CI: ma
 	@#
 	@# PIP is overridable because CI builds its venv with `uv venv`, which does not
 	@# install pip into it; CI passes PIP="uv pip".
-	$(PIP) install $(FIRST_PARTY_EDITABLES)
+	@#
+	@# -c: the versions come from lib/idp_common_pkg/uv.lock — see LOCK_CONSTRAINTS.
+	$(PIP) install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES)
 	@# Fails if any first-party package resolved from PyPI rather than the checkout.
 	$(PYTHON) scripts/check_first_party_deps.py
 
-setup: ## Install all packages into current Python environment (no venv)
-	@# Always use the current shell's pip, ignoring .venv even if it exists
+setup: lock-constraints ## Install all packages into current Python environment (no venv), constrained to uv.lock
+	@# Always use the current shell's pip, ignoring .venv even if it exists.
+	@# Every package install takes -c $(LOCK_CONSTRAINTS), the same lock export both
+	@# CIs install against, so a local environment holds the versions CI tests
+	@# (#1729). Only pip's own upgrade is unconstrained: it is the installer, not
+	@# part of the environment under test.
 	@SETUP_PIP=$$(python3 -m pip --version >/dev/null 2>&1 && echo "python3 -m pip" || echo "pip3"); \
 	SETUP_PYTHON=$$(command -v python3 2>/dev/null || echo python); \
 	echo "Installing packages into current Python environment..."; \
@@ -95,20 +144,20 @@ setup: ## Install all packages into current Python environment (no venv)
 	echo "Upgrading pip..."; \
 	$$SETUP_PIP install --upgrade pip && \
 	echo "Installing all first-party packages (single resolution pass)..." && \
-	$$SETUP_PIP install $(FIRST_PARTY_EDITABLES) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES) && \
 	echo "Verifying first-party packages resolved locally (not from PyPI)..." && \
 	$$SETUP_PYTHON scripts/check_first_party_deps.py && \
 	echo "Installing capacity planning test dependencies..." && \
-	$$SETUP_PIP install -r src/lambda/calculate_capacity/requirements-test.txt && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" -r src/lambda/calculate_capacity/requirements-test.txt && \
 	echo "Installing cfn-lint for CloudFormation template validation..." && \
-	$$SETUP_PIP install cfn-lint==$(CFN_LINT_VERSION) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" cfn-lint==$(CFN_LINT_VERSION) && \
 	echo "Installing the pinned ruff for the lint gates..." && \
-	$$SETUP_PIP install ruff==$(RUFF_VERSION) && \
+	$$SETUP_PIP install -c "$(LOCK_CONSTRAINTS)" ruff==$(RUFF_VERSION) && \
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
 
-setup-venv: ## Create .venv and install all packages into it
+setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
 	@PYENV_PYTHON=$$(pyenv which python 2>/dev/null); \
 	SYS_PYTHON=$$(command -v python3 2>/dev/null); \
@@ -122,18 +171,19 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo "Upgrading pip..."
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	@echo "Installing all first-party packages (single resolution pass)..."
-	$(VENV_DIR)/bin/pip install $(FIRST_PARTY_EDITABLES)
+	@# -c on every package install, as in `setup` above (#1729).
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" $(FIRST_PARTY_EDITABLES)
 	@echo "Verifying first-party packages resolved locally (not from PyPI)..."
 	$(VENV_DIR)/bin/python scripts/check_first_party_deps.py
 	@echo "Installing capacity planning test dependencies..."
-	$(VENV_DIR)/bin/pip install -r src/lambda/calculate_capacity/requirements-test.txt
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" -r src/lambda/calculate_capacity/requirements-test.txt
 	@echo "Installing cfn-lint for CloudFormation template validation..."
-	$(VENV_DIR)/bin/pip install cfn-lint==$(CFN_LINT_VERSION)
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" cfn-lint==$(CFN_LINT_VERSION)
 	@# lib/idp_common_pkg declares ruff as a RANGE (>=0.14.0,<0.16), so the pass
 	@# above resolves to whatever the newest matching release is on the day. This
 	@# narrows it to the exact version CI runs — see RUFF_VERSION.
 	@echo "Installing the pinned ruff for the lint gates..."
-	$(VENV_DIR)/bin/pip install ruff==$(RUFF_VERSION)
+	$(VENV_DIR)/bin/pip install -c "$(LOCK_CONSTRAINTS)" ruff==$(RUFF_VERSION)
 	@echo ""
 	@echo -e "$(GREEN)✅ Setup complete! Virtual environment created at $(VENV_DIR)$(NC)"
 	@echo -e "$(GREEN)   idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)"
@@ -150,8 +200,8 @@ setup-venv: ## Create .venv and install all packages into it
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -165,7 +215,7 @@ fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-id
 # version inside that range the tree is formatted against.
 #
 # This is the SINGLE SOURCE OF TRUTH for the ruff version. Both CI configs
-# install this exact version, scripts/setup/dev_setup_ubuntu.sh installs it, and
+# install this exact version, `make setup` and `make setup-venv` install it, and
 # scripts/check_lint_debt.py reads it from here so that a finding-count mismatch
 # measured under a different ruff says so instead of looking like a code change.
 # scripts/tests/test_ci_gate_parity.py fails if any of those drift from this.
@@ -235,6 +285,18 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@# cache, since iteration latency is what it was added for.
 	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
+		exit 1; \
+	fi
+	@# After ui-lint, which installed src/ui/node_modules: the extraction it replays
+	@# needs them, and in CI their absence is an error rather than a skip.
+	@if ! make check-ui-i18n-catalog; then \
+		echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)"; \
+		exit 1; \
+	fi
+	@# Same node_modules, same CI rule: the string-debt ratchet counts the UI's
+	@# hardcoded user-facing strings per file and fails when a file gains one.
+	@if ! make check-ui-string-debt; then \
+		echo -e "$(RED)ERROR: UI string-debt ratchet failed: a file gained a hardcoded user-facing string (see issue #1770)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -330,13 +392,17 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 #            worker count CI gives it. The job therefore costs its slowest tree
 #            rather than the sum, and which tree that is moves; measure rather than
 #            reading a figure here.
-#   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
-#            step below still requires it BY NAME, so dropping the wrong tree here
-#            turns the gate red rather than quietly narrowing it.
+#   --skip   by default leaves out the one tree an earlier CI step already measured
+#            (idp_common). The ratchet step below still requires it BY NAME, so
+#            dropping the wrong tree here turns the gate red rather than quietly
+#            narrowing it. GitHub's unit_tests also skips `scripts`, which its
+#            scripts_coverage job measures and ratchets instead; the ratchet there passes
+#            --measured-elsewhere scripts, and test_coverage_debt.py's cross-job
+#            closure test asserts the other job requires it.
 COVERAGE_CICD_JOBS ?= 4
 COVERAGE_CICD_SKIP ?= --skip idp_common
 coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
-	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
+	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) --fail-on-empty $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
 
 coverage-summary: ## Print the recorded per-tree figures, without measuring anything
 	@python3 scripts/check_coverage_debt.py --summary
@@ -345,8 +411,11 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report and refuse (exit 2), red-lining
 # every lint run for a condition the lint targets themselves cause.
-# Both CI configurations invoke it immediately after the test step instead. They pass no
-# arguments and need none: with no usable report the gate refuses rather than reporting
+# Both CI configurations invoke it immediately after the test step instead. GitLab
+# passes no arguments; GitHub, which splits the coverage trees across two jobs, passes
+# --measured-elsewhere in one and reaches this bare target with --require-tree in the
+# other (see test_every_tree_is_measured_and_ratcheted_by_some_github_job). Neither
+# needs more than that: with no usable report the gate refuses rather than reporting
 # success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.
@@ -371,6 +440,24 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
+	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
+	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it
+	@# takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_i18n_catalog.py' || \
+		(echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)" && exit 1)
+
+check-ui-string-debt: ## Ratchet the UI's hardcoded user-facing strings: fail if a file gains one, an unlisted file has any, or the baseline is stale (issue #1770)
+	@# src/ui/eslint.i18n.config.js is the counting rule (eslint-plugin-i18next, kept
+	@# out of the UI's lint script); scripts/ui_string_debt.json pins the count per
+	@# file and may only shrink — `python3 scripts/check_ui_string_debt.py --write`
+	@# re-records it after a file is converted. Off CI without src/ui/node_modules it
+	@# prints a SKIP (not a pass); in CI that is an error. It runs eslint out of
+	@# src/ui/node_modules, so it takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_string_debt.py' || \
+		(echo -e "$(RED)ERROR: UI string-debt ratchet failed (see issue #1770)$(NC)" && exit 1)
 
 check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
 	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
@@ -467,8 +554,9 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, disc
 # the commercial account?" — yes) confirmed it while it shielded 49 fixable
 # findings. Naming the lines makes the mismatch impossible to write down.
 #
-#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
-#     trust a named role in the commercial CI account that owns this pipeline.
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — three statements
+#     (two on GitLabRole, one on GitLabReviewRole) trust a named role in the
+#     commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
 #     would render an ARN naming a GovCloud account that is not the one meant.
 #
@@ -668,11 +756,63 @@ cfn-lint: ## Validate every CloudFormation template (fails on errors; warnings c
 cfn-lint-warnings: ## Same as cfn-lint but lists every advisory warning (W*/I*) in full
 	@$(MAKE) --no-print-directory cfn-lint CFN_LINT_SHOW_WARNINGS=1
 
+# Terraform offline gate: translate template.yaml with terraform/translator, then
+# `init -backend=false` and `validate` the generated module under each binary in
+# TERRAFORM_CHECK_BINARIES. It proves the generated HCL loads and type-checks
+# against the provider schemas; it plans and deploys nothing, so AWS-side
+# rejections are out of its reach. See scripts/terraform_check.py.
+#
+# Pinned for the reason CFN_LINT_VERSION is. The floor is the oldest release the
+# generated versions.tf admits (`required_version = ">= 1.7.0"`), the other is the
+# latest stable when last bumped; both CI configs pass the same four versions and
+# scripts/tests/test_ci_gate_parity.py fails if any of them drift. A new version
+# also needs its archive hashes in scripts/terraform_binaries.lock.json:
+#   python3 scripts/terraform_check.py --update-lock terraform@<v>
+TERRAFORM_FLOOR_VERSION := 1.7.5
+TERRAFORM_LATEST_VERSION := 1.17.1
+OPENTOFU_FLOOR_VERSION := 1.7.10
+OPENTOFU_LATEST_VERSION := 1.13.9
+TERRAFORM_CHECK_BINARIES ?= terraform@$(TERRAFORM_FLOOR_VERSION) terraform@$(TERRAFORM_LATEST_VERSION) tofu@$(OPENTOFU_FLOOR_VERSION) tofu@$(OPENTOFU_LATEST_VERSION)
+# Provider versions are pinned in scripts/terraform_binaries.lock.json, beside the
+# binaries' hashes, so both CI caches can key on one file.
+# Verified binaries and the provider plugin cache. Outside the checkout by default
+# (the plugin cache is ~2 GB, which would otherwise sit inside every scanner's walk);
+# CI points it at a cached directory.
+TERRAFORM_CHECK_CACHE ?= $(HOME)/.cache/idp-terraform-check
+
+terraform-check: ## Translate template.yaml to Terraform offline, then init + validate it with each pinned Terraform/OpenTofu, then diff a static scan of both (needs network for binaries, providers and checkov)
+	@$(PYTHON) scripts/terraform_check.py \
+		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
+		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
+	@$(MAKE) --no-print-directory terraform-scan-diff
+
+# The static-scan diff: checkov over the CloudFormation templates and over the
+# Terraform generated from them, failing when the Terraform side has a finding the
+# CloudFormation side does not (softer than upstream), beyond the explained entries
+# in scripts/terraform_scan_baseline.json. Pinned for the reason CFN_LINT_VERSION is:
+# a scanner release adds rules, and an unpinned one changes the verdict with no code
+# change. checkov is installed into its own venv under TERRAFORM_CHECK_CACHE. See
+# scripts/terraform_scan_diff.py for what it does and does not prove.
+CHECKOV_VERSION := 3.4.0
+terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templates against the generated Terraform; fail on a Terraform-only finding not in the baseline
+	@$(PYTHON) scripts/terraform_scan_diff.py \
+		--checkov-version "$(CHECKOV_VERSION)" \
+		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
+
+# Release-time property parity between a CloudFormation stack and a Terraform
+# deployment of the same release with the same parameters: every resource of both,
+# main and nested stacks, read through Cloud Control and diffed, with explained
+# differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
+# credentials and both deployments, so it is a release-validation tier, not a CI gate.
+terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
+	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
+	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
+
 # Deliberately NOT part of `lint`, `fastlint` or `lint-cicd`, and deliberately NOT
 # in test_ci_gate_parity.py's SHARED_GATES. It needs network access and a token
 # with administration:read, and on this repository it reports "not protected" on
-# BOTH long-lived branches: `develop`, which pull requests target, and `main`,
-# which is the default branch and the one releases are cut from. Wiring it into a
+# BOTH long-lived branches: `develop`, which pull requests target and which is the
+# default branch, and `main`, which releases are cut from. Wiring it into a
 # blocking gate would red-line every branch for a condition nobody working in the
 # tree can fix. test_check_branch_protection.py fails if it is added to a lint
 # target, to SHARED_GATES, or to either CI configuration.
@@ -696,7 +836,7 @@ check-branch-protection: ## Report whether branch protection actually requires t
 	@$(PYTHON) scripts/sdlc/check_branch_protection.py $(BRANCH_PROTECTION_ARGS)
 
 check-retired-models: ## Ask Bedrock whether any model this repo offers has been retired (opt-in, needs AWS credentials; NOT a CI gate)
-	@$(PYTHON) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
+	@$(RUN_FIRST_PARTY) scripts/sdlc/check_retired_models.py $(RETIRED_MODELS_ARGS)
 
 ##@ Type Checking
 # `typecheck` is THE type gate, and it is what both CIs run. It reads
@@ -771,20 +911,15 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 #     make test-packages-cicd PYTEST_XDIST="-n 4"
 #     make test-cicd -C lib/idp_common_pkg PYTEST_PARALLEL="-n 4"
 #
-# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
-# target:
-#
-#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
-#     lib/idp_sdk        2663 tests, serial  441s
-#
-# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
-# near-perfectly parallel and the win is close to the core count.
+# The two suites that once dominated this target, `scripts/tests` and `lib/idp_sdk`,
+# no longer run in it: `coverage-all-cicd` is their one CI run, and its worker share
+# comes from `coverage_all.worker_share`, never from this variable.
 #
 # ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
 # spinning up N workers costs a second or two before the first test runs, which is
 # longer than most of these invocations take — a majority finish in under a second.
-# The rule is **above 20s measured in CI**, which selects the nine that carry
-# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# The rule is **above 20s measured in CI**; grep the recipe for $(PYTEST_XDIST) to
+# see which invocations carry it today. Re-derive it by TIMING, not by counting tests: the test
 # count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
 # `src/lambda/complete_section_review` takes 7x longer for 115.
 #
@@ -807,26 +942,29 @@ test-integration-all: ## Run every integration-marked suite across all roots (re
 test-list: ## List the discovered test roots (run vs quarantined) without running them
 	$(PYTHON) scripts/run_all_tests.py --list
 
-test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
-	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
-	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_common_pkg test-cicd nor coverage-all-cicd runs (all green headless, no AWS)
+	@# The suites a coverage tree measures are NOT run here: `make coverage-all-cicd`
+	@# runs each of them, under coverage, in both CIs, and running them a second time
+	@# without coverage cost about 20 minutes of every pull request's longest job for
+	@# no added check. Those are the `scripts` gate suites, idp_sdk, idp_cli,
+	@# idp_feature_sdk, main-stack-extensions, seller-entitlement-service and the
+	@# pii-anonymizer hook and feature API -- every non-fan-out tree in
+	@# scripts/check_coverage_debt.py TREES. scripts/tests/test_src_lambda_tests_in_ci.py
+	@# credits those trees as run, so a suite dropped from here that no tree measures
+	@# fails there. The Lambda and resolver directories a fan-out tree measures are
+	@# still listed below: their runs are seconds each, and several are scoped
+	@# differently from the fan-out's invocation. `make test` runs every root locally.
+	@echo "Running Terraform translator and bridge tests..."
+	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
+	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
-	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@echo "Running pii-anonymizer UI deployer tests..."
+	@# These three ran in NO CI gate until #974. The feature API and hook suites are
+	@# now measured by their coverage trees (see the note at the top of this recipe). `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
@@ -881,6 +1019,20 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# index.py -- which also means this needs no region pin, as every boto3 client
 	@# is a MagicMock.
 	cd src/lambda/start_codebuild && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# AgentCore gateway custom resource: no toolkit observability on create, and
+	@# Delete removes the log group and delivery resources older versions left
+	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
+	@# botocore client behind a Stubber with an explicit region.
+	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
+	@# filters) and the custom resource that attaches it to the gateway. moto for
+	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
+	cd src/lambda/mcp_identity_interceptor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP credential manager: Admin-only routing, the scoped-Admin rule, the sweep.
+	cd src/lambda/mcp_credential_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# Registers the stack-created MCP client as "Default (stack-created)".
+	cd src/lambda/mcp_default_credential && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -908,6 +1060,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
 	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_worker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -941,14 +1095,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
-	@# Both built a boto3 client at import time with no region, so both errored at
-	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
-	@# Each now supplies its own region from its own conftest.py, which is what makes
-	@# running them through the wrapper meaningful -- the wrapper takes the region
-	@# away rather than handing one over. See #988.
+	@echo "Running the KB-ingestion custom-resource suite..."
+	@# It built a boto3 client at import time with no region, so it errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine. It
+	@# now supplies its own region from its own conftest.py, which is what makes
+	@# running it through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988. (The multi-document-discovery
+	@# build-run handler that sat beside it is now src/lambda/start_codebuild,
+	@# tested above; #1824.)
 	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the feature-platform extension suites that reached neither CI..."
 	@# The three pii-anonymizer suites above were added by #974; these eight are the
 	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
@@ -958,6 +1113,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# CI; the other modules in it run unconditionally.
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
@@ -982,14 +1138,6 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
-	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
-	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
-	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
-	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
@@ -1001,11 +1149,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, worktree reach, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
 		scripts/tests/test_check_shared_branch.py \
 		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_worktree_reach.py \
 		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
@@ -1041,8 +1190,8 @@ api-test-static: ## Static RBAC/authorization scan of all API operations (no AWS
 # the way running them all at once in one pipeline did.
 #
 # The deploy-variant stack-tests (APIGateway hosting, WAF, PRIVATE/VPC, Jobs API,
-# ZAP DAST) in particular no longer run automatically in CI; run them here on
-# demand, each on its own stack. Two modes:
+# ZAP DAST, tenant isolation) in particular run in CI only on the weekly variant-probe schedule,
+# never on the nightly; run them here on demand, each on its own stack. Two modes:
 #   * STACK_NAME=<existing>  → validate that already-deployed stack (fast)
 #   * omit STACK_NAME        → self-deploy a throwaway stack + validate + teardown
 #     (needs TEMPLATE_URL from publish.py).
@@ -1054,7 +1203,7 @@ _STACKTEST_VPC_ARGS = $(if $(VPC_ID),--vpc-id $(VPC_ID),) $(if $(SUBNET_IDS),--s
 _STACKTEST_ARGS = $(if $(STACK_NAME),--stack-name $(STACK_NAME),) $(if $(REGION),--region $(REGION),) $(if $(TEMPLATE_URL),--template-url $(TEMPLATE_URL),) $(if $(ADMIN_EMAIL),--admin-email $(ADMIN_EMAIL),) $(_STACKTEST_VPC_ARGS)
 
 stacktest-list: ## List the available deploy-variant stack-tests
-	$(PYTHON) scripts/sdlc/run_stacktest.py --list
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py --list
 
 # Usage: make api-test STACK_NAME=<stack-name> [REGION=<region>] [REPORT_DIR=<dir>] [NO_TEARDOWN=1]
 # Full RBAC test: runs the offline static scan (api-test-static) first, then
@@ -1095,13 +1244,14 @@ endif
 # under a temporary profile, claims it, saves a draft and completes it through
 # the REST API with a real Annotator ID token, then waits for the finalize
 # run and the final review status object. Creates and removes a temporary
-# profile, user and document (CHECK_EVENTS=1 adds a temporary EventBridge rule
-# and SQS queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
-stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and user)
+# profile, Annotator, Admin and document, and lists the Annotator on the Default
+# queue for the run (CHECK_EVENTS=1 adds a temporary EventBridge rule and SQS
+# queue). Exit 0 = PASS, 1 = FAIL, 2 = a check errored or was skipped.
+stacktest-review-queues: ## Review queues live check: routes a document, claims, completes and waits for the final status object (STACK_NAME=...; creates and removes a temporary profile and users)
 ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
-	$(PYTHON) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+	$(RUN_FIRST_PARTY) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
@@ -1130,6 +1280,35 @@ endif
 	    --client-id $(CLIENT_ID) \
 	    --domain $(DOMAIN)
 
+# Live tenant-isolation check against a stack deployed with TenantIsolationMode=Strict.
+# Creates throwaway profiles, tenants, users, IAM roles and an access point stack,
+# and removes them. In CI it runs only as the weekly variant-probe `tenancy` probe,
+# on a throwaway Strict stack; `make stacktest-tenancy` is that probe run by hand.
+# See docs/multi-tenancy.md.
+verify-tenant-isolation: ## Live tenant-isolation checks vs a Strict stack (STACK_NAME, REGION, YES=1 to skip the prompt)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. See docs/multi-tenancy.md)
+endif
+	$(RUN_FIRST_PARTY) scripts/security/live_checks/verify_tenant_isolation.py \
+	    --stack-name $(STACK_NAME) \
+	    --region $(if $(REGION),$(REGION),us-west-2) $(if $(YES),--yes)
+
+# Live check of tenant grants from the IdP claim (TenantGrantSource=IdpClaim), against
+# a stack federated to the throwaway OIDC provider driven to issue Entra-shaped
+# tokens (a `roles` app-role claim). See .claude/skills/live-auth-checks.md.
+verify-tenant-grants-federation: ## Tenant grants from the IdP claim vs a federated stack (STACK_NAME, REGION, IDP_FUNCTION, IDP_NAME, POOL_ID, CLIENT_ID, DOMAIN)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. See .claude/skills/live-auth-checks.md)
+endif
+	$(RUN_FIRST_PARTY) scripts/security/live_checks/verify_tenant_grants_federation.py \
+	    --stack-name $(STACK_NAME) \
+	    --region $(if $(REGION),$(REGION),us-west-2) \
+	    --idp-function $(IDP_FUNCTION) \
+	    --idp-name $(if $(IDP_NAME),$(IDP_NAME),VerifyIdP) \
+	    --pool-id $(POOL_ID) \
+	    --client-id $(CLIENT_ID) \
+	    --domain $(DOMAIN)
+
 # Usage: make ux-test STACK_NAME=<stack-name> [REGION=<region>] [GROUP=Admin]
 # Browser-driven UX test. Not a self-contained target on purpose: the browsing and
 # the usability judgement are done by the agent following
@@ -1140,7 +1319,7 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make ux-test STACK_NAME=<stack-name> [REGION=... GROUP=...])
 endif
 	@echo "Creating a throwaway UX-test session for $(STACK_NAME)..."
-	@$(PYTHON) scripts/ux_test_session.py setup $(STACK_NAME) \
+	@$(RUN_FIRST_PARTY) scripts/ux_test_session.py setup $(STACK_NAME) \
 	    --group $(if $(GROUP),$(GROUP),Admin) \
 	    $(if $(REGION),--region $(REGION),)
 	@echo -e "$(YELLOW)Now drive the flows in scripts/ux_flows.yaml — see .claude/skills/ux-test.md$(NC)"
@@ -1155,19 +1334,26 @@ ux-record-deps: ## Check the tools the UX review recorder needs (ffmpeg, ffprobe
 # Reports default under ./scratch (gitignored) so a manual run never litters the
 # working tree; override the location with REPORT_DIR=.
 stacktest-zap: ## ZAP DAST scan (STACK_NAME=... [REPORT_DIR=./dir] or self-deploy w/ TEMPLATE_URL=...)
-	IDP_ZAP_REPORT_DIR=$(if $(REPORT_DIR),$(REPORT_DIR),./scratch/zap-reports) $(PYTHON) scripts/sdlc/run_stacktest.py zapdast $(_STACKTEST_ARGS)
+	IDP_ZAP_REPORT_DIR=$(if $(REPORT_DIR),$(REPORT_DIR),./scratch/zap-reports) $(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py zapdast $(_STACKTEST_ARGS)
 
 stacktest-hosting-global: ## APIGateway GLOBAL hosting variant
-	$(PYTHON) scripts/sdlc/run_stacktest.py apigw $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py apigw $(_STACKTEST_ARGS)
 
 stacktest-waf: ## WAF-enabled hosting variant
-	$(PYTHON) scripts/sdlc/run_stacktest.py waf $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py waf $(_STACKTEST_ARGS)
 
 stacktest-hosting-private: ## APIGateway PRIVATE (VPC) hosting variant (needs VPC_ID=...)
-	$(PYTHON) scripts/sdlc/run_stacktest.py apigwpriv $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py apigwpriv $(_STACKTEST_ARGS)
 
 stacktest-jobsapi: ## Jobs API (VPC) variant (needs VPC_ID=...)
-	$(PYTHON) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py jobsapi $(_STACKTEST_ARGS)
+
+# Runs the same harness as verify-tenant-isolation. Against STACK_NAME, that stack must
+# already be TenantIsolationMode=Strict; the self-deploy form deploys one. Either way it
+# creates and removes throwaway profiles, tenants, users, two IAM roles and an access
+# point stack. See docs/multi-tenancy.md.
+stacktest-tenancy: ## Tenant isolation (TenantIsolationMode=Strict) variant: runs verify-tenant-isolation (STACK_NAME=... or self-deploy w/ TEMPLATE_URL=...)
+	$(RUN_FIRST_PARTY) scripts/sdlc/run_stacktest.py tenancy $(_STACKTEST_ARGS)
 
 # --- Template-TRANSFORM deploy tests (--headless / --govcloud) ---------------
 # These do NOT go through run_stacktest.py: every probe there deploys the
@@ -1185,16 +1371,16 @@ _TRANSFORM_ARGS = $(if $(REGION),--region $(REGION),) \
 	$(if $(JSON_OUT),--json-out $(JSON_OUT),)
 
 transform-deploy-test-list: ## List the transform deploy-tests
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py --list
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py --list
 
 transform-deploy-test-headless: ## Deploy a REAL --headless stack + process a sample doc
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py headless $(_TRANSFORM_ARGS)
 
 transform-deploy-test-govcloud: ## Deploy a REAL --govcloud stack + process a sample doc (REGION=us-gov-west-1 for a true GovCloud run)
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py govcloud $(_TRANSFORM_ARGS)
 
 transform-deploy-test-all: ## Both transform deploy-tests, one after the other
-	$(PYTHON) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
+	$(RUN_FIRST_PARTY) scripts/sdlc/transform_deploy_test.py both $(_TRANSFORM_ARGS)
 
 # Seller Entitlement Service e2e. Not a main-stack variant, so it does not go
 # through run_stacktest.py: it deploys its own standalone stack (into a seller
@@ -1213,6 +1399,16 @@ stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, pro
 	    $(if $(REGION),--region $(REGION)) \
 	    $(if $(NO_TEARDOWN),--no-teardown)
 
+# Network reach of the analytics agent's Python interpreter. Needs no IDP stack:
+# it starts a session on the AWS-managed Bedrock AgentCore Code Interpreter the
+# analytics tool uses, runs a fixed probe program in it, and compares what it
+# reaches with the posture recorded in scripts/sdlc/sandbox_network_probe.py.
+# Creates and deletes its own throwaway bucket (ab-sandbox-probe-<random>).
+# Exit 0 = matches the recorded posture, 1 = differs, 2 = could not run.
+# Manual only: no CI job runs it (see .claude/skills/run-stack-tests.md).
+stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S3 presigned PUT, raw TCP, credential presence (no stack; [REGION=us-west-2])
+	$(RUN_FIRST_PARTY) scripts/sdlc/sandbox_network_probe.py --region $(if $(REGION),$(REGION),us-west-2) $(if $(JSON_OUT),--json-out $(JSON_OUT),)
+
 # Release-vs-release benchmark audit (alias to benchmark-release).
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)
 
@@ -1223,19 +1419,54 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
+# In-place migration of an awslabs/genai-idp-terraform deployment onto this
+# repository's Terraform module: deploys the pinned upstream tag as OLD_NAME, seeds
+# it (documents, users, a config edit, a baseline and test set), runs every phase of
+# `idp-cli terraform migrate-from-genai-idp-terraform` with --apply onto a new
+# deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
+# passwords still sign in, then destroys both and sweeps what they retained. Measured
+# at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
+# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier J).
+#   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
+#       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
+_TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
+	--terraform-module-url $(TERRAFORM_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
+ifndef OLD_NAME
+	$(error OLD_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef NEW_NAME
+	$(error NEW_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef TERRAFORM_MODULE_URL
+	$(error TERRAFORM_MODULE_URL is not set: the module zip `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
+
 ##@ UI Development
 
-# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
-# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
-# those targets then runs a node tool out of that same tree. So two UI targets at
-# once in ONE checkout corrupt each other, and the loser does not report
-# contention — it reports a missing or half-deleted module from whatever package
-# the other lane was unpacking (issue #1447).
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND EVERY ONE WHOSE
+# RECIPE RUNS $(NPM_CI) WIPES IT. `npm ci` deletes node_modules before rebuilding it,
+# by design. Each of those targets then runs a node tool out of that same tree. So
+# two UI targets at once in ONE checkout corrupt each other, and the loser does not
+# report contention — it reports a missing or half-deleted module from whatever
+# package the other lane was unpacking (issue #1447). The set of targets is pinned
+# by UI_TARGETS in scripts/tests/test_ui_deps_lock.py, which fails when one joins or
+# leaves; no count is written here for that reason.
 #
-# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
-# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
-# realistic composition is "lint in one lane, UI tests in another", which looks
-# like two unrelated things and is not.
+# `make lint-cicd` performs some of them itself (ui-lint, check-ui-i18n-catalog,
+# check-ui-string-debt, ui-build-only, codegen-check — pinned as
+# TARGETS_LINT_CICD_PERFORMS in the same test), so lint-cicd PLUS ANY ONE UI TARGET
+# is enough to collide. The realistic composition is "lint in one lane, UI tests in
+# another", which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
 # an exclusive lock for the whole command, so a second UI target waits instead of
@@ -1383,6 +1614,29 @@ ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
 	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
 
+# THE WRITER for `make check-ui-i18n-catalog`, which is check-only by design (the
+# `codegen-check` auto-update is the shape CONTRIBUTING documents as a wart).
+ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/i18n/en.json (then commit it)
+	@echo "Extracting UI messages into src/ui/src/i18n/en.json..."
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run i18n:extract'
+	@echo -e "$(GREEN)✅ src/ui/src/i18n/en.json re-extracted. Commit it if it changed.$(NC)"
+
+# ADVISORY BY DESIGN (decision D17 of #1770): this target never fails, so it is
+# not a prerequisite of `lint` or `fastlint`, is not in the `lint-cicd` recipe, and
+# its name matches none of the check shapes test_ci_gate_parity.py classifies by.
+# A missing or stale translation is an English fallback on screen, not a broken
+# build; this report makes it visible without turning every English-only string
+# into a red gate. Invalid entries are enforced by `check-ui-i18n-catalog` and the
+# UI build, and only listed here. Flags go through UI_I18N_COVERAGE_ARGS, e.g.
+# `make ui-i18n-coverage UI_I18N_COVERAGE_ARGS=--json` (nothing else is printed,
+# so the output is the JSON) or `UI_I18N_COVERAGE_ARGS="--locale fr-CA"`.
+UI_I18N_COVERAGE_ARGS ?=
+ui-i18n-coverage: ## Report translation coverage for each locale catalog present in src/ui/src/i18n: missing, stale (English changed since translation) and invalid entries; advisory, never fails (issue #1770)
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447). Off CI without node_modules it prints a SKIP (not a
+	@# report); in CI that is an error. Exit 2 only when no report could be made.
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
+
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations
 	@$(UI_DEPS_LOCK) 'npm run codegen'
@@ -1508,6 +1762,13 @@ endif
 	@# literal version rather than the `<VERSION>` placeholder the published host
 	@# template uses — nothing would substitute a placeholder here.
 	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('feature-platform/seller-entitlement-service/template.yaml'); t=p.read_text(); n,c=re.subn(r\"(ServiceVersion:\\s*\\n\\s*Value: )'[^']*'\", r\"\\g<1>'$(V)'\", t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 ServiceVersion replacement, made {c}')"
+	@# The lockfile records the project's own version, and `uv export --locked`
+	@# (make lock-constraints, run by make setup and by every CI job that builds
+	@# the Python environment) refuses a lockfile whose project version disagrees
+	@# with pyproject.toml, so the bump has to reach it. Only the project's own
+	@# version line moves; nothing is re-resolved, so no dependency pin can change
+	@# as a side effect of a version bump (#1818).
+	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('lib/idp_common_pkg/uv.lock'); t=p.read_text(); n,c=re.subn(r'(\[\[package\]\]\nname = \"idp-common\"\nversion = \")[^\"]*(\")', r'\g<1>$(V)\g<2>', t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 idp-common version line in lib/idp_common_pkg/uv.lock, replaced {c}')"
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"
 	@echo "  - VERSION"
 	@echo "  - lib/idp_cli_pkg/pyproject.toml"
@@ -1515,6 +1776,7 @@ endif
 	@echo "  - lib/idp_sdk/pyproject.toml"
 	@echo "  - lib/idp_sdk/idp_sdk/__init__.py"
 	@echo "  - lib/idp_common_pkg/pyproject.toml"
+	@echo "  - lib/idp_common_pkg/uv.lock"
 	@echo "  - lib/idp_mcp_connector_pkg/pyproject.toml"
 	@echo "  - lib/idp_mcp_connector_pkg/idp_mcp_connector/__init__.py"
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"

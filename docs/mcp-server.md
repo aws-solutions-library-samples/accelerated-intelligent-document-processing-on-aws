@@ -17,7 +17,6 @@ The MCP integration exposes IDP capabilities to external applications by:
 - **Secure Authentication**: Uses AWS Cognito OAuth 2.0 for secure external application access
 - **MCP Protocol**: Implements Model Context Protocol for standardized tool integration
 - **Real-time Queries**: Enables external applications to query document processing results in real-time
-- **Extensible Architecture**: Designed to support additional IDP functionality in future releases
 
 #### Demo with Quick Suite
 https://github.com/user-attachments/assets/529ce6ad-1062-4af5-97c1-86c3a47ac12c
@@ -44,11 +43,20 @@ External App → Cognito Auth → AgentCore Gateway → Analytics Lambda → IDP
 
 ### During Stack Deployment
 
-The MCP integration is controlled by the `EnableMCP` parameter:
+The MCP integration is controlled by the `EnableMCP` parameter, which is **off by
+default**. A new stack has no MCP server until you set it to `'true'`. Updating an
+existing stack keeps its current value when the update reuses previous parameter
+values, as the CloudFormation console and `idp-cli deploy` do. An update that sends
+only the parameters you name takes the default, so pass `EnableMCP=true` there to keep
+MCP on. That covers the AWS CLI, `idp-cli deploy --terraform` (which keeps only the
+parameters an earlier deploy passed, so a stack that relied on the old default has
+none to keep) and the Terraform module used directly. Turning MCP off revokes every
+[service credential](#service-credentials), and switching it back on does not restore
+them.
 
 **Enable MCP Integration:**
 ```yaml
-EnableMCP: 'true'  # Default value
+EnableMCP: 'true'
 ```
 
 **Disable MCP Integration:**
@@ -146,6 +154,10 @@ Process documents from S3 or base64 content. To process documents via S3:
   "prefix": {
     "type": "string",
     "description": "Optional batch ID prefix (default: 'mcp-batch')"
+  },
+  "profile": {
+    "type": "string",
+    "description": "Optional Configuration Profile to process under. Without it the destination decides (a configured prefix mapping, else the active profile)."
   }
 }
 ```
@@ -465,6 +477,92 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
 }
 ```
 
+## Service credentials
+
+People sign in to the MCP server as themselves, through the user-authentication
+client (`MCPClientId`), and get their own role and configuration profiles. A client
+that signs in as a service instead uses a **service credential**: a Cognito app
+client that allows only the client-credentials flow, with its own role,
+configuration profiles, expiry and secret.
+
+Admins manage them on the **MCP Configuration** page (Configuration › MCP
+Configuration, shown when MCP is enabled), with `idp-cli mcp credentials`, or with
+`IDPClient.mcp`.
+
+- **Create.** Choose a name, a role (Viewer, Reviewer, Author; Admin only when
+  `TenantIsolationMode=Off` and `TenantGrantSource=Manual`), the configuration
+  profiles it may see (required under tenant isolation, and within one tenant), whether
+  it may use the write tools `process` and `reprocess` (Admin and Author only), and an
+  expiry (90 days by default; never is allowed). The client ID and secret are shown
+  **once**, with a ready-made Amazon Quick service-to-service block and an MCP
+  Connector settings entry. The secret is also stored in Secrets Manager as
+  `<stack>/mcp/credentials/<clientId>`, encrypted with the stack's key, where an
+  operator with access to that secret can read it.
+- **Use.** Exchange the client ID and secret at the token URL (`MCPTokenURL`) for an
+  access token that lasts one hour, and call the MCP server with it. The gateway's
+  interceptor reads the credential on every call, so its role and profiles apply as
+  they would to a user's.
+- **Rotate.** Issues a replacement with the same access and shows its secret once;
+  the old one keeps working for up to seven days so callers can move across. The
+  access is checked again first, so a credential the stack's tenant settings no
+  longer allow (an Admin credential after tenant isolation was turned on, say)
+  cannot be rotated and has to be replaced with one that fits.
+- **Revoke.** Refused from the next request, even while one of its tokens is still
+  valid; its app client is deleted and its secret scheduled for deletion ("Default
+  (stack-created)" keeps both; see below).
+- **Expiry.** A daily sweep revokes expired credentials and sends the Admin who
+  created one an Inbox message two weeks before it expires.
+- **Audit.** Every change is logged with the acting Admin, the credential's id,
+  name and new access, never its secret; the credential also records who created
+  and last changed it, and when it was last used (to the hour).
+
+Under `TenantGrantSource=Api` an entitlement system grants a credential its tenant,
+as it does a user's, with `setMcpCredentialTenant` (or `idp-cli mcp credentials
+set-tenant`); until then the credential sees no documents.
+
+Who can manage which credentials:
+
+- **An Admin with configuration profiles of their own** (a scoped Admin) sees,
+  grants and changes only credentials inside those profiles, can grant only a tenant
+  whose profile pattern is inside them, and cannot create an Admin credential or one
+  with no profiles. Under `TenantGrantSource=Api` every new credential starts with no
+  profiles, so there only an unscoped Admin can create one.
+- **`idp-cli` and the SDK** act with the AWS credentials they are run with, not a
+  sign-in, so whoever can invoke them has the authority of an unscoped Admin.
+
+⚠️ **Removing the credential registry revokes every credential.** Deleting the
+stack, setting `EnableMCP` to `false`, or downgrading to a release without service
+credentials removes each credential's app client, schedules its secret for deletion
+and takes it off the gateway. They are not restored if the stack is later upgraded
+or MCP is switched back on; create them again.
+
+## Using MCP clients
+
+An MCP client passes each tool result to its own model, and the IDP server's results
+are mostly text taken from your documents: extracted values, classifications, file
+names, and the analytics agent's answers about them. Operate a client with that in
+mind:
+
+- **Connect the IDP server alongside tools you trust.** Whatever else the client
+  can do (send email, call web APIs, write files), its model can be steered to do
+  with what it read here. Keep the IDP server out of clients that also hold tools
+  you would not want acting on a document's contents.
+- **Results mark which fields are document content.** Each result that carries
+  document text includes a `provenance` field naming those fields
+  (`documentDerived`) and saying to treat them as data to report, not as
+  instructions to follow. The MCP Connector shows that note to the model ahead of
+  the result. A client that drops it loses the hint, not the result.
+- **Give each client the least access it needs.** Prefer a service credential with
+  the Viewer role and only the configuration profiles the integration reads. Turn
+  write tools (`process`, `reprocess`) on only where the client must start
+  processing, and keep `search`, which reads across every profile, to clients that
+  need it; a credential limited to some configuration profiles cannot call `search`
+  at all.
+- **Keep a person in the loop for actions.** Where the client asks before running a
+  tool, leave that on for write tools and for tools of other servers.
+- **Rotate and revoke.** A credential that a client no longer uses should be revoked
+  on the MCP Configuration page; revocation applies to the next request.
+
 ## Important Notes
 
 ### Pagination
@@ -563,7 +661,14 @@ Example:
 2. **Cognito User Pool** validates credentials and returns JWT token
 3. **External Application** calls AgentCore Gateway with Bearer token
 4. **AgentCore Gateway** validates JWT token against Cognito
-5. **Analytics Lambda** processes the request and returns results
+5. **Caller interceptor** resolves the token to a role and a configuration scope
+   (a signed-in user's groups and `allowedConfigVersions`, or the stack-created
+   client-credentials client), refuses a tool that role may not call, and passes a
+   signed caller block to the MCP handler
+6. **MCP handler** verifies the block, applies the caller's configuration scope to
+   every document it reads or writes, and returns the result
+
+Which role may call which tool is in [RBAC: MCP Tools](./rbac.md#mcp-tools).
 
 ### Data Access
 
@@ -580,17 +685,28 @@ The Analytics Lambda has read-only access to:
 The MCP Server uses AWS Cognito OAuth 2.0 for secure authentication:
 - External applications obtain JWT tokens from the Cognito User Pool
 - AgentCore Gateway validates JWT tokens on every request
-- Tokens include scopes (openid, email, profile) for fine-grained access control
+- A token is resolved to the caller's role and configuration scope, and each tool
+  admits the roles of the web UI operation it corresponds to; see
+  [RBAC: MCP Tools](./rbac.md#mcp-tools)
+- A caller limited to some Configuration Profiles sees and processes only documents
+  in those profiles, and cannot process from an S3 location
 - Token expiration and refresh mechanisms prevent unauthorized access
 
 ### IAM Role-Based Access Control
 
-The AgentCore Analytics Lambda operates with least-privilege IAM permissions:
-- Read-only access to DynamoDB tracking and configuration tables
-- Read-only access to S3 analytics and reporting buckets
-- No write permissions to input or output buckets
-- Scoped permissions prevent access to resources outside the IDP stack
-- Service role restricts Lambda execution to authorized operations only
+What a caller may do is decided per caller, by role and configuration scope (above);
+the functions' IAM roles bound what the server as a whole can reach:
+
+- The MCP handler reads the tracking and configuration tables, reads and writes the
+  Input, Output, Reporting and MCP content buckets (processing copies documents into
+  the Input bucket), and may delete only in the Output bucket (reprocessing replaces
+  a document's earlier section results). It runs the analytics agent for `search`
+  against the reporting database.
+- The caller interceptor reads the user pool (`AdminGetUser`), the Users table, the
+  credential registry and its signing key, and nothing else.
+- The credential manager creates and deletes the MCP credentials' app clients and
+  their secrets under `<stack>/mcp/credentials/`, and changes the gateway's allowed
+  clients.
 
 ### S3 Bucket Access
 
@@ -607,7 +723,11 @@ Data security is maintained throughout the MCP integration:
 - **In Transit**: All communication between external applications and AgentCore Gateway uses HTTPS/TLS
 - **At Rest**: DynamoDB tables and S3 buckets use AWS-managed encryption keys
 - **JWT Tokens**: Signed with Cognito's private keys and validated using public keys
-- **Sensitive Data**: Client secrets are stored securely in AWS Secrets Manager and rotated regularly
+- **Client secrets**: every MCP client secret is in AWS Secrets Manager, encrypted
+  with the stack's key, and none is a stack output (see
+  [Where the secrets are](#where-the-secrets-are)). Secrets are not rotated
+  automatically: rotate a service credential, including "Default (stack-created)",
+  on the MCP Configuration page
 
 ## MCP Content Bucket
 
@@ -616,7 +736,7 @@ The stack creates a dedicated S3 bucket for MCP document uploads:
 - **Bucket Name**: `MCPContentBucket` (available in CloudFormation stack outputs)
 - **Purpose**: Upload documents for processing via the `process` tool
 - **Access**: Accessible through the MCP Server tools with proper authentication
-- **Usage**: Provide the S3 URI (e.g., `s3://mcp-content-bucket/documents/`) to the `process` tool
+- **Usage**: Provide the S3 URI (e.g., `s3://mcp-content-bucket/documents/`) to the `process` tool. Processing from an S3 location is available only to a caller with no configuration scope; a scoped caller sends the document as base64 `content` instead
 - **Cleanup**: Temporary files are automatically managed by the IDP pipeline
 
 **Example Workflow:**
@@ -658,7 +778,10 @@ The `ExternalAppClient` is used for external applications requiring user-based l
   - CloudFront distribution URL
   - Quick Suite OAuth callback
   - Cognito User Pool domain
-- **Stack Outputs**: `MCPClientId`, `MCPClientSecret`
+- **Stack Outputs**: `MCPClientId`, `MCPClientSecretArn` (the Secrets Manager ARN
+  holding the client ID and secret)
+- **Who the caller is**: the person who signs in, with their own groups and
+  configuration profiles
 
 ### MCP Connector Client
 
@@ -666,12 +789,31 @@ The `MCPConnectorClient` is used by AI coding assistants (Cline, Amazon Q, etc.)
 
 **Client Configuration:**
 - **Client Name**: `mcp-connector-client`
-- **Client Secret**: Generated automatically
+- **Client Secret**: Generated automatically; stored in Secrets Manager as
+  `<stack>/mcp/credentials/<MCPConnectorClientId>`
 - **OAuth Flows**: `client_credentials` (machine-to-machine (M2M) — no user login or browser redirect required)
 - **OAuth Scopes**: `idp-mcp-connector/access`
-- **Stack Outputs**: `MCPConnectorClientId`, `MCPConnectorClientSecret`
+- **Stack Outputs**: `MCPConnectorClientId`, `MCPConnectorClientSecretArn`
+- **Who the caller is**: the credential "Default (stack-created)" on the MCP
+  Configuration page — an Author with no configuration scope and write tools on, the
+  access every caller of this client has always had. Under
+  `TenantIsolationMode=Strict` or an external `TenantGrantSource` it is created
+  **disabled**, because unscoped access is what those modes forbid; an Admin can give
+  it one tenant's profiles and enable it there. Whether it starts enabled is decided once, when the stack first registers it, and
+  a later stack update never changes it. Switching `TenantIsolationMode` to `Strict`
+  afterwards leaves it enabled but, having no profiles, it then sees no documents;
+  switching back to `Off` leaves a disabled one disabled until an Admin enables it.
+- **Changing it**: an Admin can narrow, disable or enable it like any credential.
+  Two operations differ for this one. **Revoking** it refuses it and takes it off the
+  gateway, but keeps its app client and secret, which belong to the stack.
+  **Rotating** it issues an ordinary credential with the same access, shows that
+  secret once, and ends this one within the overlap you choose (seven days at most);
+  after that, `MCPConnectorClientSecretArn` names the secret of a client that is
+  refused, so move every integration to the new credential first.
 
-> **Note**: Use `MCPConnectorClientId` / `MCPConnectorClientSecret` for MCP Connector configuration. These credentials use the machine-to-machine (M2M) `client_credentials` OAuth flow, meaning the connector authenticates directly using its client ID and secret — no user login or browser is involved. The `MCPClientId` / `MCPClientSecret` outputs are reserved for QuickSight and other external apps that use the `authorization_code` flow (user-interactive login).
+> **Note**: Prefer a [service credential](#service-credentials) of its own for each
+> integration over sharing this one: each then carries only the access it needs,
+> and can be rotated or revoked without affecting the others.
 
 ### Token Management
 
@@ -682,7 +824,7 @@ Each client type uses a different OAuth flow for token acquisition:
 curl -X POST <MCPTokenURL> \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials&scope=idp-mcp-connector/access" \
-  -u "<MCPConnectorClientId>:<MCPConnectorClientSecret>"
+  -u "<client ID>:<client secret>"
 ```
 
 **External App / QuickSight — Authorization Code Flow** (user-interactive):
@@ -697,8 +839,27 @@ curl -X POST <MCPTokenURL> \
 # Step 2: Exchange code for tokens
 curl -X POST <MCPTokenURL> \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code&client_id=<MCPClientId>&client_secret=<MCPClientSecret>&code=AUTH_CODE&redirect_uri=CALLBACK_URL"
+  -d "grant_type=authorization_code&client_id=<MCPClientId>&client_secret=<user-client secret>&code=AUTH_CODE&redirect_uri=CALLBACK_URL"
 ```
+
+## Where the secrets are
+
+No MCP client secret is a stack output. Each is in AWS Secrets Manager, encrypted with
+the stack's key:
+
+| Client | Secret | Output naming it |
+|---|---|---|
+| External App Client (user authentication) | `<stack>/mcp/user-client` | `MCPClientSecretArn` |
+| Stack-created client-credentials client | `<stack>/mcp/credentials/<MCPConnectorClientId>` | `MCPConnectorClientSecretArn` |
+| Each service credential | `<stack>/mcp/credentials/<clientId>` | shown on the MCP Configuration page |
+
+A service credential's secret is shown once when it is created or rotated, and an
+operator with access to the secret can read it later with
+`aws secretsmanager get-secret-value`. None is rotated automatically. Rotate a service
+credential on the page. The two stack-created clients keep their secrets for the life
+of the stack; to stop using the connector client's, rotate "Default
+(stack-created)" as described above. The user-authentication client's secret cannot
+act as anyone on its own: each call still needs a person to sign in.
 
 ## Output Parameters
 
@@ -726,9 +887,10 @@ The stack provides separate output parameters for each Cognito client:
   - Use this when configuring the IDP MCP Connector package
   - Required for `client_credentials` token requests
 
-- **`MCPConnectorClientSecret`**: Cognito client secret for the MCP Connector (machine-to-machine (M2M) `client_credentials` flow)
-  - Use this when configuring the IDP MCP Connector package
-  - Should be securely stored (e.g., in environment variables or a secrets manager)
+- **`MCPConnectorClientSecretArn`**: Secrets Manager ARN holding that client's ID and
+  secret. Read it with
+  `aws secretsmanager get-secret-value --secret-id <MCPConnectorClientSecretArn>`,
+  or create a [service credential](#service-credentials) of the integration's own
 
 **External App / QuickSight (authorization_code — use for user-facing applications):**
 
@@ -736,9 +898,9 @@ The stack provides separate output parameters for each Cognito client:
   - Use this for Amazon QuickSight and other external applications requiring user login
   - Used in OAuth authorization code flows
 
-- **`MCPClientSecret`**: Cognito client secret for the External App Client (QuickSight / authorization code flow)
-  - Use this for Amazon QuickSight and other external applications requiring user login
-  - Should be securely stored and rotated regularly
+- **`MCPClientSecretArn`**: Secrets Manager ARN holding the External App Client's ID
+  and secret. Read it with
+  `aws secretsmanager get-secret-value --secret-id <MCPClientSecretArn>`
 
 **Shared authentication parameters:**
 
@@ -758,7 +920,7 @@ The stack provides separate output parameters for each Cognito client:
 
 ### External Application Setup
 
-This example uses the MCP Connector client credentials (`MCPConnectorClientId` / `MCPConnectorClientSecret`) for machine-to-machine (M2M) authentication — the application authenticates directly using its client ID and secret, with no user login or browser redirect involved.
+This example signs in as a service with the client-credentials flow, using a [service credential](#service-credentials) created on the MCP Configuration page (or the stack-created one, whose secret is at `MCPConnectorClientSecretArn`). The application authenticates directly with the client ID and secret, with no user login or browser redirect.
 
 ```python
 import requests
@@ -766,8 +928,8 @@ import json
 
 # Configuration from CloudFormation outputs
 GATEWAY_URL = "<MCPServerEndpoint>"       # From stack outputs
-CLIENT_ID = "<MCPConnectorClientId>"      # From stack outputs (M2M client_credentials client)
-CLIENT_SECRET = "<MCPConnectorClientSecret>"  # From stack outputs (M2M client_credentials client)
+CLIENT_ID = "<client ID>"                # From the MCP Configuration page
+CLIENT_SECRET = "<client secret>"        # Shown once on creation; also in Secrets Manager
 TOKEN_URL = "<MCPTokenURL>"              # From stack outputs
 MCP_BUCKET = "<MCPContentBucket>"        # From stack outputs
 
@@ -810,13 +972,32 @@ print(f"Processing result: {result}")
 
 ### Amazon Quick Suite Integration
 
-For Amazon QuickSight integration, configure the MCP connection using the **External App Client** outputs (authorization code flow). These are separate from the MCP Connector credentials.
+Amazon Quick connects to a remote MCP server in one of two ways, and both work here.
+Choose by **who the integration should act as**.
 
-- **MCP Server**: Use `MCPServerEndpoint` output value
-- **Client ID**: Use `MCPClientId` output value _(External App Client — authorization code flow)_
-- **Client Secret**: Use `MCPClientSecret` output value _(External App Client — authorization code flow)_
-- **Token URL**: Use `MCPTokenURL` output value
-- **Authorization URL**: Use `MCPAuthorizationURL` output value
-- **Content Bucket**: Use `MCPContentBucket` output value for document uploads
+**User authentication (recommended where people use it).** Each Quick user signs in
+as themselves and gets their own role and configuration profiles, exactly as in the
+IDP console.
 
-> **Do not** use `MCPConnectorClientId` / `MCPConnectorClientSecret` for QuickSight. Those are for the MCP Connector's machine-to-machine (M2M) `client_credentials` flow (no user login) and will not work with the `authorization_code` flow required by QuickSight, which expects a user login redirect.
+- **MCP Server**: `MCPServerEndpoint`
+- **Client ID**: `MCPClientId` _(External App Client — authorization code flow)_
+- **Client Secret**: from `MCPClientSecretArn`
+  (`aws secretsmanager get-secret-value --secret-id <MCPClientSecretArn>`)
+- **Token URL**: `MCPTokenURL`
+- **Authorization URL**: `MCPAuthorizationURL`
+
+Holding this client's secret lets someone run the sign-in flow, not act as anyone:
+every request still carries the signed-in user's own identity.
+
+**Service-to-service OAuth (for a shared workflow).** The integration signs in as a
+service credential with its own role and profiles. Create one on the MCP
+Configuration page, which shows its client ID, secret and token URL once, in a
+ready-made Quick block.
+
+- **MCP Server**: `MCPServerEndpoint`
+- **Client ID** and **Client Secret**: from the credential
+- **Token URL**: `MCPTokenURL`
+
+> **Do not** mix them: the External App Client allows only the authorization code
+> flow, and a service credential only the client-credentials flow.
+

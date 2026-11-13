@@ -2,6 +2,9 @@
 title: "idp_common API Reference"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # idp_common API Reference
 
 The `idp_common` library (`lib/idp_common_pkg/`) is the core shared Python package that powers all document processing in the IDP Accelerator. It provides modular services for each step of the pipeline, a central `Document` data model, and utility functions for S3, Bedrock, DynamoDB, and more.
@@ -60,12 +63,13 @@ The `Document` dataclass is the central data structure passed through the entire
 | `pages` | `Dict[str, Page]` | Page data keyed by page ID |
 | `sections` | `List[Section]` | Logical document sections (grouped by classification) |
 | `summary_report_uri` | `str` | S3 URI to the summarization output |
-| `config_version` | `str` | Configuration version used for processing |
+| `config_version` | `str` | Configuration profile used for processing |
 | `metering` | `Dict` | Token usage and cost tracking data |
 | `evaluation_results_uri` | `str` | S3 URI to evaluation results |
 | `rule_validation_result` | `RuleValidationResult` | Rule validation output |
 | `hitl_status` | `str` | Human-in-the-loop review status |
-| `confidence_alert_count` | `int` | Number of low-confidence fields |
+| `confidence_alert_count` | `int` | Number of low-confidence fields (a field with no extracted value is never one) |
+| `missing_required_field_count` | `int` | Number of required fields extraction left absent, summed over sections |
 | `errors` | `List[str]` | Processing error messages |
 
 **Key methods:**
@@ -106,6 +110,7 @@ Represents a logical group of pages with the same document class.
 | `extraction_result_uri` | `str` | S3 URI to extraction results |
 | `attributes` | `Dict` | Extracted attribute values |
 | `confidence_threshold_alerts` | `List[Dict]` | Low-confidence field alerts |
+| `missing_required_fields` | `List[Dict]` | Required fields left absent, in the same shape as an alert |
 
 ### Status Enum
 
@@ -302,7 +307,7 @@ The local pipeline processes documents from the local filesystem — no AWS infr
 result = discovery.run_local_pipeline(
     document_dir="/path/to/documents/",   # Scan directory recursively
     # document_paths=["/path/a.pdf", "/path/b.png"],  # OR explicit file list
-    config_version="v1",                  # Optional: save results to DynamoDB config
+    config_version="lending",             # Optional: profile to save results to
     progress_callback=my_callback,        # Optional: callable(step_name, step_data)
 )
 
@@ -319,7 +324,7 @@ for cls in result.discovered_classes:
 |-----------|------|----------|-------------|
 | `document_dir` | `str` | One of `document_dir` or `document_paths` | Directory to scan recursively |
 | `document_paths` | `List[str]` | One of `document_dir` or `document_paths` | Explicit list of file paths |
-| `config_version` | `str` | No | Config version to save discovered classes to |
+| `config_version` | `str` | No | Configuration profile to save discovered classes to |
 | `progress_callback` | `Callable[[str, Any], None]` | No | Progress updates callback |
 
 **Pipeline steps:**
@@ -328,7 +333,7 @@ for cls in result.discovered_classes:
 3. **Cluster** — KMeans with automatic K selection via silhouette analysis
 4. **Analyze** — Strands agent examines sample images per cluster, generates classification + JSON Schema
 5. **Reflect** — Agent produces a Markdown report reviewing all discovered classes
-6. **Save** — (Optional) Merge schemas into a DynamoDB configuration version
+6. **Save** — (Optional) Merge schemas into a configuration profile
 
 **`list_local_documents()`** — Scan for supported files
 
@@ -373,7 +378,7 @@ The S3 pipeline processes documents stored in Amazon S3. Designed for use with S
 result = discovery.run_full_pipeline(
     bucket="my-bucket",
     prefix="documents/batch-001/",
-    config_version="v1",                  # Optional: save to DynamoDB config
+    config_version="lending",             # Optional: profile to save results to
     progress_callback=my_callback,        # Optional
 )
 ```
@@ -382,7 +387,7 @@ result = discovery.run_full_pipeline(
 |-----------|------|----------|-------------|
 | `bucket` | `str` | Yes | S3 bucket containing documents |
 | `prefix` | `str` | Yes | S3 key prefix to scan |
-| `config_version` | `str` | No | Config version to save discovered classes to |
+| `config_version` | `str` | No | Configuration profile to save discovered classes to |
 | `progress_callback` | `Callable[[str, Any], None]` | No | Progress updates callback |
 
 **Step-by-step methods** (for Step Functions Map state integration):
@@ -410,7 +415,7 @@ for cluster_id in range(cluster_result.num_clusters):
 report = discovery.reflect(discovered_classes)
 
 # Step 7: Save to config (optional)
-saved = discovery.save_to_config(discovered_classes, config_version="v1",
+saved = discovery.save_to_config(discovered_classes, config_version="lending",
                                   input_bucket="my-bucket", input_prefix="docs/")
 ```
 
@@ -464,7 +469,7 @@ Both `run_local_pipeline()` and `run_full_pipeline()` accept a `progress_callbac
 | `analyzing_clusters` | `{total}` | Starting cluster analysis |
 | `cluster_analysis_progress` | `{done, total, classification}` | Per-cluster progress |
 | `reflecting` | — | Starting reflection |
-| `saving_to_config` | `{version}` | Saving to DynamoDB (if requested) |
+| `saving_to_config` | `{version}` | Saving to the configuration profile (if requested) |
 | `pipeline_complete` | Full result dict | Pipeline finished |
 
 ##### Integration with IDP SDK and CLI

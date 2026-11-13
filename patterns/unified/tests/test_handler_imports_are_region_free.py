@@ -68,9 +68,8 @@ Some tests build the path by joining components
 only that way is not in the set below. Collecting ``Path`` join chains with an AST
 pass would close that, and is deliberately not done: every module the sweep does
 not reach was imported through this file's own child program, the ones that fail a
-region-free import are ``bda_completion_function``, ``bda_invoke_function`` and
-``classification_function``, and **no test refers to any of those three by any
-spelling of its path** — so coverage is complete with respect to the defects that
+region-free import are ``bda_completion_function`` and ``bda_invoke_function``, and
+**no test refers to either of them by any spelling of its path** — so coverage is complete with respect to the defects that
 exist, and the AST pass would buy machinery rather than findings. Narrow the claim,
 not the ambition.
 """

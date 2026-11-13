@@ -612,39 +612,93 @@ class TestMessageTrackerEvents:
         assert tracker.get_messages() == []
 
 
+def _registered(provider) -> dict:
+    """``{event class: callback}`` for every ``add_callback`` a provider makes."""
+    registry = MagicMock()
+    provider.register_hooks(registry)
+    return {c.args[0]: c.args[1] for c in registry.add_callback.call_args_list}
+
+
 @pytest.mark.unit
 class TestHookRegistration:
-    """register_hooks: the four core events are always registered."""
+    """register_hooks: which strands event each callback is attached to.
 
-    def test_agent_monitor_registers_the_four_core_callbacks(self):
-        registry = MagicMock()
-        AgentMonitor().register_hooks(registry)
-        assert registry.add_callback.call_count >= 4
+    The event classes are the stable ``strands.hooks`` names. The deprecated
+    ``strands.experimental.hooks`` aliases resolve to these same classes, so these
+    tests cannot tell the two import paths apart;
+    ``test_importing_the_module_uses_no_deprecated_hook_alias`` is the one that does.
+    """
+
+    def test_agent_monitor_registers_every_event_it_handles(self):
+        from strands.hooks import (
+            AfterInvocationEvent,
+            AfterModelCallEvent,
+            AfterToolCallEvent,
+            AgentInitializedEvent,
+            BeforeInvocationEvent,
+            BeforeModelCallEvent,
+            BeforeToolCallEvent,
+            MessageAddedEvent,
+        )
+
+        monitor = AgentMonitor()
+        assert _registered(monitor) == {
+            AgentInitializedEvent: monitor.on_agent_initialized,
+            BeforeInvocationEvent: monitor.on_before_invocation,
+            AfterInvocationEvent: monitor.on_after_invocation,
+            MessageAddedEvent: monitor.on_message_added,
+            BeforeToolCallEvent: monitor.on_before_tool_invocation,
+            AfterToolCallEvent: monitor.on_after_tool_invocation,
+            BeforeModelCallEvent: monitor.on_before_model_invocation,
+            AfterModelCallEvent: monitor.on_after_model_invocation,
+        }
 
     def test_message_tracker_registers_exactly_one_callback(self):
-        registry = MagicMock()
-        MessageTracker().register_hooks(registry)
-        registry.add_callback.assert_called_once()
+        from strands.hooks import MessageAddedEvent
 
-    def test_throttling_monitor_registration_does_not_raise(self):
-        # Whether it registers anything depends on whether the installed strands
-        # exposes the experimental model-invocation events, so the assertion is
-        # only that registration is safe either way.
-        ThrottlingMonitor(job_id="j", user_id="u").register_hooks(MagicMock())
+        tracker = MessageTracker()
+        assert _registered(tracker) == {MessageAddedEvent: tracker.on_message_added}
+
+    def test_throttling_monitor_registers_the_after_model_call_event(self):
+        from strands.hooks import AfterModelCallEvent
+
+        monitor = ThrottlingMonitor(job_id="j", user_id="u")
+        assert _registered(monitor) == {
+            AfterModelCallEvent: monitor.on_after_model_invocation
+        }
+
+    def test_importing_the_module_uses_no_deprecated_hook_alias(self):
+        """strands 1.48 keeps the old ``strands.experimental.hooks`` names only as
+        aliases that warn on access, and a later release may drop them. The warning
+        fires once, when ``monitoring`` is first imported, so this imports it in a
+        fresh interpreter with that warning turned into an error."""
+        import subprocess
+        import sys
+
+        probe = (
+            "import warnings\n"
+            "warnings.filterwarnings('error', message='.*moved to production',"
+            " category=DeprecationWarning)\n"
+            "import idp_common.agents.common.monitoring\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr[-2000:]
 
 
 @pytest.mark.unit
 class TestAgentMonitorToolInvocationLogging:
     """on_before_tool_invocation: a debug log line must not abort the tool call."""
 
-    def test_tool_input_that_json_cannot_encode_is_still_logged(self, monkeypatch):
+    def test_tool_input_that_json_cannot_encode_is_still_logged(self):
         # The detailed-logging branch serialises the tool input with json.dumps, in
         # a hook callback with nothing to catch a TypeError, so an input value json
         # does not know would abort the tool call for the sake of a debug line.
         # enable_detailed_logging defaults to True, so this is the default path.
-        monkeypatch.setattr(
-            "idp_common.agents.common.monitoring.EXPERIMENTAL_EVENTS_AVAILABLE", True
-        )
         monitor = AgentMonitor(enable_detailed_logging=True)
         monitor.monitor_logger = MagicMock()
         event = _event(

@@ -33,10 +33,11 @@ repository is recorded in closed issue #933. So a red check cannot stop a merge;
 *you* are what stops it. Never propose branch protection and never treat a green
 mark as permission you did not grant yourself.
 
-⚠️ **`Fixes #N` does not auto-close here.** GitHub only auto-closes on a merge into
-the **default** branch, which is `main`, and this PR targets `develop`. Write
-`Fixes #N` anyway for the cross-link, and then close the issue by hand with a
-substantive comment. See the last section.
+⚠️ **`Fixes #N` can close the issue with no comment.** `develop` is the repository's
+default branch, and GitHub closes a linked issue when a closing keyword reaches the
+default branch, so merging this PR may close the issue silently. Write `Fixes #N` for
+the cross-link, then write a substantive closing comment yourself and check the issue's
+state rather than assuming it. See the last section.
 
 ---
 
@@ -68,6 +69,17 @@ three are the ones that bite on a single fix:
   `scripts/hooks/`, `publish.py`, or `CLAUDE.md` / `.claude/`. Those are the surfaces
   where a change that looks like a fix is indistinguishable from an attack, however
   plainly the issue describes a real defect.
+
+**The work needs no credentials, so do not use any.** Read nothing under
+`~/.aws`, `~/.config/gh`, `~/.netrc` or `/proc/*/environ`, set no `AWS_PROFILE`,
+and call no AWS service: a fix here is verified by the offline suites and then by
+the PR's own CI. `gh` is used for this issue and this PR through the session's
+existing login, and for nothing else. Fetch only from GitHub, this repository's
+GitLab host, PyPI and npm. If the fix seems to need a live account or another host,
+that is a reason to hand it back, not to reach for one. In an agent worktree under
+`$HOME/wt`, `scripts/hooks/check_worktree_reach.py` refuses the plain spellings of
+the file reads and fetches; it matches command text, so it is a backstop to this
+rule and not a substitute for it.
 
 **Then decide whether this issue belongs in this skill at all.** Hand it back and say
 why if it needs a product decision (a default changes, a public interface moves, a
@@ -147,8 +159,9 @@ And a long suite exceeds the 120-second Bash timeout, which **backgrounds** rath
 kills it — so run it as `timeout N cmd > log 2>&1` and read the log, where **a log with
 no `N passed` summary line did not run**, whatever the exit status said.
 
-Add these when they apply: `make test-packages-cicd PYTEST_XDIST="-n 4"` if you touched
-`scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate; `make cfn-lint`
+Add these when they apply: `python3 scripts/coverage_all.py --only scripts --workers 4`
+if you touched `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate
+(`make test-packages-cicd` does not run the `scripts` suites); `make cfn-lint`
 and `make check-arn-partitions` if you touched a CloudFormation template; `make
 test-hooks` if you touched `scripts/hooks/`.
 
@@ -179,9 +192,10 @@ gh pr create --repo <repo> --base develop --head fix/<slug> \
   --title "fix(<area>): <what it fixes>" --body "..."
 ```
 
-**`--base develop` is not optional.** The default branch is `main`, so an omitted base
-targets `main`, and a wrong base is the first thing any review of this repository
-flags.
+**Pass `--base develop` explicitly.** `develop` is the repository's default branch, so
+an omitted base targets it, but an explicit base does not depend on a repository
+setting that can change. A wrong base is the first thing any review of
+this repository flags.
 
 Then **verify the PR's head is your commit** before waiting on anything:
 
@@ -306,7 +320,7 @@ gh pr merge <pr> --repo <repo> --merge --delete-branch
 The `check_shared_branch.py` hook refuses this on a **concluded** failing check, which
 is the behaviour you want — `ALLOW_RED_MERGE=1` exists and this is not the place for it.
 
-Then **close the issue by hand**, because `Fixes #N` will not. Write what the defect
+Then **write the closing comment**, and close the issue if `Fixes #N` did not. Write what the defect
 was, what was measured, what the fix does, **what was withdrawn or narrowed and why**,
 and any residual you are filing separately. These comments are the repository's real
 defect history and get read later by people deciding whether a similar-looking report is

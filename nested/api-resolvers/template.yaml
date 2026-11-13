@@ -41,6 +41,10 @@ Parameters:
   
   ChatSessionsTableName:
     Type: String
+
+  ChatSessionOwnersTableName:
+    Type: String
+    Description: DynamoDB table recording which user each chat session id belongs to (keyed by sessionId)
   
   NotificationsTableName:
     Type: String
@@ -66,6 +70,18 @@ Parameters:
     Type: String
     Default: ""
     Description: DynamoDB table ARN for user management (config-version scoping)
+
+  TenantIsolationMode:
+    Type: String
+    Default: "Off"
+    AllowedValues: ["Off", "Strict"]
+    Description: Parent's TenantIsolationMode. Strict denies unscoped non-Admin callers.
+
+  TenantGrantSource:
+    Type: String
+    Default: "Manual"
+    AllowedValues: ["Manual", "IdpClaim", "Api"]
+    Description: Parent's TenantGrantSource. IdpClaim and Api deny unscoped non-Admin callers.
   
   # S3 Buckets
   InputBucketName:
@@ -172,6 +188,11 @@ Parameters:
   
   DataRetentionInDays:
     Type: Number
+
+  MaxConcurrentWorkflows:
+    Type: Number
+    Default: 100
+    Description: Maximum concurrent workflows (used to pace bulk review resubmissions)
   
   PermissionsBoundaryArn:
     Type: String
@@ -312,6 +333,10 @@ Parameters:
     Type: String
     Default: ""
     Description: ARN of UserManagementFunction from main template.
+  McpCredentialManagerFunctionArn:
+    Type: String
+    Default: ""
+    Description: ARN of the MCP credential manager from the main template (empty when MCP is disabled).
   FinetuningJobsResolverFunctionArn:
     Type: String
     Default: ""
@@ -388,7 +413,7 @@ Mappings:
   # quotes are correct as written — do NOT "fix" or escape them.
   WebUiSecurity:
     ContentSecurityPolicy:
-      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
+      Value: "'script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net/npm/; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; default-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob: https://*.amazonaws.com; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net/npm/; font-src 'self' data:; media-src 'self'; frame-src 'self' data: https://*.amazonaws.com; connect-src 'self' https://*.amazonaws.com https://*.amazoncognito.com https://*.on.aws https://*.s3-accelerate.amazonaws.com wss://*.amazonaws.com ws://localhost:*;'"
 
 Conditions:
   HasHITLTable: !Not [!Equals [!Ref HITLTableName, ""]]
@@ -467,6 +492,9 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           SETTINGS_PARAMETER: !Ref SettingsParameterName
           # create_document_service() (imported at module load) reads
@@ -481,6 +509,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref AbortWorkflowResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         # Review queues: withdraw (abort, reprocess) or purge (delete) the
@@ -565,11 +604,14 @@ Resources:
       Runtime: python3.12
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
       LoggingConfig:
         LogGroup: !Ref AgentChatResolverLogGroup
       Policies:
@@ -581,6 +623,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - LambdaInvokePolicy:
             FunctionName: !Ref AgentChatProcessorFunctionArn
         - Statement:
@@ -629,6 +673,8 @@ Resources:
       Timeout: 30
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           AGENT_TABLE: !Ref AgentTableName
           AGENT_PROCESSOR_FUNCTION: !Ref AgentProcessorFunctionArn
@@ -684,14 +730,23 @@ Resources:
       Environment:
         Variables:
           LOG_LEVEL: !Ref LogLevel
+          # Read only: where this resolver recorded owners before
+          # ChatSessionOwnersTable existed.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          # Read to tell an unused session id from one that already has history.
+          CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_DOCUMENT_PROCESSOR_FUNCTION_ARN: !Ref ChatWithDocumentProcessorFunctionArn
           DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref SendChatDocumentMessageResolverFunctionLogGroup
       Policies:
-        - DynamoDBCrudPolicy:
+        - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
+        - DynamoDBReadPolicy:
+            TableName: !Ref ChatMessagesTableName
         - Statement:
             - Effect: Allow
               Action: lambda:InvokeFunction
@@ -782,6 +837,8 @@ Resources:
           STACK_NAME: !Ref StackName
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref ConfigurationResolverFunctionLogGroup
       Policies:
@@ -843,6 +900,12 @@ Resources:
               Resource:
                 - !Ref UsersTableArn
                 - !Sub "${UsersTableArn}/index/*"
+            # Scan of the base table only (not its indexes): saving a tenant reads
+            # every stored allowedConfigVersions so that a tenant set leaving an
+            # existing user scoped across tenants is refused. Admin-only operation.
+            - Effect: Allow
+              Action: dynamodb:Scan
+              Resource: !Ref UsersTableArn
   NotificationsResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -962,6 +1025,8 @@ Resources:
           TRACKING_TABLE: !Ref TrackingTableName
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
           USER_POOL_ID: !Ref UserPoolId
           QUEUE_URL: !Ref DocumentQueueUrl
@@ -1066,6 +1131,416 @@ Resources:
                 StringEquals:
                   # Root-stack name via parameter (nested template).
                   cloudwatch:namespace: !Ref StackName
+
+  ##########################################################################
+  # Bulk review (bulk Skip All Reviews, its jobs, and Send to review)
+  ##########################################################################
+  BulkReviewJobDLQ:
+    Type: AWS::SQS::Queue
+    Metadata:
+      cdk_nag:
+        rules_to_suppress:
+          - id: AwsSolutions-SQS3
+            reason: "This queue is itself a DLQ - does not need its own DLQ"
+    Properties:
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKeyArn
+      VisibilityTimeout: 960
+      MessageRetentionPeriod: 1209600 # 14 days
+
+  BulkReviewJobDLQPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BulkReviewJobDLQ
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt BulkReviewJobDLQ.Arn
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  BulkReviewJobQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: !Ref CustomerManagedEncryptionKeyArn
+      # Above the worker's 900 s timeout, as an event source mapping requires.
+      VisibilityTimeout: 960
+      MessageRetentionPeriod: 345600 # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt BulkReviewJobDLQ.Arn
+        maxReceiveCount: 5
+
+  BulkReviewJobQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref BulkReviewJobQueue
+      PolicyDocument:
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 'sqs:*'
+            Resource: !GetAtt BulkReviewJobQueue.Arn
+            Condition:
+              Bool:
+                'aws:SecureTransport': false
+
+  BulkReviewResolverFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  BulkReviewResolverFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with DynamoDB, S3, SQS and Cognito via AWS APIs"
+          - id: W92
+            reason: "Function does not require reserved concurrency as it scales with reviewer UI demand"
+          - id: W12
+            reason: "Lambda requires CloudWatch logs permissions"
+    # checkov:skip=CKV_AWS_116: "DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Function does not require reserved concurrency as it scales with reviewer UI demand"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names, log level and stack name - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/bulk_review_resolver
+      Description: Serves bulk Skip All Reviews (dry run, inline runs, job creation and status) and Send to review
+      MemorySize: 1024
+      Timeout: 30
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          METRIC_NAMESPACE: !Ref StackName
+          HITL_TABLE_NAME: !Ref HITLTableName
+          TRACKING_TABLE: !Ref TrackingTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          USER_POOL_ID: !Ref UserPoolId
+          QUEUE_URL: !Ref DocumentQueueUrl
+          WORKING_BUCKET: !Ref WorkingBucketName
+          INPUT_BUCKET: !Ref InputBucketName
+          OUTPUT_BUCKET: !Ref OutputBucketName
+          DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
+          JOB_QUEUE_URL: !Ref BulkReviewJobQueue
+      LoggingConfig:
+        LogGroup: !Ref BulkReviewResolverFunctionLogGroup
+      Policies:
+        - Statement:
+            # Queue items, drafts, history, claim counters, the registry, and the
+            # bulk job, result, list and lock rows.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+            # Tracking rows (the skip itself, Send to review) and the by-profile
+            # selection on the production document index.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:BatchGetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndex"
+            # The queue directory and the active profile's hitl settings.
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
+            # Inbox producer grants (idp_common/notifications/README.md).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            # Resubmissions and finalize messages on the DocumentQueue; its depth
+            # paces bulk jobs.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource: !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${DocumentQueueName}"
+            # The status object (review/), section results, and message bodies.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*/review/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/*"
+            # Claim-released notices fan out by group.
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminListGroupsForUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter (nested template).
+                  cloudwatch:namespace: !Ref StackName
+            # Bulk Skip All Reviews jobs above the inline limit.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt BulkReviewJobQueue.Arn
+
+  BulkReviewWorkerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+      RetentionInDays: !Ref LogRetentionDays
+
+  BulkReviewWorkerFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: "Function does not require VPC access as it only interacts with DynamoDB, S3, SQS and Cognito via AWS APIs"
+          - id: W92
+            reason: "Concurrency is bounded by the event source mapping's MaximumConcurrency and the job lock, not reserved concurrency"
+          - id: W12
+            reason: "Lambda requires CloudWatch logs permissions"
+    # checkov:skip=CKV_AWS_116: "SQS-triggered: failed messages are redriven to BulkReviewJobDLQ, which this function also consumes to fail the job"
+    # checkov:skip=CKV_AWS_117: "Function does not require VPC access as it only interacts with AWS services via APIs"
+    # checkov:skip=CKV_AWS_115: "Concurrency is bounded by the event source mapping's MaximumConcurrency and the job lock"
+    # checkov:skip=CKV_AWS_173: "Environment variables hold only resource names, log level and stack name - no sensitive data"
+    Properties:
+      PermissionsBoundary:
+        !If [
+          HasPermissionsBoundary,
+          !Ref PermissionsBoundaryArn,
+          !Ref AWS::NoValue,
+        ]
+      Handler: index.handler
+      Runtime: python3.12
+      CodeUri: ./src/lambda/bulk_review_worker
+      Description: Advances bulk Skip All Reviews jobs, paced against the document queue
+      MemorySize: 1024
+      Timeout: 900
+      Layers:
+        - !Ref IDPCommonBaseLayerArn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          STACK_NAME: !Ref StackName
+          METRIC_NAMESPACE: !Ref StackName
+          HITL_TABLE_NAME: !Ref HITLTableName
+          TRACKING_TABLE: !Ref TrackingTableName
+          CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
+          USER_POOL_ID: !Ref UserPoolId
+          QUEUE_URL: !Ref DocumentQueueUrl
+          WORKING_BUCKET: !Ref WorkingBucketName
+          INPUT_BUCKET: !Ref InputBucketName
+          OUTPUT_BUCKET: !Ref OutputBucketName
+          DATA_RETENTION_IN_DAYS: !Ref DataRetentionInDays
+          JOB_QUEUE_URL: !Ref BulkReviewJobQueue
+          JOB_DLQ_ARN: !GetAtt BulkReviewJobDLQ.Arn
+          MAX_CONCURRENT_WORKFLOWS: !Ref MaxConcurrentWorkflows
+          MAX_RECEIVES: "5"
+      LoggingConfig:
+        LogGroup: !Ref BulkReviewWorkerFunctionLogGroup
+      Events:
+        JobQueue:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BulkReviewJobQueue.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            ScalingConfig:
+              MaximumConcurrency: 2
+        JobDeadLetters:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt BulkReviewJobDLQ.Arn
+            BatchSize: 1
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+            ScalingConfig:
+              MaximumConcurrency: 2
+      Policies:
+        - Statement:
+            # Queue items, drafts, history, claim counters, the registry, and the
+            # bulk job, result, list and lock rows.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${HITLTableName}/index/*"
+            # Tracking rows (the skip itself, Send to review) and the by-profile
+            # selection on the production document index.
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+                - dynamodb:BatchGetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndex"
+            # The queue directory and the active profile's hitl settings.
+            - Effect: Allow
+              Action:
+                - dynamodb:Scan
+              Resource: !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:Query
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${ConfigurationTableName}"
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
+            # Inbox producer grants (idp_common/notifications/README.md).
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
+                - dynamodb:GetItem
+                - dynamodb:Query
+                - dynamodb:BatchGetItem
+                - dynamodb:BatchWriteItem
+                - dynamodb:ConditionCheckItem
+              Resource:
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}"
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${NotificationsTableName}/index/UnreadIndex"
+            # Resubmissions and finalize messages on the DocumentQueue; its depth
+            # paces bulk jobs.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:GetQueueAttributes
+              Resource: !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:${DocumentQueueName}"
+            # The status object (review/), section results, and message bodies.
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*/review/*"
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${OutputBucketName}/*"
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${WorkingBucketName}/*"
+            # Claim-released notices fan out by group.
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:ListUsers
+                - cognito-idp:AdminListGroupsForUser
+              Resource: !Sub "arn:${AWS::Partition}:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+            - Effect: Allow
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: !Ref CustomerManagedEncryptionKeyArn
+            - Effect: Allow
+              Action:
+                - cloudwatch:PutMetricData
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  # Root-stack name via parameter (nested template).
+                  cloudwatch:namespace: !Ref StackName
+            # Its own job queue (continuations) and the dead-letter queue.
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+                - sqs:ChangeMessageVisibility
+              Resource:
+                - !GetAtt BulkReviewJobQueue.Arn
+                - !GetAtt BulkReviewJobDLQ.Arn
   CopyToBaselineResolverFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1115,6 +1590,9 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           OUTPUT_BUCKET: !Ref OutputBucketName
           EVALUATION_BASELINE_BUCKET: !If
@@ -1129,6 +1607,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref CopyToBaselineResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - S3CrudPolicy:
             BucketName: !Ref OutputBucketName
         - S3CrudPolicy:
@@ -1257,6 +1746,9 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           CHAT_SESSIONS_TABLE: !Ref ChatSessionsTableName
+          # The delete checks the session's owner the way getChatMessages does.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
       LoggingConfig:
         LogGroup: !Ref DeleteAgentChatSessionFunctionLogGroup
       Policies:
@@ -1264,6 +1756,8 @@ Resources:
             TableName: !Ref ChatMessagesTableName
         - DynamoDBCrudPolicy:
             TableName: !Ref ChatSessionsTableName
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -1315,6 +1809,9 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           INPUT_BUCKET: !Ref InputBucketName
@@ -1323,6 +1820,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref DeleteDocumentResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         # Review queues: withdraw (abort, reprocess) or purge (delete) the
@@ -1550,14 +2058,60 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           DISCOVERY_BUCKET: !Ref DiscoveryBucketName
+          # Multi-document discovery's source is scope-checked by bucket: Input
+          # bucket prefixes through the configuration prefix mappings. Not named
+          # INPUT_BUCKET, which s3_targets reads into the upload allow-list.
+          SCOPED_SOURCE_INPUT_BUCKET: !Ref InputBucketName
           DISCOVERY_TRACKING_TABLE: !Ref DiscoveryTrackingTableName
           DISCOVERY_QUEUE_URL: !Ref DiscoveryQueueUrl
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           MULTI_DOC_DISCOVERY_STATE_MACHINE_ARN: !Ref MultiDocDiscoveryStateMachineArn
           S3_ENDPOINT_URL: !If [HasS3EndpointUrl, !Ref S3EndpointUrl, !Ref AWS::NoValue]
+          # The caller's allowedConfigVersions, checked against the profile each
+          # discovery operation names.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          GUARDRAIL_ID_AND_VERSION:
+            !If [
+              HasGuardrail,
+              !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}",
+              "",
+            ]
       LoggingConfig:
         LogGroup: !Ref DiscoveryUploadResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions.
+        # The lookup fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - S3WritePolicy:
             BucketName: !Ref DiscoveryBucketName
         - S3ReadPolicy:
@@ -1593,6 +2147,12 @@ Resources:
                 - states:StartExecution
               Resource:
                 - !Ref MultiDocDiscoveryStateMachineArn
+            - !If
+              - HasGuardrail
+              - Effect: Allow
+                Action: bedrock:ApplyGuardrail
+                Resource: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/${BedrockGuardrailId}"
+              - !Ref AWS::NoValue
   GetAgentChatMessagesFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -1640,6 +2200,10 @@ Resources:
           # the non-streaming (GovCloud) poll path, so it verifies ownership
           # against this table too.
           CHAT_DOCUMENT_SESSIONS_TABLE: !Ref ChatDocumentSessionsTable
+          # Who each session id belongs to; the ownership check reads it and
+          # registers an owner for a session written before it existed.
+          CHAT_SESSION_OWNERS_TABLE: !Ref ChatSessionOwnersTableName
+          DATA_RETENTION_DAYS: !Ref DataRetentionInDays
           # Feature flag to disable ownership enforcement in case of legacy
           # session migration. Defaults to "true" (enforce). Customers should
           # only set this to "false" temporarily during data backfill.
@@ -1656,6 +2220,8 @@ Resources:
         # Same ownership check for document-chat sessions.
         - DynamoDBReadPolicy:
             TableName: !Ref ChatDocumentSessionsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ChatSessionOwnersTableName
         - Statement:
             - Effect: Allow
               Action:
@@ -1726,6 +2292,8 @@ Resources:
           # unconditionally, so empty means a wiring regression, not a deployment
           # without RBAC.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # RBAC: per-DOCUMENT scope on the Input and Output buckets. INPUT_BUCKET
           # and OUTPUT_BUCKET above are likewise not only allow-list entries — they
           # name the two buckets whose objects belong to a document, and
@@ -1926,6 +2494,8 @@ Resources:
           # document handled under a version outside their scope. Empty string in
           # single-user / pre-RBAC deployments (fail-open).
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref GetStepFunctionExecutionResolverFunctionLogGroup
       Policies:
@@ -2131,6 +2701,8 @@ Resources:
           # confines an Annotator to the test sets in their allowedTestSets, which
           # `testset_scope` resolves from the UsersTable EmailIndex.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Review queues: a document in review is regrouped only by the holder of
           # its review item, read from HITLTable.
           HITL_TABLE_NAME: !Ref HITLTableName
@@ -2262,6 +2834,8 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           KB_ACCOUNT_ID: !Ref AWS::AccountId
           KB_REGION: !Ref AWS::Region
@@ -2394,6 +2968,8 @@ Resources:
           # the parent template; an empty value denies a non-admin caller, because
           # a scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # The config prefix mappings, so a reprocess with no explicit profile
           # re-resolves them — which is how an operator re-runs a backlog under a
           # new profile. This resolver had no ConfigurationTable grant at all
@@ -2548,12 +3124,26 @@ Resources:
         - !Ref IDPCommonBaseLayerArn
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           OUTPUT_BUCKET: !Ref OutputBucketName
           TRACKING_TABLE: !Ref TrackingTableName
       LoggingConfig:
         LogGroup: !Ref DocumentVersionsResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         # Read manifest-pinned output object versions; delete a version's
@@ -2631,15 +3221,38 @@ Resources:
         Variables:
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTableName
+          CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           STACK_NAME: !Ref StackName
           # Used for RBAC scope enforcement: the resolver queries the
           # UsersTable EmailIndex to look up `allowedConfigVersions` for
           # non-admin callers and rejects syncBdaIdp calls against a
           # version outside their scope.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref SyncBdaIdpResolverFunctionLogGroup
       Policies:
+        - Statement:
+            # Configuration-profile revision bodies (config_revisions/<profile>/).
+            # This function saves profiles, and a save that cannot cut a revision
+            # leaves documents running the previously published one (#1778).
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+                - s3:DeleteObject
+              Resource:
+                - !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}/config_revisions/*"
+            # Without ListBucket, S3 reports a missing revision key as 403 and the
+            # revision store raises instead of treating the revision as gone.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !Sub "arn:${AWS::Partition}:s3:::${ConfigurationBucketName}"
+              Condition:
+                StringLike:
+                  s3:prefix: config_revisions/*
         - AWSLambdaBasicExecutionRole
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
@@ -2723,6 +3336,9 @@ Resources:
       Timeout: 900
       Environment:
         Variables:
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE: !Ref TrackingTableName
           BASELINE_BUCKET: !Ref EvaluationBaselineBucketName
@@ -2754,6 +3370,17 @@ Resources:
       LoggingConfig:
         LogGroup: !Ref TestResultsResolverFunctionLogGroup
       Policies:
+        # Read-only UsersTable + EmailIndex: the caller's allowedConfigVersions,
+        # which this function enforces on the document it acts on. The lookup
+        # fails closed, so without this every scoped caller is refused.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
         - S3ReadPolicy:
@@ -2893,11 +3520,29 @@ Resources:
           CONFIGURATION_BUCKET: !Ref ConfigurationBucketName
           TRACKING_TABLE: !Ref TrackingTableName
           FILE_COPY_QUEUE_URL: !Ref TestFileCopyQueueUrl
+          # RBAC: the caller's allowedConfigVersions, applied to the profile a run
+          # is started under. A run's documents are stamped with that profile and
+          # so become visible to whoever is scoped to it, which made an unscoped
+          # startTestRun a way to place documents into another scope's view.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref TestRunnerFunctionLogGroup
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref TrackingTableName
+        # Read-only on UsersTable + EmailIndex for the caller's scope lookup. A
+        # failed lookup denies the run rather than treating the caller as
+        # unrestricted.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         - DynamoDBCrudPolicy:
             TableName: !Ref ConfigurationTableName
         # Read a pinned revision's stored configuration body.
@@ -2986,6 +3631,8 @@ Resources:
           # stored on the user record. Without this the scope lookup returns
           # "unrestricted" and a scoped Annotator would be denied everything.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # Inbox notices for Test Studio assignments (assigned, unassigned).
           NOTIFICATIONS_TABLE_NAME: !Ref NotificationsTableName
           # Assignees must be in the Cognito Annotator group.
@@ -3168,6 +3815,8 @@ Resources:
           # value DENIES a caller rather than reading as unrestricted, because a
           # scope that cannot be evaluated is not a caller without restrictions.
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # The in-review check on section-result uploads: a document in a review
           # queue is edited only through its queue item, so an upload of one of its
           # section results to the Output bucket is refused (QUEUE_MANAGED).
@@ -3306,6 +3955,8 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       LoggingConfig:
         LogGroup: !Ref ListDocumentsByDateRangeResolverFunctionLogGroup
       Policies:
@@ -3361,6 +4012,8 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
       Policies:
         - Statement:
             - Effect: Allow
@@ -3368,6 +4021,9 @@ Resources:
                 - dynamodb:Query
               Resource:
                 - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndex"
+                # listDocuments reads V2 and falls back to TypeDateIndex while V2
+                # backfills; getDocumentCount reads TypeDateIndex.
+                - !Sub "arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${TrackingTableName}/index/TypeDateIndexV2"
             - Effect: Allow
               Action:
                 - dynamodb:Query
@@ -3471,6 +4127,7 @@ Resources:
             "getCircuitBreakerStatus": "${CircuitBreakerResolverFunctionArn}",
             "getDocumentCount": "${ListDocumentsGSIResolverFunction}",
             "getFileContents": "${GetFileContentsResolverFunction}",
+            "bulkSkipAllReviews": "${BulkReviewResolverFunction}",
             "getMyReviewQueues": "${ReviewQueuesResolverFunction}",
             "getSampleDocumentUrl": "${GetSampleDocumentResolverFunction}",
             "getStepFunctionExecution": "${GetStepFunctionExecutionResolverFunction}",
@@ -3489,6 +4146,7 @@ Resources:
             "uploadDocument": "${UploadResolverFunction}",
             "claimReview": "${CompleteSectionReviewFunctionArn}",
             "createUser": "${UserManagementFunctionArn}",
+            "listMcpCredentials": "${McpCredentialManagerFunctionArn}",
             "createFinetuningJob": "${FinetuningJobsResolverFunctionArn}",
             "calculateCapacity": "${CalculateCapacityResolverFunctionArn}",
             "getLatestPublishedVersion": "${VersionCheckResolverFunctionArn}",
@@ -3557,6 +4215,11 @@ Resources:
           TRACKING_TABLE_NAME: !Ref TrackingTableName
           DISCOVERY_TABLE_NAME: !Ref DiscoveryTrackingTableName
           AGENT_TABLE_NAME: !Ref AgentTableName
+          # getDocument (served here, not by a resolver) refuses a document outside
+          # the caller's configuration scope, which needs the scope lookup.
+          USERS_TABLE_NAME: !Ref UsersTableName
+          TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
+          TENANT_GRANT_SOURCE: !Ref TenantGrantSource
           # field -> resolver function ARN. Fields absent here are served by
           # ddb_direct.py (discovery/agent jobs, getDocument, date queries).
           # field -> resolver function ARN map is large (~60 ARNs > 4KB env
@@ -3594,6 +4257,18 @@ Resources:
             - Effect: Allow
               Action: ssm:GetParameter
               Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${StackName}/http-api/field-function-map"
+        # Read-only access on UsersTable + EmailIndex for the caller's
+        # allowedConfigVersions, which getDocument and the two date-partition
+        # lists enforce. Without it the lookup fails and the request is refused
+        # (the lookup fails closed), so a scoped caller could read nothing.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:Query
+                - dynamodb:GetItem
+              Resource:
+                - !Ref UsersTableArn
+                - !Sub "${UsersTableArn}/index/*"
         # The TrackingTable/DiscoveryTable/AgentTable are KMS-encrypted; the
         # DDB-direct operations (getDocument, date queries, discovery/agent jobs)
         # need kms:Decrypt/GenerateDataKey on the customer-managed key.
@@ -4176,6 +4851,29 @@ Resources:
     Properties:
       ResourceArn: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/${HttpApi}/stages/${HttpApiStage}"
       WebACLArn: !GetAtt ApiWafWebACL.Arn
+
+  # The web ACL's request log: every request it allows or blocks. WAF accepts
+  # only a CloudWatch Logs destination whose name starts "aws-waf-logs-", and
+  # adds the delivery permission to the account's CloudWatch Logs resource
+  # policy itself when the logging configuration is created.
+  ApiWafLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: IsWafEnabled
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "aws-waf-logs-${StackName}-api"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
+  ApiWafLoggingConfiguration:
+    Type: AWS::WAFv2::LoggingConfiguration
+    Condition: IsWafEnabled
+    Properties:
+      ResourceArn: !GetAtt ApiWafWebACL.Arn
+      # The bare log-group ARN: !GetAtt ApiWafLogGroup.Arn ends in ":*", which
+      # WAF rejects as a destination.
+      LogDestinationConfigs:
+        - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${ApiWafLogGroup}"
 
 
 Outputs:

@@ -30,7 +30,29 @@ on:
 permissions:
   contents: read
 
-# ⚠️ WHY THIS IS FOUR JOBS. It was one `developer_tests` job running lint,
+# GitLab's `interruptible: true`, which every gate job there carries. Without it a
+# push to a pull request leaves the previous head's run going to completion — the
+# "Unit Tests (idp_common)" job took 41 minutes at the median over 40 runs on
+# 2026-11-12 — on a runner the new head's jobs are queued
+# behind. Measured on 2026-11-12 over 40 runs: the median job started within six
+# seconds, but one in ten waited ten minutes or more for a runner, and the longest
+# waited 18.
+#
+# Keyed on the PR number, so only a newer push to the SAME pull request cancels a
+# run. Cancelling is limited to `pull_request` runs: a `workflow_dispatch` run is
+# the manual recovery path described above, and a second dispatch on the same ref
+# queues behind it rather than silently killing it. A dispatch run is grouped by
+# ref and a pull_request run by PR number, so a later push does not cancel a
+# dispatch already running for the same branch; that run is the recovery path and
+# keeps its runners until it finishes. A cancelled run reports
+# `cancelled` on a head nobody needs a verdict for any more; the current head's run
+# is unaffected. Pinned by
+# scripts/tests/test_ci_gate_parity.py::test_github_gate_workflows_cancel_superseded_runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# ⚠️ WHY THIS IS SEVERAL JOBS. It was one `developer_tests` job running lint,
 # typecheck and every pytest suite in sequence, and it took 34-46 minutes of which
 # 88% was pytest (`test-packages-cicd` 942s, `test-cicd -C lib/idp_common_pkg`
 # 783s, UI 94s, against 106s of lint and 50s of typecheck). Splitting it is worth
@@ -44,14 +66,14 @@ permissions:
 # checkout, which each does for itself.
 #
 # ⚠️ Splitting changed how many requireable status-check CONTEXTS the shared gates
-# produce — it was one job holding eight of them, and is now four. That number is
+# produce — it was one job holding eight of them, and is now one per job. That number is
 # derived and asserted by scripts/tests/test_documented_counts.py, which fails any
 # document stating a stale figure, and the branch-protection checker in
 # scripts/sdlc/ reads the job names out of this file to build its expected
 # required-check list. Adding or renaming a job here moves both; it is not a local
 # edit.
 #
-# Four parallel jobs on a free-for-public-repos runner pool cost nothing extra
+# Parallel jobs on a free-for-public-repos runner pool cost nothing extra
 # here, which is the one way this is cheaper than the GitLab equivalent.
 jobs:
   # Lint, format, types, and the static scans. Everything that reads the tree
@@ -164,10 +186,13 @@ jobs:
       - name: Set up Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # ⚠️ Node and the pinned cfn-lint are load-bearing here, and neither is visible
-      # from any `run:` line below. This job used to need neither; the coverage
-      # producer two steps down re-runs the `scripts` and `idp_sdk` suites to measure
-      # them, which drags their toolchain requirements into this job wholesale —
+      # ⚠️ The `scripts` tree no longer runs in this job (scripts_coverage measures it),
+      # so the node and ui-deps reasons below now apply to scripts_coverage; this job
+      # keeps them until it is measured that no remaining tree here needs them. The
+      # pinned cfn-lint is still load-bearing here, for the idp_sdk tree.
+      # The reasons, as written for the suites they were added for: the coverage
+      # producer two steps down was the one CI run of the `scripts` and `idp_sdk`
+      # suites, which drags their toolchain requirements into this job wholesale —
       # `scripts/tests/test_ux_recorder.py` runs the recorder's cursor-overlay
       # JavaScript under node and FAILS rather than skipping without it, and
       # `scripts/tests/test_pyright_config.py` runs basedpyright live. cfn-lint is
@@ -188,9 +213,12 @@ jobs:
           cfn-lint: "true"
           ui-deps: "true"
 
+      # SKIP_INSTALL=1, as on GitLab: the action above already installed
+      # idp_common[all,dev,test] constrained to uv.lock, and the target's own
+      # install would re-resolve `.[test]` without that constraint (#1707).
       - name: Run tests
         id: run-tests
-        run: make test-cicd -C lib/idp_common_pkg
+        run: make test-cicd -C lib/idp_common_pkg SKIP_INSTALL=1
 
       # The step above writes ONE of the ratchet's trees. Without this step the
       # others resolve to no report at all, so the ratchet named them as
@@ -199,17 +227,23 @@ jobs:
       # guards (issue #1256). Trees are measured concurrently and `idp_common` is
       # skipped because the step above already produced its report; the ratchet below
       # still requires it by name.
+      #
+      # ⚠️ The `scripts` tree is NOT measured here: it is the longest tree (about 17
+      # minutes of this job at 2 workers on 2026-11-13) and scripts_coverage below
+      # measures and ratchets it with all four CPUs. `--measured-elsewhere scripts`
+      # is the only tree this job's ratchet does not require, and
+      # scripts/tests/test_coverage_debt.py asserts that scripts_coverage requires it.
       - name: Coverage reports for every other measurable tree (concurrent)
-        run: make coverage-all-cicd
+        run: make coverage-all-cicd COVERAGE_CICD_SKIP="--skip idp_common --skip scripts"
         continue-on-error: false
 
       - name: Coverage ratchet (per-file, every registry tree required by name)
-        run: make check-coverage-debt-cicd
+        run: make check-coverage-debt-cicd CHECK_COVERAGE_DEBT_ARGS="--measured-elsewhere scripts"
         continue-on-error: false
 
       - name: Upload coverage reports
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
-        if: always() && steps.run-tests.outcome != 'skipped'
+        if: ${{ !cancelled() && steps.run-tests.outcome != 'skipped' }}
         with:
           name: test-reports
           path: |
@@ -219,7 +253,7 @@ jobs:
 
       - name: Publish test results
         uses: EnricoMi/publish-unit-test-result-action@c950f6fb443cb5af20a377fd0dfaa78838901040  # v2.23.0
-        if: always() && hashFiles('lib/idp_common_pkg/test-reports/test-results.xml') != ''
+        if: ${{ !cancelled() && hashFiles('lib/idp_common_pkg/test-reports/test-results.xml') != '' }}
         with:
           files: lib/idp_common_pkg/test-reports/test-results.xml
           check_name: Test Results
@@ -241,7 +275,7 @@ jobs:
       # CONTRIBUTING.md.
       - name: Code Coverage Report
         uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95  # v1.3.0
-        if: always() && hashFiles('lib/idp_common_pkg/test-reports/coverage.xml') != ''
+        if: ${{ !cancelled() && hashFiles('lib/idp_common_pkg/test-reports/coverage.xml') != '' }}
         with:
           filename: lib/idp_common_pkg/test-reports/coverage.xml
           badge: true
@@ -330,6 +364,52 @@ jobs:
         run: make test-packages-cicd
         continue-on-error: false
 
+  # The `scripts` coverage tree -- this repository's own gate suites -- in a job of its
+  # own. On GitHub's 4-vCPU runners it is the longest tree, and it does not speed up
+  # with more workers: 1,006 s at two workers inside unit_tests and 941 s at four
+  # inside package_tests (2026-11-13), so the only way to take it off the critical
+  # path is to run it beside the other jobs rather than after one of them.
+  # unit_tests' ratchet passes `--measured-elsewhere scripts`, and
+  # scripts/tests/test_coverage_debt.py asserts this job requires the tree.
+  scripts_coverage:
+    name: Scripts Coverage (gate suites)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    permissions:
+      contents: read
+
+    container:
+      image: python:3.13-bookworm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+        with:
+          # Full history: test_no_skip_ci_markers.py scans commits since a pinned
+          # start point and skips quietly on a shallow clone.
+          fetch-depth: 0
+
+      - name: Set up Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # The scripts suites need node (test_ux_recorder.py, and basedpyright for
+      # test_pyright_config.py), the UI's npm dependencies (test_ui_test_discovery.py)
+      # and the pinned cfn-lint -- the same three inputs, for the same reasons, that
+      # the unit_tests comment above records.
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
+        with:
+          node: "true"
+          cfn-lint: "true"
+          ui-deps: "true"
+
+      - name: Coverage report and ratchet for the scripts tree
+        run: |
+          make coverage-all-cicd COVERAGE_CICD_SKIP= COVERAGE_ARGS="--only scripts"
+          make check-coverage-debt CHECK_COVERAGE_DEBT_ARGS="--require-tree scripts"
+        continue-on-error: false
+
   # UI unit tests (Vitest + jsdom, no browser).
   #
   # Its own job because it is the one member of this workflow that needs Node and
@@ -366,3 +446,56 @@ jobs:
         id: run-ui-tests
         run: cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent
         continue-on-error: false
+
+  # The Terraform offline gate: translate template.yaml with terraform/translator,
+  # then `init -backend=false` and `validate` the generated module with every pinned
+  # Terraform and OpenTofu release. It deploys nothing and needs no AWS credentials;
+  # it does need network access, for the binaries (verified against the published
+  # SHA256SUMS and the hashes committed in scripts/terraform_binaries.lock.json) and
+  # the providers. See scripts/terraform_check.py for what it does and does not prove.
+  #
+  # Its own job rather than a step in `static_checks` so that a release host or
+  # registry outage reds this context alone, by a name that says what it was.
+  terraform_checks:
+    name: Terraform Checks (offline translate + validate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    container:
+      image: python:3.13-bookworm
+
+    env:
+      # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
+      # scripts/tests/test_ci_gate_parity.py fails if this, .gitlab-ci.yml and the
+      # Makefile disagree.
+      TERRAFORM_CHECK_BINARIES: "terraform@1.7.5 terraform@1.17.1 tofu@1.7.10 tofu@1.13.9"
+      TERRAFORM_CHECK_CACHE: .cache/idp-terraform-check
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4.3.1
+
+      - name: Set up Git safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # The translator needs only aws-sam-translator and PyYAML, both in the lock;
+      # the shared action is used anyway so this job's environment is the locked
+      # one every other job here builds.
+      - name: Set up the Python environment
+        uses: ./.github/actions/python-env
+
+      # Verified binaries plus the provider plugin cache (~430 MB compressed).
+      # Keyed on the file that pins both, and on the vendored awscc schema whose
+      # version the gate pins that provider to. No restore-keys: a pin change
+      # starts a clean cache rather than carrying every superseded release forward.
+      - name: Cache Terraform binaries and providers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: .cache/idp-terraform-check
+          key: terraform-check-${{ runner.arch }}-${{ hashFiles('scripts/terraform_binaries.lock.json', 'terraform/translator/schemas/awscc.json') }}
+
+      - name: Translate offline, then init and validate with each binary
+        run: make terraform-check

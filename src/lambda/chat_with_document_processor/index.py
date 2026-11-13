@@ -47,10 +47,17 @@ from idp_common.bedrock.client import (
     is_grok_model,
     strips_sampling_params,
 )
+from idp_common.bedrock.guardrail import guardrail_config_from_env
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
-from idp_common.config_scope import normalize_scope, scope_allows
+from idp_common.config_scope import (
+    STRICT_UNSCOPED_DENY,
+    normalize_scope,
+    scope_allows,
+    unscoped_is_denied,
+)
+from idp_common.regional_models import CHAT_MODEL_ID, regional_default
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -213,10 +220,12 @@ def _get_bedrock_runtime():
 
 
 def _default_model_for_region() -> str:
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    if region.startswith("eu-"):
-        return "eu.anthropic.claude-opus-4-8:1m"
-    return "us.anthropic.claude-opus-4-8:1m"
+    """The chat model when neither the chat nor the summarization section names one.
+
+    The US default, through the Region translation the other code fallbacks use, so
+    it is the model the deploy-time swap would have written for this Region.
+    """
+    return regional_default(CHAT_MODEL_ID, os.environ.get("AWS_REGION"))
 
 
 def _s3_object_exists(bucket: str, key: str) -> bool:
@@ -373,13 +382,30 @@ def _get_user_allowed_config_versions(
                 )
                 row = None
         if row is None and caller_email:
-            resp = table.query(
-                IndexName=USERS_TABLE_SCOPE_INDEX,
-                KeyConditionExpression=Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
-                Limit=1,
-            )
-            items = resp.get("Items") or []
-            row = items[0] if items else None
+            # Every row for the address, because Cognito does not make `email`
+            # unique and each account sharing an address can hold a row of its own.
+            # Chosen in the grant writer's order: the row recording this caller's
+            # sub, then one recording no sub, then any other (which the rule below
+            # decides). Mirrors `_row_by_email` in `idp_common.config_scope`.
+            query = {
+                "IndexName": USERS_TABLE_SCOPE_INDEX,
+                "KeyConditionExpression": Key(USERS_TABLE_SCOPE_KEY).eq(caller_email),
+            }
+            items = []
+            while True:
+                resp = table.query(**query)
+                items.extend(resp.get("Items") or [])
+                if not resp.get("LastEvaluatedKey"):
+                    break
+                query["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+
+            def _rank(item):
+                recorded = str(item.get("cognitoSub") or "").strip()
+                if caller_sub and recorded == caller_sub:
+                    return 0
+                return 1 if not recorded else 2
+
+            row = min(items, key=_rank) if items else None
     except Exception as e:  # noqa: BLE001
         logger.error(
             "User scope lookup failed, denying chat turn (%s / %s on %s): %s",
@@ -397,6 +423,22 @@ def _get_user_allowed_config_versions(
         )
     if row is None:
         return None  # no scope row for this user → unrestricted
+    recorded_sub = str(row.get("cognitoSub") or "").strip()
+    if caller_sub and recorded_sub and recorded_sub != caller_sub:
+        # The row records a different Cognito account (Cognito does not make
+        # `email` unique). Where an unscoped caller is denied, that row's scope is
+        # another account's grant, not a restriction on this one, so deny. Mirrors
+        # `resolve_allowed_config_versions` in `idp_common.config_scope`.
+        if unscoped_is_denied():
+            logger.warning(
+                "A UsersTable row found for the caller records a different Cognito "
+                "sub; denying the chat turn"
+            )
+            return [STRICT_UNSCOPED_DENY]
+        logger.warning(
+            "A UsersTable row found for the caller records a different Cognito "
+            "sub; its scope is being applied"
+        )
     scope = row.get("allowedConfigVersions")
     return list(scope) if scope else None
 
@@ -421,38 +463,63 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
       **unrestricted**. It is logged every time, at WARNING: this is the one
       fail-open path in this module and it must never be silent.
 
-      The streaming Lambda Function URL transport is what sets it today — see
-      ``_caller_identity`` in ``src/lambda/chat_stream_processor/app.py`` and
-      GAP-07 in ``scripts/api_rbac_expectations.yaml``. It carries only Identity
-      Pool SigV4 credentials, whose assumed-role session name is a pool-wide
-      constant, so it can prove *a* signed-in user of this deployment is calling
-      but not *which* one. Enforcing ``allowedConfigVersions`` against the
-      request body's self-asserted identity instead would be no control at all:
-      the caller it would restrict is the same caller that chooses the value.
-      Closing it means the browser presenting its Cognito ID token to that
-      endpoint and the endpoint verifying it — at which point returning real
-      claims from ``_caller_identity`` turns this check on with no change here,
-      provided those claims include an ``email`` or a ``sub``.
+      No web UI path sets it: the REST resolver forwards the claims API
+      Gateway verified, and the streaming Function URL forwards the claims of
+      the Cognito ID token it verifies and refuses a request without one. So
+      this branch is reached only by a direct ``lambda:InvokeFunction``.
+      Enforcing ``allowedConfigVersions`` against a self-asserted identity in
+      the event instead would be no control at all: the caller it would
+      restrict is the caller choosing the value.
     * ``identity`` **is a dict** — verified claims. The scope is resolved from
       them and every failure denies.
     """
     if "identity" not in event:
         raise ScopeLookupError("no identity on the chat event")
     identity = event["identity"]
+    if identity is None and unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, this closes
+        # the one fail-open path above: with no verified principal there is no way
+        # to tell a caller of one tenant from a caller of another, so the turn is
+        # denied rather than served unrestricted.
+        logger.warning(
+            "Denied chat turn (session=%s): tenant isolation requires a "
+            "verified caller identity, and the invoking transport supplied none.",
+            event.get("sessionId") or "unknown",
+        )
+        raise ScopeLookupError("tenant isolation: no verified caller identity")
     if identity is None:
         logger.warning(
             "Config-version scope NOT enforced for this chat turn (session=%s): "
             "the invoking transport verified no caller identity, so there is no "
             "principal to resolve allowedConfigVersions for. The turn proceeds "
-            "unrestricted. See GAP-07 / AUTH.T07.",
+            "unrestricted (a direct IAM invocation).",
             event.get("sessionId") or "unknown",
         )
         return None
     if not isinstance(identity, dict):
         raise ScopeLookupError(f"unusable identity of type {type(identity).__name__}")
+    if unscoped_is_denied():
+        # Under strict isolation, or when tenants are granted externally, an
+        # unscoped caller is denied, as everywhere else (`idp_common.config_scope`),
+        # and an Admin stays unrestricted — the other consumers skip the lookup for
+        # an Admin, so this one must not deny one.
+        if "Admin" in _caller_groups(identity):
+            return None
+        scope = _get_user_allowed_config_versions(
+            _caller_email(identity), _caller_sub(identity)
+        )
+        return scope if scope else [STRICT_UNSCOPED_DENY]
     return _get_user_allowed_config_versions(
         _caller_email(identity), _caller_sub(identity)
     )
+
+
+def _caller_groups(identity: dict) -> list[str]:
+    """``cognito:groups`` from verified claims, as a list whichever shape it arrived in."""
+    groups = (identity.get("claims") or {}).get("cognito:groups") or []
+    if isinstance(groups, str):
+        groups = [g.strip() for g in groups.strip("[]").replace(",", " ").split()]
+    return [str(g) for g in groups]
 
 
 def _get_full_text(bucket: str, object_key: str, document: dict) -> str:
@@ -756,6 +823,11 @@ def _invoke_bedrock_stream_and_emit(
         kwargs["additionalModelRequestFields"] = additional_model_fields
     if service_tier_param:
         kwargs["serviceTier"] = service_tier_param
+    # The guardrail in GUARDRAIL_ID_AND_VERSION, when one is configured; parsed
+    # by the same function BedrockClient uses for its converse calls.
+    guardrail_config = guardrail_config_from_env()
+    if guardrail_config:
+        kwargs["guardrailConfig"] = guardrail_config
 
     response = client.converse_stream(**kwargs)
     stream = response.get("stream")

@@ -811,16 +811,13 @@ class TestMergedPricing:
         assert merged is not None
         assert merged.pricing[0].units[0].price == "9.9"
 
-    def test_a_partial_custom_list_replaces_the_default_list_wholesale(
-        self, monkeypatch
-    ):
-        """Pinned behaviour, and a sharp edge worth knowing.
+    def test_a_partial_custom_list_is_laid_over_the_defaults_per_row(self, monkeypatch):
+        """A custom record naming one service leaves every other default priced.
 
-        `deep_update` assigns lists rather than merging them, so CustomPricing
-        is a full replacement of `pricing` despite the docstring calling it
-        "deltas". A custom record naming one service drops the price of every
-        other service, and the cost report then shows those services as free
-        rather than erroring.
+        The list used to be assigned wholesale by `deep_update`, so this record
+        dropped `textract/a`'s price and the cost report recorded it as unpriced
+        (#1886). `test_pricing_row_merge.py` covers the rule against the shipped
+        table.
         """
         _make_table()
         manager = _manager(monkeypatch)
@@ -833,13 +830,15 @@ class TestMergedPricing:
         merged = manager.get_merged_pricing()
 
         assert merged is not None
-        assert [e.name for e in merged.pricing] == ["bedrock/b"]
-        assert "textract/a" not in [e.name for e in merged.pricing]
+        assert [(e.name, e.units[0].price) for e in merged.pricing] == [
+            ("textract/a", "1.5"),
+            ("bedrock/b", "0.9"),
+        ]
 
-    def test_an_empty_custom_pricing_record_erases_all_default_prices(
+    def test_an_empty_custom_pricing_record_leaves_the_defaults_in_force(
         self, monkeypatch
     ):
-        """An empty CustomPricing is not the same as no CustomPricing."""
+        """An empty CustomPricing overrides nothing, so it is the defaults."""
         _make_table()
         manager = _manager(monkeypatch)
         manager.save_configuration(
@@ -850,7 +849,9 @@ class TestMergedPricing:
         merged = manager.get_merged_pricing()
 
         assert merged is not None
-        assert merged.pricing == []
+        assert [(e.name, e.units[0].price) for e in merged.pricing] == [
+            ("textract/a", "1.5")
+        ]
 
     def test_the_merge_is_a_new_object_and_writes_nothing_back(self, monkeypatch):
         """Reading the effective pricing must be a pure read.
@@ -2859,20 +2860,15 @@ class TestAFullProfileIsBackfilledForFieldsAddedSinceItWasSaved:
 @pytest.mark.unit
 @mock_aws
 class TestTheBackfillWriteBackPreservesRevisionProofs:
-    """⚠️ A save that cuts no revision rewrites the head without refreshing the
-    published entry's ``storedHash``, and for one kind of published revision that
-    destroys its only integrity proof.
+    """For a profile with revision history the write-back is a revision (#1782).
 
-    ``config/README.md``: a revision cut before ``storedHash`` existed is proven
-    only by the legacy ``UpdatedAt <= createdAt`` comparison, "and that proof is
-    gone the first time anything rewrites the head" — after which a pinned read of
-    it raises once its body expires.
-
-    The hazard predates the backfill, but only for legacy sparse profiles.
-    Resolving **every** profile against the default would take it to every
-    profile, once, after any field-adding upgrade. So the write-back is skipped
-    exactly where it could destroy a proof, and nowhere else: correctness never
-    depended on it, since the resolution happens on every read regardless.
+    Writing the resolved head back without one would leave a published revision
+    that documents run and a head the editor shows that differ, and for a revision
+    cut before ``storedHash`` existed it would also destroy that revision's only
+    integrity proof. Recording a new revision avoids both: the new revision is
+    published with its own hash, and the old one keeps its body and entry. A
+    process that cannot record the revision writes nothing, and the resolution
+    still applies to its read.
     """
 
     @staticmethod
@@ -2915,25 +2911,25 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
             merged = manager.get_merged_configuration("p")
         return merged, spy
 
-    def test_a_published_revision_with_a_hash_is_written_back(self, monkeypatch):
-        """Its proof is the hash, which does not depend on the head's timestamp,
-        so the convenience write is safe."""
-        merged, spy = self._run(
-            monkeypatch,
+    @pytest.mark.parametrize(
+        "entry",
+        [
             {"revision": 1, "createdAt": "2026-01-01T00:00:00Z", "storedHash": "abc"},
-        )
-        assert merged is not None
-        assert spy.called, "a hashed published revision should not block the write-back"
+            {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"},
+            {"revision": 7, "storedHash": "x"},
+        ],
+        ids=["hashed", "legacy-proof", "retired"],
+    )
+    def test_a_read_of_a_profile_with_history_writes_nothing(self, monkeypatch, entry):
+        """The resolution applies to the read; recording it is the deployment's job.
 
-    def test_a_published_revision_without_a_hash_is_not_written_back(self, monkeypatch):
-        """⚠️ The case the guard exists for. The resolution must still apply to
-        this read — only the stored record is left alone."""
-        merged, spy = self._run(
-            monkeypatch, {"revision": 1, "createdAt": "2026-01-01T00:00:00Z"}
-        )
+        A read cannot see whether its process may write revisions, and a process
+        holding the bucket with read-only access would otherwise rewrite the head,
+        consume a revision number and put the head back on every read (#1782).
+        """
+        merged, spy = self._run(monkeypatch, entry)
         assert merged is not None
         assert merged.classification.combined.llm.model == "us.amazon.nova-2-lite-v1:0"
-        # Backfilled on THIS read even though nothing was persisted.
         assert merged.summarization.model == SEEDED_MODEL
         spy.assert_not_called()
 
@@ -2958,41 +2954,137 @@ class TestTheBackfillWriteBackPreservesRevisionProofs:
             manager.get_merged_configuration("p")
         assert spy.called
 
-    def test_a_retired_published_revision_is_written_back(self, monkeypatch):
-        """No index entry means no entry to invalidate."""
-        merged, spy = self._run(monkeypatch, {"revision": 7, "storedHash": "x"})
-        assert merged is not None
-        assert spy.called
+    @staticmethod
+    def _revisioned_without_summarization(manager, version: str = "p") -> None:
+        """A profile and its r1 recorded before `summarization` existed, with the
+        head provably that revision."""
+        from idp_common.config.configuration_manager import _stored_content_hash
 
-    def test_history_disabled_is_written_back(self, monkeypatch):
-        """With no bucket there is no revision history to protect, and this is
-        the pre-existing behaviour for a sparse profile."""
-        table = _make_table()
-        manager = _manager(monkeypatch)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG, IDPConfig(notes="mine"), version=version
+        )
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#{version}"}
+        head = manager._decompress_item(manager.table.get_item(Key=key)["Item"])
+        head.pop("summarization")
+        manager.table.put_item(Item=manager._compress_item(head))
+        body = manager.revisions.get_body(version, 1)
+        body.pop("summarization")
+        manager.revisions.put_body(version, 1, body)
+        manager.revisions.update_entry(
+            version, 1, storedHash=_stored_content_hash(head)
+        )
+
+    def test_recording_the_resolution_cuts_a_system_revision(self, monkeypatch):
+        _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
-        self._put_full(table, "p")
+        self._revisioned_without_summarization(manager)
         with patch.object(
             manager, "save_configuration", wraps=manager.save_configuration
         ) as spy:
-            manager.get_merged_configuration("p")
-        assert spy.called
+            recorded = manager.record_resolution_against_default("p")
+        assert spy.call_args.kwargs["created_by"] == "system"
+        assert "cut_revision" not in spy.call_args.kwargs
+        assert recorded == 2
+        assert manager.head_matches_published("p") is True
+        assert (
+            manager.get_merged_configuration("p", revision=2).summarization.model
+            == SEEDED_MODEL
+        )
 
-    def test_an_unreadable_index_fails_closed(self, monkeypatch):
-        """Skipping a convenience write is recoverable; destroying a proof is
-        not. So the unknown answer is 'do not write'."""
+    def test_a_converged_legacy_proof_profile_is_left_untouched(self, monkeypatch):
+        """The case `_backfill_may_be_persisted` guarded: a published revision whose
+        only proof is `UpdatedAt <= createdAt`. When the resolution changes nothing
+        that revision runs, recording writes nothing, so the proof survives."""
         table = _make_table(with_bucket=True)
         manager = _manager(monkeypatch, with_bucket=True)
         _seed_default(manager)
-        self._put_full(table, "p")
-        with patch.object(
-            manager.revisions, "get_entry", side_effect=RuntimeError("index unreadable")
-        ):
-            with patch.object(
-                manager, "save_configuration", wraps=manager.save_configuration
-            ) as spy:
-                merged = manager.get_merged_configuration("p")
-        assert merged is not None, "the read must still succeed"
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            manager.get_merged_configuration("default"),
+            version="p",
+        )
+        manager.revisions.update_entry("p", 1, storedHash=None)
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
+        before = table.get_item(Key=key)["Item"]
+        assert manager.head_matches_published("p") is True
+        with patch.object(manager, "save_configuration") as spy:
+            assert manager.record_resolution_against_default("p") is None
         spy.assert_not_called()
+        assert table.get_item(Key=key)["Item"] == before
+        assert manager.head_matches_published("p") is True
+
+    def test_a_head_that_differs_from_its_revision_is_left_for_a_person(
+        self, monkeypatch, caplog
+    ):
+        """Recording would publish that other difference under notes that describe
+        only the fill-in."""
+        import logging
+
+        _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._revisioned_without_summarization(manager)
+        manager.save_configuration(
+            CONFIG_TYPE_CONFIG,
+            IDPConfig(notes="changed without a revision"),
+            version="p",
+            cut_revision=False,
+        )
+        with caplog.at_level(logging.WARNING):
+            assert manager.record_resolution_against_default("p") is None
+        assert manager.resolve_published_revision("p") == 1
+        assert "cannot be shown to be r1" in caplog.text
+
+    def test_a_process_that_cannot_record_a_revision_is_refused(self, monkeypatch):
+        """No bucket in this process, but the profile has history: the save is
+        refused before it writes, and the head is left as stored."""
+        from idp_common.config.revisions import RevisionNotRecordedError
+
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._revisioned_without_summarization(manager)
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
+        before = table.get_item(Key=key)["Item"]
+        # The same process with its bucket withdrawn for the save itself.
+        monkeypatch.setattr(
+            type(manager.revisions), "enabled", property(lambda s: False)
+        )
+        monkeypatch.setattr(
+            manager, "_read_revision_body", lambda p, r: {"notes": "mine"}
+        )
+        monkeypatch.setattr(manager, "head_matches_published", lambda p: True)
+        with pytest.raises(RevisionNotRecordedError):
+            manager.record_resolution_against_default("p")
+        assert table.get_item(Key=key)["Item"] == before
+
+    def test_a_failed_revision_leaves_the_head_as_it_was(self, monkeypatch):
+        from idp_common.config.revisions import RevisionNotRecordedError
+
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        self._revisioned_without_summarization(manager)
+        key = {"Configuration": f"{CONFIG_TYPE_CONFIG}#p"}
+        before = table.get_item(Key=key)["Item"]
+        with patch.object(
+            manager.revisions, "put_body", side_effect=RuntimeError("S3 refused")
+        ):
+            with pytest.raises(RevisionNotRecordedError):
+                manager.record_resolution_against_default("p")
+        after = table.get_item(Key=key)["Item"]
+        assert {k: v for k, v in after.items() if k != "LatestRevision"} == {
+            k: v for k, v in before.items() if k != "LatestRevision"
+        }
+
+    def test_a_profile_without_history_records_nothing(self, monkeypatch):
+        table = _make_table(with_bucket=True)
+        manager = _manager(monkeypatch, with_bucket=True)
+        _seed_default(manager)
+        table.put_item(Item={"Configuration": f"{CONFIG_TYPE_CONFIG}#p", "classes": []})
+        assert manager.record_resolution_against_default("p") is None
+        assert manager.record_resolution_against_default("absent") is None
 
 
 @pytest.mark.unit

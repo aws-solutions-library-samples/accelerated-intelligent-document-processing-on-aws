@@ -106,6 +106,9 @@ PYTHON_PATHSPECS = (
     # reviewer learns to rubber-stamp it. The wider glob is worth doing; it is its
     # own change.
     "lib/*/idp_common/metering_units.py",
+    # The CloudFormation -> Terraform translator's own checks (the completeness
+    # check's not-applicable list) live in its package, not under scripts/.
+    "terraform/translator/idp_tf/*.py",
 )
 
 #: Non-Python files that carry exemptions, and the pattern that finds one in each.
@@ -242,7 +245,8 @@ def _text_pattern(case: str) -> str:
     start with a digit -- while letting the fragment sit at position zero. This was a
     divergence between the surfaces rather than a deliberate narrowing, and the
     ``_matches_name`` parity case below is what now pins the two together in both
-    directions. Measured over this tree: one further variable.
+    directions. The leading-position case is pinned by the synthetic per-fragment
+    probes rather than by any variable in this tree.
     """
     alternation = "|".join(NAME_VOCABULARY)
     if case == "upper":

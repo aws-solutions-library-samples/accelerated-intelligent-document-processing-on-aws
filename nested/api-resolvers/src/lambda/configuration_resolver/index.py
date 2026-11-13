@@ -35,6 +35,17 @@ from idp_common.config.prefix_mappings import (
     prefix_rejection_reason,
     resolve_config_assignment,
 )
+from idp_common.config.revisions import RevisionNotRecordedError
+from idp_common.config.tenants import (
+    TenantConflict,
+    TenantStore,
+    ingest_rejection_reason,
+    is_strict_isolation,
+    mapping_rejection_reason,
+    mappings_rejection_reason,
+    stored_scopes,
+    stored_scopes_rejection_reason,
+)
 from idp_common.config_scope import (
     ScopeLookupError,
     caller_email_from_claims,
@@ -43,6 +54,7 @@ from idp_common.config_scope import (
     scope_allows,
 )
 from idp_common.metering_units import declared_free_units
+from idp_common.user_scope import tenant_grant_source
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -120,6 +132,12 @@ _OPERATION_REQUIRED_GROUPS = {
     # of a longest-prefix rule is actively misleading — you cannot tell which
     # mapping wins when some of them are hidden from you.
     "listConfigPrefixMappings": {"Admin"},
+    # Tenant declarations: Admin-only on the same grounds as mapping CRUD. A
+    # declaration decides which prefixes and profiles a scoped user may be
+    # confined to, and the list is the deployment's isolation policy.
+    "listTenants": {"Admin"},
+    "putTenant": {"Admin"},
+    "deleteTenant": {"Admin"},
     # Admin + Author writes
     "updateConfiguration": {"Admin", "Author"},
     "setActiveVersion": {"Admin", "Author"},
@@ -524,6 +542,15 @@ def handler(event, context):
             return handle_delete_prefix_mapping(
                 manager, event["arguments"].get("prefix") or ""
             )
+        elif operation == "listTenants":
+            return handle_list_tenants(manager)
+        elif operation == "putTenant":
+            # Admin-only, so there is no caller scope to apply.
+            return handle_put_tenant(manager, event["arguments"], caller["email"])
+        elif operation == "deleteTenant":
+            return handle_delete_tenant(
+                manager, event["arguments"].get("tenantId") or ""
+            )
         elif operation == "resolveConfigPrefixMapping":
             # The one prefix-mapping operation a non-Admin can call, so its answer
             # is scope-filtered rather than refused — a SCOPED Author needs to
@@ -582,6 +609,17 @@ def handler(event, context):
         return {
             "success": False,
             "error": {"type": "ValidationError", "message": str(e)},
+        }
+    except RevisionNotRecordedError as e:
+        # A deliberate refusal (#1778): the profile has revision history and this
+        # save's revision could not be recorded, so it was refused or undone
+        # rather than leave the profile different from what its documents run.
+        # The message says which, and that is what the admin acts on; the generic
+        # handler below would frame it as a product bug.
+        logger.error(f"Configuration save refused, revision not recorded: {e}")
+        return {
+            "success": False,
+            "error": {"type": "RevisionNotRecorded", "message": str(e)},
         }
     except InertGatingHookError as e:
         # A deliberate refusal, not a fault: the configuration registers an
@@ -936,7 +974,8 @@ def handle_get_pricing(manager):
 
     This mirrors the Default/Custom pattern for IDP configuration:
     - DefaultPricing: Full baseline from deployment (stored at deployment time)
-    - CustomPricing: User overrides only (deltas)
+    - CustomPricing: The table the Pricing page saved; laid over DefaultPricing per
+      model and unit
     - Returns:
       - pricing: Merged result (default + custom overrides)
       - defaultPricing: Original defaults for diff highlighting and restore
@@ -949,7 +988,7 @@ def handle_get_pricing(manager):
                nonChargeableUnits: {...}, error: {...} }
     """
     try:
-        # Get merged pricing (DefaultPricing + CustomPricing deltas)
+        # Effective pricing: DefaultPricing with CustomPricing laid over it per row
         pricing_config = manager.get_merged_pricing()
 
         # Also get default pricing for UI diff/restore features
@@ -1006,14 +1045,14 @@ def handle_get_pricing(manager):
 def handle_update_pricing(manager, pricing_config_json):
     """
     Handle the updatePricing GraphQL mutation
-    Saves custom pricing overrides (deltas) to DynamoDB
+    Saves the submitted pricing table to DynamoDB as CustomPricing
 
-    This saves to CustomPricing, which stores only user overrides.
-    The overrides are merged with DefaultPricing when reading.
+    The UI sends the whole table. When reading, its rows are laid over
+    DefaultPricing per model and unit (see ConfigurationManager.get_merged_pricing).
 
     Args:
         manager: ConfigurationManager instance
-        pricing_config_json: JSON string or dict with pricing deltas
+        pricing_config_json: JSON string or dict with the pricing table
 
     Returns: { success: bool, message: str, error: {...} }
     """
@@ -1027,7 +1066,7 @@ def handle_update_pricing(manager, pricing_config_json):
         # Validate and create PricingConfig
         pricing_config = PricingConfig(**pricing_data)
 
-        # Save to CustomPricing (deltas only)
+        # Save to CustomPricing (the full table)
         success = manager.save_custom_pricing(pricing_config)
 
         if success:
@@ -1193,7 +1232,7 @@ def handle_update_model_config_limits(manager, model_config_limits_json):
     Handle the updateModelConfigLimits GraphQL mutation
     Saves the complete user-edited limits list to CustomModelConfigLimits
 
-    Unlike pricing (deltas), the payload must be the FULL ordered list —
+    The payload must be the FULL ordered list —
     model_limits is matched first-pattern-wins, so order is semantic.
 
     Args:
@@ -1357,7 +1396,20 @@ def handle_list_profile_revisions(manager, profile):
     """Revision history for one Configuration Profile, newest first."""
     try:
         revisions = manager.list_revisions(profile)
-        return {"success": True, "revisions": revisions}
+        # Whether the configuration the editor shows is the revision new documents
+        # run. Advisory: a failure to work it out must not hide the history.
+        try:
+            matches = manager.head_matches_published(profile)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                f"Could not compare '{profile}' with its published revision: {e}"
+            )
+            matches = None
+        return {
+            "success": True,
+            "revisions": revisions,
+            "profileMatchesPublished": matches,
+        }
     except Exception as e:
         logger.error(f"Error listing revisions for '{profile}': {e}")
         return {
@@ -1425,6 +1477,12 @@ def handle_restore_profile_revision(
         }
     except PermissionError:
         raise
+    except RevisionNotRecordedError as e:
+        # Same refusal, same type as the save path (#1778).
+        return {
+            "success": False,
+            "error": {"type": "RevisionNotRecorded", "message": str(e)},
+        }
     except ValueError as e:
         return {
             "success": False,
@@ -1588,6 +1646,20 @@ def handle_put_prefix_mapping(manager, args, actor):
         }
 
     try:
+        # A mapping that would move a tenant's documents into another tenant's
+        # profiles -- or place documents from outside a tenant into its view -- is
+        # refused here, at the one place a mapping is written. Read inside the try:
+        # an unreadable tenant index refuses the write rather than skipping the
+        # check, because a mapping saved unchecked is exactly the crossing this
+        # check exists to stop.
+        boundary = mapping_rejection_reason(
+            prefix, profile, _tenant_store(manager).list()
+        )
+        if boundary:
+            return {
+                "success": False,
+                "error": {"type": "ValidationError", "message": boundary},
+            }
         if not _profile_head_exists(manager, profile):
             return {
                 "success": False,
@@ -1708,6 +1780,107 @@ def handle_delete_prefix_mapping(manager, prefix):
         }
 
 
+def _tenant_store(manager):
+    return TenantStore(manager.table)
+
+
+def handle_list_tenants(manager):
+    """Every tenant declaration, plus this stack's isolation mode and grant source."""
+    try:
+        return {
+            "success": True,
+            "tenants": _tenant_store(manager).list(),
+            "isolationMode": "Strict" if is_strict_isolation() else "Off",
+            "grantSource": tenant_grant_source(),
+        }
+    except Exception as e:
+        logger.error(f"Error listing tenants: {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to list tenants: {str(e)}"},
+        }
+
+
+def handle_put_tenant(manager, args, actor):
+    """Create or replace one tenant declaration.
+
+    Refused when it is malformed, overlaps another tenant, would put an EXISTING
+    prefix mapping across the new boundary, or would leave an EXISTING user scope
+    reaching more than one tenant. The mapping check runs inside the store's
+    read-modify-write (``validate_against``) against the tenant set as it would be
+    after this write, so it judges the same snapshot the write is conditioned on.
+    The user scopes are read once, before it: they are not in the item the write
+    is conditioned on, so re-reading them per attempt would buy nothing. Either
+    read failing raises, and so refuses the write.
+    """
+    tenant_id = args.get("tenantId") or ""
+    prefixes = args.get("prefixes") or []
+    if isinstance(prefixes, str):
+        prefixes = [prefixes]
+    pattern = args.get("profilePattern") or ""
+    granted_by = args.get("grantedBy") or []
+    if isinstance(granted_by, str):
+        granted_by = [granted_by]
+    mapping_store = _prefix_mapping_store(manager)
+    try:
+        users_table_name = os.environ.get("USERS_TABLE_NAME", "")
+        if not users_table_name:
+            raise RuntimeError(
+                "USERS_TABLE_NAME is not set, so existing user scopes cannot be "
+                "checked against the tenant set"
+            )
+        scopes = stored_scopes(_dynamodb.Table(users_table_name))
+        entry = _tenant_store(manager).put(
+            tenant_id,
+            list(prefixes),
+            pattern,
+            description=args.get("description"),
+            granted_by=list(granted_by),
+            actor=actor,
+            validate_against=lambda tenants: (
+                mappings_rejection_reason(mapping_store.list(), tenants)
+                or stored_scopes_rejection_reason(scopes, tenants)
+            ),
+        )
+        return {"success": True, "tenant": entry}
+    except TenantConflict as e:
+        return {"success": False, "error": {"type": "Conflict", "message": str(e)}}
+    except ValueError as e:
+        return {
+            "success": False,
+            "error": {"type": "ValidationError", "message": str(e)},
+        }
+    except Exception as e:
+        logger.error(f"Error saving tenant {tenant_id!r}: {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to save tenant: {str(e)}"},
+        }
+
+
+def handle_delete_tenant(manager, tenant_id):
+    """Remove one tenant declaration.
+
+    Leaves its prefix mappings and profiles in place: deleting the declaration
+    removes the boundary checks for that tenant, not the tenant's data.
+    """
+    try:
+        if not _tenant_store(manager).delete(tenant_id):
+            return {
+                "success": False,
+                "error": {"type": "NotFound", "message": f"No tenant '{tenant_id}'"},
+            }
+        return {"success": True, "message": f"Deleted tenant '{tenant_id}'"}
+    except TenantConflict as e:
+        return {"success": False, "error": {"type": "Conflict", "message": str(e)}}
+    except Exception as e:
+        logger.error(f"Error deleting tenant {tenant_id!r}: {e}")
+        return {
+            "success": False,
+            "error": {"type": "Error", "message": f"Failed to delete tenant: {str(e)}"},
+        }
+
+
 def handle_resolve_prefix_mapping(manager, args, allowed_config_versions):
     """Dry run: what configuration would an object at this key process under?
 
@@ -1808,6 +1981,42 @@ def handle_resolve_prefix_mapping(manager, args, allowed_config_versions):
                 "rejected": None,
             },
         }
+    # Strict isolation refuses at ingest a document whose key and profile belong to
+    # different tenants, so the dry run reports the same refusal before the upload.
+    # The upload panel passes no `submission-source`, and nor can a browser upload.
+    # The reason is deliberately generic: the specific one names the tenant that owns
+    # this key, which a scoped caller probing keys is not entitled to learn.
+    if is_strict_isolation() and not assignment.rejected:
+        try:
+            tenants = TenantStore(manager.table).list()
+        except Exception as e:
+            logger.error(f"Error reading tenants for the dry run of {key!r}: {e}")
+            return {
+                "success": False,
+                "error": {
+                    "type": "Error",
+                    "message": "Failed to read the tenant declarations",
+                },
+            }
+        if ingest_rejection_reason(key, assignment.profile, tenants):
+            return {
+                "success": True,
+                "assignment": {
+                    "objectKey": key,
+                    "outOfScope": False,
+                    "configProfile": assignment.profile,
+                    "configRevision": assignment.revision,
+                    "source": "rejected",
+                    "mappingPrefix": assignment.mapping_prefix,
+                    "conflict": assignment.conflict,
+                    "rejected": True,
+                    "reason": (
+                        "Refused under strict tenant isolation: this destination "
+                        "and the profile it would be processed under do not belong "
+                        "to the same tenant."
+                    ),
+                },
+            }
     return {
         "success": True,
         "assignment": {

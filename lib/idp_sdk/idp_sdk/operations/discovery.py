@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from idp_sdk._core.naming import resolve_config_profile
-from idp_sdk.exceptions import IDPConfigurationError, IDPResourceNotFoundError
+from idp_sdk.exceptions import IDPConfigurationError
 from idp_sdk.models.discovery import (
     AutoDetectResult,
     AutoDetectSection,
@@ -294,8 +294,7 @@ class DiscoveryOperation:
     ) -> AutoDetectResult:
         """Auto-detect sections using stack config."""
         try:
-            config_table = self._get_config_table(stack_name)
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+            self._configure_config_env(stack_name)
 
             from idp_common.discovery.classes_discovery import ClassesDiscovery
 
@@ -343,13 +342,33 @@ class DiscoveryOperation:
         try:
             from idp_common import bedrock
             from idp_common.config.merge_utils import load_system_defaults
+            from idp_common.prompt_comments import strip_prompt_comments_in_config
+            from idp_common.regional_models import (
+                NOVA_PRO_MODEL_ID,
+                regional_default,
+                regional_shipped_model,
+            )
 
-            defaults = load_system_defaults("pattern-2")
+            # Shipped defaults may document prompts in {# ... #} comments; this
+            # path sends them without the runtime config reader, so strip here.
+            defaults = strip_prompt_comments_in_config(
+                load_system_defaults("pattern-2")
+            )
             discovery_cfg = defaults.get("discovery", {})
             auto_cfg = discovery_cfg.get("auto_split", {})
 
-            # Caller override wins over system default
-            model_id = model_id or auto_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
+
+            # Caller override wins over system default. The system default and
+            # the last resort both go through the Region translation: this path
+            # never runs the deploy-time swap, and a us. profile is not callable
+            # from an EU or Canada Region.
+            shipped_model_id = auto_cfg.get("model_id")
+            model_id = model_id or (
+                regional_shipped_model(shipped_model_id, region)
+                if shipped_model_id
+                else regional_default(NOVA_PRO_MODEL_ID, region)
+            )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
             # block built below (text + image input only), and would silently drop
@@ -396,7 +415,6 @@ class DiscoveryOperation:
                 {"text": user_prompt},
             ]
 
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
             bedrock_client = bedrock.BedrockClient(region=region)
 
             response = bedrock_client.invoke_model(
@@ -451,9 +469,8 @@ class DiscoveryOperation:
     ) -> DiscoveryResult:
         """Stack-connected mode: uses stack config, saves schema to DynamoDB."""
         try:
-            # Get config table from stack resources
-            config_table = self._get_config_table(stack_name)
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+            # Table and bucket: this mode saves the schema into a profile.
+            self._configure_config_env(stack_name)
 
             from idp_common.discovery.classes_discovery import ClassesDiscovery
 
@@ -541,6 +558,12 @@ class DiscoveryOperation:
         try:
             from idp_common import bedrock, image
             from idp_common.config.merge_utils import load_system_defaults
+            from idp_common.prompt_comments import strip_prompt_comments_in_config
+            from idp_common.regional_models import (
+                NOVA_PRO_MODEL_ID,
+                regional_default,
+                regional_shipped_model,
+            )
 
             # If a page range is specified and the file is a PDF, extract only those pages
             file_extension = doc_path.suffix.lower().lstrip(".")
@@ -553,7 +576,11 @@ class DiscoveryOperation:
                 )
 
             # Load system defaults to get discovery prompts and model settings
-            defaults = load_system_defaults("pattern-2")
+            # Shipped defaults may document prompts in {# ... #} comments; this
+            # path sends them without the runtime config reader, so strip here.
+            defaults = strip_prompt_comments_in_config(
+                load_system_defaults("pattern-2")
+            )
             discovery_cfg = defaults.get("discovery", {})
             mode_cfg = (
                 discovery_cfg.get("with_ground_truth", {})
@@ -561,8 +588,18 @@ class DiscoveryOperation:
                 else discovery_cfg.get("without_ground_truth", {})
             )
 
-            # Caller override wins over system default
-            model_id = model_id or mode_cfg.get("model_id", "us.amazon.nova-pro-v1:0")
+            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
+
+            # Caller override wins over system default. The system default and
+            # the last resort both go through the Region translation: this path
+            # never runs the deploy-time swap, and a us. profile is not callable
+            # from an EU or Canada Region.
+            shipped_model_id = mode_cfg.get("model_id")
+            model_id = model_id or (
+                regional_shipped_model(shipped_model_id, region)
+                if shipped_model_id
+                else regional_default(NOVA_PRO_MODEL_ID, region)
+            )
 
             # Grok, GPT-5.x and GPT-6 Astra cannot accept the `document` content
             # block built below (text + image input only), and would silently drop
@@ -620,7 +657,6 @@ class DiscoveryOperation:
                 content = [image.prepare_bedrock_image_attachment(file_bytes)]
 
             # Call Bedrock with retry/validation loop
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
             bedrock_client = bedrock.BedrockClient(region=region)
 
             validation_feedback = ""
@@ -721,9 +757,11 @@ class DiscoveryOperation:
             document_paths: Explicit list of document file paths. Provide either
                 ``document_dir`` or ``document_paths``, not both.
             embedding_model_id: Bedrock embedding model for document similarity.
-                Default: ``us.cohere.embed-v4:0``.
+                Default: ``us.cohere.embed-v4:0``; ``eu.cohere.embed-v4:0`` in an
+                EU Region and ``global.cohere.embed-v4:0`` in Canada.
             analysis_model_id: Bedrock LLM for cluster analysis and schema
-                generation. Default: ``us.anthropic.claude-sonnet-4-6``.
+                generation. Default: ``us.anthropic.claude-sonnet-4-6``;
+                ``eu.anthropic.claude-sonnet-4-6`` in an EU Region.
             save_to_config: If True, save discovered schemas to the stack's
                 config. Requires ``stack_name`` and ``config_version``.
             config_version: Configuration profile to save schemas to.
@@ -806,9 +844,8 @@ class DiscoveryOperation:
             config["analysis_model_id"] = analysis_model_id
 
         if save_to_config and resolved_stack:
-            # Set CONFIGURATION_TABLE_NAME for ClassesDiscovery
-            config_table = self._get_config_table(resolved_stack)
-            os.environ["CONFIGURATION_TABLE_NAME"] = config_table
+            # ClassesDiscovery saves into the profile, so it needs the bucket too.
+            self._configure_config_env(resolved_stack)
             save_version = config_version
 
         try:
@@ -955,19 +992,17 @@ class DiscoveryOperation:
             results=results,
         )
 
-    def _get_config_table(self, stack_name: str) -> str:
-        """Get ConfigurationTable from stack resources."""
-        import boto3
+    def _configure_config_env(self, stack_name: str) -> str:
+        """
+        Point `idp_common` at the stack's configuration table and bucket.
 
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
-        paginator = cfn.get_paginator("list_stack_resources")
-
-        for page in paginator.paginate(StackName=stack_name):
-            for resource in page.get("StackResourceSummaries", []):
-                if resource.get("LogicalResourceId") == "ConfigurationTable":
-                    return resource.get("PhysicalResourceId", "")
-
-        raise IDPResourceNotFoundError("ConfigurationTable not found in stack.")
+        Discovery saves the discovered schema into a configuration profile, and a
+        save with no `CONFIGURATION_BUCKET` cannot record that profile's revision:
+        for a profile that already has history it is refused, and for a new one it
+        is saved with no history (#1778). Delegates to the config operations, which
+        own the lookup of both and the region bridge.
+        """
+        return self._client.config._configure_config_env(stack_name)
 
 
 # --- Helpers for local mode ---

@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from idp_common import bedrock, image, metrics, s3, utils
 from idp_common.assessment.degradation import skip_section_no_confidence
+from idp_common.config import without_prompt_comments
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
     SCHEMA_DESCRIPTION,
@@ -231,7 +232,10 @@ class AssessmentService:
                     f"Invalid config type: {type(config)}. Expected None, dict, or IDPConfig instance."
                 )
 
-        self.config = config_model
+        # A directly handed configuration may carry {# ... #} prompt comments;
+        # the prompt is split on {DOCUMENT_IMAGE} before format_prompt sees it,
+        # so remove them once here (see ExtractionService.__init__).
+        self.config = without_prompt_comments(config_model, as_model=True)
         self.region = region or os.environ.get("AWS_REGION")
 
         # Get model_id from typed config for logging (v0.6: extraction.confidence)
@@ -695,14 +699,18 @@ class AssessmentService:
         Returns:
             List of content items with text and image content properly ordered
         """
-        # Split the prompt at the DOCUMENT_IMAGE placeholder
-        parts = prompt_template.split("{DOCUMENT_IMAGE}")
+        from idp_common.extraction.prompt_assembly import (
+            DOCUMENT_IMAGE_PLACEHOLDER,
+            document_image_placeholder_error,
+        )
 
-        if len(parts) != 2:
-            raise ValueError(
-                f"Invalid DOCUMENT_IMAGE placeholder usage: found {len(parts) - 1} occurrences, "
-                f"but exactly 1 is required. The DOCUMENT_IMAGE placeholder must appear exactly once in the template."
-            )
+        # The rule validate_config applies to the same prompt.
+        placeholder_error = document_image_placeholder_error(prompt_template)
+        if placeholder_error:
+            raise ValueError(placeholder_error)
+
+        # Split the prompt at the DOCUMENT_IMAGE placeholder
+        parts = prompt_template.split(DOCUMENT_IMAGE_PLACEHOLDER)
 
         # Process the parts before and after the image placeholder
         before_image = self._prepare_prompt_from_template(
@@ -1915,12 +1923,33 @@ class AssessmentService:
             #
             # Imported here, as the other batching imports in this file are.
             from idp_common.assessment.batching import dedupe_alerts
+            from idp_common.assessment.presence import (
+                collect_missing_required_fields,
+                exclude_absent_value_alerts,
+            )
+
+            # An absent value raises no confidence alert (#1527): its score and
+            # reason stay in explainability_info, and a REQUIRED absent field is
+            # listed separately below. Applied here, at the last statement before
+            # the list is stored, so every producer upstream (the batched merge,
+            # the per-core checks, the retry ladder) is covered by one filter.
+            confidence_threshold_alerts = exclude_absent_value_alerts(
+                confidence_threshold_alerts,
+                enhanced_assessment_data,
+                extraction_results,
+            )
+            missing_required_fields = collect_missing_required_fields(
+                extraction_results,
+                self._get_class_schema(class_label),
+                enhanced_assessment_data,
+            )
 
             for doc_section in document.sections:
                 if doc_section.section_id == section_id:
                     doc_section.confidence_threshold_alerts = dedupe_alerts(
                         confidence_threshold_alerts
                     )
+                    doc_section.missing_required_fields = missing_required_fields
                     # Replace only the assessment-stage issues, keep the rest.
                     # The section write that follows in the assessment Lambda
                     # REPLACES the whole section map, so an unconditional

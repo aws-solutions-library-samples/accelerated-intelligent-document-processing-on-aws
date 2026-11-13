@@ -4,9 +4,13 @@
 """
 Lambda resolver for listDocuments and getDocumentCount GraphQL queries.
 
-Uses the TypeDateIndex GSI on TrackingTable for efficient queries:
-- listDocuments: Paginated query with date range filtering and RBAC-based filtering
-- getDocumentCount: the header figure beside that list, carrying the same filters
+Uses two GSIs on TrackingTable that share one key schema (ItemType, InitialEventTime):
+- listDocuments: Paginated query with date range filtering and RBAC-based filtering,
+  on TypeDateIndexV2, falling back to TypeDateIndex while V2 is backfilling — see
+  `_query_list_index`
+- getDocumentCount: the header figure beside that list, carrying the same filters,
+  on TypeDateIndex. The two indexes hold the same rows (both are sparse on the same
+  key attributes), so the count and the list agree whichever index each reads.
 
 RBAC (Role-Based Access Control):
 - Admin/Author/Viewer: See all documents (scoped by allowedConfigVersions if set)
@@ -30,6 +34,7 @@ from decimal import Decimal
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.exceptions import ClientError
 
 # Vendored verbatim from idp_common/config_scope.py: this function has no
 # idp_common layer (it is on the hottest UI query and is kept dependency-free).
@@ -49,53 +54,16 @@ from config_scope import (  # noqa: E402
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
 from review_statuses import (  # noqa: E402
-    LegacyHitlStatus,
-    ReviewStatus,
-    normalize_hitl_status,
+    FINISHED_HITL_STATUSES,
+    REVIEWER_ACTIVE_STATUSES,
+    is_review_finished,
 )
 
-#: Legacy HITL statuses that make a document part of a Reviewer's working set.
-#: ``Review Pending`` is what ``releaseReview`` writes: a released review goes back
-#: to the queue for another Reviewer to claim. Matched exactly, in both document-list
-#: resolvers, so the two lists agree row for row.
-_REVIEWER_ACTIVE_STATUSES = (
-    LegacyHitlStatus.PENDING_REVIEW.value,
-    LegacyHitlStatus.REVIEW_PENDING.value,
-    LegacyHitlStatus.IN_PROGRESS.value,
-    LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
-)
-
-
-def _review_finished(hitl_status):
-    """Whether a stored HITLStatus says the document's review has finished.
-
-    A legacy review completed or skipped, or a queue review that ended complete or
-    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
-    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
-    writer stored that the exact-match normaliser does not know (the earlier
-    SageMaker A2I flow). The web UI's ``isHitlReviewFinished`` is the same rule.
-    """
-    return (
-        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
-        or hitl_status == "COMPLETED"
-    )
-
-
-#: Every stored HITLStatus value that reads as a finished review, derived from the
-#: declared vocabularies through ``_review_finished`` so a FilterExpression can test
-#: it. Exact values: the normaliser also accepts surrounding whitespace, which no
-#: writer stores.
-_FINISHED_HITL_STATUSES = tuple(
-    sorted(
-        value
-        for value in (
-            *(s.value for s in ReviewStatus),
-            *(s.value for s in LegacyHitlStatus),
-            "COMPLETED",
-        )
-        if _review_finished(value)
-    )
-)
+#: The shared review vocabulary (``review_statuses``, vendored from
+#: ``idp_common/review_queues/statuses.py``), under the names this module uses.
+_REVIEWER_ACTIVE_STATUSES = REVIEWER_ACTIVE_STATUSES
+_review_finished = is_review_finished
+_FINISHED_HITL_STATUSES = FINISHED_HITL_STATUSES
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -126,8 +94,26 @@ _COUNT_TIME_RESERVE_MS = 5_000
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 
-# GSI name
+# GSI names. Both are keyed (ItemType, InitialEventTime). TypeDateIndex is read by
+# getDocumentCount and by other resolvers; its projection cannot be widened in
+# place, so TypeDateIndexV2 projects the document attributes this list reads plus
+# the per-document counts it shows (ConfigRevision, MissingRequiredFieldCount,
+# ProcessingIssueCount). See the TrackingTable definition in template.yaml.
 TYPE_DATE_INDEX = "TypeDateIndex"
+LIST_INDEX = "TypeDateIndexV2"
+
+# The two ValidationException messages DynamoDB returns when LIST_INDEX cannot be
+# read, both recorded from live queries during an upgrade. "does not have the
+# specified index" is returned before the index exists and through the first,
+# resource-allocation phase of creating it (CREATING, Backfilling false), and
+# after it has been deleted by hand to recover a rolled-back upgrade; "backfilling"
+# is returned while it is filled. Matched on these phrases rather than on the
+# error code alone, so an invalid request is never silently retried against
+# another index.
+_LIST_INDEX_UNAVAILABLE_PHRASES = (
+    "backfilling global secondary index",
+    "does not have the specified index",
+)
 
 # TypeDateIndex hash-key values; must match idp_common.dynamodb.service. Documents
 # submitted by Test Studio carry their own ItemType, so they never appear in the
@@ -139,6 +125,7 @@ ITEM_TYPE_TEST_DOCUMENT = "test-document"
 
 class DecimalEncoder(json.JSONEncoder):
     """JSON encoder that handles Decimal objects from DynamoDB."""
+
     def default(self, obj):
         if isinstance(obj, Decimal):
             if obj % 1 == 0:
@@ -183,7 +170,12 @@ def _get_caller_identity(event):
 
 def _is_reviewer_only(caller):
     """Check if caller is a reviewer-only user (no Admin/Author/Viewer groups)."""
-    return caller["is_reviewer"] and not caller["is_admin"] and not caller["is_author"] and not caller["is_viewer"]
+    return (
+        caller["is_reviewer"]
+        and not caller["is_admin"]
+        and not caller["is_author"]
+        and not caller["is_viewer"]
+    )
 
 
 def _get_user_allowed_config_versions(caller_email, caller_sub=""):
@@ -281,14 +273,14 @@ def _reviewer_filter_expression(caller):
     )
     return hitl_active & (
         (
-            ~review_finished &
-            (
-                Attr("HITLReviewOwner").not_exists() |
-                Attr("HITLReviewOwner").eq("") |
-                owner_is_me
+            ~review_finished
+            & (
+                Attr("HITLReviewOwner").not_exists()
+                | Attr("HITLReviewOwner").eq("")
+                | owner_is_me
             )
-        ) |
-        owner_is_me
+        )
+        | owner_is_me
     )
 
 
@@ -319,12 +311,12 @@ def _item_in_config_scope(item, allowed_versions):
 def handler(event, context):
     """
     AppSync Lambda resolver handler.
-    
+
     Routes to listDocuments or getDocumentCount based on the field name.
     """
     field_name = event.get("info", {}).get("fieldName", "")
     logger.info(f"Resolver invoked for field: {field_name}")
-    
+
     if field_name == "listDocuments":
         return list_documents(event)
     elif field_name == "getDocumentCount":
@@ -345,19 +337,23 @@ def _item_type_for_view(view):
     page of 50 can return a single row plus a nextToken, with no indication that
     the rest were dropped.
     """
-    return ITEM_TYPE_TEST_DOCUMENT if str(view or "").upper() == "TEST" else ITEM_TYPE_DOCUMENT
+    return (
+        ITEM_TYPE_TEST_DOCUMENT
+        if str(view or "").upper() == "TEST"
+        else ITEM_TYPE_DOCUMENT
+    )
 
 
 def list_documents(event):
     """
     List documents using TypeDateIndex GSI with server-side pagination and RBAC filtering.
-    
+
     Args (from GraphQL):
         startDateTime: ISO 8601 start time
-        endDateTime: ISO 8601 end time  
+        endDateTime: ISO 8601 end time
         limit: Page size (default 50, max 200)
         nextToken: Pagination token from previous response
-    
+
     Returns:
         {
             Documents: [Document],
@@ -370,54 +366,51 @@ def list_documents(event):
     end_dt = args.get("endDateTime")
     limit = min(int(args.get("limit") or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE)
     next_token = args.get("nextToken")
-    
+
     table_name = os.environ["TRACKING_TABLE_NAME"]
     table = dynamodb.Table(table_name)
-    
+
     # Get caller identity for RBAC
     caller = _get_caller_identity(event)
     reviewer_only = _is_reviewer_only(caller)
 
-    logger.info(f"Caller groups: {caller['groups']}, reviewer_only: {reviewer_only}, username: {caller['username']}")
+    logger.info(
+        f"Caller groups: {caller['groups']}, reviewer_only: {reviewer_only}, username: {caller['username']}"
+    )
 
     # Resolve the config-version scope BEFORE querying: a caller whose scope
     # cannot be evaluated is denied, and there is no point reading the table for
     # a request that will be refused.
     allowed_versions = _caller_scope_or_deny(caller, "listDocuments")
 
-    # Build GSI query
+    # Build GSI query. The index is chosen by `_query_list_index`.
     query_kwargs = {
-        "IndexName": TYPE_DATE_INDEX,
         "Limit": limit,
         "ScanIndexForward": False,  # Newest first
     }
-    
+
     # Key condition: the ItemType selects the view (production vs test-submitted).
     item_type = _item_type_for_view(args.get("view"))
     if start_dt and end_dt:
-        query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq(item_type) &
-            Key("InitialEventTime").between(start_dt, end_dt)
-        )
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type) & Key(
+            "InitialEventTime"
+        ).between(start_dt, end_dt)
     elif start_dt:
-        query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq(item_type) &
-            Key("InitialEventTime").gte(start_dt)
-        )
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type) & Key(
+            "InitialEventTime"
+        ).gte(start_dt)
     elif end_dt:
-        query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq(item_type) &
-            Key("InitialEventTime").lte(end_dt)
-        )
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type) & Key(
+            "InitialEventTime"
+        ).lte(end_dt)
     else:
         query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
-    
+
     # RBAC: Server-side filtering for Reviewer-only users
     list_filter = _list_filter(caller, reviewer_only)
     if list_filter is not None:
         query_kwargs["FilterExpression"] = list_filter
         logger.info("Applied reviewer filter for the caller")
-
 
     # Handle pagination token
     if next_token:
@@ -425,18 +418,18 @@ def list_documents(event):
             query_kwargs["ExclusiveStartKey"] = json.loads(next_token)
         except (json.JSONDecodeError, TypeError):
             logger.warning(f"Invalid nextToken: {next_token}")
-    
-    logger.info(f"Querying TypeDateIndex: limit={limit}, start={start_dt}, end={end_dt}")
-    
+
+    logger.info(f"Querying {LIST_INDEX}: limit={limit}, start={start_dt}, end={end_dt}")
+
     try:
-        response = table.query(**query_kwargs)
+        response = _query_list_index(table, query_kwargs)
     except Exception as e:
         logger.error(f"GSI query failed: {e}")
         raise
-    
+
     items = response.get("Items", [])
     last_key = response.get("LastEvaluatedKey")
-    
+
     logger.info(f"Query returned {len(items)} items, has more: {last_key is not None}")
 
     # Transform GSI projection items to match the Document GraphQL type
@@ -452,15 +445,58 @@ def list_documents(event):
             continue  # Skip documents outside user's scope
         doc = _gsi_item_to_document(item)
         documents.append(doc)
-    
-    logger.info(f"After scope filtering: {len(documents)} documents from {len(items)} items")
-    
+
+    logger.info(
+        f"After scope filtering: {len(documents)} documents from {len(items)} items"
+    )
+
     result = {
         "Documents": documents,
         "nextToken": json.dumps(last_key, cls=DecimalEncoder) if last_key else None,
     }
-    
+
     return result
+
+
+def _list_index_unavailable(error):
+    """Whether a query failed only because LIST_INDEX cannot be read yet (or any more)."""
+    details = error.response.get("Error", {}) if isinstance(error, ClientError) else {}
+    if details.get("Code") != "ValidationException":
+        return False
+    message = str(details.get("Message", "")).lower()
+    return LIST_INDEX.lower() in message and any(
+        phrase in message for phrase in _LIST_INDEX_UNAVAILABLE_PHRASES
+    )
+
+
+def _query_list_index(table, query_kwargs):
+    """Query LIST_INDEX, or TypeDateIndex while LIST_INDEX is unavailable.
+
+    A GSI added to an existing table cannot be queried until DynamoDB has finished
+    backfilling it, and CloudFormation reports the table updated before that: on a
+    live upgrade of a stack holding a handful of documents the table resource was
+    complete about eight minutes before the index became readable, and the window
+    grows with the table. DescribeTable can also report the index ACTIVE a little
+    before a query on it succeeds, so the query's own error is what decides. Until
+    then the list is served from TypeDateIndex, which has the
+    same keys and so the same rows, the same order and an interchangeable
+    `nextToken` (a GSI's LastEvaluatedKey is the table key plus the index key,
+    identical for both). What the fallback loses is only the attributes V2 adds:
+    those rows carry no counts, and the UI shows a dash for each.
+    """
+    try:
+        return table.query(IndexName=LIST_INDEX, **query_kwargs)
+    except ClientError as e:
+        if not _list_index_unavailable(e):
+            raise
+        logger.warning(
+            "%s is not readable (%s); serving listDocuments from %s, whose rows "
+            "carry no per-document counts.",
+            LIST_INDEX,
+            e.response.get("Error", {}).get("Message"),
+            TYPE_DATE_INDEX,
+        )
+        return table.query(IndexName=TYPE_DATE_INDEX, **query_kwargs)
 
 
 def _remaining_invocation_ms(context):
@@ -551,26 +587,21 @@ def get_document_count(event, context=None):
         "IndexName": TYPE_DATE_INDEX,
         # A scoped caller needs the projected ConfigVersion of each row to decide
         # whether it counts, so only an unscoped caller can use COUNT.
-        "Select": "ALL_PROJECTED_ATTRIBUTES"
-        if allowed_versions
-        else "COUNT",
+        "Select": "ALL_PROJECTED_ATTRIBUTES" if allowed_versions else "COUNT",
     }
 
     if start_dt and end_dt:
-        query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq(item_type) &
-            Key("InitialEventTime").between(start_dt, end_dt)
-        )
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type) & Key(
+            "InitialEventTime"
+        ).between(start_dt, end_dt)
     elif start_dt:
-        query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq(item_type) &
-            Key("InitialEventTime").gte(start_dt)
-        )
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type) & Key(
+            "InitialEventTime"
+        ).gte(start_dt)
     elif end_dt:
-        query_kwargs["KeyConditionExpression"] = (
-            Key("ItemType").eq(item_type) &
-            Key("InitialEventTime").lte(end_dt)
-        )
+        query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type) & Key(
+            "InitialEventTime"
+        ).lte(end_dt)
     else:
         query_kwargs["KeyConditionExpression"] = Key("ItemType").eq(item_type)
 
@@ -628,17 +659,19 @@ def get_document_count(event, context=None):
 def _gsi_item_to_document(item):
     """
     Transform a GSI projection item to match the Document GraphQL type.
-    
+
     The GSI INCLUDE projection has a subset of Document fields.
     We map them to the expected GraphQL field names.
     """
     # Extract PK to get ObjectKey if not directly available
     pk = item.get("PK", "")
-    object_key = item.get("ObjectKey") or (pk.replace("doc#", "", 1) if pk.startswith("doc#") else pk)
-    
+    object_key = item.get("ObjectKey") or (
+        pk.replace("doc#", "", 1) if pk.startswith("doc#") else pk
+    )
+
     # Build confidence alert count from ConfidenceAlertCount attribute
     confidence_alert_count = item.get("ConfidenceAlertCount")
-    
+
     doc = {
         "PK": item.get("PK"),
         "SK": item.get("SK", "none"),
@@ -660,14 +693,13 @@ def _gsi_item_to_document(item):
         "HITLReviewedBy": item.get("HITLReviewedBy"),
         "PageCount": item.get("NumPages"),
         "ConfidenceAlertCount": confidence_alert_count,
-        # NOTE: ProcessingIssueCount is written to the base table item but is NOT
-        # part of this GSI's INCLUDE projection (DynamoDB does not allow adding
-        # attributes to an existing GSI's projection in-place). It therefore
-        # resolves to None on the fast list path and is filtered out below; the
-        # per-document view (getDocument, full item) returns the real count. If a
-        # future migration recreates the GSI with this attribute, this line will
-        # start populating it automatically.
+        # ProcessingIssueCount, MissingRequiredFieldCount and ConfigRevision are
+        # projected by TypeDateIndexV2 but not by TypeDateIndex. On a row served
+        # by the fallback (see `_query_list_index`), or one written before the
+        # count existed, they are None and dropped below; the UI then shows a
+        # dash rather than a 0 the row cannot support.
         "ProcessingIssueCount": item.get("ProcessingIssueCount"),
+        "MissingRequiredFieldCount": item.get("MissingRequiredFieldCount"),
     }
 
     # Remove None values to keep response clean

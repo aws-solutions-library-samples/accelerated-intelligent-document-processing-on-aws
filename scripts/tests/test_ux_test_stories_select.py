@@ -613,7 +613,9 @@ def test_a_link_to_another_section_of_a_declared_page_selects_nothing_alone() ->
     catalogue = _real_catalogue()
     selection = changelog_select.select(
         catalogue,
-        _added("**An Annotator inbox.** See [inbox](docs/web-ui.md#inbox)."),
+        _added(
+            "**Page text, side by side.** See [text](docs/web-ui.md#view-page-text)."
+        ),
     )
     assert selection.stories == () and selection.flows == ()
     declaring = [

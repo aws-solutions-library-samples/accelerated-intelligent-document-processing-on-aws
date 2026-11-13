@@ -138,7 +138,10 @@ npm install -g basedpyright    # the type-check gate; neither target above insta
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint` and `ruff`, then verify that every first-party package
-resolved from the checkout. Use them in preference to hand-rolling `pip install` lines.
+resolved from the checkout. Every install is constrained to
+`lib/idp_common_pkg/uv.lock`, the same constraints both CI systems install against,
+so a local environment holds the versions CI tests; exporting the lock is why both
+targets need `uv`. Use them in preference to hand-rolling `pip install` lines.
 
 **Activate the virtual environment if you used `make setup-venv`.** The
 `Makefile` resolves `$(PYTHON)` and `$(PIP)` to `.venv/bin/` when `.venv`
@@ -416,8 +419,8 @@ The second is that `ruff` still does not read everything, and what it skips is
 now a **named list of individual files** rather than a directory. Any file you
 add, anywhere in the repository, is linted and format-checked from the moment it
 exists. The files that are skipped are the ones that already carried findings
-when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 77 files
-holding 181 pre-existing findings, and `[format] exclude` names 166 files that
+when the exclusions were narrowed: `ruff.toml`'s `[lint] exclude` names 71 files
+holding 172 pre-existing findings, and `[format] exclude` names 157 files that
 `ruff format` has never been run over. Both counts fall as files are paid off, and
 `scripts/tests/test_contributing_doc.py` reads them out of
 `scripts/lint_debt.json` and fails if the right figure appears nowhere on this page.
@@ -789,9 +792,9 @@ documented in [docs/deployment.md](docs/deployment.md) and
 
 | Command | Description |
 |---|---|
-| `make setup` | Install all first-party packages into the current Python environment |
-| `make setup-venv` | Create `.venv` and install everything into it |
-| `make install-first-party` | Install just the first-party editables in one pip pass |
+| `make setup` | Install all first-party packages into the current Python environment, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
+| `make setup-venv` | Create `.venv` and install everything into it, constrained to the same lock (needs `uv`) |
+| `make install-first-party` | Install just the first-party editables in one pip pass, constrained to `lib/idp_common_pkg/uv.lock` (needs `uv`) |
 
 ### Code quality
 
@@ -801,6 +804,8 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
+| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/` or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
+| `make check-ui-string-debt` | Ratchet the UI's hardcoded user-facing strings against `scripts/ui_string_debt.json`: a file may not gain one, an unlisted file may not have any, and the baseline may not be stale (part of `lint`, `fastlint` and `lint-cicd`) |
 | `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |
 | `make format` | Ruff formatter |
@@ -840,6 +845,8 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make ui-lint` | ESLint (`--max-warnings 0`) + `tsc --noEmit`, check-only (checksum-cached; `FORCE=1` to override) |
 | `make ui-lint-fix` | `eslint --fix` over `src/ui`, then re-runs `ui-lint` |
 | `make ui-build` | Lint, typecheck, and production Vite build |
+| `make ui-i18n-extract` | Re-extract the UI's English message catalog into `src/ui/src/i18n/en.json` (the writer for `check-ui-i18n-catalog`; commit the result) |
+| `make ui-i18n-coverage` | Report translation coverage per locale catalog: missing, stale (English changed since translation) and invalid entries; advisory, never fails (`UI_I18N_COVERAGE_ARGS=--json` for JSON) |
 | `make docs-setup` | One-time docs site setup |
 | `make docs` | Build and serve the docs site locally |
 

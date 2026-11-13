@@ -123,3 +123,49 @@ schema flag: on a pool created with `ExternalIdPEmailMutable=true` it is a real
 PASS/FAIL check; on a pool created with the default `false` it is recorded as a
 `NOTE`, because such a pool lets each federated user sign in exactly once (#835).
 See the skill for what that means and why it is not your change.
+
+## Tenant isolation against a deployed stack
+
+`verify_tenant_isolation.py` is different from the harnesses above: it needs a stack
+deployed with `TenantIsolationMode=Strict` (see
+[Multi-Tenant Isolation](../../../docs/multi-tenancy.md)).
+
+```bash
+make verify-tenant-isolation STACK_NAME=<stack> REGION=<region>   # YES=1 skips the prompt
+```
+
+It creates two throwaway profiles and tenants over `tenancy-verify/a/` and
+`tenancy-verify/b/`, checks that a crossing prefix mapping and an overlapping tenant
+are refused, runs `idp-cli tenancy verify` (throwaway users of each tenant read only
+their own tenant's document, strict-mode ingest refuses an outside-every-tenant
+upload, and an upload naming another tenant's profile stays in its own tenant), deploys the template `idp-cli tenancy generate-policies`
+writes for two throwaway uploader roles and checks that each can write only under its
+own prefix through its own access point, then runs `idp-cli tenancy audit`. Every row
+is `PASS`, `FAIL`, `SKIP` or `ERROR`; it exits non-zero unless every row passes, and
+removes what it created in a `finally`.
+
+The same harness is the `tenancy` deployment-variant probe: on the weekly
+variant-probe schedule CI deploys a throwaway `TenantIsolationMode=Strict` stack, runs
+it with `--yes`, and tears the stack down. `make stacktest-tenancy` runs that probe
+by hand; see `.claude/skills/run-stack-tests.md`.
+
+## Tenant grants from the identity provider's claim
+
+`verify_tenant_grants_federation.py` covers `TenantGrantSource=IdpClaim`. It needs a
+stack federated to the throwaway OIDC provider (stand both up as for
+`make verify-idp-federation`), deployed with `TenantGrantSource=IdpClaim`,
+`ExternalIdPGroupAttributeName=roles` and `ExternalIdPViewerGroupName=DMS.Viewer`.
+
+```bash
+make verify-tenant-grants-federation STACK_NAME=<stack> REGION=<region> \
+  IDP_FUNCTION=<provider function> POOL_ID=<pool> CLIENT_ID=<client> DOMAIN=<hosted UI>
+```
+
+It drives the provider to issue tokens shaped like Microsoft Entra ID's for an app
+registration with app roles — a `roles` array such as `["DMS.Viewer", "tenant.tga"]`
+plus `oid`, `tid` and `preferred_username` — and checks, through real hosted-UI
+sign-ins and the federated user's own API calls, that the tenant role scopes the user
+to that tenant, that a changed role moves them at the next fresh sign-in but not on a
+token refresh, and that two tenant roles or none leave them with no access. A token
+without an `email` claim is reported as a note. What it cannot prove is Entra's own
+side: group-to-role assignment and the claims an actual app registration emits.

@@ -2,6 +2,9 @@
 title: "IDP SDK Documentation"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP SDK Documentation
 
 The IDP SDK provides programmatic Python access to all IDP Accelerator capabilities with a clean, namespaced API.
@@ -138,6 +141,7 @@ client.search.query(...)
 # Configuration operations
 client.config.create(...)
 client.config.validate(...)
+client.config.migrate(...)
 client.config.upload(...)
 client.config.download(...)
 client.config.list()
@@ -149,6 +153,9 @@ client.config.sync_bda(...)
 # Manifest operations
 client.manifest.generate(...)
 client.manifest.validate(...)
+
+# Terraform-only operations (genai-idp-terraform migration)
+client.terraform.migrate_from_genai_idp_terraform.plan(...)
 
 # Testing operations
 client.testing.load_test(...)
@@ -175,6 +182,69 @@ client.stack_name = "new-stack"
 |-----------|------|----------|-------------|
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
+
+### Terraform deployments
+
+`stack_name` also accepts the name of a [Terraform deployment](./terraform.md)
+(experimental). Such a deployment has a read-only CloudFormation label stack of the
+same name, and importing `idp_sdk` installs a hook on botocore's CloudFormation clients
+that answers resource lookups for a label stack from the deployment's resource
+directory. Every client operation therefore works against either kind of deployment
+with no change to your code. The hook applies only inside a process that imported
+`idp_sdk`; the AWS CLI and other tools see only the label stack's single resource.
+Deploying and deleting a Terraform deployment through the SDK's CloudFormation path
+is refused; use `idp-cli deploy --terraform` and `idp-cli delete --terraform`, or
+Terraform itself.
+
+### Terraform migration
+
+`client.terraform.migrate_from_genai_idp_terraform` moves a deployment of the separate
+`awslabs/genai-idp-terraform` implementation onto this repository's Terraform module
+in place, keeping its buckets, tables, KMS key and Cognito user pool. It is what
+`idp-cli terraform migrate-from-genai-idp-terraform` calls; the procedure is in
+[Migrating from genai-idp-terraform](./terraform-migration.md). The client's
+`stack_name` is the **new** deployment's name, and each method takes `terraform_dir`
+(default `./idp-terraform/<stack_name>`). The methods' own AWS calls assume the role
+the new deployment's providers assume (`assume_role_arn` of `plan`, read back from
+`main.tf` by the later methods), or use the ambient credentials when there is none.
+
+```python
+client = IDPClient(stack_name="my-idp", region="us-west-2")
+migration = client.terraform.migrate_from_genai_idp_terraform
+
+plan = migration.plan(
+    "old-idp.tfstate",
+    "admin@example.com",
+    pointer_url="https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/"
+    "artifacts/genai-idp/terraform/idp-terraform-latest.json",
+)
+migration.check_retention()
+migration.freeze(apply=True, wait=True)
+migration.fix_config(apply=True)
+migration.adopt_user_pool(apply=True)
+result = migration.apply(apply=True)
+migration.detach("./old-idp", apply=True)
+migration.check_destroy("destroy-plan.json")
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
+| `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. `notes` says what was not checked. |
+| `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30, ignore_documents=())` | `TerraformMigrationStepResult` | `details` separates documents in flight from documents awaiting review. |
+| `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
+| `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=(), accept_changes=(), ignore_documents=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts; `details["review"]` lists the allowed in-place changes to adopted resources. `accept_changes` takes `"<address>:<rule>"` as a finding names it. |
+| `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
+
+Every method that can change something is a dry run unless `apply=True`. A
+`TerraformMigrationStepResult` lists in `changes` exactly what the phase changes (or,
+in a dry run, would change), in `findings` what blocks the next step (`ok` is false
+when there is any), and in `back_out` how to undo it. `TerraformMigrationPlanResult`
+lists one `TerraformMigrationResource` per old resource, with its verdict, the
+address it is adopted into and the import id, plus the stack parameters written, the
+addresses to detach and the commands that detach them.
 
 ---
 
@@ -1145,6 +1215,16 @@ result = client.stack.delete(
 print(f"Status: {result.status}")
 ```
 
+### stack.deploy_terraform() / stack.delete_terraform()
+
+Deploy or destroy the accelerator with Terraform or OpenTofu, from a module published by `publish.build(terraform=True)`. These are what `idp-cli deploy --terraform` and `idp-cli delete --terraform` call; see [Terraform deployments](./idp-cli.md#terraform-deployments) for the behaviour.
+
+- `deploy_terraform(stack_name=None, admin_email=None, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None, allow_replace_stateful=False, allow_replace_retained=False)` returns a `StackDeploymentResult` (`status="APPLY_COMPLETE"`, the label stack's outputs). With no `module_url`, `pointer_url` names an `idp-terraform-latest.json`; `default_terraform_pointer_url(template_url, variant=None)` derives it from a default template URL, for the standard module or the `headless`/`govcloud` one. It applies a saved plan after checking it, and raises `IDPStackError` without applying anything when the plan deletes or replaces a resource that holds data or that CloudFormation would retain (the module's `statefulAddresses` and `retainedAddresses`), unless `allow_replace_stateful=True` (`allow_replace_retained` is the earlier name).
+- `assume_role_arn` (both) is an IAM role the `aws` and `awscc` providers assume: `deploy_terraform` writes it into `main.tf`, and `delete_terraform` rewrites the provider blocks of an idp-cli `main.tf` with it before `init`, keeping the region the deploy recorded there and refusing a client in another region.
+- `delete_terraform(stack_name=None, *, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` returns a `StackDeletionResult` whose `retained_resources` lists the resources left in place, categorized as `dynamodb_tables`, `log_groups`, `s3_buckets` and `other`.
+
+Both raise `IDPConfigurationError` when the binary is missing or the inputs are invalid, and `IDPStackError` when a Terraform command fails.
+
 ### stack.get_resources()
 
 Get stack resource information.
@@ -1330,6 +1410,7 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `no_validate` (bool, optional): If `True`, skip CloudFormation template validation. Default: `False`.
 - `verbose` (bool, optional): If `True`, enable verbose build output. Default: `False`.
 - `lint` (bool, optional): If `True`, enable ruff linting and cfn-lint. Default: `True`.
+- `terraform` (bool, optional): If `True`, also translate the published main template into a Terraform module and upload it (`publish.publish_terraform()`), and do the same for each variant `headless`/`govcloud` produce (`publish_terraform(..., variant="headless")`). Default: `False`.
 
 **Returns:** `PublishResult` with:
 - `success` (bool)
@@ -1340,6 +1421,8 @@ This is the programmatic equivalent of `idp-cli publish` — see [Headless Deplo
 - `bucket` (str, optional): S3 bucket used (region-suffixed)
 - `prefix` (str, optional): S3 prefix used
 - `version` (str, optional): Version string from the project's `VERSION` file
+- `terraform_module_url`, `terraform_module_sha256`, `terraform_pointer_url` (str, optional): The Terraform module zip's HTTPS URL, its SHA-256, and the latest-pointer URL (only when `terraform=True`)
+- `terraform_variant_modules` (dict): Variant name (`headless`, `govcloud`) to `{"moduleUrl", "sha256", "pointerUrl", "version"}`, for the variant modules published with `terraform=True`
 - `error` (str, optional): Error message if the build failed
 
 **Raises:**
@@ -1480,13 +1563,15 @@ Operations for managing IDP configurations.
 Generate an IDP configuration template.
 
 **Parameters:**
-- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or comma-separated (default: `"min"`)
+- `features` (str, optional): Feature set to include — `"min"`, `"core"`, `"all"`, or one or more section names, comma-separated or as a list (default: `"min"`). A single section name is read the same way as a list, and blank segments are dropped. `"min"` switches summarization and evaluation off and leaves confidence scoring (`extraction.confidence`) on. No template carries a `classes` section: the system defaults have no document classes, and an empty list uploaded over a profile would replace its classes with none. `"all"` is every section except `hitl`, `chat` and `rule_validation`. Uploaded, the template is merged over the stack's preset or the profile's current configuration, so every setting it writes is reset to its default there (`summarization` and `evaluation` switch back on where a preset turned them off; prompts left out keep their own values); the three are left out so the reset does not also switch human review, the chat companion or rule validation on or off. Name them to include them
 - `pattern` (str, optional): Pattern to use — `"pattern-1"` or `"pattern-2"` (default: `"pattern-2"`)
 - `output` (str, optional): Output file path
-- `include_prompts` (bool, optional): Include prompt templates (default: False)
+- `include_prompts` (bool, optional): Include prompt templates (default: False). When False, the long `system_prompt`, `task_prompt` and `user_prompt` values are left out of the template, so they take whatever value the configuration is merged over
 - `include_comments` (bool, optional): Include explanatory comments (default: True)
 
 **Returns:** `ConfigCreateResult` with `yaml_content` and `output_path`
+
+**Raises:** `IDPValidationError` when `features` names no section, an unknown feature set or section, or a feature set combined with section names, or only `classes` (empty in the system defaults, so there is nothing to write), and when `pattern` is not a known pattern. The message lists the valid sections. `config.parse_features(features)` returns how a value is read (a feature-set name, or a list of section names) without generating anything.
 
 ```python
 result = client.config.create(
@@ -1510,7 +1595,14 @@ Validate a configuration file against system defaults.
 - `show_merged` (bool, optional): Include merged configuration in result (default: False)
 - `strict` (bool, optional): Report deprecated/unknown fields as errors (default: False)
 
-**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+**Returns:** `ConfigValidationResult` with `valid`, `validation_available`, `document_loaded`, `class_count`, `errors`, `warnings`, `deprecated_fields`, `unknown_fields`, and optional `merged_config`
+
+`document_loaded` is False when the file could not be read or is not valid YAML; the
+one error then starts `Failed to load file:` or `YAML syntax error:`, which have
+different remedies. `class_count` is the number of document classes the file itself
+defines, not counting the system defaults, and is None when the file did not load or
+its top level is not a mapping. `idp-cli config-validate` reports from these fields
+rather than reading the file itself.
 
 `validation_available` is False when this installation could not run the checks at
 all — `idp_common`, which does the checking, is not importable — and the missing
@@ -1536,21 +1628,47 @@ for warning in result.warnings:
     print(f"Warning: {warning}")
 ```
 
+### config.migrate()
+
+Convert a configuration file to the current configuration format, the way the loader
+converts it on every read (for example, the pre-0.9 flat classification keys). Nothing
+is validated; call `config.validate()` for that. `idp-cli config-validate
+--emit-migrated <path>` is this method.
+
+**Parameters:**
+- `config_file` (str, required): Path to the configuration file
+- `output` (str, optional): Path to write the migrated YAML to
+
+**Returns:** `ConfigMigrateResult` with `yaml_content` (headed by a comment naming the
+format version and the source file), `config_format_version` and `output_path`
+
+**Raises:** `IDPValidationError` when the file is not valid YAML or cannot be read,
+with the same two messages `config.validate()` reports, or when its top level is not a
+mapping
+
+```python
+result = client.config.migrate(
+    config_file="./old-config.yaml",
+    output="./config-current.yaml",
+)
+print(result.config_format_version)
+```
+
 ### config.upload()
 
 Upload configuration to a deployed stack.
 
 **Parameters:**
 - `config_file` (str, required): Path to the YAML or JSON configuration file
-- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"v1"`, `"production"`). If the profile doesn't exist, it will be created automatically.
+- `config_profile` (alias: `config_version`) (str, required): Configuration profile to upload to (e.g., `"default"`, `"lending"`, `"production"`). If the profile doesn't exist, it will be created automatically.
 - `stack_name` (str, optional): Stack name override
 - `validate` (bool, optional): Validate configuration before uploading (default: `True`)
 - `pattern` (str, optional): Pattern to validate against (default: `"pattern-2"`)
-- `description` (str, optional): Description for the configuration version
+- `description` (str, optional): Description for the configuration profile (overwritten by every save)
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version`, `version_created`, `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
@@ -1559,7 +1677,7 @@ no new revision, so `revision` is then the one already current, which is still
 the right value to pin.
 
 ```python
-# Upload to the default version
+# Upload to the default profile
 result = client.config.upload(
     config_file="./my-config.yaml",
     config_profile="default",
@@ -1569,24 +1687,25 @@ result = client.config.upload(
 if result.success:
     print("Configuration uploaded")
 
-# Create a new named version
+# Upload to a named profile, creating it if it does not exist
 result = client.config.upload(
     config_file="./my-config.yaml",
-    config_profile="v2",
-    description="Updated extraction rules"
+    config_profile="lending",
+    description="Lending package configuration",
+    revision_notes="Updated extraction rules",
 )
 
 if result.success:
     if result.version_created:
-        print(f"New version created: {result.version}")
+        print(f"New profile created: {result.version} (r{result.revision})")
     else:
-        print(f"Version updated: {result.version}")
+        print(f"Profile updated: {result.version} (r{result.revision})")
 
 # Score exactly what was uploaded, rather than "whatever that profile holds now"
 result = client.config.upload(
     config_file="./attempt.yaml",
     config_profile="tuning-run-42",
-    description="raised topK to 20",
+    revision_notes="raised topK to 20",
 )
 client.batch.process(
     directory="./docs/",
@@ -1604,7 +1723,7 @@ Download configuration from a deployed stack.
 - `output` (str, optional): Output file path
 - `format` (str, optional): Format type — `"full"` or `"minimal"` (default: `"full"`)
 - `pattern` (str, optional): Pattern override (auto-detected if not provided)
-- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to download (default: active profile)
 - `config_revision` (int, optional): Download an exact **revision** of that profile instead of its current configuration
 
 **Returns:** `ConfigDownloadResult` with `config`, `yaml_content`, `output_path`, and `revision`
@@ -1636,12 +1755,12 @@ earlier = client.config.download(config_profile="lending", config_revision=7)
 
 ### config.list()
 
-List all configuration versions in a deployed stack.
+List all configuration profiles in a deployed stack.
 
 **Parameters:**
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`) and `count`
+**Returns:** `ConfigListResult` with `versions` (list of `ConfigVersionInfo`, one per profile) and `count`
 
 **ConfigVersionInfo fields:** `version_name`, `is_active`, `created_at`, `updated_at`, `description`, `latest_revision`, `published_revision`
 
@@ -1653,10 +1772,10 @@ flight. Both are `None` for a profile with no history.
 result = client.config.list()
 
 print(f"Found {result.count} profiles:")
-for version in result.versions:
-    status = " (ACTIVE)" if version.is_active else ""
-    at = f" @r{version.published_revision}" if version.published_revision else ""
-    print(f"  - {version.version_name}{status}{at}")
+for profile in result.versions:
+    status = " (ACTIVE)" if profile.is_active else ""
+    at = f" @r{profile.published_revision}" if profile.published_revision else ""
+    print(f"  - {profile.version_name}{status}{at}")
 ```
 
 ### config.revisions()
@@ -1713,7 +1832,7 @@ deployment.
 
 ### config.activate()
 
-Activate a configuration version. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
+Activate a configuration profile. If the configuration uses BDA (`use_bda=True`), a BDA blueprint sync is performed before activation.
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to activate
@@ -1728,10 +1847,10 @@ whatever happened to the classes, so an aborted activation is the outcome most l
 have left one, and `bda_synced` is `False` on every failing path.
 
 ```python
-result = client.config.activate("v2")
+result = client.config.activate("lending")
 
 if result.success:
-    print(f"Activated version: {result.activated_version}")
+    print(f"Activated profile: {result.activated_version}")
     if result.bda_synced:
         print(f"BDA synced: {result.bda_classes_synced} classes")
 else:
@@ -1744,7 +1863,7 @@ for arn in result.bda_orphaned_blueprint_arns:
 
 ### config.delete()
 
-Delete a configuration version.
+Delete a configuration profile, together with its revision history.
 
 **Parameters:**
 - `config_profile` (alias: `config_version`) (str, required): Configuration profile to delete
@@ -1753,15 +1872,15 @@ Delete a configuration version.
 **Returns:** `ConfigDeleteResult` with `success`, `deleted_version`, and `error`
 
 ```python
-result = client.config.delete("old-version")
+result = client.config.delete("old-profile")
 
 if result.success:
-    print(f"Deleted version: {result.deleted_version}")
+    print(f"Deleted profile: {result.deleted_version}")
 else:
     print(f"Failed to delete: {result.error}")
 ```
 
-**Note:** Cannot delete `"default"` or currently active versions.
+**Note:** Cannot delete the `"default"` profile or the currently active profile.
 
 ### config.sync_bda()
 
@@ -1770,7 +1889,7 @@ Synchronize IDP document class schemas with BDA (Bedrock Data Automation) bluepr
 **Parameters:**
 - `direction` (str, optional): Sync direction — `"bidirectional"` (default), `"bda_to_idp"`, or `"idp_to_bda"`
 - `mode` (str, optional): Sync mode — `"replace"` (default, full alignment) or `"merge"` (additive)
-- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active version)
+- `config_profile` (alias: `config_version`) (str, optional): Configuration profile to sync (default: active profile)
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `ConfigSyncBdaResult` with `success`, `direction`, `mode`, `classes_synced`, `classes_failed`, `processed_classes`, `orphaned_blueprint_arns`, and `error`
@@ -1933,7 +2052,7 @@ batch_result = client.discovery.run(
 for r in batch_result.results:
     print(f"{r.document_class} (pages {r.page_range}): {r.status}")
 
-# Save to specific config version
+# Save to a specific configuration profile
 result = client.discovery.run(
     "./form.pdf",
     config_profile="v2"
@@ -2014,8 +2133,8 @@ Discover document classes from a collection of documents using embedding-based c
 **Parameters:**
 - `document_dir` (str, optional): Directory path containing documents to analyze (recursive scan)
 - `document_paths` (list[str], optional): List of individual document file paths
-- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`)
-- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`)
+- `embedding_model_id` (str, optional): Bedrock embedding model ID (default: `us.cohere.embed-v4:0`; `eu.cohere.embed-v4:0` in EU Regions, `global.cohere.embed-v4:0` in Canada)
+- `analysis_model_id` (str, optional): Bedrock LLM for cluster analysis (default: `us.anthropic.claude-sonnet-4-6`; `eu.anthropic.claude-sonnet-4-6` in EU Regions)
 - `output_dir` (str, optional): Directory to write individual JSON schema files per discovered class
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
@@ -2103,6 +2222,53 @@ result = client.discovery.run_batch(
 ```
 
 ---
+
+## MCP Operations
+
+MCP service credentials — the operations behind `idp-cli mcp credentials` and the MCP
+Configuration page. See [MCP Server](mcp-server.md#service-credentials).
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `mcp.list_credentials()` | `list[McpCredential]` | Every credential; never a secret |
+| `mcp.create_credential(name, role, *, allowed_config_versions=None, write_tools=False, expires_in_days=None)` | `McpCredentialIssued` | Create one. The result is the only time `client_secret` is returned; it is also stored in Secrets Manager at `secret_arn`. Raises `IDPValidationError` on the same refusals as the page |
+| `mcp.update_credential(client_id, *, role=None, allowed_config_versions=None, clear_scope=False, write_tools=None, enabled=None)` | `McpCredential` | Change role, profiles, write tools or enabled |
+| `mcp.rotate_credential(client_id, *, overlap_days=7)` | `McpCredentialIssued` | A replacement with the same access; the old one keeps working for `overlap_days` (0 to 7) |
+| `mcp.revoke_credential(client_id)` | `McpCredential` | Refused from its next request; app client and secret deleted |
+| `mcp.set_credential_tenant(client_id, tenant_id)` | `McpCredential` | Grant one tenant, or none; only under `TenantGrantSource=Api` |
+
+The settings these use (gateway, token URL, stack key, isolation mode) are read from
+the stack's credential manager function, so a credential made here is configured
+exactly as one made on the page.
+
+## Tenancy Operations
+
+Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
+See [Multi-Tenant Isolation](multi-tenancy.md) for the model.
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `tenancy.isolation_mode()` | `str` | The stack's `TenantIsolationMode` (`Off`, `Strict`, or `Unknown` when the stack predates the parameter) |
+| `tenancy.grant_source()` | `str` | The stack's `TenantGrantSource` (`Manual`, `IdpClaim` or `Api`; `Manual` when the stack predates the parameter) |
+| `tenancy.list()` | `TenantListResult` | Declared tenants, the isolation mode and the grant source |
+| `tenancy.put(tenant_id, prefixes, profile_pattern, *, description=None, granted_by=None)` | `TenantInfo` | Create or replace one tenant; raises `IDPValidationError` on the same refusals as the API. `granted_by` lists the claim or entitlement values that grant it |
+| `tenancy.set_user_tenant(email, tenant_id)` | `TenantUserGrant` | Grant one existing user one tenant, or none with `tenant_id=None`. Only under `TenantGrantSource=Api`; raises `IDPValidationError` (wrong source, undeclared tenant, an Admin) or `IDPResourceNotFoundError` (no such user) |
+| `tenancy.delete(tenant_id)` | `bool` | Remove one tenant; whether it existed |
+| `tenancy.apply(declarations, *, prune=False, dry_run=True)` | `TenantApplyResult` | Plan, and with `dry_run=False` write, the changes that make the stack match `declarations` |
+| `tenancy.generate_policies(principals)` | `TenantPolicyResult` | A CloudFormation template of per-tenant S3 access points, plus warnings |
+| `tenancy.deploy_policies(principals, *, access_point_stack=None)` | `TenantPolicyDeployResult` | Generates that template and deploys it as its own stack (default `<stack>-tenant-access-points`), creating or updating it and waiting; returns each tenant's access point ARN and alias as `TenantAccessPoint` items, and `operation` `created`, `updated` or `unchanged` |
+| `tenancy.audit(*, principals=None, document_sample=500)` | `TenantAuditResult` | Read-only findings that weaken isolation |
+| `tenancy.verify(document, document_name="tenancy-verify.pdf", *, tenant_ids=None, timeout_seconds=240, email_domain=None)` | `TenantVerifyResult` | Live cross-tenant check with throwaway users; every row is `PASS`, `FAIL`, `SKIP` or `ERROR` |
+
+```python
+from idp_sdk import IDPClient
+
+client = IDPClient(stack_name="my-idp-stack")
+client.tenancy.put("acme", ["clients/acme/"], "acme-*", description="ACME Corp")
+report = client.tenancy.audit()
+for finding in report.findings:
+    print(finding.kind, finding.subject, finding.detail)
+```
 
 ## Manifest Operations
 
@@ -2325,6 +2491,7 @@ from idp_sdk import (
 
     # Config models
     ConfigCreateResult,
+    ConfigMigrateResult,
     ConfigValidationResult,
     ConfigUploadResult,
     ConfigDownloadResult,

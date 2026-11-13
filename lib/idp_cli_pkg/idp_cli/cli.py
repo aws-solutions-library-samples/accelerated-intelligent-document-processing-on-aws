@@ -153,6 +153,68 @@ def emit_json(payload: Any) -> None:
     )
 
 
+def _build_terraform_module_from_local_code(
+    from_code_dir: str,
+    region: str,
+    *,
+    headless: bool = False,
+    govcloud: bool = False,
+    bucket_basename: Optional[str] = None,
+    prefix: Optional[str] = None,
+    public: bool = False,
+    max_workers: Optional[int] = None,
+    clean_build: bool = False,
+    no_validate: bool = False,
+) -> str:
+    """Build and publish the templates from a local checkout, translate them to
+    a Terraform module (`idp-cli publish --terraform`), and return the module
+    URL for `idp-cli deploy --terraform`.
+
+    With `headless` or `govcloud`, that variant's module is returned. A build
+    that publishes no module for the requested variant is refused, never
+    replaced by the standard module.
+    """
+    console.print(
+        "[bold cyan]Building project and Terraform module from source...[/bold cyan]"
+    )
+    console.print(f"[dim]Source: {from_code_dir}[/dim]")
+    console.print(f"[dim]Region: {region}[/dim]")
+    console.print()
+    client = IDPClient(region=region)
+    result = client.publish.build(
+        source_dir=from_code_dir,
+        bucket=bucket_basename,
+        prefix=prefix,
+        region=region,
+        headless=headless,
+        govcloud=govcloud,
+        public=public,
+        max_workers=max_workers,
+        clean_build=clean_build,
+        no_validate=no_validate,
+        terraform=True,
+    )
+    if not result.success:
+        console.print(f"[red]✗ Build failed: {result.error}[/red]")
+        sys.exit(1)
+    variant = "govcloud" if govcloud else ("headless" if headless else None)
+    if variant:
+        module_url = (
+            (result.terraform_variant_modules or {}).get(variant, {}).get("moduleUrl")
+        )
+    else:
+        module_url = result.terraform_module_url
+    if not module_url:
+        label = f"{variant} " if variant else ""
+        console.print(
+            f"[red]✗ Error: the build published no {label}Terraform module.[/red]"
+        )
+        sys.exit(1)
+    console.print(f"[green]✓ Terraform module: {module_url}[/green]")
+    console.print()
+    return module_url
+
+
 def _build_from_local_code(
     from_code_dir: str,
     region: str,
@@ -387,6 +449,186 @@ TEMPLATE_URLS = {
 }
 
 
+def _resolve_region(region: Optional[str]) -> str:
+    if region:
+        return region
+    import boto3
+
+    found = boto3.session.Session().region_name  # type: ignore
+    if not found:
+        raise ValueError(
+            "Region could not be determined. Please specify --region or "
+            "configure AWS_DEFAULT_REGION"
+        )
+    return found
+
+
+def _deploy_terraform(
+    *,
+    stack_name: str,
+    admin_email: Optional[str],
+    parameters: Optional[str],
+    region: Optional[str],
+    module_url: Optional[str],
+    terraform_dir: Optional[str],
+    terraform_bin: str,
+    unsupported: List[str],
+    headless: bool = False,
+    govcloud: bool = False,
+    assume_role_arn: Optional[str] = None,
+    allow_replace_retained: bool = False,
+) -> None:
+    """`idp-cli deploy --terraform`. The work is in the SDK's
+    `client.stack.deploy_terraform`; this resolves the default module the way
+    the CloudFormation deploy resolves its default template, and prints.
+
+    `--headless` / `--govcloud` select that variant's latest module (its own
+    pointer, `idp-terraform-<variant>-latest.json`) instead of the standard one."""
+    from idp_sdk import default_terraform_pointer_url
+
+    if unsupported:
+        console.print(
+            "[red]✗ Error: "
+            + ", ".join(unsupported)
+            + " cannot be used with --terraform. Pass stack parameters with "
+            "--parameters.[/red]"
+        )
+        sys.exit(1)
+    if headless and govcloud:
+        console.print(
+            "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
+            "Each selects its own Terraform module.[/red]"
+        )
+        sys.exit(1)
+    variant = "headless" if headless else "govcloud" if govcloud else None
+    if variant and module_url:
+        console.print(
+            f"[red]✗ Error: --{variant} selects the latest {variant} module, and "
+            "--terraform-module-url names a module itself; pass one of them.[/red]"
+        )
+        sys.exit(1)
+    if headless and admin_email:
+        console.print(
+            "[yellow]--admin-email is ignored with --headless "
+            "(no Cognito in the headless module)[/yellow]"
+        )
+        admin_email = None
+    try:
+        region = _resolve_region(region)
+        pointer_url = None
+        if not module_url:
+            if region not in TEMPLATE_URLS:
+                supported = ", ".join(TEMPLATE_URLS)
+                raise ValueError(
+                    f"Region '{region}' has no published Terraform module. "
+                    f"Supported regions: {supported}. Pass --terraform-module-url "
+                    "explicitly for other regions."
+                )
+            pointer_url = default_terraform_pointer_url(TEMPLATE_URLS[region], variant)
+            kind = f"{variant} " if variant else ""
+            console.print(
+                f"[bold]Using the latest {kind}Terraform module for {region}[/bold]"
+            )
+        additional = parse_parameters(
+            parameters,
+            on_warning=lambda message: console.print(f"[yellow]⚠ {message}[/yellow]"),
+        )
+        client = IDPClient(stack_name=stack_name, region=region)
+        console.print(
+            f"[bold blue]Deploying {stack_name} with {terraform_bin}[/bold blue]"
+        )
+        result = client.stack.deploy_terraform(
+            stack_name=stack_name,
+            admin_email=admin_email,
+            parameters=additional,
+            module_url=module_url,
+            pointer_url=pointer_url,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+            assume_role_arn=assume_role_arn,
+            allow_replace_retained=allow_replace_retained,
+        )
+        console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
+        outputs = result.outputs
+        if outputs:
+            console.print("[bold]Important Outputs:[/bold]")
+            console.print(
+                f"  Application URL: [cyan]{outputs.get('ApplicationWebURL', 'N/A')}[/cyan]"
+            )
+            console.print(f"  Input Bucket: {outputs.get('S3InputBucketName', 'N/A')}")
+            console.print(
+                f"  Output Bucket: {outputs.get('S3OutputBucketName', 'N/A')}"
+            )
+            console.print()
+    except Exception as e:
+        logger.error(f"Error deploying with Terraform: {e}", exc_info=True)
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
+
+
+def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
+    labels = {
+        "s3_buckets": "S3 Buckets",
+        "dynamodb_tables": "DynamoDB Tables",
+        "log_groups": "CloudWatch Log Groups",
+        "other": "Other",
+    }
+    entries = {k: (retained or {}).get(k) or [] for k in labels}
+    if not any(entries.values()):
+        console.print("No resources were retained.")
+        return
+    console.print("[bold]Retained resources (kept, as CloudFormation would):[/bold]")
+    for key, label in labels.items():
+        if entries[key]:
+            console.print(f"  • {label}: {len(entries[key])}")
+            for r in entries[key]:
+                console.print(f"    - {r.get('physical_id') or r.get('logical_id')}")
+    console.print("Delete them manually if no longer needed.")
+
+
+def _delete_terraform(
+    *,
+    stack_name: str,
+    region: Optional[str],
+    terraform_dir: Optional[str],
+    terraform_bin: str,
+    force: bool,
+    assume_role_arn: Optional[str] = None,
+) -> None:
+    """`idp-cli delete --terraform`; the work is `client.stack.delete_terraform`."""
+    try:
+        region = _resolve_region(region)
+        console.print("[bold red]⚠️  WARNING: Terraform Deployment Deletion[/bold red]")
+        console.print("━" * 60)
+        console.print(f"Deployment: [cyan]{stack_name}[/cyan]")
+        console.print(f"Region: {region}")
+        console.print(
+            "Every bucket that will be destroyed is emptied first, then `destroy` runs."
+        )
+        console.print("[bold red]This action cannot be undone.[/bold red]")
+        console.print("━" * 60)
+        if not force and not click.confirm(
+            "Are you sure you want to delete this deployment?", default=False
+        ):
+            console.print("[yellow]Deletion cancelled[/yellow]")
+            return
+        client = IDPClient(stack_name=stack_name, region=region)
+        result = client.stack.delete_terraform(
+            stack_name=stack_name,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+            assume_role_arn=assume_role_arn,
+        )
+        console.print("\n[green]✓ Deployment destroyed![/green]")
+        console.print(f"Deployment: {stack_name}")
+        console.print()
+        _print_retained(result.retained_resources)
+    except Exception as e:
+        logger.error(f"Error deleting with Terraform: {e}", exc_info=True)
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
+
+
 def _default_email_mutable_for_new_federated_stack(
     additional_params: Dict[str, str], *, stack_exists: bool, headless: bool
 ) -> Optional[str]:
@@ -449,6 +691,21 @@ def _parse_tags(tags: Optional[str]) -> Dict[str, str]:
     return result
 
 
+def _print_unsent_classes(classes) -> None:
+    """Name the classes a BDA sync did not send, because none of their fields can
+    be represented in a blueprint (issue #1755). Prints nothing when there are none."""
+    classes = list(classes or [])
+    if not classes:
+        return
+    console.print(
+        f"[yellow]⚠ {len(classes)} class(es) not sent to BDA: none of their fields "
+        f"can be represented in a BDA blueprint, and BDA rejects a blueprint with "
+        f"no fields[/yellow]"
+    )
+    for cls_name in classes:
+        console.print(f"    • {cls_name}")
+
+
 def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
     """Report blueprints a BDA sync disassociated but could not delete.
 
@@ -477,7 +734,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.13")
+@click.version_option(version="0.6.15")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -505,7 +762,7 @@ def cli():
 @click.option(
     "--from-code",
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="Deploy from local code by building with publish.py (path to project root)",
+    help="Deploy from local code by building with publish.py (path to project root). With --terraform, also publishes the Terraform module from that checkout and deploys it",
 )
 @click.option(
     "--template-url",
@@ -568,7 +825,10 @@ def cli():
 @click.option(
     "--headless",
     is_flag=True,
-    help="Deploy headless (no UI/AppSync/Cognito/WAF) — for API-only or GovCloud deployments",
+    help=(
+        "Deploy headless (no UI/AppSync/Cognito/WAF) — for API-only or GovCloud "
+        "deployments. With --terraform, deploys the headless Terraform module"
+    ),
 )
 @click.option(
     "--govcloud",
@@ -576,7 +836,8 @@ def cli():
     help=(
         "Deploy the GovCloud template variant: removes all AWS::CloudFront::* "
         "resources (unavailable in GovCloud) and forces API Gateway Web UI "
-        "hosting, keeping the full UI. Mutually exclusive with --headless."
+        "hosting, keeping the full UI. Mutually exclusive with --headless. "
+        "With --terraform, deploys the GovCloud Terraform module."
     ),
 )
 @click.option(
@@ -610,6 +871,57 @@ def cli():
     is_flag=True,
     help="Skip CloudFormation template validation (used with --from-code)",
 )
+@click.option(
+    "--terraform",
+    is_flag=True,
+    help=(
+        "Deploy with Terraform instead of CloudFormation: write a root "
+        "configuration that calls the published module, then run init and apply"
+    ),
+)
+@click.option(
+    "--terraform-module-url",
+    default=None,
+    help=(
+        "Terraform module zip URL (used with --terraform; default: the latest "
+        "module published for the region)"
+    ),
+)
+@click.option(
+    "--terraform-dir",
+    default=None,
+    help=(
+        "Root configuration and local state directory (used with --terraform; "
+        "default: ./idp-terraform/<stack-name>)"
+    ),
+)
+@click.option(
+    "--terraform-bin",
+    default="terraform",
+    show_default=True,
+    help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
+)
+@click.option(
+    "--terraform-assume-role-arn",
+    default=None,
+    help=(
+        "IAM role both Terraform providers assume, so the deployment's resources "
+        "are created as that role (used with --terraform)"
+    ),
+)
+@click.option(
+    "--terraform-allow-replace-stateful",
+    "--terraform-allow-replace-retained",
+    "terraform_allow_replace_retained",
+    is_flag=True,
+    help=(
+        "Apply even if the plan deletes or replaces a resource that holds data "
+        "(a bucket, table, user pool, key or knowledge base) or that "
+        "CloudFormation would retain, losing its data. Without it such a plan is "
+        "refused and nothing is applied. --terraform-allow-replace-retained is "
+        "the earlier name (used with --terraform)"
+    ),
+)
 def deploy(
     stack_name: str,
     admin_email: Optional[str],
@@ -634,6 +946,12 @@ def deploy(
     build_max_workers: Optional[int],
     clean_build: bool,
     no_validate_template: bool,
+    terraform: bool,
+    terraform_module_url: Optional[str],
+    terraform_dir: Optional[str],
+    terraform_bin: str,
+    terraform_assume_role_arn: Optional[str],
+    terraform_allow_replace_retained: bool,
 ):
     """
     Deploy or update IDP stack from command line
@@ -667,7 +985,86 @@ def deploy(
       idp-cli deploy --stack-name my-idp \\
           --admin-email user@example.com \\
           --parameters "DataRetentionInDays=90,ErrorThreshold=5"
+
+      # Deploy with Terraform (root configuration in ./idp-terraform/my-idp)
+      idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com
+
+      # Build and deploy with Terraform from a local checkout
+      idp-cli deploy --terraform --from-code . --stack-name my-idp --admin-email user@example.com
     """
+    if terraform:
+        if from_code and terraform_module_url:
+            console.print(
+                "[red]✗ Error: --from-code builds and publishes its own Terraform "
+                "module; do not also pass --terraform-module-url.[/red]"
+            )
+            sys.exit(1)
+        if from_code:
+            build_region = region
+            if not build_region:
+                import boto3
+
+                build_region = boto3.session.Session().region_name  # type: ignore
+                if not build_region:
+                    console.print(
+                        "[red]✗ Error: Region could not be determined. Please specify "
+                        "--region or configure AWS_DEFAULT_REGION.[/red]"
+                    )
+                    sys.exit(1)
+            if headless and govcloud:
+                console.print(
+                    "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
+                    "Each selects its own Terraform module.[/red]"
+                )
+                sys.exit(1)
+            terraform_module_url = _build_terraform_module_from_local_code(
+                from_code,
+                build_region,
+                headless=headless,
+                govcloud=govcloud,
+                bucket_basename=bucket_basename,
+                prefix=prefix,
+                public=public,
+                max_workers=build_max_workers,
+                clean_build=clean_build,
+                no_validate=no_validate_template,
+            )
+            region = build_region
+            # The build already chose the variant's module, which is what these
+            # flags otherwise select; passing both would read as a conflict.
+            headless = govcloud = False
+        ignored = {
+            "--template-url": template_url,
+            "--template-file": template_file,
+            "--custom-config": custom_config,
+            "--tags": tags,
+            "--role-arn": role_arn,
+            "--no-rollback": no_rollback,
+            "--log-level": log_level,
+            "--max-concurrent": max_concurrent != 100,
+        }
+        _deploy_terraform(
+            stack_name=stack_name,
+            admin_email=admin_email,
+            parameters=parameters,
+            region=region,
+            module_url=terraform_module_url,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+            unsupported=[k for k, v in ignored.items() if v],
+            headless=headless,
+            govcloud=govcloud,
+            assume_role_arn=terraform_assume_role_arn,
+            allow_replace_retained=terraform_allow_replace_retained,
+        )
+        return
+    if terraform_assume_role_arn:
+        console.print(
+            "[red]✗ Error: --terraform-assume-role-arn is used with --terraform; "
+            "for a CloudFormation deploy, pass the service role with --role-arn."
+            "[/red]"
+        )
+        sys.exit(1)
     try:
         # Validate mutually exclusive options
         exclusive_count = sum(1 for x in [from_code, template_url, template_file] if x)
@@ -1107,6 +1504,36 @@ def deploy(
     help="Wait for deletion to complete (same as deploy)",
 )
 @click.option("--region", help="AWS region (optional)")
+@click.option(
+    "--terraform",
+    is_flag=True,
+    help=(
+        "Destroy a Terraform deployment: empty its buckets, keep the resources "
+        "CloudFormation retains, then run destroy"
+    ),
+)
+@click.option(
+    "--terraform-dir",
+    default=None,
+    help=(
+        "Directory the deployment was applied from (used with --terraform; "
+        "default: ./idp-terraform/<stack-name>)"
+    ),
+)
+@click.option(
+    "--terraform-bin",
+    default="terraform",
+    show_default=True,
+    help="Terraform binary: terraform, tofu, or a path (used with --terraform)",
+)
+@click.option(
+    "--terraform-assume-role-arn",
+    default=None,
+    help=(
+        "IAM role both Terraform providers assume, so the deployment's resources "
+        "are created as that role (used with --terraform)"
+    ),
+)
 def delete(
     stack_name: str,
     force: bool,
@@ -1114,6 +1541,10 @@ def delete(
     force_delete_all: bool,
     wait: bool,
     region: Optional[str],
+    terraform: bool,
+    terraform_dir: Optional[str],
+    terraform_bin: str,
+    terraform_assume_role_arn: Optional[str],
 ):
     """
     Delete an IDP CloudFormation stack
@@ -1140,7 +1571,31 @@ def delete(
 
       # Wait for deletion to complete
       idp-cli delete --stack-name test-stack --force --wait
+
+      # Destroy a Terraform deployment applied from ./idp-terraform/test-stack
+      idp-cli delete --terraform --stack-name test-stack --force
     """
+    if terraform:
+        if force_delete_all:
+            console.print(
+                "[red]✗ Error: --force-delete-all does not apply with --terraform; "
+                "retained resources are removed from the state and kept.[/red]"
+            )
+            sys.exit(1)
+        _delete_terraform(
+            stack_name=stack_name,
+            region=region,
+            terraform_dir=terraform_dir,
+            terraform_bin=terraform_bin,
+            force=force,
+            assume_role_arn=terraform_assume_role_arn,
+        )
+        return
+    if terraform_assume_role_arn:
+        console.print(
+            "[red]✗ Error: --terraform-assume-role-arn is used with --terraform.[/red]"
+        )
+        sys.exit(1)
     try:
         client = IDPClient(stack_name=stack_name, region=region)
 
@@ -2018,7 +2473,7 @@ def _process_impl(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (e.g., default, lending); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
@@ -2261,7 +2716,7 @@ def reprocess(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to use for processing (e.g., v1, v2); --config-version is the former name and still works",
+    help="Configuration profile to use for processing (e.g., default, lending); --config-version is the former name and still works",
 )
 @click.option(
     "--config-revision",
@@ -5001,7 +5456,7 @@ def remove_residual_resources_from_deleted_stacks(
 @click.option(
     "--features",
     default="min",
-    help="Feature set: 'min' (classification, extraction, classes), 'core' (adds ocr, assessment), 'all', or comma-separated list of sections",
+    help="Feature set: 'min' (classification, extraction; summarization and evaluation switched off, confidence scoring left on), 'core' (adds ocr, and keeps summarization and evaluation at their defaults), 'all' (every section except hitl, chat and rule_validation; on upload every setting it writes resets that deployment's value to the default, so edit it first), or one or more section names, comma-separated. An unknown section name is refused",
 )
 @click.option(
     "--output",
@@ -5032,11 +5487,16 @@ def config_create(
     to customize the values they want to change - unspecified fields use defaults.
 
     Feature sets:
-      min:  classification, extraction, classes (simplest)
-      core: min + ocr, assessment
-      all:  all sections with full defaults
+      min:  classification, extraction (simplest); switches
+            summarization and evaluation off and leaves confidence scoring on
+      core: min + ocr, with summarization and evaluation left at their defaults
+      all:  every section except hitl, chat and rule_validation. Uploaded
+            unedited, every setting it writes resets the deployment's value
+            to the default (summarization and evaluation switch back on where
+            a preset turned them off; prompts left out keep their own)
 
-    Or specify a comma-separated list of sections:
+    Or name one or more sections, comma-separated (an unknown name is refused):
+      --features summarization
       --features "classification,extraction,summarization"
 
     Examples:
@@ -5044,7 +5504,7 @@ def config_create(
       # Generate minimal config to stdout
       idp-cli config-create
 
-      # Generate full config with all sections
+      # Generate a config with every section except hitl, chat and rule_validation
       idp-cli config-create --features all --output full-config.yaml
 
       # Include full prompts (verbose)
@@ -5054,36 +5514,25 @@ def config_create(
       idp-cli config-create --features "classification,extraction,summarization" --output config.yaml
     """
     try:
-        from idp_common.config.merge_utils import generate_config_template
+        from idp_sdk.exceptions import IDPValidationError
 
-        # Parse features - could be a preset or comma-separated list. The comma is what
-        # decides which of the two it is, so that branch is left alone; only the blank
-        # segments inside a list change, and a list that is all blanks is refused rather
-        # than handed on as a section whose name is the empty string.
-        if "," in features:
-            feature_list = _comma_separated_values(features)
-            if not feature_list:
-                console.print(
-                    "[red]✗ Error: --features contains no section names. Give a preset "
-                    "('min', 'core', 'all') or one or more section names, "
-                    "comma-separated.[/red]"
-                )
-                sys.exit(1)
-        else:
-            feature_list = features  # type: ignore
-
-        # Generate template
-        yaml_content = generate_config_template(
-            features=feature_list,
-            pattern="pattern-2",
-            include_prompts=include_prompts,
-            include_comments=not no_comments,
-        )
+        # The SDK parses --features (a preset, or one or more section names,
+        # comma-separated) and writes --output, so this command and
+        # client.config.create cannot read the same value differently.
+        try:
+            result = IDPClient().config.create(
+                features=features,
+                pattern="pattern-2",
+                output=output,
+                include_prompts=include_prompts,
+                include_comments=not no_comments,
+            )
+        except IDPValidationError as e:
+            err_console.print(f"[red]✗ Error (--features): {e}[/red]")
+            sys.exit(1)
+        yaml_content = result.yaml_content
 
         if output:
-            # Write to file
-            with open(output, "w", encoding="utf-8") as f:
-                f.write(yaml_content)
             console.print(
                 f"[green]✓ Configuration template written to: {output}[/green]"
             )
@@ -5170,65 +5619,44 @@ def config_validate(
     try:
         import yaml
 
-        from idp_common.config.merge_utils import load_yaml_file, validate_config
+        from idp_sdk import IDPClient
 
-        # Load the user's config
+        # The SDK loads, migrates and validates and this command only reports,
+        # so it and client.config.validate cannot read one file differently.
+        client = IDPClient()
+
         console.print(f"[bold blue]Validating: {config_file}[/bold blue]")
         console.print()
 
-        try:
-            from pathlib import Path
-
-            user_config = load_yaml_file(Path(config_file))
-            console.print("[green]✓ YAML syntax valid[/green]")
-        except yaml.YAMLError as e:
-            console.print(f"[red]✗ YAML syntax error: {e}[/red]")
+        result = client.config.validate(
+            config_file=config_file, pattern="pattern-2", show_merged=show_merged
+        )
+        if not result.document_loaded:
+            # A file that is not YAML, or cannot be read, or an installation that
+            # cannot run the checks: each error says which.
+            for error in result.errors:
+                console.print(f"[red]✗ {error}[/red]")
             sys.exit(1)
-        except Exception as e:
-            console.print(f"[red]✗ Failed to load file: {e}[/red]")
-            sys.exit(1)
+        console.print("[green]✓ YAML syntax valid[/green]")
 
-        # Emit the migrated (current-format) config if requested. Done up front so it
-        # works even when the file is an older format that would otherwise warn about
-        # deprecated fields — the whole point is to hand the user a pre-migrated file.
+        # Emit the migrated (current-format) config if requested. Before the
+        # strict and validity verdicts below, so it is written even when the file
+        # is an older format that fails them — the whole point is to hand the user
+        # a pre-migrated file.
         if emit_migrated:
-            from idp_common.config.migrations import migrate_config
-
-            migrated = migrate_config(user_config)
-            migrated_yaml = yaml.dump(
-                migrated,
-                default_flow_style=False,
-                sort_keys=False,
-                allow_unicode=True,
-                width=120,
-            )
-            with open(emit_migrated, "w", encoding="utf-8") as f:
-                f.write(
-                    f"# Migrated to config_format_version {migrated.get('config_format_version', '?')} "
-                    f"from: {config_file}\n\n"
-                )
-                f.write(migrated_yaml)
+            client.config.migrate(config_file=config_file, output=emit_migrated)
             console.print(
                 f"[green]✓ Migrated config written to: {emit_migrated}[/green]"
             )
-
-        # Validate config. The unread-key findings come from validate_config rather
-        # than from a set difference computed here: a raw
-        # `set(config) - set(IDPConfig.model_fields)` reports every key IDPConfig
-        # does not declare, which told an operator that two keys the loader honours
-        # would be ignored — `description`, which update_configuration pops and
-        # stores, and `rule_classes`, which is renamed to `policy_classes` on load.
-        # It also sees only the top level, where a typo is least likely.
-        result = validate_config(user_config, pattern="pattern-2")
 
         # --strict keeps its contract: top-level fields only. A nested finding is
         # reported either way (in the warnings below, with the path and often the
         # field it was meant to be), and failing on one would fail configurations
         # that pass today, which is a decision for a release rather than a fix.
         top_level_extras = sorted(
-            finding["path"]
-            for finding in result.get("ignored_keys", [])
-            if "." not in finding["path"] and "[" not in finding["path"]
+            path
+            for path in [*result.deprecated_fields, *result.unknown_fields]
+            if "." not in path and "[" not in path
         )
         if strict and top_level_extras:
             console.print()
@@ -5241,22 +5669,21 @@ def config_validate(
             )
             sys.exit(1)
 
-        if result["valid"]:
+        if result.valid:
             console.print("[green]✓ Config merges with system defaults[/green]")
             console.print("[green]✓ Pydantic validation passed[/green]")
 
             # Show warnings
-            if result["warnings"]:
+            if result.warnings:
                 console.print()
                 console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result["warnings"]:
+                for warning in result.warnings:
                     console.print(f"  ⚠ {warning}")
 
             # Check for document classes
-            classes = user_config.get("classes", [])
-            if classes:
+            if result.class_count:
                 console.print(
-                    f"[green]✓ {len(classes)} document class(es) defined[/green]"
+                    f"[green]✓ {result.class_count} document class(es) defined[/green]"
                 )
             else:
                 console.print(
@@ -5271,7 +5698,7 @@ def config_validate(
                 console.print("[bold]Merged configuration:[/bold]")
                 console.print("-" * 60)
                 merged_yaml = yaml.dump(
-                    result["merged_config"],
+                    result.merged_config,
                     default_flow_style=False,
                     sort_keys=False,
                     allow_unicode=True,
@@ -5281,7 +5708,7 @@ def config_validate(
         else:
             console.print("[red]✗ Validation failed[/red]")
             console.print()
-            for error in result["errors"]:
+            for error in result.errors:
                 console.print(f"  [red]• {error}[/red]")
             # The unread-key findings belong on this branch too, not only on the
             # passing one. They are the likely explanation for the error above rather
@@ -5291,10 +5718,10 @@ def config_validate(
             # which of the two the author wrote. On this path `warnings` holds these
             # findings and nothing else, since every other check runs only after the
             # configuration validates, so there is no duplication with the block above.
-            if result["warnings"]:
+            if result.warnings:
                 console.print()
                 console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result["warnings"]:
+                for warning in result.warnings:
                     console.print(f"  ⚠ {warning}")
             sys.exit(1)
 
@@ -5329,7 +5756,7 @@ def config_validate(
     "--config-version",
     "config_version",
     required=True,
-    help="Configuration profile to update (e.g., v1, v2). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
+    help="Configuration profile to update (e.g., default, lending). If the profile doesn't exist, it will be created. --config-version is the former name and still works.",
 )
 @click.option(
     "--version-description",
@@ -5479,7 +5906,7 @@ def config_upload(
     "--config-profile",
     "--config-version",
     "config_version",
-    help="Configuration profile to download (e.g., v1, v2). If not specified, downloads the active profile. --config-version is the former name and still works.",
+    help="Configuration profile to download (e.g., default, lending). If not specified, downloads the active profile. --config-version is the former name and still works.",
 )
 @click.option(
     "--config-revision",
@@ -5621,6 +6048,7 @@ def config_activate(
             # the deletes run whatever happened to the classes — and it is the one
             # where nothing else printed says so. `bda_synced` is False on every
             # failing path, so gating on it would have hidden exactly those.
+            _print_unsent_classes(result.bda_unsent_classes)
             _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
             sys.exit(1)
 
@@ -5635,6 +6063,7 @@ def config_activate(
                 console.print(
                     f"[green]✓ Successfully synced {result.bda_classes_synced} classes to BDA[/green]"
                 )
+            _print_unsent_classes(result.bda_unsent_classes)
         _print_orphaned_blueprints(result.bda_orphaned_blueprint_arns)
 
         console.print(
@@ -6141,7 +6570,9 @@ def config_sync_bda(
             console.print(f"  Classes synced: {result.classes_synced}")
             if result.processed_classes:
                 for cls_name in result.processed_classes:
-                    console.print(f"    • {cls_name}")
+                    if cls_name not in result.unsent_classes:
+                        console.print(f"    • {cls_name}")
+            _print_unsent_classes(result.unsent_classes)
             _print_orphaned_blueprints(result.orphaned_blueprint_arns)
         else:
             console.print("[yellow]⚠ BDA sync completed with issues[/yellow]")
@@ -6149,6 +6580,7 @@ def config_sync_bda(
             console.print(f"  Classes failed: {result.classes_failed}")
             if result.error:
                 console.print(f"  [red]Error: {result.error}[/red]")
+            _print_unsent_classes(result.unsent_classes)
             _print_orphaned_blueprints(result.orphaned_blueprint_arns)
             sys.exit(1)
 
@@ -6917,12 +7349,12 @@ def _write_discover_output(output, all_schemas, console, is_batch=True):
 @click.option(
     "--embedding-model",
     default=None,
-    help="Bedrock embedding model ID (default: us.cohere.embed-v4:0)",
+    help="Bedrock embedding model ID (default: us.cohere.embed-v4:0; eu.cohere.embed-v4:0 in EU Regions, global.cohere.embed-v4:0 in Canada)",
 )
 @click.option(
     "--analysis-model",
     default=None,
-    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6)",
+    help="Bedrock LLM for cluster analysis (default: us.anthropic.claude-sonnet-4-6; eu.anthropic.claude-sonnet-4-6 in EU Regions)",
 )
 @click.option(
     "--output",
@@ -7242,6 +7674,14 @@ def multi_discover(
     default=True,
     help="Enable/disable ruff linting and cfn-lint (default: enabled)",
 )
+@click.option(
+    "--terraform",
+    is_flag=True,
+    help=(
+        "Also translate the published main template to a Terraform module and "
+        "upload it beside the templates"
+    ),
+)
 def publish(
     source_dir: str,
     bucket_basename: Optional[str],
@@ -7255,6 +7695,7 @@ def publish(
     no_validate: bool,
     verbose: bool,
     lint: bool,
+    terraform: bool,
 ):
     """
     Build, package, and publish IDP CloudFormation artifacts to S3
@@ -7282,6 +7723,9 @@ def publish(
 
       # Skip validation
       idp-cli publish --source-dir . --region us-east-1 --no-validate
+
+      # Also publish the Terraform module
+      idp-cli publish --source-dir . --region us-east-1 --terraform
     """
     try:
         client = IDPClient(region=region)
@@ -7298,6 +7742,7 @@ def publish(
             no_validate=no_validate,
             verbose=verbose,
             lint=lint,
+            terraform=terraform,
         )
 
         if not result.success:
@@ -7311,6 +7756,9 @@ def publish(
             region=region,
             headless_template_url=result.headless_template_url,
             govcloud_template_url=result.govcloud_template_url,
+            terraform_module_url=result.terraform_module_url,
+            terraform_pointer_url=result.terraform_pointer_url,
+            terraform_variant_modules=result.terraform_variant_modules,
         )
         console.print()
         console.print("[bold green]✅ Publish complete![/bold green]")
@@ -8014,7 +8462,10 @@ def bootstrap(
         from idp_sdk import IDPClient
 
         client = IDPClient(stack_name=stack_name, region=region)
-        config_table = client.discovery._get_config_table(stack_name)
+        # Table AND bucket: the bootstrap saves a configuration profile, and a
+        # save without CONFIGURATION_BUCKET cannot record the profile's revision
+        # (refused outright for a profile that already has history, #1778).
+        config_table = client.config._configure_config_env(stack_name)
         _os.environ["CONFIGURATION_TABLE_NAME"] = config_table
 
         from idp_common.config.configuration_manager import ConfigurationManager
@@ -8056,6 +8507,25 @@ def bootstrap(
         logger.error(f"Error in bootstrap: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
+
+
+# `idp-cli tenancy ...` lives in its own module; registered here, after `cli`
+# exists, so importing it cannot run ahead of the group it attaches to.
+from .tenancy import tenancy as _tenancy_group  # noqa: E402
+
+cli.add_command(_tenancy_group)
+
+# `idp-cli mcp credentials ...`, likewise.
+from .mcp import mcp as _mcp_group  # noqa: E402
+
+cli.add_command(_mcp_group)
+
+# `idp-cli terraform ...` (Terraform-only commands) likewise.
+from .terraform import configure as _configure_terraform  # noqa: E402
+from .terraform import terraform as _terraform_group  # noqa: E402
+
+_configure_terraform(TEMPLATE_URLS, _resolve_region)
+cli.add_command(_terraform_group)
 
 
 def main():

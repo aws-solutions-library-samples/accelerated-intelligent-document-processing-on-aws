@@ -606,8 +606,7 @@ class TestAnnotatorObjectScope:
         service.update_document.assert_called_once()
 
     # -- roles the check does not apply to are unchanged ---------------------
-    @pytest.mark.parametrize("group", ["Admin", "Reviewer"])
-    def test_admin_and_reviewer_are_unaffected(self, resolver, document, group):
+    def test_admin_is_unaffected(self, resolver, document):
         """Pinned, because a scope check that caught the roles it does not apply to
         would break ordinary review. Neither table name is configured here, so a
         check that ran at all would fail closed and this would refuse."""
@@ -615,11 +614,67 @@ class TestAnnotatorObjectScope:
         result, service = _call(
             resolver,
             document,
-            _event(object_key=document_key, sections=self._regroup(), groups=(group,)),
+            _event(
+                object_key=document_key, sections=self._regroup(), groups=("Admin",)
+            ),
         )
 
         assert result["success"] is True
         service.update_document.assert_called_once()
+
+    def test_a_reviewer_regroups_a_production_document(self, resolver, document):
+        """A Reviewer works production review: a document with no `TestSetId` is
+        re-grouped as before, after the one tracking-table read."""
+        tracking = _FakeTable(item={"ObjectKey": "packet.pdf"})
+        result, service = _call_scoped(
+            resolver,
+            document,
+            # A resolvable caller with no configuration scope: the profile check
+            # that follows has nothing to restrict and reads nothing.
+            _annotator_event(sections=self._regroup(), groups=("Reviewer",)),
+            tracking=tracking,
+            users=_FakeTable(),
+        )
+
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+        assert tracking.get_item_calls == 1
+
+    def test_a_reviewer_is_refused_a_test_set_document(
+        self, resolver, document, caplog
+    ):
+        """Test-set documents are worked by Annotators: a Reviewer-only caller is
+        refused, as an object refusal (`ResourceAccessDenied`, a `PermissionError`),
+        with a WARNING "Forbidden" line, and nothing is written."""
+        tracking = _FakeTable(item={"TestSetId": "set-a"})
+        with caplog.at_level("WARNING"):
+            with pytest.raises(
+                resolver.ResourceAccessDenied,
+                match="^Unauthorized: test-set documents are worked by Annotators",
+            ) as raised:
+                _call_scoped(
+                    resolver,
+                    document,
+                    _event(sections=self._regroup(), groups=("Reviewer",)),
+                    tracking=tracking,
+                    users=_FakeTable(),
+                )
+        assert isinstance(raised.value, PermissionError)
+        assert "Forbidden: reviewer" in caplog.text
+        assert tracking.get_item_calls == 1
+
+    def test_a_reviewer_whose_document_cannot_be_read_is_refused(
+        self, resolver, document
+    ):
+        """An unanswerable test-set lookup refuses, as it does for an Annotator."""
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _event(sections=self._regroup(), groups=("Reviewer",)),
+                tracking=_FakeTable(raises=RuntimeError("throttled")),
+                users=_FakeTable(),
+            )
 
     def test_a_caller_holding_both_reviewer_and_annotator_is_still_scoped(
         self, resolver, document
@@ -1053,3 +1108,153 @@ class TestAnnotatorHoldingAProductionItem:
     def test_a_stack_with_no_review_queues_refuses(self, resolver, document):
         with pytest.raises(resolver.ResourceAccessDenied):
             self._call(resolver, document, store=None)
+
+
+class _ScopedUsersTable:
+    """A users table whose email lookup answers one ``allowedConfigVersions``."""
+
+    def __init__(self, allowed_config_versions):
+        self._allowed = allowed_config_versions
+
+    def get_item(self, **kwargs):
+        return {}
+
+    def query(self, **kwargs):
+        return {"Items": [{"allowedConfigVersions": list(self._allowed)}]}
+
+
+@pytest.mark.unit
+class TestProductionDocumentProfileScope:
+    """A production document is re-grouped only within the caller's profile scope.
+
+    Before this check a Reviewer, or an Author or Annotator who also held Reviewer,
+    re-grouped any production document that was not in review whatever its profile:
+    the only object checks on the path were the test-set ones.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self, resolver):
+        from idp_common import testset_scope
+
+        testset_scope.clear_scope_cache()
+        resolver._user_scope_cache.clear()
+        yield
+        testset_scope.clear_scope_cache()
+        resolver._user_scope_cache.clear()
+
+    @pytest.fixture
+    def document(self, resolver):
+        return _document(resolver, [_section(resolver, "1", [1, 2], "Invoice")])
+
+    @staticmethod
+    def _regroup():
+        return [{"sectionId": "1", "pageIds": ["1", "2"]}]
+
+    @pytest.mark.parametrize(
+        "groups", [("Reviewer",), ("Author", "Reviewer"), ("Author", "Annotator")]
+    )
+    def test_a_document_outside_the_callers_scope_is_refused(
+        self, resolver, document, groups
+    ):
+        tracking = _FakeTable(
+            item={"ObjectKey": "packet.pdf", "ConfigVersion": "payroll"}
+        )
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup(), groups=groups),
+                tracking=tracking,
+                users=_ScopedUsersTable(["lending-*"]),
+            )
+
+    def test_the_refusal_writes_nothing(self, resolver, document):
+        service = MagicMock()
+        service.get_document.return_value = document
+        tracking = _FakeTable(item={"ConfigVersion": "payroll"})
+        users = _ScopedUsersTable(["lending-*"])
+        tables = {"tracking-table": tracking, "users-table": users}
+        resource = MagicMock()
+        resource.Table.side_effect = lambda name: tables[name]
+        env = {"TRACKING_TABLE": "tracking-table", "USERS_TABLE_NAME": "users-table"}
+        with (
+            patch.dict(os.environ, env),
+            patch("boto3.resource", return_value=resource),
+        ):
+            with patch.object(
+                resolver, "create_document_service", return_value=service
+            ):
+                with pytest.raises(resolver.ResourceAccessDenied):
+                    resolver.handler(
+                        _annotator_event(
+                            sections=self._regroup(), groups=("Reviewer",)
+                        ),
+                        None,
+                    )
+        service.update_document.assert_not_called()
+
+    def test_a_document_inside_the_callers_scope_is_regrouped(self, resolver, document):
+        tracking = _FakeTable(item={"ConfigVersion": "lending-v2"})
+        result, service = _call_scoped(
+            resolver,
+            document,
+            _annotator_event(sections=self._regroup(), groups=("Reviewer",)),
+            tracking=tracking,
+            users=_ScopedUsersTable(["lending-*"]),
+        )
+        assert result["success"] is True
+        service.update_document.assert_called_once()
+
+    def test_a_document_with_no_tracking_row_is_refused_for_a_scoped_caller(
+        self, resolver, document
+    ):
+        with pytest.raises(resolver.ResourceAccessDenied):
+            _call_scoped(
+                resolver,
+                document,
+                _annotator_event(sections=self._regroup(), groups=("Reviewer",)),
+                tracking=_FakeTable(item=None),
+                users=_ScopedUsersTable(["lending-*"]),
+            )
+
+    def test_an_admin_is_not_looked_up(self, resolver, document):
+        tracking = _FakeTable(item={"ConfigVersion": "payroll"})
+        result, _ = _call_scoped(
+            resolver,
+            document,
+            _event(sections=self._regroup(), groups=("Admin",)),
+            tracking=tracking,
+            users=_ScopedUsersTable(["lending-*"]),
+        )
+        assert result["success"] is True
+        assert tracking.get_item_calls == 0
+
+    def test_a_tracking_read_that_fails_refuses_a_scoped_caller(
+        self, resolver, document
+    ):
+        """Author + Annotator reaches only this check's read (the test-set check
+        exempts Author), so a failure here is the failure under test."""
+        service = MagicMock()
+        service.get_document.return_value = document
+        tracking = _FakeTable(raises=RuntimeError("ProvisionedThroughputExceeded"))
+        users = _ScopedUsersTable(["lending-*"])
+        tables = {"tracking-table": tracking, "users-table": users}
+        resource = MagicMock()
+        resource.Table.side_effect = lambda name: tables[name]
+        env = {"TRACKING_TABLE": "tracking-table", "USERS_TABLE_NAME": "users-table"}
+        with (
+            patch.dict(os.environ, env),
+            patch("boto3.resource", return_value=resource),
+        ):
+            with patch.object(
+                resolver, "create_document_service", return_value=service
+            ):
+                with pytest.raises(resolver.ResourceAccessDenied):
+                    resolver.handler(
+                        _annotator_event(
+                            sections=self._regroup(), groups=("Author", "Annotator")
+                        ),
+                        None,
+                    )
+        assert tracking.get_item_calls == 1
+        service.update_document.assert_not_called()

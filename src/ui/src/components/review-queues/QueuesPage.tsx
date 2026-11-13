@@ -66,9 +66,19 @@ interface TestSetRow {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/** Why a queue can't be deleted, or undefined when it can. A queue that holds items can: they move to Default. */
-export const deleteDisabledReason = (definition: ReviewQueueDefinition | null): string | undefined =>
-  !definition ? 'This queue is not defined' : definition.isDefaultQueue ? "The default queue can't be deleted" : undefined;
+/**
+ * Why a queue can't be deleted, or undefined when it can. A queue that holds items can: they move to Default.
+ * So can a queue that is no longer defined but still holds items — what a delete that stopped part-way
+ * leaves, since the definition goes first — and deleting it again moves the rest.
+ */
+export const deleteDisabledReason = (definition: ReviewQueueDefinition | null, depth = 0): string | undefined =>
+  !definition
+    ? depth > 0
+      ? undefined
+      : 'This queue is not defined'
+    : definition.isDefaultQueue
+      ? "The default queue can't be deleted"
+      : undefined;
 
 /** The delete confirmation text, naming where a non-empty queue's items go. */
 export const deleteConfirmText = (queue: { id: string; name: string }, depth: number): string =>
@@ -102,7 +112,7 @@ const QueuesPage = (): React.JSX.Element => {
   const [annotators, setAnnotators] = useState<string[] | null>(null);
   const [annotatorsLoading, setAnnotatorsLoading] = useState(false);
   const [editing, setEditing] = useState<{ queue: ReviewQueueDefinition } | null>(null);
-  const [deleting, setDeleting] = useState<{ queue: ReviewQueueDefinition; depth: number } | null>(null);
+  const [deleting, setDeleting] = useState<{ queue: { id: string; name: string }; depth: number } | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [settingsTarget, setSettingsTarget] = useState<TestSetQueueTarget | null>(null);
@@ -262,7 +272,7 @@ const QueuesPage = (): React.JSX.Element => {
 
   const productionMenu = (row: ProductionRow): ButtonDropdownProps.Item[] => {
     const d = row.definition;
-    const deleteReason = deleteDisabledReason(d);
+    const deleteReason = deleteDisabledReason(d, row.health?.summary.depth ?? 0);
     return [
       { id: 'view', text: 'View' },
       { id: 'edit', text: 'Settings', disabled: !d, disabledReason: d ? undefined : 'This queue is not defined' },
@@ -273,9 +283,12 @@ const QueuesPage = (): React.JSX.Element => {
   const onProductionAction = (row: ProductionRow, action: string) => {
     if (action === 'view') navigate(row.href.replace(/^#/, ''));
     else if (action === 'edit' && row.definition) openEditor(row.definition);
-    else if (action === 'delete' && row.definition) {
+    else if (action === 'delete' && !deleteDisabledReason(row.definition, row.health?.summary.depth ?? 0)) {
       setDeleteError(null);
-      setDeleting({ queue: row.definition, depth: row.health?.summary.depth ?? 0 });
+      setDeleting({
+        queue: { id: row.id, name: row.definition?.name || row.name },
+        depth: row.health?.summary.depth ?? 0,
+      });
     }
   };
 

@@ -2,6 +2,9 @@
 title: "Benchmarking Guide"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Benchmarking Guide — How the IDP Benchmark Suite Works
 
 The benchmark suite (`benchmarks/` in the repo) is a repeatable, scientific harness
@@ -238,7 +241,7 @@ reference test sets to reference, with each doc's ground-truth pointer and confi
 | `cost` | cost-decision cells × 1 mid doc, repeats≥5 | Cost-difference detection (variance-aware) |
 | `intconf` | integrated + separate confidence × 1 list doc, repeats=4 | Re-verifies the integrated-confidence row-loss hazard; the one finding a single-sample grid cannot settle |
 | `advverify` | advanced × integrated + separate × 1 list doc, repeats=4 | Re-verifies the **tool-decline** list-loss hazard (an agent that declines the table tool returning the whole list as `null`). Run with `--set extraction_model=sonnet5` |
-| `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 4 docs (3–26 pages) × **5 repeats** (100 runs) | **Does a ~4× more expensive frontier model earn its price for IDP?** See below |
+| `astravalue` | Sonnet 5 vs OpenAI GPT-6 Astra, simple + advanced, 4 docs (3–26 pages) × **5 repeats** (100 runs) | **Does a frontier model at 5× the per-token price earn it for IDP?** See below |
 | `astracap` | The same pair plus the 25-page-shard arms on `scale_3200` (66 pages, ~790K tokens), repeats=2 | The **ceiling** arm: a document too large for *both* models in simple mode, so the finding is where the 1.05M window stops helping and sharding takes over. Expensive — opt in deliberately |
 | `opus55value` | Claude Opus 5.5 vs Claude Opus 5, simple + advanced, 2 docs (3–9 pages) × **5 repeats** (40 runs) | **Is the newer Opus actually cheaper for the same result?** The comparator is Opus 5 rather than the default, because the claim is a ratio and a ratio needs its denominator on the same documents. See below |
 | `full` | core + all one-axis sweeps — including the **extraction-model sweep**, which is what puts a model in the published guide | The deep study for the paper (expensive) |
@@ -272,23 +275,23 @@ model only appears there if it has been swept, and the table records when:
 
 | Model | In the sweep | Measured | Note |
 |---|---|---|---|
-| Nova Lite | ✅ (on `simplegrid`) | ✅ **2026-10-31, v0.6.13** (`simplegrid`, 63 runs, 63 completed) | recall **0.496**, cell accuracy 0.770 over 8,514 cells, against the same matrix's control at 1.000 over 39,690. Completes every run and returns about half the rows; wrong on 12% of values even at 100 rows. Simple mode only — it cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)), so it is measured on the simple-mode `simplegrid` matrix rather than `coresynth` — [guide §5.1](./config-guidance.md#51-extraction-model--the-full-grid) |
-| Nova Pro | ✅ (on `simplegrid`) | ✅ **2026-10-31, v0.6.13** (`simplegrid`, 63 runs, 63 completed) | recall **0.505**, cell accuracy 0.932 over 7,764 cells; the same under-return shape as Nova Lite, and simple mode only for the same reason |
-| Claude Sonnet 4.6 | held as the sweep's control | ✅ **2026-10-31, v0.6.13** (`core` 893 rows including both reference corpora, `simplegrid`, `scaling`, `cost`, `intconf`, the classification and confidence sweeps) | the fixed baseline every sweep varies against, and the model of §2–§4 and §7 |
-| **Claude Sonnet 5** (default) | ✅ | ✅ **2026-10-31, v0.6.13** (`coresynth` 133 runs, plus `cost`, `advverify`, `astravalue`, `astracap`) | 133 of 133 completed, recall **0.9307** over 69,042 cells — all of the shortfall simple-mode truncation on the 17-page document (10 of 13 runs return 43–141 of 800 rows, each `COMPLETED` and flagged), 1.0000 in advanced mode. ⚠️ Its `pricing.yaml` rows carry Sonnet 4.6's rates, 1.5× its published price, so every Sonnet 5 dollar figure in the guide is an **upper bound** |
-| Sonnet 5 `:1m` | ✅ | ✅ **2026-10-31, v0.6.13** (`coresynth`, 133 runs) | recall 0.9658, cell accuracy 0.9995 over 76,514 cells — the same simple-mode truncation as Sonnet 5 at a lower rate (5 of 13). Same 1.5× pricing caveat as Sonnet 5. The 1M window rescued no request on this corpus |
-| **Claude Opus 5** | ✅ | ✅ **2026-10-31, v0.6.13** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over the full 83,790 cells, $128.52 over the grid — and dominated by Opus 5.5, which does the same for 16% less |
-| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ✅ **2026-10-31, v0.6.13** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over 83,790 cells for **$107.67** — the cheapest arm at the grid's ceiling, 16% below Opus 5 and at least 27% above the shipped default. In the dedicated pair it is 6% cheaper than Opus 5 on identical denominators, 12% in simple mode and under 1% in advanced. ⚠️ **The `forcing` axis has no measurement for it**: it rejects a forced `toolChoice` (`tool_choice: type "tool" and "any" are not supported for this model`), so its `force-on` cells run the prose path with `forced_tool_attempted=0`. Thinking cannot be disabled, and its default effort is `medium` where Opus 5's is `high` (per the model card; a default is not observable from a response, so this is cited rather than measured) |
-| **OpenAI GPT-6 Astra** | ✅ | ✅ **2026-10-31, v0.6.13** (`coresynth` 133 runs, `astravalue` 100, `astracap` 18) | 132 of 133 completed, recall 0.9925 and the lowest cell accuracy of the grid, **0.9735** over 82,188 cells; $188.81, a **lower bound** (long-context band above 272,000 input tokens). On the 26-page `dense_250` in simple mode it returns no usable row key on 10 of 10 runs, with nothing reporting a problem — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it) |
-| `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | ✅ 2026-10-31, v0.6.13 (20 runs) | same weights, cheaper: $22.41 against `us.`'s $28.05 over essentially the same 12,996 cells; same simple-mode failure on `dense_250` |
+| Nova Lite | ✅ (on `simplegrid`) | ✅ **2026-11-07, v0.6.14** (`simplegrid`, 63 runs, 63 completed) | recall **0.498**, cell accuracy 0.733 over 9,404 cells, against the same matrix's control at 1.000 over 39,690. Completes every run and returns about half the rows; wrong on 15–17% of values even at 100 rows. Simple mode only — it cannot run the agentic path ([#895](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/895)), so it is measured on the simple-mode `simplegrid` matrix rather than `coresynth` — [guide §5.1](./config-guidance.md#51-extraction-model--the-full-grid) |
+| Nova Pro | ✅ (on `simplegrid`) | ✅ **2026-11-09, v0.6.14** (`simplegrid`, 63 runs, 63 completed) | recall **0.504**, cell accuracy 0.923 over 7,858 cells; the same under-return shape as Nova Lite, and simple mode only for the same reason |
+| Claude Sonnet 4.6 | held as the sweep's control | ✅ **2026-11-07 and 2026-11-09, v0.6.14** (`core` 893 rows including both reference corpora, `simplegrid`, `scaling`, `cost`, `intconf`, the classification and confidence sweeps) | the fixed baseline every sweep varies against, and the model of §2–§4 and §7 |
+| **Claude Sonnet 5** (default) | ✅ | ✅ **2026-11-07 and 2026-11-09, v0.6.14** (`coresynth` 133 runs, plus `cost`, `advverify`, `astravalue`, `astracap`) | 133 of 133 completed, recall **0.9463** over 72,364 cells — all of the shortfall simple-mode truncation on the 17-page document (8 of 13 runs return 43–190 of 800 rows, each `COMPLETED` and flagged), 1.0000 in advanced mode. Its `pricing.yaml` rows carried Sonnet 4.6's rates, 1.5× its published price, until [#1830](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1830); the guide's v0.6.14 Sonnet 5 dollar figures are re-priced at the published rates, and Sonnet 5 figures from earlier editions are as priced then |
+| Sonnet 5 `:1m` | ✅ | ✅ **2026-11-07, v0.6.14** (`coresynth`, 133 runs) | recall 0.9524, cell accuracy 0.9995 over 74,188 cells — the same simple-mode truncation as Sonnet 5 (6 of 13). Its dollar figures are re-priced the same way as Sonnet 5's. The 1M window rescued no request on this corpus |
+| **Claude Opus 5** | ✅ | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over the full 83,790 cells, $127.08 over the grid — and dominated by Opus 5.5, which does the same for 17% less |
+| **Claude Opus 5.5** | ✅ (`extraction_model` sweep + the `opus55value` pair) | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `opus55value` 20) | 133 of 133 at recall **1.0000** and cell accuracy **1.0000** over 83,790 cells for **$105.95** — the cheapest arm at the grid's ceiling, 17% below Opus 5 and 63% above the shipped default (re-priced, see the guide's header). In the dedicated pair it is 13% cheaper than Opus 5 on identical denominators, 15% in simple mode and 11% in advanced. ⚠️ **The `forcing` axis has no measurement for it**: it rejects a forced `toolChoice` (`tool_choice: type "tool" and "any" are not supported for this model`), so its `force-on` cells run the prose path with `forced_tool_attempted=0`. Thinking cannot be disabled, and its default effort is `medium` where Opus 5's is `high` (per the model card; a default is not observable from a response, so this is cited rather than measured). That default does not apply to these figures: every v0.6.14 benchmark cell, like the shipped extraction default, sends `low` |
+| **OpenAI GPT-6 Astra** | ✅ | ✅ **2026-11-07, v0.6.14** (`coresynth` 133 runs, `astravalue` 100, `astracap` 12) | 133 of 133 completed, recall 0.9924 and the lowest cell accuracy of the grid, **0.9810** over 82,184 cells; $191.85, a **lower bound** (long-context band above 272,000 input tokens). On the 26-page `dense_250` in simple mode it returns no usable row key on 10 of 10 runs, with nothing reporting a problem — [guide §5.2](./config-guidance.md#52-is-a-premium-model-worth-it) |
+| `global.openai.gpt-6-astra` | ❌ deliberately; measured in `astravalue` only | ✅ 2026-11-07, v0.6.14 (20 runs) | same weights, cheaper: $20.62 against `us.`'s $23.19 over the same 13,000 cells; same simple-mode failure on `dense_250` |
 | Claude Haiku 4.5 (classification only) | ❌ not on the axis (see below) | 2026-09-12, **v0.6.8** (133 runs) — not re-measured | reproducible on demand with `--set classification_model=haiku45` |
-| **Claude Haiku 5.5** | ✅ (`extraction_model` **and** `classification_model` sweeps) | ✅ **2026-10-31, v0.6.13** (extraction sweep 133 runs, classification sweep 133 runs) | **Extraction:** 132 of 133 completed, recall 0.9427, cell accuracy 0.9995 over 73,106 cells — accuracy parity with the default on the rows it returns, the same simple-mode truncation on the 17-page document. **Classification:** 133 of 133 sections correct, indistinguishable from the Nova 2 Lite default. ⚠️ **Cost cannot be quoted**: Anthropic prices it in two prompt-length bands (5× on every token type above 100,000 input tokens) while `pricing.yaml` holds one flat rate, and its agentic shard budget is 578,400 tokens, so every dollar figure for it is a lower bound and no ratio is published. It accepts `reasoning_effort` (default `medium` per the model card) and a forced `toolChoice`; its prompt-cache minimum is 512 tokens; images cost high-resolution tokens (~4,770 for a 2550×3301 page) |
-| **Claude Sonnet 5.5** | ✅ | ✅ **2026-10-31, v0.6.13** (`coresynth`, 133 runs; first measured v0.6.12) | 133 of 133 completed, recall **0.8851** — **16 of its runs return 0–162 rows of a 400-row list**, 6 of them with no completeness issue ([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)); 1.0000 on every smaller document and on the 800-row one. Do not use it for lists of a few hundred rows. Its per-token input and output rates are **identical** to Sonnet 5's published price ($2.20/$11.00 per 1M, `us.`/`eu.`) with cache reads at half, so the guide's lower dollar figure for it is the Sonnet 5 pricing artefact, not a saving. It **rejects** a forced `toolChoice` (a `forcing` A/B is invalid on it), its default window is 1M with no `:1m` id (a 578,400-token agentic shard budget against Sonnet 5's 18,400), and its prompt-cache minimum is 512 tokens |
+| **Claude Haiku 5.5** | ✅ (`extraction_model` **and** `classification_model` sweeps) | ✅ **2026-11-09, v0.6.14** (extraction sweep 133 runs, classification sweep 133 runs) | **Extraction:** 133 of 133 completed, recall 0.9502, cell accuracy 0.9998 over 73,906 cells — accuracy parity with the default on the rows it returns, the same simple-mode truncation on the 17-page document. **Classification:** 133 of 133 sections correct, indistinguishable from the Nova 2 Lite default. ⚠️ **Cost cannot be quoted**: Anthropic prices it in two prompt-length bands (5× on every token type above 100,000 input tokens) while `pricing.yaml` holds one flat rate, and its agentic shard budget is 578,400 tokens, so every dollar figure for it is a lower bound and no ratio is published. It accepts `reasoning_effort` (default `medium` per the model card) and a forced `toolChoice`; its prompt-cache minimum is 512 tokens; images cost high-resolution tokens (~4,770 for a 2550×3301 page) |
+| **Claude Sonnet 5.5** | ✅ | ✅ **2026-11-09, v0.6.14** (`coresynth`, 133 runs; first measured v0.6.12) | 133 of 133 completed, recall **0.8905** — **15 of its runs return 2–20 rows of a 400-row list**, all in simple mode, 2 of them with no completeness issue ([#1494](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1494)); 1.0000 on every smaller document and on the 800-row one. Do not use it for lists of a few hundred rows. Its per-token input and output rates are **identical** to Sonnet 5's published price ($2.20/$11.00 per 1M, `us.`/`eu.`) with cache reads at half, so the guide's grid figures for the two ($62.21 against $65.00) are close for that reason. It **rejects** a forced `toolChoice` (a `forcing` A/B is invalid on it), its default window is 1M with no `:1m` id (a 578,400-token agentic shard budget against Sonnet 5's 18,400), and its prompt-cache minimum is 512 tokens |
 | xAI Grok 4.6 | ❌ | — | not yet measured — see `docs/grok-models.md` for its documented capabilities |
 
 The classification-model axis (Nova 2 Lite default · Sonnet 5 · Haiku 5.5) and the
 confidence-model axis (Nova Lite default · Nova 2 Lite · Sonnet 5) were **both swept in
-full on v0.6.13** — three arms each, 133 runs per arm, 2026-10-31. The guide's §5.3 and
+full on v0.6.14** — three arms each, 133 runs per arm, 2026-11-09 and 2026-11-10. The guide's §5.3 and
 §5.4 report them.
 
 ⚠️ **Haiku 4.5 is not on the classification axis**, and that is deliberate rather than an
@@ -324,17 +327,18 @@ escalation path acts on the number.
 
 The same driver crosses the models with named combinations of
 granularity, modality and `classification.strategy` via `--variants` (see `VARIANTS` in the script for the
-list). **It has run once at a size that can show direction: all seven variants, 20
-DocSplit packets, Nova 2 Lite, on v0.6.13 (2026-10-31)**, reported in
-[guide §5.6](./config-guidance.md#56-classification-granularity-modality-and-strategy)
-with the data in `benchmarks/results/v0.6.13/clsvariants/`. Over the 15 packets every
-variant scored, packet granularity reproduced 0.711–0.821 of section boundaries against
-0.446 for the page-granularity default, at 23–65% of its classification cost per page —
-and every packet variant that sends images failed the same three 18–20-page packets
+list). **It has run twice at a size that can show direction: all seven variants, 20
+DocSplit packets, Nova 2 Lite, on v0.6.13 (2026-10-31) and on v0.6.14 (2026-11-10)**,
+reported in [guide §5.6](./config-guidance.md#56-classification-granularity-modality-and-strategy)
+with the data in `benchmarks/results/v0.6.14/clsvariants/`. Over the 19 packets every
+variant scored on v0.6.14, packet granularity reproduced 0.600–0.710 of section boundaries
+against 0.509 for the page-granularity default, at 29–59% of its classification cost per
+page, and the image-bearing packet variants no longer fail long packets
 ([#1676](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1676)).
-⚠️ **That is one model, one run per packet and 15 comparable documents**, which is enough
-to measure the direction of the boundary effect and both failure modes and not enough to
-rank the packet variants against each other, so
+⚠️ **That is one model, one run per packet and 19 comparable documents**, and the two runs
+disagree on the order of the packet variants by more than one packet's worth, which is enough
+to measure the direction of the boundary effect and not enough to rank the packet variants
+against each other, so
 [#1513](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1513)'s
 aim — a recommendation to change the shipped default — still needs a second model and
 repeats. The advice in
@@ -400,7 +404,7 @@ release regression gate unreadable.
 ### Is a premium model worth it?
 
 A model-price question is a **ratio**, so this pair is built to be able to answer
-"no". It compares Claude Sonnet 5 against OpenAI GPT-6 Astra (~4× the input price)
+"no". It compares Claude Sonnet 5 against OpenAI GPT-6 Astra (5× the per-token input and output price)
 with only `extraction.model` differing.
 
 **Size a fixture by page count, not by text.** This is the finding that shaped the
@@ -479,13 +483,18 @@ Three things to know before reading the output:
   share one window and one sizing budget, so both simple-mode arms would be refused on
   both documents: an A/B whose two arms fail identically measures nothing and is still
   billed. The ceiling question belongs to `astracap`, which already owns it.
-- ⚠️ **This suite measures the switch, not the model.** Opus 5.5 defaults to `medium`
-  reasoning effort where Opus 5 defaults to `high`, and neither cell sets
-  `reasoning_effort` — so the two arms differ by model *and* by default effort. That is
-  what a user who changes the model and nothing else actually gets, which is the
-  decision the guide has to inform, but it is not a model-for-model comparison. To
-  separate the two, re-run with `--set reasoning_effort=high` on both arms and read the
-  difference between the two runs.
+- **Both arms run at `low` reasoning effort, so the pair is matched on effort.** No cell
+  names `reasoning_effort`, so every cell inherits `default_cell`'s `low`, and the
+  generated configuration sets `extraction.reasoning_effort: low` on all four. The
+  v0.6.14 run records it: `rows[].resolved.reasoning_effort` is `low` on all 40 rows of
+  `opus55value` and on all 133 rows of each of the two `coresynth` Opus arms. The models'
+  own defaults (`medium` for Opus 5.5, `high` for Opus 5, per the model cards) therefore
+  never applied to these figures. The shipped extraction default is also `low`
+  (`lib/idp_common_pkg/idp_common/config/system_defaults/base-extraction.yaml`), and no
+  preset in `config_library/unified/` overrides it, so this is also what a user who
+  switches the model and changes nothing else gets. How the pair compares at a higher
+  effort is not measured; re-run with `--set reasoning_effort=medium` or `high` to
+  measure it.
 - **`repeats: 5` is what makes a cost claim sayable at all**, for the same reason
   `astravalue` uses it: agentic cost is non-deterministic (turn-count spreads around 4×
   have been observed), so a single draw per cell cannot resolve a cost *difference*.

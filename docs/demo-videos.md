@@ -16,7 +16,7 @@ This page contains all demonstration videos for the GenAI Intelligent Document P
 - [Web User Interface](#web-user-interface)
 - [Command Line Interface (CLI)](#command-line-interface-cli)
 - [AI Agents & Analytics](#ai-agents--analytics)
-- [Role-Based Access Control (RBAC)](#role-based-access-control-rbac)
+- [Access Control & Tenant Isolation](#access-control--tenant-isolation)
 - [Configuration & Management](#configuration--management)
 - [Evaluation & Testing](#evaluation--testing)
 - [Rule Validation](#rule-validation)
@@ -167,7 +167,7 @@ https://github.com/user-attachments/assets/78764207-0fcf-4523-ad12-f428581a685f
 
 ---
 
-## Role-Based Access Control (RBAC)
+## Access Control & Tenant Isolation
 
 ### RBAC Demo
 Role-based access control for managing user permissions and access to document processing features, configurations, and review workflows.
@@ -175,6 +175,17 @@ Role-based access control for managing user permissions and access to document p
 https://github.com/user-attachments/assets/a1e9ce1a-1b2e-4e98-a387-d2e48d7e557d
 
 **Related Documentation**: [RBAC Documentation](./rbac.md)
+
+### Tenant Isolation in a Shared Deployment
+One deployment can serve several tenants and keep each tenant's documents visible only to that tenant's users. This demo covers the `TenantIsolationMode`, `TenantGrantSource` and `RefreshTokenValidityHours` stack parameters, declares a tenant on the Prefix Mappings page, maps its folder and creates a user scoped to it. It then shows the safeguards: overlapping tenants, cross-tenant mappings and user scopes that span tenants are refused when saved, and strict mode refuses an upload outside every tenant before it is sent. It closes with the `idp-cli tenancy` commands (`put`, `list`, `audit`, `generate-policies`, `verify`) and the tenant's own view, where a user sees only their tenant's documents and is refused a direct link to another tenant's.
+
+**Duration**: ~4.5 minutes
+
+https://github.com/user-attachments/assets/27e12b5d-0595-4c24-a4f3-ab5eaff6d6f7
+
+
+
+**Related Documentation**: [Multi-Tenant Isolation](./multi-tenancy.md)
 
 ---
 
@@ -315,7 +326,7 @@ https://github.com/user-attachments/assets/1d17ea33-f098-4d9e-a461-1113b9dc3ce9
 ---
 
 ### Test Set - ConfBench (Confidence & OCR Robustness)
-Installable Feature Platform extension that deploys the [amazon/ConfBench](https://huggingface.co/datasets/amazon/ConfBench) benchmark into Test Studio on demand — the 75 verified FCC invoices degraded with up to 21 Augraphy noise pipelines into 1,346 (document, noise variant) pairs with identical ground truth. Purpose-built for measuring confidence calibration, OCR robustness, and extraction quality as input quality degrades, with results directly comparable to the clean RealKIE-FCC-Verified baseline when both test sets run on one configuration version: the stack-managed `realkie-fcc-verified` profile sets `classification.document_shape.sectionSplitting: disabled`, and the extension's preset does not set it.
+Installable Feature Platform extension that deploys the [amazon/ConfBench](https://huggingface.co/datasets/amazon/ConfBench) benchmark into Test Studio on demand — the 75 verified FCC invoices degraded with up to 21 Augraphy noise pipelines into 1,346 (document, noise variant) pairs with identical ground truth. Purpose-built for measuring confidence calibration, OCR robustness, and extraction quality as input quality degrades, with results directly comparable to the clean RealKIE-FCC-Verified baseline when both test sets run on one configuration profile: the stack-managed `realkie-fcc-verified` profile sets `classification.document_shape.sectionSplitting: disabled`, and the extension's preset does not set it.
 
 https://github.com/user-attachments/assets/0b164e6d-c694-4127-8be9-45ec7fd41bee
 
@@ -333,7 +344,7 @@ https://github.com/user-attachments/assets/d5e0d590-ce8b-4e14-b2b7-8bde31e57ec2
 ---
 
 ### Adding Documents to Existing Test Sets
-Incrementally grow test sets over time by adding newly reviewed documents with ground truth — with automatic baseline filtering, time-based file selection, and prepopulated file patterns.
+Incrementally grow test sets over time by adding newly reviewed documents with ground truth — with time-based file selection, and prepopulated file patterns.
 
 https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 

@@ -152,7 +152,12 @@ harness — verify they still hold when the schema evolves:
   `!!` note for the packet window (the old holistic method sends the whole file in one
   call) and for class confidence (the old release only composes it at page level);
   report those as findings if a document is longer than the window or the cell asks
-  for confidence.
+  for confidence. **All of this applies only when the `--validate-against-release`
+  tag predates the nesting.** A tag whose own `ClassificationConfig` declares every
+  v0.9 block (v0.6.13 onward; `release_model_check.reads_nested_classification`
+  decides it from that release's model) gets the generated file unchanged, with no
+  flat keys and no refusals, because that release would convert flat keys on read
+  and let them override the nested blocks. The run prints which of the two it chose.
 - **`run_matrix.launch()`** invokes the TestRunner Lambda directly (finds it whether it's
   under the pre-migration `APPSYNCSTACK` (v0.5.x) or `APIRESOLVERSTACK` (v0.6)).
 - **Validation against the OLD model is a hard stop, in code
@@ -162,7 +167,9 @@ harness — verify they still hold when the schema evolves:
   that release's own migration and `IDPConfig`, and fails the run before any test set
   is registered or config uploaded if the release rejects a config, drops any
   `classification` key, or resolves a flat classification setting to a value other
-  than the one the file's nested combined blocks ask for. The v0.9 blocks themselves
+  than the one the file's nested combined blocks ask for. Against a release that
+  reads the nested layout, a file carrying any flat key is one error naming them, not one per
+  key; a nested file is checked for dropped keys only. The v0.9 blocks themselves
   are expected to be dropped in a file that carries the flat keys; every other dropped
   key is an error. The same check runs standalone:
   `python3 benchmarks/harness/compat/release_model_check.py --release v<PREV>

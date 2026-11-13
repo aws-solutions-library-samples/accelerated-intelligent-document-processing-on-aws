@@ -5,6 +5,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import svgr from 'vite-plugin-svgr';
 import { resolve } from 'path';
+import i18nCatalogs from './scripts/i18n/vite-plugin-catalogs.mjs';
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
@@ -25,6 +26,10 @@ export default defineConfig(({ mode }) => ({
 
     // Enable SVG import as React components
     svgr(),
+    // Compile src/i18n/<locale>.json message catalogs into per-locale chunks and serve
+    // the `virtual:i18n-catalogs` module (see the plugin header). Vitest reads this
+    // config too, so tests see the same virtual modules as the build.
+    i18nCatalogs({ catalogDir: resolve(__dirname, 'src/i18n') }),
   ],
 
   // Ensure all .js and .jsx files are treated as JSX

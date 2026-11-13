@@ -100,6 +100,32 @@
     "            'nobody is working on it', which is itself information."
   ],
   "exemptions": {
+    "scripts/tests/test_agent_capabilities.py::PENDING_CONTROL_FINDINGS": {
+      "kind": "exemption",
+      "memberKind": "an open finding in scripts/tests/agent_capabilities.yaml: an entry whose external output no control limits (entry:<name>), or a role grant declared unused (role:<function>:<kind>:<bucket and key>)",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Each member is a place the capability manifest records, in its own text beside the member, that nothing in the code limits an external output of an entry that takes untrusted text and reads private data, or that a role holds an S3 grant no code path on it uses. Recording the member is what turns the combination rule's failure for that entry or grant into a pass, so it is a carve-out. Why JUDGEMENT: whether a grant is used, and whether anything limits a channel, is read from the code by a person, and each member's text in the manifest says whether that reading was measured or inferred. A member closes when the code gains a control for the listed channel or the template stops granting the unused access, and the pin then requires removing it.",
+      "turnsOff": "test_agent_capabilities.py's per-output combination rule for one entry's listed outputs, and test_analytics_role_grants.py's declared-access check for one grant, per member",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_agent_capabilities.py",
+      "ratchetGap": "The pin holds the set of findings, not their text: an entry's finding text or an unused grant's note can be wrong, and nothing checks that the access really is unused or the channel really is unlimited. .claude/skills/agent-capability-review.md is the audit that re-reads them."
+    },
+    "scripts/tests/test_config_profile_writer_wiring.py::KNOWN_WRITERS": {
+      "kind": "fixture",
+      "memberKind": "a (template, logical id) pair naming a deployed Lambda measured to save a configuration profile",
+      "turnsOff": "nothing. It is a FLOOR under the derived set of profile-writing Lambdas, not the list the gate checks: the bucket and S3-grant assertions are parametrised over what config_profile_writers derives from source, and this constant only adds the requirement that the derivation still finds every Lambda measured to save a profile. A member being in it makes the gate stricter, never looser.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_config_profile_writer_wiring.py",
+      "issues": [
+        1778
+      ],
+      "reason": "Discovered by name: KNOWN_ is in the discovery vocabulary, and the match is the mechanism working on a constant whose shape is a hand-written list beside a gate. Registered rather than renamed, because renaming to slip past discovery is what this registry exists to prevent. Why JUDGEMENT: membership is the claim 'this Lambda saves a profile at runtime', established by reading each handler and its idp_common call path when the gate was written (discovery, the Replace-mode clear, multi-document save, BDA optimization and sync, the configuration resolver and updater, the two chat processors and the agent processor via the Quick Start agent, the feature platform's config-preset installer, and the data generator's bootstrap); computing it would be the derivation itself, which is what the floor exists to check. The ratchet is that test_the_derivation_finds_every_measured_writer fails when a member is no longer derived -- whether because a resolution rule regressed (measured: disabling the registry-carrier rule shrank the derived set from 11 to 8 and this test went red) or because the Lambda vanished from its template -- so a dead member fails rather than lingering. The residual is the other direction: a new writer the derivation cannot see and nobody adds here is unchecked, which the derivation's documented blind spots (getattr, registries filled inside a function, third-party modules) describe. The universe is deployed Lambdas only, so a local writer (the CLI, the SDK, a notebook) is outside it entirely; the SDK and CLI writers are covered instead by lib/idp_sdk/tests/unit/test_discovery_operations.py and the CLI bootstrap test, which assert they resolve the bucket."
+    },
     ".ash/.ash.yaml::suppressions": {
       "kind": "exemption",
       "memberKind": "advisory id",
@@ -108,7 +134,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "The mirror of scripts/security/dep_audit_allowlist.json, and the only cross-referenced pair in the repo where both sides name each other. Enforcement is one-directional: test_dep_audit.py computes ash_ids - gating, so a stale ASH twin fails but a new allowlist entry with no ASH twin passes silently.",
+      "reason": "The mirror of scripts/security/dep_audit_allowlist.json, and the only cross-referenced pair in the repo where both sides name each other. Enforcement runs both ways: test_dep_audit.py fails on ash_ids - gating, a stale ASH twin, and on gating - ash_ids, an allowlist entry with no ASH twin.",
       "ratchetEvidence": "scripts/security/tests/test_dep_audit.py",
       "crossReferences": [
         "scripts/security/dep_audit_allowlist.json::dep_audit_allowlist.json"
@@ -121,7 +147,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "non-vacuity",
-      "reason": "Two entries, one reason each, both bounded to a single file and a single line pattern. credential-vendor.yml:gitlab-runners-prod \u2014 cross-partition IAM trust does not exist, so the two statements trusting a named role in the commercial CI account cannot be parameterised; not machine-checkable, because whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree. github-oidc-review-role.yml:sts.amazon \u2014 the two lines carry an OpenID Connect audience claim that happens to be spelled like a hostname; GitHub mints the token with it as an opaque value and configure-aws-credentials requests it verbatim in every partition, so ${AWS::URLSuffix} would render an audience GitHub never issues. Not machine-checkable either: distinguishing a claim value from an endpoint needs the meaning of the surrounding IAM key, not a grep.",
+      "reason": "Two entries, one reason each, both bounded to a single file and a single line pattern. credential-vendor.yml:gitlab-runners-prod \u2014 cross-partition IAM trust does not exist, so the three statements (two on GitLabRole, one on GitLabReviewRole) trusting a named role in the commercial CI account cannot be parameterised; not machine-checkable, because whether a foreign account id has a counterpart in another partition is a fact about that account, not about this tree. github-oidc-review-role.yml:sts.amazon \u2014 the two lines carry an OpenID Connect audience claim that happens to be spelled like a hostname; GitHub mints the token with it as an opaque value and configure-aws-credentials requests it verbatim in every partition, so ${AWS::URLSuffix} would render an audience GitHub never issues. Not machine-checkable either: distinguishing a claim value from an endpoint needs the meaning of the surrounding IAM key, not a grep.",
       "crossReferences": [
         "scripts/check_python_arn_partitions.py::EXCLUDE_FRAGMENTS",
         "scripts/check_account_ids.py::ACCOUNT_ID_EXEMPT_LINES"
@@ -152,7 +178,7 @@
     "Makefile::COVERAGE_CICD_SKIP": {
       "kind": "exemption",
       "memberKind": "the name of one registry tree in check_coverage_debt.TREES whose coverage report the CI coverage-producer step does not generate",
-      "turnsOff": "nothing, for the one member it has. It removes `idp_common` from the trees `make coverage-all-cicd` measures, because the CI step immediately before it -- `make test-cicd -C lib/idp_common_pkg` -- already writes that tree's report to the path `check_coverage_debt.LEGACY_IDP_COMMON_REPORT` names. The ratchet step after it runs `--require-all-trees`, which requires `idp_common` BY NAME like every other tree, so the coverage of this tree is enforced exactly as it was; what is skipped is the second measurement of it, not the check.",
+      "turnsOff": "nothing, for the one member it has. It removes `idp_common` from the trees `make coverage-all-cicd` measures, because the CI step immediately before it -- `make test-cicd -C lib/idp_common_pkg` -- already writes that tree's report to the path `check_coverage_debt.LEGACY_IDP_COMMON_REPORT` names. The ratchet step after it runs `--require-all-trees`, which requires `idp_common` BY NAME like every other tree, so the coverage of this tree is enforced exactly as it was; what is skipped is the second measurement of it, not the check. GitHub's unit_tests job overrides the value with a second member, `--skip scripts`, for a different reason: its scripts_coverage job measures that tree with all four CPUs and ratchets it by name (`--require-tree scripts`), and unit_tests' ratchet passes `--measured-elsewhere scripts`. test_every_tree_is_measured_and_ratcheted_by_some_github_job asserts that split is whole, and test_gitlab_never_declares_a_tree_measured_elsewhere that GitLab, which ratchets in one job, never narrows its ratchet that way.",
       "premise": [
         "JUDGEMENT"
       ],
@@ -164,7 +190,7 @@
       "issues": [
         1256
       ],
-      "reason": "Discovered by name: the fragment `SKIP` is in the discovery vocabulary, and it matching here is the mechanism working rather than a false positive -- a variable that removes a tree from a coverage producer is exactly the shape this registry governs, whatever its intent. The judgement is bounded to one member because the variable holds one: `--skip idp_common`. Why it is JUDGEMENT rather than a computed premise: the fact that would have to be computed is 'an earlier step in the same CI job already wrote this tree's report', and that is a property of the ORDER of steps in two CI configuration files, not of a path or a file on disk, so none of the predicates in gate_premises.py can express it and a new one would have to parse and order both configs to answer for a single member. What makes the entry safe without that is the ratchet, and it is stronger than the premise would have been: `check-coverage-debt-cicd` passes `--require-all-trees`, whose required set is derived from `TREES` inside `check_coverage_debt.py` rather than written out anywhere a skip could be mirrored. So a tree named here and produced by nobody is not quietly unmeasured -- it is named in a refusal and the gate exits 2. TestRequireAllTreesIsDerivedFromTheRegistry in scripts/tests/test_coverage_debt.py asserts that closure, including against a tree invented by the test so the derivation cannot be satisfied by hardcoding today's names, and test_the_cicd_producer_skips_exactly_the_tree_CI_already_measured in the same file pins the membership of this variable to exactly `idp_common` and pins that the recipe still invokes the producer -- deleting the recipe body is a mutation this registry entry alone would not catch and that assertion does. The residual a reviewer should check is the one thing neither asserts: that the earlier CI step really still writes that report. It is not unprotected, it is protected one layer out -- if that step stops writing it, `--require-all-trees` fails naming `idp_common`, which is the loud direction."
+      "reason": "Discovered by name: the fragment `SKIP` is in the discovery vocabulary, and it matching here is the mechanism working rather than a false positive -- a variable that removes a tree from a coverage producer is exactly the shape this registry governs, whatever its intent. The judgement is bounded to the members each configuration passes: the Makefile default holds one, `--skip idp_common`, and GitHub's unit_tests passes a second, `--skip scripts`, whose own justification is in turnsOff and is checked by the cross-job closure test rather than by this judgement. Why it is JUDGEMENT rather than a computed premise: the fact that would have to be computed is 'an earlier step in the same CI job already wrote this tree's report', and that is a property of the ORDER of steps in two CI configuration files, not of a path or a file on disk, so none of the predicates in gate_premises.py can express it and a new one would have to parse and order both configs to answer for a single member. What makes the entry safe without that is the ratchet, and it is stronger than the premise would have been: `check-coverage-debt-cicd` passes `--require-all-trees`, whose required set is derived from `TREES` inside `check_coverage_debt.py` rather than written out anywhere a skip could be mirrored. So a tree named here and produced by nobody is not quietly unmeasured -- it is named in a refusal and the gate exits 2. TestRequireAllTreesIsDerivedFromTheRegistry in scripts/tests/test_coverage_debt.py asserts that closure, including against a tree invented by the test so the derivation cannot be satisfied by hardcoding today's names, and test_the_cicd_producer_skips_exactly_the_tree_CI_already_measured in the same file pins the membership of this variable to exactly `idp_common` and pins that the recipe still invokes the producer -- deleting the recipe body is a mutation this registry entry alone would not catch and that assertion does. The residual a reviewer should check is the one thing neither asserts: that the earlier CI step really still writes that report. It is not unprotected, it is protected one layer out -- if that step stops writing it, `--require-all-trees` fails naming `idp_common`, which is the loud direction."
     },
     "benchmarks/tests/test_processing_issues_recorded.py::CODES_EXCLUDED_FROM_RESULT_JSON": {
       "kind": "enforced-universe",
@@ -207,17 +233,6 @@
         1378
       ],
       "reason": "rule_validation and postprocessing build their issues through document_failure.record_section_failure from handlers in patterns/unified/src/, after extraction and assessment have written the section result.json, and nothing rewrites that file afterwards. So a stage in this list is one the harness is structurally blind to, and the whole point of registering it is that the blindness is written down instead of discovered again -- #1378 is itself an instance of a check firing into a field nobody read. The closure is an equality with no authored inventory on either side: the left-hand set is every stage whose only ProcessingIssue construction is the document_failure pass-through, derived by AST, and the right is this list, so a sixth stage lands in the left and fails rather than being silently unread. What a reviewer should check is that the equality is real -- add a *_STAGE constant to document_failure.py and watch test_every_declared_stage_is_either_covered_or_a_named_boundary fail. The reason this is not an exemption is that there is no gate here for it to excuse: nothing in this repository asserts the harness sees every stage, because measurement says it does not, and an assertion to the contrary is the defect rather than the fix."
-    },
-    "docs-site/add-frontmatter.sh::skipped": {
-      "kind": "fixture",
-      "memberKind": "shell variable holding a count",
-      "turnsOff": "nothing. It is a counter in the docs-site frontmatter helper, incremented once per Markdown file that already has frontmatter and printed in the closing summary line",
-      "premise": [
-        "JUDGEMENT"
-      ],
-      "ratchet": "none",
-      "reason": "An integer, not a list of members, and it decides nothing beyond a line of output: the loop skips a file because that file already carries frontmatter, and this records how many times that happened. It is discovered at all only because the shell pattern's first character is now matched by a lookahead rather than consumed, so a variable whose name BEGINS with a vocabulary fragment can match -- and this one entry is the whole measured cost of that fix over this tree, which is also the evidence that the fix reaches something.",
-      "ratchetGap": "Nothing in this registry re-measures a SHELL variable -- there is no parser for one here -- so no ratchet applies and claiming one would be a label with nothing behind it. What remains is the registry's own both-directions membership assertion, which fails if the variable is renamed or removed. It costs one slot of the unratcheted budget, which the PYTHON_PATHSPECS entry frees in the same change by gaining the dead-glob ratchet it did not have."
     },
     "feature-platform/confbench-testset/shared/prune_layer.py::PRUNE_DIRS": {
       "kind": "prune",
@@ -1650,7 +1665,7 @@
         "JUDGEMENT"
       ],
       "ratchet": "staleness",
-      "reason": "Advisories triaged as unreachable, each with a justification. dep_audit.py fails the run on an entry that matched no finding, because a dead entry pre-approves its advisory id if it is ever reissued; scripts/security/tests/test_dep_audit.py asserts that, and also fails on an ASH entry in .ash/.ash.yaml with no allowlist twin.",
+      "reason": "Advisories triaged as unreachable, each with a justification. dep_audit.py fails the run on an entry that matched no finding, because a dead entry pre-approves its advisory id if it is ever reissued; scripts/security/tests/test_dep_audit.py asserts that, and also fails when an entry and its ASH twin in .ash/.ash.yaml do not match, in either direction.",
       "crossReferences": [
         ".ash/.ash.yaml::suppressions",
         "scripts/security/dep_audit.py::suppressed"
@@ -2158,6 +2173,17 @@
       "reason": "Paths the document names BECAUSE they are absent. An inverse test requires each to stay absent.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_contributing_doc.py"
+    },
+    "scripts/tests/test_contributing_doc.py::PATHS_EXEMPT_AS_BUILD_ARTIFACTS": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the 'every path the document names exists' check in test_documented_paths_exist, for a generated file CONTRIBUTING.md names that exists only after a local build",
+      "premise": [
+        "vcs_ignored_build_output"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_contributing_doc.py",
+      "reason": "src/ui/.checksum is written by `make ui-lint` and is absent from a fresh clone, so whether it exists says nothing about whether the sentence naming it is right, and neither direction can be asserted. The premise is computed for the one member by test_build_artifact_exemptions_are_ignored_and_still_named: an ignore rule must cover the path and git must track nothing there, so the exemption cannot come to hide a file that ships. The same test fails when CONTRIBUTING.md no longer names the path, which is the stale case that would otherwise pre-exempt whatever is next written there."
     },
     "scripts/tests/test_coverage_debt.py::COVERAGE_UNREACHABLE_FILES_EXEMPT": {
       "kind": "exemption",
@@ -3111,7 +3137,7 @@
       ],
       "ratchet": "universe-closure",
       "ratchetEvidence": "scripts/tests/test_ux_runner_agent.py",
-      "reason": "A capability grant, not a gate exemption: it is what the UX session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, so every tool that server offers is either granted here or denied by name in EXPERT_DISALLOWED_TOOLS, and a tool added by a version bump fails the closure until somebody decides which. Same shape as scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS.",
+      "reason": "A capability grant, not a gate exemption: it is what the UX session may do, and it withholds rather than excuses. Registered so the vocabulary match on the name is accounted for rather than silently dropped. Closed over DEVTOOLS_TOOLS_AT_PIN, the tool universe the pinned chrome-devtools-mcp serves, so every tool that server offers is either granted here or denied by name in EXPERT_DISALLOWED_TOOLS, and a tool added by a version bump fails the closure until somebody decides which. The session reaches chrome-devtools-mcp only through the review relay, which serves only the browser tools this list grants whatever the server lists, a second layer scripts/tests/test_ux_review_relay.py pins against the recorded server. Same shape as scripts/sdlc/ai_mr_review.py::ALLOWED_TOOLS.",
       "memberKind": "tool name",
       "crossReferences": [
         "scripts/ux_runner/tool_profiles.py::EXPERT_DISALLOWED_TOOLS"
@@ -3249,6 +3275,261 @@
       "reason": "Each member carries its own reason in the dict: testset_labels.py is the one writer the scan exists to make the only one, and testset_summaries.py derives a document summary from labels rather than writing a label. Whether a match is a label write is a reading of what the line does, which the regex cannot compute. test_every_allowed_file_still_matches fails on a stale entry whose file no longer matches, so an entry cannot outlive its reason and pre-approve a future writer at that path.",
       "memberKind": "path",
       "ratchetEvidence": "scripts/tests/test_test_set_label_writers.py"
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_generated_template_validates.py::EXCLUDED_FROM_ALL": {
+      "kind": "exemption",
+      "memberKind": "the name of one top-level section of the system defaults that `FEATURE_SETS[\"all\"]` in idp_common/config/merge_utils.py does not include",
+      "turnsOff": "the equality between `FEATURE_SETS[\"all\"]` and the sections the system defaults carry, for the named section only. Every other assertion in the file still applies to it.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_generated_template_validates.py",
+      "issues": [
+        1691
+      ],
+      "reason": "Each member carries its own reason in the constant's value, because the three reasons differ: rule_validation and chat are on in the system defaults and off in some presets, and hitl is off in the system defaults and may have been turned on in a profile. They share one fact. `all` copies each section's default values, and config-upload merges the file over the stack's preset or the profile's current configuration, so adding a member to `all` would revert that section there. For these three the revert would switch a feature on or off, so `all` leaves them out and they keep the deployment's own setting unless named. That was a product decision (issue #1691), so it cannot be computed. The ratchet is test_all_accounts_for_every_section_the_defaults_carry. It requires every member to be a real section and not already in `all`, and it requires `all` plus the members to equal the section set derived from the defaults. A section that is in neither is therefore unaccounted for and fails, and a member that is added to `all`, or that the defaults drop, also fails."
+    },
+    "terraform/translator/idp_tf/completeness.py::NOT_APPLICABLE": {
+      "kind": "exemption",
+      "memberKind": "a (CloudFormation type, property path) pair",
+      "turnsOff": "the translator's completeness check (every property value of a resource appears in the Terraform emitted for it), for that one property path of that one type",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "terraform/translator/tests/test_upgrade_safety.py",
+      "reason": "Each entry says why that property's value legitimately does not appear in the HCL: it is encoded in an attribute name (DynamoDB KeyType becomes hash_key/range_key), it is the only value the mapper accepts and is the provider default (S3 AccessControl Private, DynamoDB SSEType KMS, each refused by the mapper otherwise), or it is written to a file instead (inline Lambda ZipFile). Why JUDGEMENT: whether a value is represented elsewhere is a reading of the mapper, not a property of the member. An entry that matches nothing in the standard template is reported stale by tree_checks, and test_no_declaration_is_stale_for_the_standard_template fails on it."
+    },
+    "scripts/terraform_scan_baseline.json::terraform_scan_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a (checkov check id, resource) pair, plus one pinned count",
+      "turnsOff": "make terraform-scan-diff, for one checkov check on one resource of the generated Terraform that the CloudFormation side does not fail",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/terraform_scan_diff.py",
+      "reason": "Each entry names one check on one resource and says why the Terraform side fails a check the CloudFormation side does not: on the custom-resource bridge the translator adds (which has no CloudFormation counterpart, because CloudFormation runs custom resources inside the service), why the check does not apply to it; on a translated resource, why the two sides differ although the deployed setting is the same. Why JUDGEMENT: whether a scanner rule applies to a generated resource, or whether a difference is checkov's evaluation rather than the translation, is a reading of what the resource does. An entry matching no finding fails the gate as stale, and notEvaluatedCount is count-pinned: a change in the number of findings on conditional resources the CloudFormation scan skips fails the gate until it is re-read. Findings on checks with no CloudFormation counterpart are not here: scripts/terraform_scan_tf_only_baseline.json pins them."
+    },
+    "terraform/tools/parity_baseline.json::parity_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a (CloudFormation type, property path) pair",
+      "turnsOff": "make terraform-parity's property comparison, for that property path (and everything below it) of every resource of that type",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "terraform/tools/parity.py",
+      "reason": "Each entry is a property one deployment stores and the other does not because of how the writer behaves (the hashicorp/aws provider writing CodeBuild's service defaults explicitly), with the measurement it came from. Why JUDGEMENT: whether a stored default is the same configuration as an absent value is a reading of the service's behaviour. The tier is live and manual, so the ratchet runs when it does: an entry that explained no difference in a run is reported stale and fails that run."
+    },
+    "scripts/sdlc/sandbox_network_probe.py::EXPECTED_POSTURE": {
+      "kind": "fixture",
+      "memberKind": "a check name reported by the interpreter network probe",
+      "turnsOff": "nothing. It is the recorded network posture of the managed code interpreter that the probe compares each live observation with; a member makes a row PASS only when the live value equals it, and a value in either direction different from it is a FAIL. No assertion is skipped for any member.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered by name: EXPECTED_ is in the discovery vocabulary. Registered rather than renamed, because renaming to slip past discovery is what this registry exists to prevent. Why JUDGEMENT: each value is a measurement of an AWS-managed service taken by hand with make stacktest-sandbox-network, not a property of this tree, so there is nothing in the tree to compute it from.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/sdlc/tests/test_sandbox_network_probe.py"
+    },
+    "scripts/tests/test_session_keyed_storage.py::SESSION_KEYED_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the 'no DynamoDB key built from a chat session id without a user term' check for the pinned number of sites in one file. Each entry names the file holding the ownership check those sites rely on.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Chat history is stored under PK=sessionId and the owner registry is keyed by sessionId by design, so these sites cannot carry a user term; what makes them the caller's own is claim_chat_session deciding whose the id is before they run. Whether that call precedes each site on every path is read from the handler, not computed, so it is a judgement per file, written beside the entry. What IS computed per member: the named guard file must define or call claim_chat_session (test_each_entry_names_a_guard_that_decides_ownership), and the site count is pinned at the number audited when the entry was written.",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_session_keyed_storage.py"
+    },
+    "src/ui/src/components/common/__tests__/markdown-surfaces-allowlist.json::markdown-surfaces-allowlist.json": {
+      "kind": "exemption",
+      "memberKind": "a UI source file, with the one capability it is allowed and its pinned count of sites",
+      "turnsOff": "the markdown-surfaces check (src/ui/src/components/common/__tests__/markdown-surfaces.test.ts), which otherwise fails on any import of a markdown/HTML renderer or HTML sanitizer package or any raw-HTML DOM write in UI application code, for exactly the listed number of sites of the listed capability in that one file",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "src/ui/src/components/common/__tests__/markdown-surfaces.test.ts",
+      "reason": "Discovered by name: the file matches the *allowlist*.json glob, and it is one. Each entry is one file and one reason: the SafeMarkdown component (the renderer the check routes everything else through), the file viewer's HTML document view (DOMPurify output in a sandboxed data: iframe), the report print window (writes SafeMarkdown's own rendered output), and the Test Studio print helper (a CSS string literal into a style element it creates). Why JUDGEMENT: whether the HTML a write receives can carry document- or model-derived markup is a reading of the data flow at that site, not a property the check can compute. Each entry pins its expected count of sites, so a new site inside a listed file fails, and an entry whose file holds none fails as stale."
+    },
+    "scripts/sdlc/scan_api_rbac.py::SCOPE_KEYED_ARGUMENT_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "(operation, argument kind) pair",
+      "turnsOff": "S10's requirement that an operation whose arguments name a configuration profile, document or session declare how that object is scoped, for one argument kind of one named operation",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Each member carries its own reason beside it in the constant, one (operation, argument kind) pair per entry: bulkSkipAllReviews scope-checks each named document in the shared review_queues library, which S10 does not read; autoDetectSections and uploadDiscoveryDocument name a key or destination in the discovery bucket, the shared Admin/Author workspace whose uploads carry no profile; getSampleDocumentUrl names a bundled sample under samples/, which belongs to no profile; generateDraftLabels and startTestRun select documents inside a named test set, which Admins and Authors are not scoped on by design. In every case the operation's profile argument, where it has one, is declared and checked; only the object kind is exempted. Whether an object carries a scope is a property of the data model rather than of the source the gate reads, so these are judgements.",
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/sdlc/scan_api_rbac.py",
+      "ratchetDetail": "run_checks records every (operation, kind) an entry actually shields and reports each entry that shielded nothing as an S10 FAIL ('shields no finding'), so an entry is stale -- and fails -- as soon as its operation is gone, stops taking that kind of argument, or declares a scope. test_an_exemption_that_shields_nothing_fails in scripts/sdlc/tests/test_scan_api_rbac_scope_keyed_arguments.py pins it; the same file pins that an entry shields only its own pair.",
+      "ratchetGap": "A live entry is not re-judged: if discovery uploads gained a profile stamp, the entry would keep shielding the missing check until someone deleted it."
+    },
+    "scripts/test_api_rbac.py::SCOPED_DISCOVERY_CELLS": {
+      "kind": "enforced-universe",
+      "memberKind": "(operation, arguments) cell the live scope suite drives with the profile-scoped Author",
+      "turnsOff": "nothing. The list is the set of discovery operations the live scope suite ASSERTS refuse an out-of-scope profile; an operation left off it is not exempted from anything, it is simply not probed live, and its scope check is still required statically by S10/S4 and by its unit suite.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered by the prose of its comment, which explains why autoDetectSections is not probed live. Which operations can be probed live without doing real work depends on what each resolver does with its arguments before and after the scope check, which is a reading of code, not a property of a path.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/sdlc/tests/test_api_rbac_verdicts.py",
+      "ratchetDetail": "test_every_scope_checked_discovery_operation_is_probed_live_or_named derives the scope-checked operations of the discovery resolver from the expectations file and requires each to be a live cell or named in _DISCOVERY_NOT_PROBED_LIVE, so an operation dropped from the list, or a new scope-checked discovery operation, fails until it is accounted for.",
+      "crossReferences": [
+        "scripts/sdlc/tests/test_api_rbac_verdicts.py::_DISCOVERY_NOT_PROBED_LIVE"
+      ]
+    },
+    "scripts/sdlc/tests/test_api_rbac_verdicts.py::_DISCOVERY_NOT_PROBED_LIVE": {
+      "kind": "exemption",
+      "memberKind": "discovery operation name",
+      "turnsOff": "the requirement that a scope-checked discovery operation be driven live by the scope suite (SCOPED_DISCOVERY_CELLS), for one operation",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "One member, autoDetectSections. A live cell can refuse it on the profile only if the resolver reaches the scope check, which needs a non-empty bucket and key: an empty one is refused with 400 before the check in both builds, and a bucket outside the allow-list would be refused by that check instead, so the cell would pass for the wrong reason. The suite does not know the deployment's discovery bucket. Its scope check is covered by discovery_upload_resolver/test_profile_scope.py.",
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/sdlc/tests/test_api_rbac_verdicts.py",
+      "ratchetDetail": "The closure test requires the live cells and this set to be disjoint and together to equal the scope-checked discovery operations derived from the expectations file, so a name here that is not such an operation, or that is also probed, fails.",
+      "crossReferences": [
+        "scripts/test_api_rbac.py::SCOPED_DISCOVERY_CELLS"
+      ]
+    },
+    "scripts/tests/test_tool_resource_arguments.py::RESOURCE_ARGUMENTS_PERMITTED_UNVALIDATED": {
+      "kind": "exemption",
+      "memberKind": "one Strands tool parameter, as <path>::<function>::<parameter>, whose name says it references a resource",
+      "turnsOff": "the requirement that the parameter's first use is as an argument of a registered validator, for that one parameter of that one tool",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_tool_resource_arguments.py",
+      "reason": "Discovered by name (PERMIT). Each member carries its own reason in the constant. Why JUDGEMENT: whether an unvalidated reference is acceptable depends on what the tool does with it, read per member -- fetch_document_record's object_key can only select a record of the stack's own tracking table, and view_buffer_data_section's path is a JSON Pointer into in-memory agent state. The second member's premise is partly computed: test_in_memory_members_make_no_service_call fails if that function's body comes to name boto3, botocore, httpx, requests, urllib, a client or a session. The ratchet is staleness in both directions: a listed member that now passes the validation rule fails as a stale entry, and a listed member that vanished from the derived universe fails test_every_listed_member_still_exists. The residual is the vocabulary: a parameter whose name does not contain one of RESOURCE_NAME_PARTS is outside the universe whatever it holds."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py::ACCEPTED": {
+      "kind": "fixture",
+      "memberKind": "one SQL statement the analytics agent's Athena tool must accept",
+      "turnsOff": "nothing. It is a corpus of inputs validate_read_only_query must accept, each one a query shape the agent's prompt teaches or a refused keyword appearing only as data; a member that is refused turns test_accepted red, so membership makes the gate stricter.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/analytics/test_query_validation.py",
+      "reason": "Discovered by name (ACCEPTED is in the discovery vocabulary); a test corpus rather than a carve-out. Why JUDGEMENT: which statements the agent legitimately needs is read from its prompt, not computed. The ratchet is test_the_corpus_covers_the_shapes_the_tool_must_refuse, which holds both this corpus and REFUSED to a floor so an emptied list cannot leave the parametrized tests vacuous."
+    },
+    "lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py::ACCEPTED": {
+      "kind": "fixture",
+      "memberKind": "one Python snippet the analytics sandbox code check must accept",
+      "turnsOff": "nothing. It is a corpus of code check_sandbox_code must accept, beside the examples derived from the agent's own prompt; a member that is refused turns test_accepted red, so membership makes the gate stricter.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/agents/analytics/test_sandbox_code_checks.py",
+      "reason": "Discovered by name (ACCEPTED is in the discovery vocabulary); a test corpus rather than a carve-out. Why JUDGEMENT: the hand-written members are shapes chosen to cover the import and file-reading rules, which is a reading of the rules rather than a computation; the derived half comes from load_python_plot_generation_examples(). The ratchet is test_the_prompt_examples_are_found, which holds the derived examples and both hand-written corpora to a floor so none can be emptied into a vacuous test."
+    },
+    "scripts/hooks/check_worktree_reach.py::ALLOWED_FETCH_HOSTS": {
+      "kind": "enforced-universe",
+      "memberKind": "a hostname a curl, wget or nc command run from an agent worktree may reach",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/tests/test_check_worktree_reach.py",
+      "turnsOff": "nothing in a gate. It is the set of destinations the hook does not refuse; every other host is refused.",
+      "reason": "GitHub's web, API, raw-content and archive hosts, PyPI's index and file host and npm's registry are where a fix's legitimate fetches go (source, wheels, packages). Each is a public code or package host the session already reaches through git, pip or npm. The set is pinned by test_the_fetch_host_list_is_pinned, so a new host is a reviewed edit. At run time allowed_fetch_hosts adds the worktree's own git origin host and its `ssh.`-less web name, and those additions are pinned too, by test_only_the_origin_host_is_added_to_the_pinned_set."
+    },
+    "scripts/tests/test_model_call_guardrail.py::MODEL_CALL_GUARDRAIL_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "a (path, enclosing function, callee) triple naming Bedrock model call sites in lib/ or src/lambda/, with a pinned site count",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_model_call_guardrail.py",
+      "ratchetDetail": "test_every_model_call_is_accounted_for derives every model call by AST and fails on any site that is in neither the enforced verdicts nor this map (unaccounted). test_exemptions_are_live_and_count_pinned also fails when an entry shields a different number of sites than it records, so a dead entry and a new site inside an exempt function both go red.",
+      "reason": "Each member is a call the guardrail does not apply to for a reason specific to that call: an embedding request whose response is a vector, and three references inside a retry wrapper that forwards its caller's arguments unchanged, so the decision is made at a caller this gate also reads. Why JUDGEMENT: whether a call should carry a guardrail depends on what the call produces, which is not a property of its syntax.",
+      "turnsOff": "the requirement that a Bedrock model call attaches GUARDRAIL_ID_AND_VERSION, for the listed sites only"
+    },
+    "scripts/tests/test_model_call_guardrail.py::GUARDRAIL_ENV_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "a (template, logical id) pair naming a deployed Lambda whose role can invoke a Bedrock model",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "universe-closure",
+      "ratchetEvidence": "scripts/tests/test_model_call_guardrail.py",
+      "ratchetDetail": "test_every_model_invoking_lambda_gets_the_guardrail derives every Lambda in the deployed templates holding a model-invoke grant and fails on any that neither sets the variable nor is listed here; test_env_exemptions_are_live fails on a member that no longer exists, no longer holds the grant, or now sets the variable.",
+      "reason": "Each member records why that one function is not given the configured guardrail: classification broke when it was applied, OCR output is the page text itself, assessment output is parsed JSON, the LLM evaluation compares values from a baseline, the embed function makes only embedding calls, and the configuration resolver translates rule text an administrator types. Why JUDGEMENT: whether applying a guardrail to a pipeline step is acceptable is a product decision about that step's output, not computable from the template.",
+      "turnsOff": "the requirement that a model-invoking Lambda sets GUARDRAIL_ID_AND_VERSION and may call bedrock:ApplyGuardrail, for the listed functions only"
+    },
+    "lib/idp_common_pkg/tests/unit/config/test_system_defaults_value_parity.py::DEFAULT_PARITY_EXEMPT": {
+      "kind": "exemption",
+      "memberKind": "one dotted configuration path, naming exactly one shipped setting or one shipped block",
+      "turnsOff": "the 'every value the system defaults ship equals the model's default for that field' check, for one exact path per entry. The two excuses that check computes (a top-level setting the two patterns ship differently, a prompt whose code default is empty or None) are not entries here and are each bounded by a test of their own",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "non-vacuity",
+      "ratchetEvidence": "lib/idp_common_pkg/tests/unit/config/test_system_defaults_value_parity.py",
+      "reason": "Each member carries its own sentence in the constant, and the reasons are of three kinds, none of them shared across the set. Five are fields or blocks where None is a value with a meaning a concrete default would remove: extraction.agentic.runtime (None defers to the EXTRACTION_RUNTIME environment variable, then runs shards in process, the path without a Step Functions state machine), extraction.validation.escalation_model (None makes escalation a plain retry with the extraction model unless a class sets its own override), extraction.confidence.escalation_model (None skips the model-escalation round), rule_validation.fact_extraction (None makes the rule validation service refuse to start, naming the block) and rule_validation.rule_validation_orchestrator (None skips the cross-file summary rather than running it with empty prompts). Two are prose: rule_validation.recommendation_options is kept only in the YAML, and extraction.multi_instance_detection.question's empty default already resolves to the shipped wording through DEFAULT_INSTANCE_QUESTION; neither is named like a prompt, so the computed prompt excuse does not reach them. The rest are library defaults whose alignment would change behaviour or cost for code that builds a configuration without the system defaults: extraction.agentic.max_concurrent_batches and extraction.agentic.table_parsing.enabled (paired with the in-process runtime), extraction.confidence.model, ocr.model_id (read only under the Bedrock OCR backend, which is not the default backend) and ocr.features (an empty list calls Textract DetectDocumentText, the shipped features call the more expensive AnalyzeDocument). Whether a field differs is computed per member, not judged, but whether the difference is wanted is a product decision, which is why the premise is JUDGEMENT. The test fails per member when an entry's default comes to equal the shipped value or the path stops being shipped, so an entry that shields nothing has to be deleted; and the parity check itself derives every shipped setting the models declare, lists of models included, from both patterns' merged system defaults, so a new disagreement fails by name unless it is added here with its own reason.",
+      "issues": [
+        1884
+      ]
+    },
+    "scripts/ui_string_debt.json::ui_string_debt.json": {
+      "kind": "exemption",
+      "memberKind": "path",
+      "turnsOff": "the UI string-debt gate's zero tolerance for hardcoded user-facing strings, per file: a listed file may carry exactly the number of i18next/no-literal-string findings recorded for it and not one more; an unlisted file may carry none",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "reason": "Discovered as a JSON registry (the `*_debt.json` glob) and it is an exemption list by another name: every count is a finding the gate agrees not to fail on, measured by src/ui/eslint.i18n.config.js (eslint-plugin-i18next no-literal-string in mode all, exclude-mode lists of leaf attributes, technical keys, logger and constructor callees and technical word patterns), whose sha256 the baseline records so a widened list fails the gate until a visible `--write` re-records it beside the configuration diff. The judgement is which strings are user-facing, and the ESLint configuration encodes it; two declared gaps are in the gate's docstring (strings inside ALL-CAPS constants, which the plugin skips unconditionally, and `new Error` texts). The file is generated by `python3 scripts/check_ui_string_debt.py --write`, which REFUSES to add a path or raise a count without --allow-new-debt '<reason>' (recorded in newDebtReasons), deletes an entry whose file reached zero so the file is held there, and shrinks as the conversion PRs of issue #1770 pay files down.",
+      "ratchet": "count-pinned",
+      "ratchetEvidence": [
+        "scripts/check_ui_string_debt.py"
+      ],
+      "crossReferences": [],
+      "issues": [
+        1770
+      ]
+    },
+    "scripts/terraform_scan_tf_only_baseline.json::terraform_scan_tf_only_baseline.json": {
+      "kind": "exemption",
+      "memberKind": "a checkov check id with no CloudFormation counterpart, with one reason and a pinned count per Terraform resource type",
+      "turnsOff": "make terraform-scan-diff's failure on findings of that check on the generated Terraform, up to the pinned count for each resource type, and no further",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "scripts/terraform_scan_diff.py",
+      "reason": "Each entry is one checkov check that has no CloudFormation counterpart (no CloudFormation check with the same id or the same policy text), so nothing on the CloudFormation side can be compared with its findings; its reason says what is accepted and why, which CloudFormation-side setting covers it, or that it is a known gap and where the fix belongs. Why JUDGEMENT: whether a scanner rule's finding is acceptable for this solution is a reading of the resource and of the template it came from, not a property the tree can compute. The ratchet is the pinned count per (check id, resource type): tf_only_verdict fails on a check id with no entry, on a count above its pin (a new finding), and on a count below it or a pinned pair that no longer occurs (stale, with the number to lower the pin to), so a new Terraform-only finding fails the gate even though no CloudFormation result exists to compare it with."
+    },
+    "terraform/translator/idp_tf/aws_mappers.py::ignore_changes": {
+      "kind": "exemption",
+      "memberKind": "a hand mapper (a SpecMapper, or a subclass of one, in aws_mappers.py or aws_mappers_storage.py) that sets ignore_changes for provider arguments of one resource type",
+      "turnsOff": "Terraform acting on a difference in that one argument of that one resource type after creation (lifecycle ignore_changes), so the plan neither updates nor replaces the resource for it",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "count-pinned",
+      "ratchetEvidence": "terraform/translator/tests/test_upgrade_safety.py",
+      "reason": "Two members today, each with its own reason. (1) AWS::Cognito::UserPool's username_configuration: Cognito fixes UsernameConfiguration when a pool is created (it is a CreateUserPool member and not an UpdateUserPool one, and CloudFormation never updates it), so a difference can only ever replace the pool, which deletes every user and password; ignoring it reproduces what CloudFormation does and is what lets an existing pool be adopted with an import block. (2) AWS::Cognito::UserPoolUser's attributes, desired_delivery_mediums and message_action: every UserPoolUser property is create-only under CloudFormation, so CloudFormation never updates a user in place, and Cognito adds attributes of its own (sub, email_verified) that the template does not name; reading those as drift would strip them from an adopted user. This member differs from CloudFormation in one case, recorded in terraform/README.md: CloudFormation replaces a user whose attributes change and Terraform leaves it, which the shipped template cannot produce because AdminUser's username and email both come from AdminEmail. Why JUDGEMENT: whether a service can change an argument after creation, or owns it after creation, is a reading of the service's API, not something the translator can compute. The set of mappers that ignore changes is pinned in test_the_mappers_that_ignore_changes_are_pinned, which reads every mapper rather than only SpecMapper instances, and test_every_ignore_changes_the_translator_emits_is_declared scans the generated HCL of the standard template so a lifecycle block a mapper writes inline also fails until it is audited and registered here. translate.py's LIFECYCLE_OVERRIDES and STABLE_CUSTOM_OUTPUTS are accounted for separately in that scan, not as members of this entry."
+    },
+    "scripts/sdlc/terraform_migration_test.py::GUIDE_ACCEPTED_CHANGES": {
+      "kind": "exemption",
+      "memberKind": "an `<address>:<rule>` pair of a REFUSED_CHANGES rule in `idp-cli terraform migrate-from-genai-idp-terraform apply`",
+      "turnsOff": "the migration command's refusal of that one rule on that one address, in the live migration test's `apply` dry run and apply only (each member is passed as `--accept-change`); every other refusal still fails the run",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/sdlc/tests/test_terraform_migration_test.py",
+      "reason": "Discovered by name (ACCEPT). The one member is the agent-jobs table's time-to-live rename, which docs/terraform-migration.md (Hazards) tells every migration to accept, because the module's table expires rows on a differently spelled attribute than upstream's. Why JUDGEMENT: whether a refused change is acceptable is the guide's decision about upstream's data, not a property the test can compute; the test's job is to follow the guide exactly, so membership is the guide's prescription. The ratchet is test_the_accepted_changes_are_exactly_the_ones_the_guide_prescribes, which reads the guide and fails both on a stale member the guide no longer names and on a prescription the test does not pass."
     }
   }
 }

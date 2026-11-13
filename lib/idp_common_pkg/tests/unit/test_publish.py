@@ -18,6 +18,7 @@ import pytest
 # Add the project root to the path so we can import publish
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../.."))
 
+import publish as publish_script
 from publish import IDPPublisher
 
 
@@ -238,6 +239,92 @@ def mock_open_version_file(version_content):
     from unittest.mock import mock_open
 
     return mock_open(read_data=version_content)
+
+
+class _FakePublisher:
+    """Stands in for IDPPublisher: records the arguments ``run`` received."""
+
+    region = "us-east-1"
+    bucket = "artifacts-us-east-1"
+    prefix = "idp"
+    version = "0.0.0"
+    public = False
+
+    def __init__(self):
+        self.args = None
+
+    def run(self, args):
+        self.args = args
+        _FakePublisher.last = self
+
+
+class _FakeClient:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def __call__(self, region=None):
+        client = Mock()
+
+        def publish_terraform(**kwargs):
+            self.calls.append(kwargs)
+            if self.error:
+                raise self.error
+            return {"moduleUrl": "s3://m", "sha256": "0" * 64, "pointerUrl": "s3://p"}
+
+        client.publish.publish_terraform = publish_terraform
+        return client
+
+
+@pytest.mark.unit
+class TestPublishScriptTerraformStep:
+    """A direct ``publish.py`` run publishes the Terraform module after the
+    CloudFormation artifacts, unless given ``--no-terraform``."""
+
+    def _run(self, monkeypatch, argv, client):
+        from rich.console import Console
+
+        import idp_sdk
+
+        monkeypatch.setattr(idp_sdk, "IDPClient", client)
+        console = Console(record=True, width=400)
+        rc = publish_script.run_publish(argv, _FakePublisher, console)
+        return rc, console.export_text()
+
+    def test_no_terraform_skips_the_module_and_is_not_passed_on(self, monkeypatch):
+        client = _FakeClient()
+        rc, _ = self._run(
+            monkeypatch, ["b", "idp", "us-east-1", "--no-terraform"], client
+        )
+        assert rc == 0
+        assert client.calls == []
+        assert _FakePublisher.last.args == ["b", "idp", "us-east-1"]
+
+    def test_the_module_is_published_by_default(self, monkeypatch):
+        client = _FakeClient()
+        rc, out = self._run(monkeypatch, ["b", "idp", "us-east-1"], client)
+        assert rc == 0
+        assert len(client.calls) == 1
+        assert client.calls[0]["bucket"] == "artifacts-us-east-1"
+        assert "Terraform module: s3://m" in out
+
+    def test_a_terraform_failure_says_the_cloudformation_artifacts_are_published(
+        self, monkeypatch
+    ):
+        client = _FakeClient(error=RuntimeError("translator exploded"))
+        rc, out = self._run(monkeypatch, ["b", "idp", "us-east-1"], client)
+        assert rc == 1
+        assert "translator exploded" in out
+        assert "CloudFormation artifacts were published" in out
+        assert "s3://artifacts-us-east-1/idp" in out
+        assert "--no-terraform" in out
+
+    def test_no_environment_variable_turns_the_module_off(self, monkeypatch):
+        """Only the flag does: the variable that once did was set by nothing."""
+        monkeypatch.setenv("IDP_SDK_PUBLISH_SUBPROCESS", "1")
+        client = _FakeClient()
+        rc, _ = self._run(monkeypatch, ["b", "idp", "us-east-1"], client)
+        assert rc == 0 and len(client.calls) == 1
 
 
 if __name__ == "__main__":

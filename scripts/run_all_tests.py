@@ -123,6 +123,7 @@ RUN_ROOTS = [
     "feature-platform/confbench-testset/tests",
     "feature-platform/feature-template/feature-api/tests",
     "feature-platform/idp-data-generator/feature-api/tests",
+    "feature-platform/idp-data-generator/docker_build_lambda/tests",
     "feature-platform/pii-anonymizer/feature-api/tests",
     "feature-platform/pii-anonymizer/hook/tests",
     "feature-platform/pii-anonymizer/ui-deployer/tests",
@@ -141,7 +142,9 @@ RUN_ROOTS = [
     # becomes a wrong published number rather than a visible failure — which is
     # exactly what happened at v0.6.5. Pure dict/YAML logic, no AWS.
     "benchmarks/tests",
-    "nested/multi-doc-discovery/docker_build_lambda/tests",
+    # CloudFormation -> Terraform translator and its custom-resource bridge.
+    "terraform/translator/tests",
+    "terraform/bridge/tests",
     # S3 Vectors custom resource. The directory root, not its `tests` subdirectory:
     # `test_handler.py` sits beside `handler.py` and the nested suite is reached by
     # nesting under this entry. `conftest.py` here stubs `cfnresponse` and supplies
@@ -179,6 +182,8 @@ RUN_ROOTS = [
     # caller from verified claims, exact error classes) over a stub service.
     "nested/api-resolvers/src/lambda/notifications_resolver",
     "nested/api-resolvers/src/lambda/review_queues_resolver",
+    "nested/api-resolvers/src/lambda/bulk_review_resolver",
+    "nested/api-resolvers/src/lambda/bulk_review_worker",
     # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
     # caller whose scope cannot be resolved must be refused in-band.
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
@@ -208,6 +213,7 @@ RUN_ROOTS = [
     # invokes each root in its own subprocess, so it runs clean here, and six
     # green tests that were excluded from every gate are now gated.
     "samples/lambda-hook-inference/GENAIIDP-w2-copy-consistency",
+    "src/lambda/agentcore_gateway_manager",
     "src/lambda/api_handler",
     "src/lambda/batch_pre_processor",
     "src/lambda/bda_ocr_project/tests",
@@ -220,6 +226,13 @@ RUN_ROOTS = [
     "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
+    # Status lookup: a refused document must return its refusal reason as `error`,
+    # or the SDK and CLI report it as "Unknown error".
+    "src/lambda/lookup_function",
+    "src/lambda/mcp_credential_manager",
+    "src/lambda/mcp_default_credential",
+    "src/lambda/mcp_identity_interceptor",
+    "src/lambda/mcp_interceptor_attach",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
     # Review queue sweeper: the no-table path, the deadline and the wiring.

@@ -1,6 +1,14 @@
 # Accept PYTHON from parent Makefile, or auto-detect
 PYTHON ?= $(shell command -v python3 2>/dev/null || pyenv which python 2>/dev/null || echo python)
 
+# The installer that belongs to $(PYTHON)'s environment, so an install lands where
+# the tests then run. A bare `pip` is whichever pip is first on PATH, and a venv made
+# by `uv venv` has no pip of its own -- in one, `pip install` went to some other
+# interpreter while pytest ran this one (#1707). $(PYTHON) -m pip when that
+# interpreter has pip, otherwise uv pointed at it explicitly. Recursively expanded,
+# so the probe runs only when a recipe that installs is used.
+PIP_INSTALL = $(if $(shell $(PYTHON) -m pip --version >/dev/null 2>&1 && echo y),$(PYTHON) -m pip install,uv pip install --python $(PYTHON))
+
 # HERMETIC_AWS / PYTEST_HERMETIC, shared with the repository-root Makefile so
 # there is one definition of "the AWS environment a CI runner has". Resolved
 # relative to THIS file rather than the working directory, so it works under
@@ -42,6 +50,13 @@ PYTEST_PARALLEL ?= -n auto
 # running a subset of the suite -- a partial run legitimately covers less.
 COV_FLOOR ?= --cov-fail-under=82
 
+# The coverage measurement core, the same one scripts/coverage_all.py uses (its
+# COVERAGE_CORE constant carries the measurement). `sys.monitoring` instead of the C
+# tracer, which on Python 3.12+ makes line coverage close to free. `export` with `?=`
+# rather than an assignment on the recipe line, so a caller's own value wins:
+# `COVERAGE_CORE=ctrace make test-cicd` selects the C tracer for a comparison run.
+export COVERAGE_CORE ?= sysmon
+
 .PHONY: test test-cicd clean
 
 test: test-unit
@@ -77,7 +92,7 @@ test-cicd: test-unit-cicd
 # exit 5. GitLab used to pass `-n auto` here, which is why the parallel default lives
 # in this file now -- as a CI-side override it left GitHub running the suite serially.
 test-unit-cicd:
-	@if [ -z "$(SKIP_INSTALL)" ]; then pip install -e ".[test]"; else echo "SKIP_INSTALL set — using pre-installed deps"; fi
+	@if [ -z "$(SKIP_INSTALL)" ]; then $(PIP_INSTALL) -e ".[test]"; else echo "SKIP_INSTALL set — using pre-installed deps"; fi
 	$(PYTEST_HERMETIC) $(PYTEST_PARALLEL) -m "not integration" $(PYTEST_ARGS) $(COV_FLOOR) --cov=idp_common --cov-report=xml:test-reports/coverage.xml --cov-report=term --junitxml=test-reports/test-results.xml tests/
 
 clean:
@@ -93,4 +108,4 @@ clean:
 	
 # A convenience target to install the idp_common library with all, dev dependencies in edit mode
 dev:
-	pip install -e ".[all,dev]"
+	$(PIP_INSTALL) -e ".[all,dev]"

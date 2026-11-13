@@ -4,15 +4,15 @@
 
 | Field | Value |
 |-------|-------|
-| **Document Version** | 3.2 |
-| **Last Updated** | 2026-09-17 |
+| **Document Version** | 3.3 |
+| **Last Updated** | 2026-11-09 |
 | **Applies to release** | v0.6.9 |
 | **Classification** | Internal |
 
 ## 1. Overview
 
 This guide details the security controls implemented in the GenAI IDP Accelerator
-to mitigate the 104 identified threats. Controls are organized by security domain
+to mitigate the 109 identified threats. Controls are organized by security domain
 and mapped to the specific threats they address.
 
 > **A control listed here is a control that exists in the shipped templates and
@@ -105,17 +105,17 @@ and mapped to the specific threats they address.
 
 ### 3.1a Chat Streaming Function URL
 
-**Threats mitigated**: CHAT.T03 (authentication only), CHAT.T06
+**Threats mitigated**: CHAT.T03, CHAT.T06
 
 | Control | Implementation |
 |---------|---------------|
-| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole` |
+| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole`. The browser also sends its Cognito ID token in `x-idp-id-token`, which the endpoint verifies (`idp_common.cognito_id_token`) before anything else; no valid token is a 401 |
 | **CORS** | `AllowCredentials: false`, SigV4 in headers, no cookies |
-| **Group authorization** | **NOT ENFORCED** — the Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them, and no group claim reaches this transport (open gap, CHAT.T03, `GAP-07`; issue #920 closed without changing it) |
-| **Session ownership** | **NOT ENFORCED** on this transport, which carries no verified per-user subject (open gap, CHAT.T03) |
-| **Caller identity** | The value the handler derives from the request context is the assumed-role **session name**, not a verified Cognito `sub`; on `/chat/agent` a body-supplied `callerSub` takes precedence over it (CHAT.T06). That session name is also the **same for every user** of the deployment, because the Identity Pool's enhanced flow picks it and one authenticated role is shared by all groups — so the remedy is a verified subject (an ID token presented alongside the signed request), not a reordering. **Issue #920** / PR #954 addresses the precedence and leaves the verified subject outstanding |
+| **Group authorization** | Enforced from the verified token's `cognito:groups` before the stream opens: Admin/Author/Viewer on `/chat/agent`, any assigned group on `/chat/document` |
+| **Session ownership** | Enforced: each session id is registered to its first user's `sub` in `ChatSessionOwnersTable`, and a request under another user's id is a 403; agent memory is keyed on the user and the session |
+| **Caller identity** | Taken only from the verified ID token (`sub`, `email`, `cognito:groups`); a `callerSub` in the request body is ignored (CHAT.T06) |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
-| **Automated testing** | **None** — `make api-test` drives `POST /op/{field}` only |
+| **Automated testing** | Unit tests drive both routes with real token verification (`src/lambda/chat_stream_processor/tests/test_route_identity.py`); the static scan covers the routes (S6–S9); `make api-test` cells exist and have not yet been run against a deployment |
 
 ### 3.2 CloudFront Distribution
 
@@ -164,12 +164,15 @@ and mapped to the specific threats they address.
 
 > **Read-scoping residual (UI.T06).** The per-document check runs on the
 > configuration-profile axis, because that is the only per-document axis the
-> product records — nothing says which user or tenant a document belongs to. For a
+> product records — nothing says which *user* a document belongs to, and a tenant is
+> expressed only as a set of profiles (tenant declarations). For a
 > **scoped** caller it is a real refusal; for an **unscoped** one (no
 > `allowedConfigVersions`, which is a user row's default, since scoping is opt-in
 > per user) it is a deliberate no-op, so a caller holding any one of the five
-> groups still reads any document's bytes through the resolver. Closing the rest
-> needs a document ownership model — issue #1033. Partially Mitigated.
+> groups still reads any document's bytes through the resolver. That is the default,
+> `TenantIsolationMode: Off`; under `Strict` an unscoped non-admin is refused every
+> document instead. Closing the rest needs a per-user document ownership model —
+> issue #1033. Partially Mitigated.
 
 ## 4. Data Protection
 
@@ -222,11 +225,12 @@ bound to it.
 
 ### 4.3 Data Isolation
 
-**Threats mitigated**: AGT.T05, CHAT.T02, AUTH.T06
+**Threats mitigated**: AGT.T05, CHAT.T02, AUTH.T06, TEN.T01–T05
 
 | Mechanism | Implementation |
 |-----------|---------------|
-| **Single-tenant** | One CloudFormation stack per environment |
+| **Single-tenant** | One CloudFormation stack per environment or tenant |
+| **Shared stack (v0.6.14)** | Tenant declarations (prefixes plus a profile pattern) enforced when mappings, tenants and scopes are written; `TenantIsolationMode=Strict` denies unscoped non-Admins, refuses cross-tenant documents at ingest, closes the agent, Knowledge Base, MCP and chat-stream surfaces, and delegates the Input and Output buckets to per-tenant S3 Access Points; `TenantGrantSource` selects who grants tenants. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) |
 | **User-scoped queries** | `ChatSessionsTable` is keyed `PK=userId`; `ChatMessagesTable` is keyed `PK=sessionId` and relies on **explicit resolver ownership checks** (`_verify_session_ownership` / `ownerSub`), not the key alone |
 | **Session isolation** | UUID-based conversation session IDs |
 | **Stack isolation** | Separate Cognito pools, S3 buckets, DynamoDB tables per stack |
@@ -263,7 +267,7 @@ bound to it.
 | Control | Implementation |
 |---------|---------------|
 | **Athena read-only** | IAM role with SELECT-only permissions on Glue catalog |
-| **AgentCore sandbox** | AWS-managed isolation (no network, no credentials, no persistent storage) |
+| **AgentCore sandbox** | AWS-managed isolation (no credentials, no persistent storage; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role) |
 | **Tool-level auth** | Each agent tool validates caller permissions |
 | **Audit logging** | All tool invocations logged with parameters and results |
 
@@ -392,6 +396,7 @@ For deployments requiring network-level isolation:
 - [ ] Review Lambda hook security requirements, and make hooks before the review point idempotent if review queues are used — they run in both executions of a reviewed document
 - [ ] Decide `MalwareScanning` (and `AllowUnscannableDocuments`) for any deployment that accepts documents from outside the organisation (PM.T09)
 - [ ] Plan VPC configuration if network isolation is required
+- [ ] For a stack shared by several tenants: declare tenants, run `idp-cli tenancy audit`, restrict `s3:CreateAccessPoint` and `s3:PutAccessPointPolicy` to the access point deployer, then update with `TenantIsolationMode=Strict` and run `idp-cli tenancy verify` (TEN.T01, TEN.T02); choose `TenantGrantSource` and `RefreshTokenValidityHours` together if tenants are granted from outside the stack (TEN.T03)
 
 ### Post-Deployment
 
@@ -408,7 +413,7 @@ For deployments requiring network-level isolation:
 ### Ongoing Operations
 
 - [ ] Periodic API authorization audit (`make api-test` against a live stack; review the op×role matrix report)
-- [ ] Review the chat streaming Function URL path separately — it is **outside** the automated harness and outside the WAF WebACL (CHAT.T03, CHAT.T06)
+- [ ] Review the chat streaming Function URL path separately — it is outside the WAF WebACL, and its `make api-test` cells (CHAT.T03, CHAT.T06) need a live run
 - [ ] Re-review the threat model each release cycle — `make check-threat-model-currency` fails the build when `security/threat-modeling/README.md`'s `Last reviewed against version` field falls more than one release behind `VERSION`
 - [ ] Review CloudWatch alarm history for security events
 - [ ] Monitor Athena query patterns for anomalies

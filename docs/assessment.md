@@ -10,7 +10,7 @@ SPDX-License-Identifier: MIT-0
 > **This guide has moved.** Extraction, confidence, and geometry documentation
 > is now consolidated in **[Extraction & Confidence](extraction-and-confidence.md)**.
 
-As of config v0.6, confidence scoring is an **output of extraction** (configured
+As of config format 0.6, confidence scoring is an **output of extraction** (configured
 under `extraction.confidence.*`, with HITL under the top-level `hitl.*`). What
 moved:
 

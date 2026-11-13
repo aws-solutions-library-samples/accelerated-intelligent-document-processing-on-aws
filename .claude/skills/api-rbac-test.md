@@ -18,16 +18,29 @@ complementary layers that share one source of truth:
 > `dynamodb:Query` IAM grant). Treat a hard fail as real until proven otherwise.
 
 > ⚠️ **"Every operation" is true of the group check, not of the scope check.** The
-> dynamic scope suite makes exactly **two** calls with the scoped token, against
-> `getConfigVersion` and `getConfigVersions`. No other scope-enforcing operation is
-> exercised live. Ops marked `skip_allowed:` in the expectations file are called
+> dynamic scope suite calls, with the scoped token, `getConfigVersion`,
+> `getConfigVersions` and the three discovery operations in
+> `SCOPED_DISCOVERY_CELLS` (`startMultiDocDiscovery`, `uploadMultiDocDiscoveryZip`,
+> `uploadDiscoveryDocument`), each naming the out-of-scope profile and each built so
+> that no job starts whatever the stack answers. No other scope-enforcing
+> operation is exercised live. Ops marked `skip_allowed:` in the expectations file are called
 > only in their *denied* role, because an allowed-role call would start real work —
 > `sendChatDocumentMessage` starts a chat turn — so their scope enforcement is not
 > reached here and is covered by that component's own unit suite instead. The
-> static scan's **S4** is a grep: it asserts the `enforced_in` file mentions
-> `allowedConfigVersions`, which a file containing a broken lookup also does.
+> static scan's **S4** reads the code each operation can reach: it asserts that
+> code refers to the caller's config-version scope, and, for a `scope_filtered`
+> operation, that it applies a per-item scope predicate bottoming out at
+> `scope_allows` to what it returns, following calls into `idp_common`. It is a
+> structural check, not dataflow: a broken scope *lookup* still passes it.
 > Neither layer would have caught issue #970, where the lookup named a DynamoDB
 > index no template declares.
+>
+> **S10** is what makes an operation declare a scope in the first place: any
+> operation whose arguments name a profile, a stored object or a session (read from
+> the words of the argument name) must carry `scope_checked`, `scope_filtered`,
+> `document_scope_checked`, `testset_checked` or `ownership` (by argument kind), be callable only by Admin/IAM, or have a `known_gap` or a
+> `SCOPE_KEYED_ARGUMENT_EXEMPT` entry. **Adding an operation that takes
+> `configVersion`, `objectKey` or `sessionId`? Declare its scope, or S10 fails.**
 
 ### Mandatory security-focused test cases (AppSec checklist)
 
@@ -177,7 +190,7 @@ regenerate the manifest.
 
 ## Files
 
-- `scripts/api_rbac_expectations.yaml` — single source of truth (164 ops + gap
+- `scripts/api_rbac_expectations.yaml` — single source of truth (180 ops + gap
   register). Entry schema is documented at the top of the file.
 - `scripts/sdlc/scan_api_rbac.py` — static scanner (`--strict` fails on known
   gaps, use to confirm a gap was fixed; `--json PATH` for machine output).
@@ -449,7 +462,7 @@ on an operation, so it declares `assigned_by:` in the register; the static scann
 > widening this warns against: `ANY` means the dispatcher checks authentication
 > only, so a forgotten resolver check on an `ANY` operation is still reachable by
 > any authenticated caller — including one in no group, which self-signup produces.
-> 8 of the 164 declared operations are `ANY`, each with a note in the expectations file
+> 8 of the 180 declared operations are `ANY`, each with a note in the expectations file
 > saying why that is the intended answer for **that operation**, not for the section
 > it sits in. In full: `getMyProfile`, `listChatSessions`,
 > `getLatestPublishedVersion`, `listFinetuningJobs`, `getFinetuningJob`,

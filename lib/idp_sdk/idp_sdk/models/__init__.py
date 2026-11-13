@@ -38,6 +38,7 @@ from .config import (
     ConfigDeleteResult,
     ConfigDownloadResult,
     ConfigListResult,
+    ConfigMigrateResult,
     ConfigRevisionInfo,
     ConfigRevisionListResult,
     ConfigSyncBdaResult,
@@ -76,6 +77,7 @@ from .evaluation import (
     UseAsBaselineResult,
 )
 from .manifest import ManifestDocument, ManifestResult, ManifestValidationResult
+from .mcp import McpCredential, McpCredentialIssued
 from .publish import PublishResult, TemplateTransformResult
 from .search import SearchCitation, SearchDocumentReference, SearchResult
 from .stack import (
@@ -90,6 +92,27 @@ from .stack import (
     StackOperationInProgress,
     StackResources,
     StackStableStateResult,
+)
+from .tenancy import (
+    TenantAccessPoint,
+    TenantApplyResult,
+    TenantAuditFinding,
+    TenantAuditResult,
+    TenantInfo,
+    TenantListResult,
+    TenantPlanAction,
+    TenantPlanItem,
+    TenantPolicyDeployResult,
+    TenantPolicyResult,
+    TenantUserGrant,
+    TenantVerifyCheck,
+    TenantVerifyOutcome,
+    TenantVerifyResult,
+)
+from .terraform import (
+    TerraformMigrationPlanResult,
+    TerraformMigrationResource,
+    TerraformMigrationStepResult,
 )
 from .testing import (
     DocumentsAbortedResult,
@@ -147,6 +170,7 @@ __all__ = [
     "DocumentListResult",
     # Config models
     "ConfigCreateResult",
+    "ConfigMigrateResult",
     "ConfigValidationResult",
     "ConfigDownloadResult",
     "ConfigUploadResult",
@@ -197,4 +221,24 @@ __all__ = [
     "AssessmentGeometryResult",
     "AssessmentFieldGeometry",
     "AssessmentMetrics",
+    # Tenancy models
+    "TenantApplyResult",
+    "TenantAuditFinding",
+    "TenantAuditResult",
+    "TenantInfo",
+    "TenantListResult",
+    "TenantPlanAction",
+    "TenantPlanItem",
+    "TenantAccessPoint",
+    "TenantPolicyDeployResult",
+    "TerraformMigrationPlanResult",
+    "TerraformMigrationResource",
+    "TerraformMigrationStepResult",
+    "TenantPolicyResult",
+    "TenantVerifyCheck",
+    "TenantVerifyOutcome",
+    "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
+    "TenantVerifyResult",
 ]

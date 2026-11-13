@@ -8,7 +8,14 @@ used to run automatically on every integration pipeline; they were moved to
 on-demand `make stacktest-*` targets because standing up ~6 stacks at once in one
 pipeline burst the account-wide AWS control planes (CloudWatch Logs
 create-consistency, CodeBuild role-trust propagation, IAM CreatePolicy rate
-limit) and caused flaky failures unrelated to the code under test.
+limit) and caused flaky failures unrelated to the code under test. In CI the
+deploy-variant probes (ZAP DAST, WAF, API Gateway GLOBAL and PRIVATE, Jobs API,
+tenant isolation) run only on the **weekly variant-probe schedule** (a GitLab project setting; they
+run only while it is active), never on the nightly;
+`stacktest-rbac` is `make api-test`, which every integration run already executes
+as a step of the primary suite, and the other `stacktest-*` targets run only by
+hand; see
+`scripts/sdlc/docs/CI_TEST_COVERAGE.md` (Pipeline stages & triggers).
 
 ## The stacktest family
 
@@ -18,12 +25,14 @@ limit) and caused flaky failures unrelated to the code under test.
 | `make stacktest-rbac STACK_NAME=…` | Full RBAC/authorization matrix (alias of `api-test`) | live stack |
 | `make stacktest-zap` | OWASP ZAP DAST scan of the UI API | stack or self-deploy |
 | `make stacktest-inbox STACK_NAME=…` | Inbox end to end: posts through `idp_common.notifications` (direct, group fan-out, idempotency, dedupe) and reads back through the REST API (list, unread count, mark read, cross-user 404). Creates and removes a temporary Cognito group `inbox-live-check-<rand>`, two temporary users and their Inbox items, and restores the app client's auth flows. Exit 0 = PASS, 1 = FAIL, 2 = errored or skipped | live stack deployed **with the Inbox** (`NotificationsTableName` output; an older stack reports SKIP) |
-| `make stacktest-review-queues STACK_NAME=…` | Review queues end to end: uploads a sample under a temporary profile with review queues on (`hitl.confidence_threshold: 0.99`), waits for `review/status.json` = `in_review`, then claims, saves a draft and completes through the REST API as a temporary Annotator, and waits for `complete`, tracking `COMPLETED`, an unchanged machine manifest and a final manifest. Removes the profile, user, document and its queue and tracking rows, and restores the app client's auth flows. `CHECK_EVENTS=1` also expects the two status-object EventBridge events via a temporary rule and SQS queue. Costs one document's processing. Exit 0 = PASS, 1 = FAIL, 2 = errored or skipped | live stack deployed **with review queues** (`HITLTableName` output; an older or headless stack reports SKIP). ⚠️ The flow self-claims from a per-profile `default` queue, which predates system-wide queues and Admin assignment; see the note at the top of `scripts/review_queues_live_check.py` |
+| `make stacktest-review-queues STACK_NAME=…` | Review queues end to end on the Annotator path: uploads a sample under a temporary profile with HITL on (`hitl.confidence_threshold: 0.99`), creates a temporary Annotator and a temporary Admin, checks the Annotator sees no queue while unlisted, has the Admin add the Annotator to the Default queue's Eligible Annotators through `updateReviewQueue` (sending back the settings an update would otherwise reset, and leaving out `enabled` and the skip reasons, which an update keeps), waits for `review/status.json` = `in_review`, then lists, claims, saves a draft and completes through the REST API as the Annotator, and waits for `complete`, tracking `COMPLETED`, an unchanged machine manifest and a final manifest. Cleanup takes only that Annotator off the Default queue's list, from a fresh read, and removes the profile, both users, the document and its queue and tracking rows, and restores the app client's auth flows. A disabled Default queue is reported as could-not-run rather than switched on. `CHECK_EVENTS=1` also expects the two status-object EventBridge events via a temporary rule and SQS queue. Costs one document's processing. Exit 0 = PASS, 1 = FAIL, 2 = errored or skipped | live stack deployed **with review queues** (`HITLTableName` output; an older or headless stack reports SKIP) and its Default queue enabled (the seeded state). ⚠️ While it runs, the Default queue lists one extra Annotator, and a cleanup that cannot remove it is reported as a FAIL naming the user. `updateReviewQueue` writes the whole definition unconditionally from a read the resolver may have cached for up to 30 seconds, so an Admin edit to the Default queue's name, description, priority, checklist, reject reasons, time limit or Eligible Annotators within about 30 seconds of either of the check's two writes can be lost, and two concurrent runs can drop each other's Annotator. Run it when nobody is editing that queue |
 | `make stacktest-hosting-global` | APIGateway GLOBAL hosting variant | stack or self-deploy |
 | `make stacktest-waf` | WAF IP-allow-list WebACL association | stack or self-deploy |
 | `make stacktest-hosting-private` | PRIVATE (VPC) API hosting | **VPC** + stack/self-deploy |
 | `make stacktest-jobsapi` | Jobs REST API (`EnableJobsApi`) | **VPC** + stack/self-deploy |
+| `make stacktest-tenancy` | Tenant isolation: deploys `TenantIsolationMode=Strict` and runs the `verify-tenant-isolation` harness (cross-tenant read and upload refusals, strict-mode ingest refusals, generated access points). Processes a real document per tenant | Strict stack or self-deploy; credentials that can create IAM roles and a CloudFormation stack |
 | `make stacktest-seller` | Seller Entitlement Service e2e (deploys + tears down its own stack) | seller-account creds; **no** listing needed |
+| `make stacktest-sandbox-network` | Network reach of the analytics agent's Python interpreter (`aws.codeinterpreter.v1`, the AWS-managed Bedrock AgentCore Code Interpreter): runs a fixed probe program in a session and reports DNS (`example.com`, the regional S3 endpoint), HTTPS to `example.com`, a PUT to a presigned URL for a throwaway bucket `ab-sandbox-probe-<random>` and whether the object arrived, raw TCP to `1.1.1.1:443`, TCP to S3 in another region, HTTPS to regional STS, whether the instance metadata service answers, and whether any AWS credential source (environment, `~/.aws` files, metadata role, container endpoint) is present, by presence only. Each is compared with `EXPECTED_POSTURE` in `scripts/sdlc/sandbox_network_probe.py`. Exit 0 = matches, 1 = the posture changed (in either direction), 2 = could not run. When it changes, re-measure, update `EXPECTED_POSTURE` and the network statement in `docs/agent-analysis.md` together. Manual only: it needs credentials that can start an interpreter session and create a bucket, and the GitLab CI job role (`scripts/sdlc/cfn/credential-vendor.yml`) grants neither, so it is not on the weekly schedule. Default `REGION=us-west-2`, the only region measured | credentials for the account; **no** stack |
 | `make stacktest-benchmark` | Release-vs-release benchmark audit (alias) | see run-benchmarks |
 | `make stacktest-upgrade` | In-place upgrade test pointer | see test-upgrade |
 
@@ -79,6 +88,31 @@ outcome, not just the findings:
 - To tune what's reported: edit `scripts/sdlc/zap-rules.conf` (IGNORE known-noise
   plugin ids, or WARN/FAIL to change severity).
 
+## Tenant isolation (`tenancy`)
+
+`make stacktest-tenancy` runs `scripts/security/live_checks/verify_tenant_isolation.py`
+— the same harness as `make verify-tenant-isolation` — through the probe runner, so
+its verdict is the weekly probe's verdict.
+
+- **Against an existing stack** (`STACK_NAME=…`), that stack must already be deployed
+  with `TenantIsolationMode=Strict`; the harness refuses any other mode with exit 2
+  and creates nothing. Prefer `make verify-tenant-isolation STACK_NAME=…` there
+  if you want its confirmation prompt; the probe form passes `--yes`.
+- **Self-deploy** (`TEMPLATE_URL=…`) deploys a fresh Strict stack, runs the harness
+  and tears the stack down, exactly as the weekly run does.
+- Either way it creates and removes two throwaway Configuration Profiles, two tenants
+  over `tenancy-verify/a/` and `tenancy-verify/b/`, throwaway Cognito users, two IAM
+  roles `idp-tiv-uploader-<tenant>-<hex>` (no permissions boundary) and an access point
+  stack `<stack>-tiv-ap-<hex>`, all in a `finally`. A run killed before that
+  `finally` can leave the two roles behind: no CI reaper removes them, so list
+  `idp-tiv-uploader-*` roles after an interrupted run.
+- It passes only when the harness exits 0, prints a complete `<passed>/<total> PASS`
+  tally, and reports at least one `verify:` row (the cross-tenant read refusals).
+  The tally is printed as `tenancy_checks` on success; on failure the first failing
+  rows are in the error.
+- Pass `REGION=` when the stack is not in `us-east-1`; the runner reads
+  `AWS_DEFAULT_REGION`, while `make verify-tenant-isolation` defaults to `us-west-2`.
+
 ## VPC tests (`hosting-private`, `jobsapi`) — auto-discover a VPC, then CONFIRM
 
 These need VPC wiring. Prefer discovering a suitable existing VPC in the account
@@ -118,8 +152,11 @@ over creating one. Procedure:
   (`scripts/sdlc/run_stacktest.py`) imports `codebuild_deployment.py` and drives
   its internal deploy-variant table, so results match what CI would have produced
   — no drift.
-- To temporarily re-enable the deploy-variant tests inside a pipeline run (rarely
-  needed), set `IDP_RUN_PROBES=true`. Default is off.
+- To run all the deploy-variant tests inside a pipeline, press **Run** on the
+  weekly variant-probe schedule (a GitLab project setting under **Build › Pipeline
+  schedules**, carrying `IDP_RUN_PROBES=true`; the button exists only once the schedule does). `IDP_RUN_PROBES=true` is honoured only on a
+  scheduled pipeline, so setting it on a manual or merge-request run does nothing;
+  on the build side it is off unless the buildspec sets it.
 - Permissions boundary is now verified only by the primary suite (Step 13,
   `test_step13_permission_boundaries`); the deploy-variant tests deploy without
   one.

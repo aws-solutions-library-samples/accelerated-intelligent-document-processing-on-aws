@@ -2391,7 +2391,7 @@ RUNNING_ROW = (
 
 
 def _night(harness: StoryHarness, summary: str, *extra: str) -> list[str]:
-    path = harness.tmp / "deployment_summary.txt"
+    path = harness.tmp / "codebuild_logs.txt"
     path.write_text(summary, encoding="utf-8")
     harness.environ.update(CI="true", CI_COMMIT_SHA=HEAD, CI_PIPELINE_ID="12345")
     return ["--all", "--deploy-summary", str(path), *extra]
@@ -2438,6 +2438,75 @@ def test_a_missing_deployment_summary_runs_and_records_the_night_as_missing(
     )
     assert runner.main(argv, harness.runtime()) == 0
     assert harness.record()["stack_state"] == "missing"
+
+
+@pytest.mark.unit
+def test_the_stack_state_is_read_from_the_tail_of_a_log_past_the_bound(
+    tmp_path: Path,
+) -> None:
+    """The build prints its consolidated summary near the end of a log that can
+    pass the read's bound, so the log's last bytes are read and a long night is
+    not taken for one whose stack row is missing."""
+    bound = runner._SUMMARY_MAX_BYTES
+    filler = "".join(
+        f"[Container] step output — line {n:08d}\n" for n in range(bound // 30)
+    )
+    log = tmp_path / "codebuild_logs.txt"
+    log.write_text(
+        f"{filler}\n{UPDATED_ROW}\n🤖 Generating deployment summary with Bedrock...\n"
+        "🚀 DEPLOYMENT RESULTS — ✅ PASS\n",
+        encoding="utf-8",
+    )
+    assert log.stat().st_size > bound
+    assert runner.deploy_state(log) == "updated"
+    early = tmp_path / "early.txt"
+    early.write_text(f"{UPDATED_ROW}{filler}", encoding="utf-8")
+    assert early.stat().st_size > bound
+    assert runner.deploy_state(early) == "missing"
+
+
+@pytest.mark.unit
+def test_the_last_stack_header_in_the_log_decides(tmp_path: Path) -> None:
+    log = tmp_path / "codebuild_logs.txt"
+    log.write_text(
+        f"build starts\n{RUNNING_ROW}more output\n{UPDATED_ROW}"
+        "🤖 Generating deployment summary with Bedrock...\n",
+        encoding="utf-8",
+    )
+    assert runner.deploy_state(log) == "updated"
+    log.write_text(f"{UPDATED_ROW}more output\n{RUNNING_ROW}", encoding="utf-8")
+    assert runner.deploy_state(log) == "running"
+
+
+@pytest.mark.unit
+def test_a_header_echoed_in_the_narrative_after_the_marker_is_not_read(
+    tmp_path: Path,
+) -> None:
+    log = tmp_path / "codebuild_logs.txt"
+    log.write_text(
+        f"build starts\n{UPDATED_ROW}\n{story_digest.NARRATIVE_MARKER}\n"
+        f"🚀 DEPLOYMENT RESULTS — ❌ FAIL\n{RUNNING_ROW}",
+        encoding="utf-8",
+    )
+    assert runner.deploy_state(log) == "updated"
+    log.write_text(f"{story_digest.NARRATIVE_MARKER}\n{UPDATED_ROW}", encoding="utf-8")
+    assert runner.deploy_state(log) == "missing"
+
+
+@pytest.mark.unit
+def test_a_log_that_is_absent_or_not_a_regular_file_is_missing(tmp_path: Path) -> None:
+    target = tmp_path / "codebuild_logs.txt"
+    target.write_text(UPDATED_ROW, encoding="utf-8")
+    link = tmp_path / "link.txt"
+    link.symlink_to(target)
+    empty = tmp_path / "empty.txt"
+    empty.write_text("", encoding="utf-8")
+    assert runner.deploy_state(None) is None
+    assert runner.deploy_state(target) == "updated"
+    assert runner.deploy_state(tmp_path / "absent.txt") == "missing"
+    assert runner.deploy_state(tmp_path) == "missing"
+    assert runner.deploy_state(link) == "missing"
+    assert runner.deploy_state(empty) == "missing"
 
 
 @pytest.mark.unit
@@ -3122,8 +3191,13 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
         posted.append((webhook, payload))
         return "posted (200)"
 
+    read: list[story_digest.History | None] = []
+
     def history(args: Any, environ: Any) -> story_digest.History | None:
-        return runner.nightly_history(args, environ, forge=lambda a, credential: gitlab)
+        read.append(
+            runner.nightly_history(args, environ, forge=lambda a, credential: gitlab)
+        )
+        return read[-1]
 
     runtime.history = history
     runtime.slack = slack
@@ -3140,7 +3214,28 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
     assert record["available"] is True
     assert [night["pipeline_id"] for night in record["nights"]] == [41]
     assert "History unavailable" not in (out / "digest.md").read_text("utf-8")
-    assert posted == [(WEBHOOK, story_digest.slack_payload(digest, job_url=JOB_URL))]
+    catalogue = stories.load_catalogue()
+    facts = story_digest.SlackFacts(
+        results=json.loads((out / story_verdict.RESULTS_FILE).read_text("utf-8")),
+        run=json.loads((out / story_verdict.RUN_FILE).read_text("utf-8")),
+        history=read[0],
+        titles={story.id: story.title for story in catalogue.stories},
+        cap_usd=2 * catalogue.runs.job_usd,
+    )
+    ((webhook, payload),) = posted
+    assert webhook == WEBHOOK
+    assert payload == story_digest.slack_payload(digest, job_url=JOB_URL, facts=facts)
+    assert payload["status"] == "⚠️ 1 of 2 passed"
+    assert payload["job_url"] == JOB_URL
+    assert payload["summary"].split("\n")[3:5] == [
+        "❌ Make one input folder use one configuration (new analyst): offered a "
+        "control the docs say this role lacks (unconfirmed)",
+        "✅ Make one input folder use one configuration (platform admin), 3 of 50 "
+        "steps",
+    ]
+    assert payload["summary"].endswith(
+        f"\nSpend: ${digest['spend_usd']:.2f} of ${facts.cap_usd:.2f}"
+    )
     lines = _lines(capsys)
     assert lines[-3:] == [
         "history: 1 earlier night(s), 1 gap(s)",
@@ -3157,11 +3252,18 @@ def test_the_scheduled_digest_compares_with_the_nights_it_read_and_posts_once(
         ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": None}, []),
         ({"UX_TEST_STORIES_SLACK_WEBHOOK_URL": "   "}, []),
         (
+            {
+                "UX_TEST_STORIES_SLACK_WEBHOOK_URL": None,
+                "SLACK_WEBHOOK_URL": "https://hooks.slack.test/triggers/T0/2/x",
+            },
+            [],
+        ),
+        (
             {"CI_PIPELINE_SOURCE": "web"},
             ["slack: not posted, because this is not a scheduled pipeline"],
         ),
     ],
-    ids=["no-webhook", "blank-webhook", "manual-pipeline"],
+    ids=["no-webhook", "blank-webhook", "integration-webhook-only", "manual-pipeline"],
 )
 def test_the_digest_posts_to_slack_only_from_a_schedule_with_a_webhook(
     harness: StoryHarness,
@@ -3183,6 +3285,66 @@ def test_the_digest_posts_to_slack_only_from_a_schedule_with_a_webhook(
     assert [line for line in lines if line.startswith("slack:")] == said
     assert lines[-1].startswith("DIGEST: ")
     assert "hooksecretvalue" not in "\n".join(lines)
+
+
+SHARED_WEBHOOK = "https://hooks.slack.test/triggers/T0/2/sharedsecretvalue"
+
+
+@pytest.mark.unit
+def test_the_digest_posts_to_its_own_webhook_and_never_the_integration_builds(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``SLACK_WEBHOOK_URL`` reaches every job, so a digest run anywhere in a
+    scheduled pipeline, a test among them, must not post through it."""
+    _shard_runs(harness)
+    harness.environ.update(
+        _scheduled(
+            UX_TEST_STORIES_SLACK_WEBHOOK_URL=WEBHOOK, SLACK_WEBHOOK_URL=SHARED_WEBHOOK
+        )
+    )
+    runtime = harness.runtime()
+    posted: list[str] = []
+
+    def slack(webhook: str, payload: dict[str, str]) -> str:
+        posted.append(webhook)
+        return "posted (200)"
+
+    runtime.slack = slack
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    assert posted == [WEBHOOK]
+    printed = "\n".join(_lines(capsys))
+    assert "slack: posted (200)" in printed
+    assert "hooksecretvalue" not in printed and "sharedsecretvalue" not in printed
+
+
+@pytest.mark.unit
+def test_an_unusable_webhook_posts_nothing_and_is_named(
+    harness: StoryHarness, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A value that is not an https URL is reported by the variable's name and
+    posts nothing, and the integration build's webhook is not tried instead."""
+    _shard_runs(harness)
+    harness.environ.update(
+        _scheduled(
+            UX_TEST_STORIES_SLACK_WEBHOOK_URL="http://hooks.slack.test/x",
+            SLACK_WEBHOOK_URL=SHARED_WEBHOOK,
+        )
+    )
+    runtime = harness.runtime()
+    runtime.slack = lambda webhook, payload: pytest.fail("Slack was posted to")
+    out = harness.tmp / "digest"
+    capsys.readouterr()
+    argv = ["--digest", str(harness.tmp / "shards"), "--out", str(out)]
+    assert runner.main(argv, runtime) == 0
+    lines = _lines(capsys)
+    assert [line for line in lines if line.startswith("slack:")] == [
+        "slack: not posted, because UX_TEST_STORIES_SLACK_WEBHOOK_URL is not an "
+        "https URL"
+    ]
+    assert "sharedsecretvalue" not in "\n".join(lines)
 
 
 @pytest.mark.unit
@@ -3261,9 +3423,7 @@ class _Opener:
 def test_post_slack_posts_only_to_a_usable_https_url(webhook: str) -> None:
     opener = _Opener(_Answer(200))
     outcome = runner.post_slack(webhook, {"status": "clean"}, opener=opener)
-    assert outcome == (
-        "not posted, because UX_TEST_STORIES_SLACK_WEBHOOK_URL is not an https URL"
-    )
+    assert outcome == "not posted, because the webhook is not an https URL"
     assert opener.requests == []
 
 
@@ -3677,7 +3837,10 @@ def _python_files(entry: str) -> list[Path]:
 
 
 def _resolved(importer: Path, node: ast.Import | ast.ImportFrom) -> list[Path]:
-    """The scripts/ or scripts/sdlc/ files an import statement can load."""
+    """The scripts/, scripts/sdlc/ or scripts/hooks/ files an import can load.
+
+    ``scripts/hooks`` is there because ``ai_mr_review`` puts it on the import path
+    for ``check_commit_text``."""
     if isinstance(node, ast.ImportFrom) and node.level:
         package = importer.parents[node.level - 1]
         module = package.joinpath(*node.module.split(".")) if node.module else package
@@ -3691,7 +3854,7 @@ def _resolved(importer: Path, node: ast.Import | ast.ImportFrom) -> list[Path]:
         dotted += [f"{node.module}.{alias.name}" for alias in node.names]
     targets: list[Path] = []
     for name in dotted:
-        for base in (SCRIPTS, SCRIPTS / "sdlc"):
+        for base in (SCRIPTS, SCRIPTS / "sdlc", SCRIPTS / "hooks"):
             module = base.joinpath(*name.split("."))
             for candidate in (module.with_suffix(".py"), module / "__init__.py"):
                 if candidate.is_file():
@@ -3759,6 +3922,30 @@ def test_ai_mr_review_is_reached_only_through_gitlab_api() -> None:
         assert not any(name.split(".")[0] == "ai_mr_review" for name in names)
 
 
+BARE_ENV_NAMES = (
+    "PATH",
+    "SYSTEMROOT",
+    "LANG",
+    "TMP",
+    "TEMP",
+    "TMPDIR",
+    "COVERAGE_PROCESS_START",
+    "COVERAGE_FILE",
+    "COVERAGE_SUBPROCESS_SOURCE",
+)
+
+
+def _bare_env() -> dict[str, str]:
+    """The script's subprocess environment: what Python needs to start, nothing a
+    CI job holds, so a run under a scheduled pipeline reaches no credential.
+
+    The three ``COVERAGE_*`` names are the ones ``coverage_all.py`` hands every
+    test run so a subprocess is measured too; without them these runs of the
+    script would count for nothing in its coverage floor. None is a credential.
+    """
+    return {name: os.environ[name] for name in BARE_ENV_NAMES if name in os.environ}
+
+
 def _heavy_imports(*argv: str) -> tuple[int, list[str], str]:
     completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
         [sys.executable, "-X", "importtime", "-B", str(SCRIPT), *argv],
@@ -3768,10 +3955,41 @@ def _heavy_imports(*argv: str) -> tuple[int, list[str], str]:
         errors="replace",
         timeout=120,
         check=False,
+        env=_bare_env(),
     )
     imported = re.findall(r"\|\s+(\S+)\s*$", completed.stderr, flags=re.M)
     heavy = sorted({m for m in imported if m.split(".")[0] in ("boto3", "yaml", "PIL")})
     return completed.returncode, heavy, completed.stdout
+
+
+@pytest.mark.unit
+def test_the_bare_python_runs_inherit_no_ci_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The digest run below posts to Slack from a scheduled pipeline whenever its
+    environment holds a webhook, so the subprocess must not inherit the job's."""
+    planted = {
+        "CI_PIPELINE_SOURCE": "schedule",
+        "SLACK_WEBHOOK_URL": SHARED_WEBHOOK,
+        "UX_TEST_STORIES_SLACK_WEBHOOK_URL": WEBHOOK,
+        "GITLAB_REVIEW_TOKEN": CREDENTIAL,
+    }
+    for name, value in planted.items():
+        monkeypatch.setenv(name, value)
+    seen: list[dict[str, str] | None] = []
+    real_run = subprocess.run
+
+    def spy(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs.get("env"))
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", spy)
+    code, _, out = _heavy_imports("--help")
+    assert code == 0, out
+    (env,) = seen
+    assert env is not None, "the subprocess would inherit the whole environment"
+    assert not set(planted) & set(env), sorted(set(planted) & set(env))
+    assert all(value not in env.values() for value in planted.values())
 
 
 @pytest.mark.unit
@@ -4103,8 +4321,15 @@ def test_the_harness_revision_is_gits_with_dirty_meaning_a_harness_path_differs(
     tmp_path: Path,
 ) -> None:
     git = ["git", "-C", str(tmp_path)]
+    # A machine may set ``core.hooksPath`` system-wide to a directory of hook
+    # runners that refuse a commit from an unregistered email, which would fail
+    # this fixture's commit for a reason unrelated to the code under test. An
+    # empty hooks directory measures git alone, as test_ai_mr_review.py does.
+    empty_hooks = tmp_path.parent / f"{tmp_path.name}-empty-hooks"
+    empty_hooks.mkdir()
     for argv in (
         ["init", "-q"],
+        ["config", "core.hooksPath", str(empty_hooks)],
         ["config", "user.email", "t@example.invalid"],
         ["config", "user.name", "t"],
     ):
@@ -4440,3 +4665,78 @@ def test_video_notes_show_only_closed_shapes_from_a_record() -> None:
     assert lines[2].startswith("_A story's video is made only of the review stack")
     assert lines[3] == "_Video of `a-story@x`, not uploaded in a dry run: `a'b.mp4`._"
     assert len(lines) == 5
+
+
+ANNOTATORS = {
+    "Annotator": ("ux-annotator@example.invalid", "Ux!3cretive-annotator-9aZ"),
+    "Annotator-scoped": (
+        "ux-annotator-scoped@example.invalid",
+        "Ux!3cretive-scope-9aZ",
+    ),
+}
+NO_STACK_SHOWN = signin.PageFacts(None, None, None, (1600, 1000, 1.0), None)
+
+
+def _personas_and_annotators(*groups: str, annotators: tuple[str, ...] = ()) -> str:
+    table = {group: PERSONAS[group] for group in groups}
+    table.update({key: ANNOTATORS[key] for key in annotators or tuple(ANNOTATORS)})
+    return _b64(
+        json.dumps(
+            {
+                key: {"username": login, "password": secret}
+                for key, (login, secret) in table.items()
+            }
+        )
+    )
+
+
+def _annotator_run(
+    harness: StoryHarness, *groups: str, annotators: tuple[str, ...] = ()
+) -> None:
+    harness.environ["UX_TEST_PERSONAS"] = _personas_and_annotators(
+        *groups, annotators=annotators
+    )
+    harness.default_facts = dataclasses.replace(
+        harness.default_facts, version="0.6.13.dev6"
+    )
+
+
+@pytest.mark.unit
+def test_an_annotator_flow_is_judged_by_its_own_page(harness: StoryHarness) -> None:
+    """An Annotator's navigation shows Deployment Info like every other group's, so
+    its own page releases its video and no other persona signs in for it."""
+    _annotator_run(harness, "Admin", annotators=("Annotator",))
+    harness.script = {"why-is-it-in-review@queue-annotator": ["help"]}
+    assert harness.main(story="why-is-it-in-review") == 0
+    assert [name for name, _ in harness.sign_ins] == ["Annotator"]
+    assert harness.results()["flows"][0]["verdict"] == "done"
+    assert harness.record()["video_withheld"] is None
+    assert harness.calls.count("render_video") == 1
+
+
+@pytest.mark.unit
+def test_an_annotator_page_that_shows_no_stack_withholds_its_video(
+    harness: StoryHarness,
+) -> None:
+    """No other persona's page stands in for one that shows no stack, whatever
+    the group."""
+    _annotator_run(harness, "Admin", annotators=("Annotator",))
+    harness.facts["Annotator"] = NO_STACK_SHOWN
+    assert harness.main(story="why-is-it-in-review") == 0
+    assert [name for name, _ in harness.sign_ins] == ["Annotator"]
+    assert harness.record()["video_withheld"] == PAGE_REASON
+    assert "render_video" not in harness.calls
+
+
+@pytest.mark.unit
+def test_a_persona_with_its_own_credentials_is_never_signed_in_with_its_groups(
+    harness: StoryHarness,
+) -> None:
+    """The profile-limited Annotator names its own UX_TEST_PERSONAS entry; without
+    it the flow is not run, rather than run as the unlimited Annotator."""
+    _annotator_run(harness, "Admin", annotators=("Annotator",))
+    assert harness.main(story="find-my-review-work") == 0
+    assert [name for name, _ in harness.sign_ins] == ["Annotator"]
+    verdicts = {flow["key"]: flow["verdict"] for flow in harness.results()["flows"]}
+    assert verdicts["find-my-review-work@queue-annotator"] == "done"
+    assert verdicts["find-my-review-work@scoped-annotator"] == "not_run"

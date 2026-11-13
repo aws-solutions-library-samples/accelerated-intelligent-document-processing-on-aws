@@ -2262,9 +2262,9 @@ Resources:
               multi_instance_detection:
                 type: object
                 sectionLabel: Multi-instance Section Detection
-                description: "Detects a section that turned out to hold SEVERAL separate instances (records) of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many instances the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every instance, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction only, so this is shown only when Extraction mode is 'simple'."
+                description: "Detects a section that turned out to hold SEVERAL separate instances (records) of the same class when extraction returned only one of them, and raises a warning naming both counts. It asks the model, in the same extraction call, how many instances the pages contain - one extra integer of output, no second inference. Detection only: it never changes the extracted data, never fails a section, and never turns on a schema flag for you. To actually extract every instance, set 'Multi-instance Sections' on the class in the Document Schema editor. Applies to Simple extraction and to Advanced extraction, except where an Advanced section is split into page-range shards or resumed from a validated checkpoint; those are not checked."
                 order: 4.08
-                dependsOn: { field: "extraction.mode", value: "simple" }
+                dependsOn: { field: "extraction.mode", values: ["simple", "advanced"] }
                 properties:
                   enabled:
                     type: boolean
@@ -2948,9 +2948,15 @@ Resources:
                 maximum: 1.0
                 default: 0.8
                 order: 1
+              route_missing_required_fields:
+                type: boolean
+                title: Review missing required fields
+                description: "With the Default review queue on, also send a document to review when a field its class schema marks required has no extracted value. Legacy HITL triggers on confidence alerts only."
+                default: true
+                order: 2
               notifications:
                 type: object
-                order: 2
+                order: 3
                 sectionLabel: "Inbox messages"
                 description: "Retention and per-user cap for Inbox messages. Applies whether or not HITL review is enabled; changes apply to messages written after the change."
                 properties:
@@ -2970,6 +2976,14 @@ Resources:
                     maximum: 200
                     default: 50
                     order: 1
+              bulk_skip_sync_limit:
+                type: number
+                title: "Bulk skip synchronous limit"
+                description: "Bulk Skip All Reviews runs immediately for up to this many documents and as a background job (Home > Jobs) above it. Read from the active configuration profile; values are clamped to 1-100."
+                minimum: 1
+                maximum: 100
+                default: 50
+                order: 4
           summarization:
             order: 7
             type: object
@@ -3839,6 +3853,22 @@ Resources:
                       - "us.anthropic.claude-opus-5:1m"
                       - "us.xai.grok-4.6"
                       - "us.openai.gpt-6-astra"
+                      # The EU twins of the ids above, so an EU stack (whose
+                      # picklists keep only eu. and unprefixed ids) is offered the
+                      # eu.anthropic.claude-sonnet-4-6 default the swap writes.
+                      - "eu.amazon.nova-lite-v1:0"
+                      - "eu.amazon.nova-pro-v1:0"
+                      - "eu.amazon.nova-2-lite-v1:0"
+                      - "eu.anthropic.claude-sonnet-4-6"
+                      - "eu.anthropic.claude-sonnet-5"
+                      - "eu.anthropic.claude-sonnet-5:1m"
+                      - "eu.anthropic.claude-opus-4-6-v1:1m"
+                      - "eu.anthropic.claude-opus-4-7"
+                      - "eu.anthropic.claude-opus-4-7:1m"
+                      - "eu.anthropic.claude-opus-4-8"
+                      - "eu.anthropic.claude-opus-4-8:1m"
+                      - "eu.anthropic.claude-opus-5"
+                      - "eu.anthropic.claude-opus-5:1m"
                     order: 1
                   temperature:
                     type: number
@@ -4685,17 +4715,22 @@ Resources:
       # checkov:skip=CKV_AWS_163: "ECR scanning controlled by parameter for environment-specific deployment requirements"
       ImageScanningConfiguration:
         ScanOnPush: !If [IsECRImageScanningEnabled, true, false]
+      # Keeps two complete versions plus slack. A version is one image per entry
+      # in DockerBuildRun's ExpectedImages, and a rollback reuses the previous
+      # version's images only while all of them are still here (#1824), so the
+      # count must be at least twice that list's length.
+      # scripts/tests/test_docker_build_run_wiring.py checks it.
       LifecyclePolicy:
         LifecyclePolicyText: |
           {
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Keep last 15 images",
+                "description": "Keep last 30 images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
-                  "countNumber": 15
+                  "countNumber": 30
                 },
                 "action": {
                   "type": "expire"
@@ -4751,12 +4786,13 @@ Resources:
                   - s3:GetObjectVersion
                   - s3:GetBucketLocation
                   - s3:ListBucket
+              # The build logs to DockerBuildLogGroup (LogsConfig below), which
+              # the stack creates first. No logs:CreateLogGroup: a build must not
+              # be able to recreate a deleted group with no retention or key.
               - Resource:
-                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
-                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*:*"
+                  - !GetAtt DockerBuildLogGroup.Arn
                 Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
               - Resource:
@@ -4815,6 +4851,17 @@ Resources:
                       ec2:AuthorizedService: !Sub "codebuild.${AWS::URLSuffix}"
                 - !Ref AWS::NoValue
 
+  # The image build's logs. Without LogsConfig CodeBuild creates
+  # /aws/codebuild/<project> itself, with no retention and no key, and the
+  # stack never deletes it.
+  DockerBuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/codebuild/DockerBuildProject"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId: !Ref CustomerManagedEncryptionKeyArn
+
   DockerBuildProject:
     Type: AWS::CodeBuild::Project
     # cdk-nag suppress: AwsSolutions-CB5 - Privileged mode required for Docker image builds
@@ -4838,6 +4885,10 @@ Resources:
         Location: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/${SourceZipfile}"
         Type: S3
         BuildSpec: patterns/unified/buildspec.yml
+      LogsConfig:
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref DockerBuildLogGroup
       Environment:
         ComputeType: BUILD_GENERAL1_LARGE
         Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
@@ -4911,6 +4962,12 @@ Resources:
                   - ecr:DescribeImages
                 Resource:
                   - !GetAtt ECRRepository.Arn
+              # Read this stack's own status, to tell a rollback from an update
+              # (#1824). Scoped to this stack only.
+              - Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                Resource: !Ref AWS::StackId
         # Used by custom resource helper poller
         # https://github.com/aws-cloudformation/custom-resource-helper
         - PolicyName: CustomResourcePoller
@@ -4931,6 +4988,17 @@ Resources:
                   - lambda:RemovePermission
                 Resource:
                   - !Sub "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:*"
+        - PolicyName: KeepLogGroupDeleted
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Lambda delivers an invocation's last log lines after the stack delete
+              # has removed this group; denying the create keeps it deleted (#1754).
+              - Effect: Deny
+                Action: logs:CreateLogGroup
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${CodeBuildTriggerLogGroup}"
+                  - !GetAtt CodeBuildTriggerLogGroup.Arn
       ManagedPolicyArns:
         - !If
           - DeployInVPC
@@ -4989,6 +5057,9 @@ Resources:
       CodeLocation: !Sub "arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/${SourceZipfile}"
       ImageVersion: !Ref ImageVersion
       LambdaArchitecture: !Ref LambdaArchitecture
+      # Lets a rollback reuse the previous version's images, which are still in
+      # this repository, instead of rebuilding them (#1824).
+      RepositoryName: !Ref ECRRepository
       ExpectedImages:
         - "bda-invoke-function"
         - "bda-completion-function"
@@ -5232,12 +5303,11 @@ Resources:
               - kms:GenerateDataKey*
               - kms:DescribeKey
             Resource: !Ref CustomerManagedEncryptionKeyArn
-          - Effect: Allow
-            Action:
-              - ssm:GetParameter
-              - ssm:PutParameter
-              - ssm:GetParametersByPath
-            Resource: '*'
+          # No SSM grant: ssm:GetParameter/PutParameter/GetParametersByPath on
+          # "*" came with the removed SageMaker A2I flow. Neither this handler
+          # nor any idp_common module it imports calls SSM, and it has no
+          # SETTINGS_PARAMETER; scripts/tests/test_template_security_hardening.py
+          # holds both.
           - Effect: Allow
             Action:
               - bedrock:GetDataAutomationProject
@@ -5500,6 +5570,14 @@ Resources:
               Action:
                 - bedrock:ListDataAutomationProjects
               Resource: "*"
+        - Statement:
+            # Lambda delivers an invocation's last log lines after the stack delete
+            # has removed this group; denying the create keeps it deleted (#1754).
+            - Effect: Deny
+              Action: logs:CreateLogGroup
+              Resource:
+                - !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${BDAOCRProjectFunctionLogGroup}"
+                - !GetAtt BDAOCRProjectFunctionLogGroup.Arn
 
   BDAOCRProjectFunctionLogGroup:
     Type: AWS::Logs::LogGroup
@@ -5776,7 +5854,12 @@ Resources:
           LOG_LEVEL: !Ref LogLevel
           DOCUMENT_TRACKING_MODE: dynamodb
           WORKING_BUCKET: !Ref WorkingBucket
-          # Guardrails break classification
+          # Guardrails break classification. GUARDRAIL_ID_AND_VERSION is left unset
+          # here on purpose: when the guardrail was introduced, applying it to the
+          # classification call broke classification, and it was disabled for this
+          # function alone. The failure mode was not recorded and has not been
+          # re-measured since. The exclusion is registered, with this reason, as
+          # GUARDRAIL_ENV_EXEMPT in scripts/tests/test_model_call_guardrail.py.
           # GUARDRAIL_ID_AND_VERSION: !If [HasGuardrailConfig, !Sub "${BedrockGuardrailId}:${BedrockGuardrailVersion}", ""]
           BEDROCK_ASSUME_ROLE_ARN:
             !If [HasBedrockHubRole, !Ref BedrockHubRoleArn, !Ref AWS::NoValue]

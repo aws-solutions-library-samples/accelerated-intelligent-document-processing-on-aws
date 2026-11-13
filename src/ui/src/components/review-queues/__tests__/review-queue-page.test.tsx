@@ -8,14 +8,33 @@
  * Annotators (how many are listed) and Priority; the Annotators table lists each listed
  * Annotator, and anyone still holding documents, with the documents assigned to each;
  * the Documents table shows Document, Source, Queue, Priority and State, then the row
- * Actions menu; and the page reports the queue's name for the breadcrumb.
+ * Actions menu; the page reports the queue's name for the breadcrumb; and the Settings
+ * dialog stays open, keeping what was typed, through a refresh that briefly returns no
+ * definition, without carrying one queue's definition to another queue's page.
  */
 
 import React from 'react';
-import { render, waitFor } from '@testing-library/react';
+import { act, fireEvent, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const defaultQueue = {
+  id: 'default',
+  name: 'Default',
+  description: '',
+  priority: 50,
+  checklist: [],
+  rejectReasons: [],
+  skipReasons: [],
+  timeLimitMinutes: 60,
+  eligibleAnnotators: ['a@example.com', 'b@example.com'],
+  isDefaultQueue: true,
+  enabled: true,
+  version: 4,
+};
+const { listReviewQueues } = vi.hoisted(() => ({ listReviewQueues: vi.fn() }));
 
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: vi.fn() }) }));
 vi.mock('../../../contexts/app', () => ({ default: () => ({ setSuccessMessage: vi.fn(), setErrorMessage: vi.fn() }) }));
@@ -23,21 +42,7 @@ vi.mock('../../../hooks/use-user-role', () => ({ default: () => ({ isAdmin: true
 vi.mock('../../../hooks/use-review-work', () => ({ useOptionalReviewWork: () => null }));
 vi.mock('../reviewer-assignment', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../reviewer-assignment')>()),
-  listReviewQueues: async () => [
-    {
-      id: 'default',
-      name: 'Default',
-      description: '',
-      priority: 50,
-      checklist: [],
-      rejectReasons: [],
-      skipReasons: [],
-      timeLimitMinutes: 60,
-      eligibleAnnotators: ['a@example.com', 'b@example.com'],
-      isDefaultQueue: true,
-      enabled: true,
-    },
-  ],
+  listReviewQueues: () => listReviewQueues(),
   listAnnotatorEmails: async () => [],
 }));
 vi.mock('../review-api', async (importOriginal) => ({
@@ -72,12 +77,24 @@ vi.mock('../review-api', async (importOriginal) => ({
   }),
 }));
 
+// The bulk dialog has its own tests; here it only shows which mode the page opened it in.
+vi.mock('../../review-bulk/BulkSkipModal', () => ({
+  default: ({ mode }: { mode: string }) => <div data-testid="bulk-skip">{mode}</div>,
+}));
+
 import ReviewQueuePage from '../ReviewQueuePage';
 import { queueAnnotatorRows } from '../QueueAnnotatorsTable';
 
+let navigateTo: (path: string) => void = () => undefined;
+const Navigator = () => {
+  navigateTo = useNavigate();
+  return null;
+};
+
 const renderPage = async (onName?: (name: string) => void) => {
-  render(
+  renderWithIntl(
     <MemoryRouter initialEntries={['/review-queues/queues/default']}>
+      <Navigator />
       <Routes>
         <Route path="/review-queues/queues/:queue" element={<ReviewQueuePage onName={onName} />} />
       </Routes>
@@ -86,6 +103,10 @@ const renderPage = async (onName?: (name: string) => void) => {
   await waitFor(() => expect(createWrapper(document.body).findAllTables()).toHaveLength(2));
   await waitFor(() => expect(itemsTable().findRows()).toHaveLength(1));
 };
+
+beforeEach(() => {
+  listReviewQueues.mockReset().mockResolvedValue([defaultQueue]);
+});
 
 const tables = () => createWrapper(document.body).findAllTables();
 const annotatorsTable = () => tables()[0];
@@ -133,6 +154,32 @@ describe('a production queue page', () => {
   });
 });
 
+describe("the Documents table's actions", () => {
+  it('shows Assign and Unassign as buttons and groups the rest under More actions', async () => {
+    await renderPage();
+    const slot = itemsTable().findHeaderSlot()!;
+    expect(slot.findAllButtons().map((b) => b.getElement().textContent)).toEqual(expect.arrayContaining(['Assign to…', 'Unassign']));
+    const menu = slot.findButtonDropdown()!;
+    expect(menu.getElement().textContent).toContain('More actions');
+    menu.openDropdown();
+    expect(menu.getElement().textContent).toMatch(/Queue.*Skip reviews/s);
+    expect(menu.findItems().map((i) => i.getElement().getAttribute('data-testid'))).toEqual([
+      'move',
+      'remove',
+      'skip-selected',
+      'skip-by-profile',
+    ]);
+  });
+
+  it('opens Skip All Reviews by profile from the menu', async () => {
+    await renderPage();
+    const menu = itemsTable().findHeaderSlot()!.findButtonDropdown()!;
+    menu.openDropdown();
+    act(() => menu.findItemById('skip-by-profile')!.click());
+    await waitFor(() => expect(document.querySelector('[data-testid="bulk-skip"]')?.textContent).toBe('PROFILE'));
+  });
+});
+
 describe('the Annotator column', () => {
   it("can be sorted, so each person's documents read together", async () => {
     await renderPage();
@@ -166,5 +213,57 @@ describe('queueAnnotatorRows', () => {
       { email: 'a@x.com', assigned: 0, listed: true },
       { email: 'c@x.com', assigned: 4, listed: false },
     ]);
+  });
+});
+
+describe('the queue Settings dialog', () => {
+  const settingsModal = () =>
+    createWrapper(document.body)
+      .findAllModals()
+      .find((m) => m.findHeader().getElement().textContent?.includes('Default'));
+  const description = () => settingsModal()!.findContent().findTextarea()!;
+  const refresh = async () => {
+    const button = createWrapper(document.body)
+      .findAllButtons()
+      .find((b) => b.getElement().getAttribute('aria-label') === 'Refresh')!;
+    await act(async () => {
+      fireEvent.click(button.getElement());
+    });
+  };
+
+  const openSettings = async () => {
+    const settings = createWrapper(document.body)
+      .findAllButtons()
+      .find((b) => b.getElement().textContent === 'Settings')!;
+    fireEvent.click(settings.getElement());
+    await waitFor(() => expect(settingsModal()?.isVisible()).toBe(true));
+  };
+
+  it("does not carry one queue's definition over to another queue's page", async () => {
+    await renderPage();
+    await openSettings();
+    await act(async () => {
+      navigateTo('/review-queues/queues/claims');
+    });
+    // The listing has no 'claims', and the Default definition it held is not claims'.
+    await waitFor(() => expect(settingsModal()?.isVisible() ?? false).toBe(false));
+  });
+
+  it('stays open, keeping what was typed, when a refresh briefly returns no definition', async () => {
+    await renderPage();
+    await openSettings();
+    description().setTextareaValue('typed, not saved');
+
+    listReviewQueues.mockResolvedValueOnce([]);
+    await refresh();
+    await waitFor(() => expect(listReviewQueues).toHaveBeenCalledTimes(2));
+    expect(settingsModal()?.isVisible()).toBe(true);
+    expect(description().getTextareaValue()).toBe('typed, not saved');
+
+    // The definition comes back: still the same dialog, still what was typed.
+    await refresh();
+    await waitFor(() => expect(listReviewQueues).toHaveBeenCalledTimes(3));
+    expect(settingsModal()?.isVisible()).toBe(true);
+    expect(description().getTextareaValue()).toBe('typed, not saved');
   });
 });

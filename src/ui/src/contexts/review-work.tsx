@@ -4,7 +4,9 @@
 // The one Home › Tasks poll for the whole app. Mounted once in the authenticated
 // shell for Annotators, so the navigation badge and the Tasks page share a single
 // 30-second poll: `listMyReviewWork` (assigned production items) and
-// `listMyTestSetTasks` (assigned Test Studio documents), in parallel.
+// `listMyTestSetTasks` (assigned Test Studio documents), in parallel. A caller who
+// works no test set (a Reviewer-only user) makes no `listMyTestSetTasks` call; its
+// source is answered with an empty list.
 import React, { createContext, useCallback, useMemo, useRef, useState } from 'react';
 import { ConsoleLogger } from 'aws-amplify/utils';
 
@@ -12,6 +14,7 @@ import { generateClient } from '../api/client-shim';
 import { listMyReviewWork as listMyReviewWorkQuery } from '../graphql/generated';
 import type { ReviewItem } from '../graphql/generated/operation-types';
 import usePolling from '../hooks/use-polling';
+import useUserRole from '../hooks/use-user-role';
 import { listMyTestSetTasks } from '../components/review-queues/reviewer-assignment';
 import { fromTestSetTask } from '../components/review-queues/work-items';
 import type { WorkItem } from '../components/review-queues/work-items';
@@ -74,6 +77,9 @@ const withoutSettled = (s: State, settled: ReadonlySet<string>): State => {
 
 export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [state, setState] = useState<State>(INITIAL);
+  const { canWorkTestSetQueues, isAuthor, loading: roleLoading } = useUserRole();
+  // Test Studio tasks are an Annotator's (or an Admin's or Author's); the server refuses a Reviewer.
+  const readsTestSetTasks = canWorkTestSetQueues || isAuthor;
   const inFlightRef = useRef<Promise<void> | null>(null);
   const epochRef = useRef(0);
   // Finished work item ids, with when they stop being hidden.
@@ -99,7 +105,7 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
       try {
         const [production, testSets] = await Promise.allSettled([
           client.graphql({ query: listMyReviewWorkQuery, variables: { limit: 100 } }),
-          listMyTestSetTasks(),
+          readsTestSetTasks ? listMyTestSetTasks() : Promise.resolve([]),
         ]);
         if (epoch !== epochRef.current) return;
         setState((prev) => {
@@ -128,9 +134,10 @@ export const ReviewWorkProvider = ({ children }: { children: React.ReactNode }):
     })();
     inFlightRef.current = request;
     return request;
-  }, []);
+  }, [readsTestSetTasks]);
 
-  usePolling(poll, { enabled: true, intervalMs: REVIEW_WORK_POLL_INTERVAL_MS, immediate: true });
+  // Waits for the role, so the first poll already knows whether to read Test Studio tasks.
+  usePolling(poll, { enabled: !roleLoading, intervalMs: REVIEW_WORK_POLL_INTERVAL_MS, immediate: true });
 
   const refresh = useCallback(async (): Promise<void> => {
     epochRef.current += 1;

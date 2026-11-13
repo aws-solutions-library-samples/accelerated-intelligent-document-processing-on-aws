@@ -15,7 +15,7 @@ import os
 import sys
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import yaml
 
@@ -24,6 +24,7 @@ from idp_common.bedrock.model_utils import (
     resolve_model_id_from_arn,
 )
 from idp_common.config.retired_models import retirement_of
+from idp_common.prompt_comments import strip_prompt_comments_in_config
 
 # Use importlib.resources for Python 3.9+
 if sys.version_info >= (3, 9):
@@ -38,17 +39,27 @@ logger = logging.getLogger(__name__)
 # Valid pattern names
 VALID_PATTERNS = ["pattern-1", "pattern-2"]
 
-# Feature sets for create-config command
+# Feature sets for the create-config command. Each entry names top-level sections
+# of the system defaults; a name a pattern's defaults lack is skipped for that
+# pattern (pattern-1 has no ``ocr`` or ``classification``). Confidence scoring is
+# not a section of its own: it lives in ``extraction.confidence``, so it comes with
+# ``extraction``. tests/unit/config/test_generated_template_validates.py derives the
+# sections from the defaults and fails on a name that is not one, and on a section
+# that neither ``all`` nor its ``EXCLUDED_FROM_ALL`` set accounts for. Every
+# section a set copies is written at its defaults (less the long prompts, unless
+# ``include_prompts``), and an upload is merged over the deployment's configuration,
+# so every setting written is reset there (``summarization`` and ``evaluation``
+# switch back on where a preset turned them off). ``all`` leaves
+# out ``hitl``, ``chat`` and ``rule_validation`` on purpose so that reset does not
+# also switch those features on or off (issue #1691).
 FEATURE_SETS = {
     "min": ["classification", "extraction", "classes"],
-    "core": ["ocr", "classification", "extraction", "assessment", "classes"],
+    "core": ["ocr", "classification", "extraction", "classes"],
     "all": [
         "ocr",
         "classification",
         "extraction",
-        "assessment",
         "summarization",
-        "criteria_validation",
         "evaluation",
         "discovery",
         "agents",
@@ -77,6 +88,57 @@ def deep_update(target: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any
         else:
             target[key] = deepcopy(value)
     return target
+
+
+def overlay_pricing_rows(
+    default_rows: List[Dict[str, Any]], custom_rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Lay saved pricing rows over the default rows, per model and per unit.
+
+    The effective pricing table is the defaults with every saved row applied
+    on top of them:
+
+    - a saved unit replaces the default unit of the same name on the same entry;
+    - a saved unit the default entry lacks is added to that entry;
+    - a saved entry the defaults lack is appended;
+    - a default entry or unit the saved table does not mention is kept, so a
+      model a later release adds to the defaults is priced on a stack that saved
+      earlier, and a default row deleted in the editor reappears.
+
+    Entries are matched on ``name`` and units on ``name`` within an entry, the
+    keys the cost readers price by. Those readers build a name-keyed dict, so of
+    two rows with the same name the **last** one prices; a saved row is therefore
+    applied to the last default entry, and the last unit within it, of that name.
+    Saved rows are applied in order, so when a name repeats in them the later row
+    wins for each unit it names. A saved entry the defaults lack is added once.
+
+    Neither argument is modified; the stored records keep their shape, because
+    only the reader changes.
+    """
+    merged = deepcopy(default_rows)
+    by_name: Dict[Any, Dict[str, Any]] = {}
+    for entry in merged:
+        by_name[entry.get("name")] = entry  # the last of a repeated name
+
+    for custom_entry in custom_rows:
+        name = custom_entry.get("name")
+        target = by_name.get(name)
+        if target is None:
+            added = deepcopy(custom_entry)
+            merged.append(added)
+            by_name[name] = added
+            continue
+        units = target.setdefault("units", [])
+        for custom_unit in custom_entry.get("units") or []:
+            unit_name = custom_unit.get("name")
+            # The last unit of that name, the one the readers price by.
+            for index in range(len(units) - 1, -1, -1):
+                if units[index].get("name") == unit_name:
+                    units[index] = deepcopy(custom_unit)
+                    break
+            else:
+                units.append(deepcopy(custom_unit))
+    return merged
 
 
 def apply_delta_with_deletions(
@@ -478,6 +540,118 @@ def merge_config_with_defaults(
     return result
 
 
+# Sections the ``min`` set writes as a one-key ``enabled: false`` stub rather than
+# copying, so that leaving them out switches them off instead of keeping whatever
+# the configuration underneath has. Confidence scoring is not among them: it is
+# ``extraction.confidence``, which ``min`` copies, so it stays on.
+MIN_DISABLED_SECTIONS = ["summarization", "evaluation"]
+
+
+def template_sections(pattern: str = "pattern-2") -> List[str]:
+    """The section names ``generate_config_template`` accepts for ``pattern``.
+
+    A section is a top-level key of the pattern's system defaults holding a mapping
+    or a list, in the order the defaults declare them; ``notes`` and ``use_bda`` are
+    scalars and are not sections.
+    """
+    return [
+        key
+        for key, value in load_system_defaults(pattern).items()
+        if isinstance(value, (dict, list))
+    ]
+
+
+def _resolve_sections(features: Union[str, List[str]], pattern: str) -> List[str]:
+    """The section list a preset name or an explicit list stands for.
+
+    A preset may name a section a pattern's defaults lack (pattern-1 has no ``ocr``
+    or ``classification``), and those are skipped. An explicit list is the caller's
+    own request, so a name that is not a section of ``pattern`` is refused rather
+    than dropped: dropping it turned a one-letter typo into a template missing the
+    section, reported as a success.
+    """
+    if isinstance(features, str):
+        if features not in FEATURE_SETS:
+            raise ValueError(
+                f"Invalid feature set '{features}'. Valid: {list(FEATURE_SETS.keys())}"
+            )
+        return FEATURE_SETS[features]
+
+    if not features:
+        raise ValueError(
+            "No sections requested. Give a feature set "
+            f"({', '.join(FEATURE_SETS)}) or one or more section names."
+        )
+    valid = template_sections(pattern)
+    unknown = [name for name in features if name not in valid]
+    if unknown:
+        message = (
+            f"Unknown configuration section(s) for {pattern}: "
+            f"{', '.join(repr(n) for n in unknown)}. "
+            f"Valid sections: {', '.join(valid)}. "
+            f"Feature sets, used on their own: {', '.join(FEATURE_SETS)}."
+        )
+        if any(name in FEATURE_SETS for name in unknown):
+            message += " A feature set cannot be combined with section names."
+        raise ValueError(message)
+    return list(dict.fromkeys(features))
+
+
+def _template_header(
+    features: Union[str, List[str]],
+    pattern: str,
+    written: List[str],
+    disabled: List[str],
+    include_prompts: bool,
+    confidence_mode: Optional[str],
+    empty: Optional[List[str]] = None,
+) -> str:
+    """The comment block that opens a generated template, describing that file."""
+    label = features if isinstance(features, str) else ", ".join(features)
+    omitted = [s for s in template_sections(pattern) if s not in written + disabled]
+
+    lines = [
+        "# IDP Configuration Template",
+        f"# Generated for: {pattern}",
+        f"# Feature set: {label}",
+        "#",
+        f"# Sections copied from the system defaults: {', '.join(written)}.",
+    ]
+    if disabled:
+        lines.append(f"# Sections switched off: {', '.join(disabled)}.")
+    if confidence_mode and confidence_mode != "off":
+        lines.append(
+            "# Confidence scoring stays on (extraction.confidence.mode: "
+            f"{confidence_mode})."
+        )
+    if omitted:
+        lines.append(f"# Sections not in this file: {', '.join(omitted)}.")
+    if empty:
+        lines.append(
+            f"# Empty in the system defaults, so left out: {', '.join(empty)}."
+        )
+        lines.append("# Written empty, it would replace the profile's own on upload;")
+        lines.append("# add yours under that top-level key.")
+    if not include_prompts:
+        lines.append(
+            "# Long system_prompt, task_prompt and user_prompt values are left out;"
+        )
+        lines.append("# other prompt fields are written in full.")
+    lines += [
+        "#",
+        "# Anything not in this file keeps the value of the configuration it is",
+        "# merged over: the system defaults when validating or deploying, or the",
+        "# stack's default configuration (or the profile's current one) when",
+        "# uploading.",
+        "# Edit only the values you need to customize.",
+        "#",
+        "# Documentation: https://github.com/aws-solutions-library-samples/"
+        "accelerated-intelligent-document-processing-on-aws/blob/main/docs/"
+        "configuration.md",
+    ]
+    return "\n".join(lines) + "\n\n"
+
+
 def generate_config_template(
     features: Union[str, List[str]] = "min",
     pattern: str = "pattern-2",
@@ -488,7 +662,10 @@ def generate_config_template(
     Generate a configuration template YAML string.
 
     Args:
-        features: Feature set name ("min", "core", "all") or list of section names
+        features: Feature set name ("min", "core", "all") or a list of section
+            names (see ``template_sections``). An unknown name in a list raises
+            ``ValueError``, as does a request whose sections are all empty in
+            the defaults (``["classes"]``), which has nothing to write.
         pattern: Pattern to base the template on
         include_prompts: If True, include full prompt templates
         include_comments: If True, include helpful comments
@@ -496,15 +673,7 @@ def generate_config_template(
     Returns:
         YAML string for the configuration template
     """
-    # Determine which sections to include
-    if isinstance(features, str):
-        if features not in FEATURE_SETS:
-            raise ValueError(
-                f"Invalid feature set '{features}'. Valid: {list(FEATURE_SETS.keys())}"
-            )
-        sections = FEATURE_SETS[features]
-    else:
-        sections = features
+    sections = _resolve_sections(features, pattern)
 
     # Load full defaults
     defaults = load_system_defaults(pattern)
@@ -515,8 +684,18 @@ def generate_config_template(
     # Always include notes
     template["notes"] = "My IDP Configuration - customize as needed"
 
+    written: List[str] = []
+    empty: List[str] = []
     for section in sections:
         if section in defaults:
+            # A list the defaults leave empty (``classes: []``) has nothing to
+            # copy, and writing it is not neutral: an uploaded file is merged over
+            # the profile's current configuration, and a list there is replaced
+            # rather than merged, so ``classes: []`` emptied the profile's document
+            # classes (issue #1720). Leaving the key out keeps them.
+            if defaults[section] == []:
+                empty.append(section)
+                continue
             section_data = deepcopy(defaults[section])
 
             # Optionally strip prompts for cleaner output
@@ -524,12 +703,24 @@ def generate_config_template(
                 section_data = _strip_prompts(section_data)
 
             template[section] = section_data
+            written.append(section)
+
+    if not written:
+        # Only empty sections were requested, so the file would hold nothing but
+        # ``notes``, and uploading it would only overwrite the profile's notes.
+        raise ValueError(
+            f"Nothing to generate: {', '.join(empty)} "
+            f"{'is' if len(empty) == 1 else 'are'} empty in the system defaults. "
+            "Write your document classes under a top-level 'classes:' key in your "
+            "own file, or request a section that has defaults."
+        )
 
     # Add disabled flags for sections not in the template
+    disabled: List[str] = []
     if features == "min":
-        template["summarization"] = {"enabled": False}
-        template["assessment"] = {"enabled": False}
-        template["evaluation"] = {"enabled": False}
+        for section in MIN_DISABLED_SECTIONS:
+            template[section] = {"enabled": False}
+            disabled.append(section)
 
     # Convert to YAML
     yaml_str = yaml.dump(
@@ -542,17 +733,21 @@ def generate_config_template(
 
     # Add header comments if requested
     if include_comments:
-        header = f"""# IDP Configuration Template
-# Generated for: {pattern}
-# Feature set: {features}
-#
-# This is a minimal configuration - unspecified fields use system defaults.
-# Edit only the values you need to customize.
-#
-# Documentation: https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/configuration.md
-
-"""
-        yaml_str = header + yaml_str
+        confidence_mode = (
+            (template.get("extraction") or {}).get("confidence") or {}
+        ).get("mode")
+        yaml_str = (
+            _template_header(
+                features,
+                pattern,
+                written,
+                disabled,
+                include_prompts,
+                confidence_mode,
+                empty,
+            )
+            + yaml_str
+        )
 
     return yaml_str
 
@@ -561,16 +756,22 @@ def _strip_prompts(data: Any) -> Any:
     """
     Recursively strip prompt fields from a config section.
 
-    Replaces long prompt strings with placeholder comments.
+    A long prompt is omitted rather than replaced: the template is a delta that
+    ``merge_config_with_defaults`` lays over the system defaults, so an absent key
+    is what "use the default prompt" means. Any string left in its place would be
+    read as the prompt itself -- by ``validate_config``'s placeholder checks, which
+    then refuse the file, and at runtime by every prompt field no check covers.
     """
     if isinstance(data, dict):
         result = {}
         for key, value in data.items():
+            # Deliberately narrower than prompt_comments.is_prompt_key: this
+            # decides which keys a generated template may OMIT to inherit the
+            # default, and only these three have a shipped default to fall back
+            # to. is_prompt_key decides which values comments are stripped from.
             if key in ("system_prompt", "task_prompt", "user_prompt"):
-                # Replace prompts with placeholder
-                if value and len(str(value)) > 50:
-                    result[key] = "# Uses system default prompt"
-                else:
+                # Omit long prompts so the system default applies
+                if not (value and len(str(value)) > 50):
                     result[key] = value
             else:
                 result[key] = _strip_prompts(value)
@@ -685,7 +886,7 @@ def validate_config(
     try:
         from idp_common.config.models import IDPConfig
 
-        IDPConfig.model_validate(merged)
+        validated = IDPConfig.model_validate(merged)
     except ImportError:
         raise
     except Exception as e:
@@ -702,11 +903,28 @@ def validate_config(
     # Enhanced validation checks
     _validate_model_ids(merged, result)
     _validate_max_tokens(merged, result)
-    _validate_task_prompt_placeholders(merged, result)
+    # The prompt checks judge what is sent: prompt comments ({# ... #}) are removed
+    # before a prompt reaches a model, so a placeholder or <<CACHEPOINT>> written
+    # only inside a comment must not count. The stored text is not changed.
+    sent_prompts = strip_prompt_comments_in_config(merged)
+    _validate_task_prompt_placeholders(sent_prompts, result)
+    _validate_confidence_prompt_as_sent(validated, merged, result)
     _validate_schema_fields(config.get("classes", []), result)
-    _validate_agentic_openai(merged, result)
+    # The extraction path is decided by the validated model, never by re-reading the
+    # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
+    # and the runtime reads `config.extraction.agentic.enabled` off this same model.
+    # Escalation is read off the same model, which is what the runtime reads,
+    # including a pre-0.7 `extraction.agentic.validation` block once migrated.
+    vcfg = validated.extraction.validation
+    _validate_agentic_openai(
+        merged,
+        result,
+        agentic=validated.extraction.agentic.enabled,
+        escalates=vcfg.enabled and vcfg.fail_action == "escalate",
+        escalation_model=vcfg.escalation_model,
+    )
     _validate_simple_integrated_lists(merged, result)
-    _validate_prompt_cache_prefix(merged, result)
+    _validate_prompt_cache_prefix(sent_prompts, result)
     _validate_discovery_openai(merged, result)
     _validate_multi_doc_discovery_forced_tool(merged, result)
     _validate_pipeline_hook_reachability(merged, result)
@@ -876,11 +1094,56 @@ def _load_valid_bedrock_models() -> set:
         return set()
 
 
+# Every model-ID field outside classification that names a Bedrock model
+# ``config_library/pricing.yaml`` prices, as a dotted path into the merged config.
+# Classification is read per call by ``_classification_calls``, and the per-class
+# overrides are read in ``_validate_model_ids``. Three model fields are deliberately
+# absent, each for its own reason:
+#
+# - ``classification.split_then_classify.section_classification.embeddings.model``
+#   and ``discovery.multi_document.embedding_model_id`` name embedding models,
+#   and pricing.yaml prices none: the shipped default ``us.cohere.embed-v4:0`` is
+#   not in it, so checking either would refuse the default configuration.
+# - The per-class ``x-aws-idp-evaluation-model-name`` is the name of the Stickler
+#   model class the evaluator builds, not a Bedrock model.
+#
+# ``tests/unit/config/test_model_id_catalog_coverage.py`` walks ``IDPConfig`` and
+# fails on a model field that is in neither this tuple nor its list of the above.
+_CATALOG_MODEL_FIELDS: Tuple[str, ...] = (
+    "ocr.model_id",
+    "extraction.model",
+    "extraction.agentic.review_agent_model",
+    "extraction.confidence.model",
+    "extraction.confidence.escalation_model",
+    "extraction.validation.escalation_model",
+    "summarization.model",
+    "chat.model",
+    "rule_validation.fact_extraction.model",
+    "rule_validation.rule_validation_orchestrator.model",
+    "rule_validation.z3_rule_translator.model",
+    "rule_validation.z3_value_extraction.model",
+    "agents.error_analyzer.model_id",
+    "agents.chat_companion.model_id",
+    "discovery.without_ground_truth.model_id",
+    "discovery.with_ground_truth.model_id",
+    "discovery.auto_split.model_id",
+    "discovery.multi_document.analysis_model_id",
+    "discovery.rules.model",
+    "discovery.rules.agentic.review_agent_model",
+    "evaluation.llm_method.model",
+)
+
+
 def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -> None:
     """
     Validate Bedrock model IDs against pricing.yaml.
 
-    Checks that model IDs in config are valid and recognized.
+    Checks every model ID the config names: each classification call the active
+    strategy makes, every path in ``_CATALOG_MODEL_FIELDS``, the per-class
+    extraction, extraction-escalation and confidence-escalation overrides, and the
+    ``model`` of any field's LLM-comparator method-config. An ID
+    is compared as written, so surrounding whitespace or upper case is reported
+    like any other typo — the Bedrock client sends it on unchanged.
 
     A model may be named by ARN rather than by bare model ID — GovCloud
     requires an account-scoped inference-profile ARN, and provisioned-throughput
@@ -914,35 +1177,70 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         # Can't validate - skip silently
         return
 
-    sections_with_models = {
-        "ocr": "model_id",
-        "classification": "model",
-        "extraction": "model",
-        "assessment": "model",
-        "summarization": "model",
-    }
+    from idp_common.config.schema_constants import (
+        EVALUATION_METHOD_LLM,
+        X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EVALUATION_METHOD,
+        X_AWS_IDP_EVALUATION_METHOD_CONFIG,
+        X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+        X_AWS_IDP_EXTRACTION_MODEL,
+    )
 
-    targets: List[tuple] = []
-    for section_name, model_field in sections_with_models.items():
-        if section_name not in merged_config:
-            continue
-        if section_name == "classification":
-            # One model per call the active strategy makes.
-            targets.extend(
-                (path, "model", call.get("model"))
-                for path, call in _classification_calls(merged_config)
-            )
-        else:
+    def llm_judge_models(node: Any, field_path: str, class_name: str) -> None:
+        """A field judged by the LLM comparator may name its own model.
+
+        The Stickler mapper lays a field's method-config over
+        ``evaluation.llm_method``, so a ``model`` there chooses the judge.
+        """
+        if isinstance(node, list):
+            for item in node:
+                llm_judge_models(item, field_path, class_name)
+            return
+        if not isinstance(node, dict):
+            return
+        method_config = node.get(X_AWS_IDP_EVALUATION_METHOD_CONFIG)
+        if node.get(X_AWS_IDP_EVALUATION_METHOD) == EVALUATION_METHOD_LLM and (
+            isinstance(method_config, dict)
+        ):
             targets.append(
                 (
-                    section_name,
-                    model_field,
-                    merged_config[section_name].get(model_field),
+                    f"Class '{class_name}' field '{field_path or '<root>'}' "
+                    f"{X_AWS_IDP_EVALUATION_METHOD_CONFIG}.model",
+                    method_config.get("model"),
                 )
             )
+        for key, value in node.items():
+            if key == "properties" and isinstance(value, dict):
+                for name, child in value.items():
+                    child_path = f"{field_path}.{name}" if field_path else name
+                    llm_judge_models(child, child_path, class_name)
+            elif key != X_AWS_IDP_EVALUATION_METHOD_CONFIG:
+                llm_judge_models(value, field_path, class_name)
 
-    for section, field_name, model_id in targets:
-        if not model_id:
+    # (label, value) per model ID the config names. Classification has one model
+    # per call the active strategy makes; every other field is a fixed path.
+    targets: List[tuple] = [
+        (f"{path}.model", call.get("model"))
+        for path, call in _classification_calls(merged_config)
+    ]
+    for path in _CATALOG_MODEL_FIELDS:
+        *parents, leaf = path.split(".")
+        targets.append((path, _dict_at(merged_config, *parents).get(leaf)))
+    for cls in merged_config.get("classes", []) or []:
+        if not isinstance(cls, dict):
+            continue
+        class_name = cls.get(X_AWS_IDP_DOCUMENT_TYPE, "<unnamed>")
+        for key in (
+            X_AWS_IDP_EXTRACTION_MODEL,
+            X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+            X_AWS_IDP_CONFIDENCE_ESCALATION_MODEL,
+        ):
+            targets.append((f"Class '{class_name}' {key}", cls.get(key)))
+        llm_judge_models(cls, "", class_name)
+
+    for label, model_id in targets:
+        if not model_id or not isinstance(model_id, str):
             continue
 
         resolved = resolve_model_id_from_arn(model_id)
@@ -959,7 +1257,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
         if retirement is not None:
             result["valid"] = False
             result["errors"].append(
-                f"{section}.{field_name} has invalid model ID: {model_id} reached "
+                f"{label} has invalid model ID: {model_id} reached "
                 f"end of life on {retirement['eol']} and is no longer available in "
                 f"any region — every call returns ResourceNotFoundException. "
                 f"Choose a current model. Verify with: {retirement['verify']}"
@@ -989,14 +1287,14 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
                 # (has family.name shape) but doesn't match — treat as a typo.
                 result["valid"] = False
                 result["errors"].append(
-                    f"{section}.{field_name} names a Bedrock ARN whose resolved "
+                    f"{label} names a Bedrock ARN whose resolved "
                     f"model ID ({resolved!r}) is not a known Bedrock model. This is "
                     f"most likely a typo in the ARN's resource-id, partition, or "
                     f"account. Full ARN: {model_id}"
                 )
                 continue
             result["warnings"].append(
-                f"{section}.{field_name} names a Bedrock ARN whose underlying "
+                f"{label} names a Bedrock ARN whose underlying "
                 f"model can't be determined offline: {model_id}. Cost reporting "
                 f"needs a matching entry in config_library/pricing.yaml."
             )
@@ -1004,7 +1302,7 @@ def _validate_model_ids(merged_config: Dict[str, Any], result: Dict[str, Any]) -
 
         result["valid"] = False
         result["errors"].append(
-            f"{section}.{field_name} has invalid model ID: {model_id}. "
+            f"{label} has invalid model ID: {model_id}. "
             f"Verify the model name is correct and ensure it's enabled in the Bedrock console. "
             f"Check config_library/pricing.yaml for valid model IDs."
         )
@@ -1025,7 +1323,12 @@ def _looks_like_uuid(value: str) -> bool:
 
 
 def _validate_agentic_openai(
-    merged_config: Dict[str, Any], result: Dict[str, Any]
+    merged_config: Dict[str, Any],
+    result: Dict[str, Any],
+    *,
+    agentic: bool,
+    escalates: bool,
+    escalation_model: Optional[str],
 ) -> None:
     """Error when an OpenAI GPT-5.x model is paired with agentic extraction.
 
@@ -1035,24 +1338,40 @@ def _validate_agentic_openai(
     runtime fallback) so the misconfiguration surfaces at config time instead
     of failing obscurely mid-processing.
 
+    ``agentic`` is whether extraction will actually run the agentic path, and the
+    caller takes it from the validated ``IDPConfig`` — the value the runtime reads.
+    It is a parameter rather than something read here because the merged dict
+    cannot answer it: ``extraction.mode`` decides the path and overrides
+    ``extraction.agentic.enabled`` whenever it is set, so ``mode: advanced`` with
+    no ``agentic`` block is agentic, and ``mode: simple`` with
+    ``agentic.enabled: true`` is not. Reading the raw flag got both wrong.
+
     NOTE this gate is about the ROUTE, not the vendor: ``openai.gpt-6-astra``
     reaches Converse and emits ``toolUse``, so it is allowed for agentic
     extraction. The predicate is ``is_openai_responses_model`` precisely so it
     tracks the mantle route rather than the "openai." prefix.
+
+    The escalation model is held to the same rule, because agentic escalation
+    (``ExtractionService._escalate_failing_fields``) calls the same Strands
+    ``structured_output`` with it. ``escalates`` is whether that call can happen at
+    all — validation enabled and ``fail_action: escalate`` — and is taken from the
+    validated model for the same reason ``agentic`` is. Simple-mode escalation is a
+    plain ``bedrock.invoke_model`` call, which routes GPT-5.x through the Responses
+    API, so nothing is refused there. An unset escalation model falls back to the
+    extraction model, which the checks above already cover. Without this check the
+    runtime caught the Strands ``ValueError``, kept the unescalated result and
+    recorded the reason only in the section's metadata.
     """
     from idp_common.bedrock.openai_responses import is_openai_responses_model
-    from idp_common.config.schema_constants import X_AWS_IDP_EXTRACTION_MODEL
+    from idp_common.config.schema_constants import (
+        X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
+        X_AWS_IDP_EXTRACTION_MODEL,
+    )
 
+    if not agentic:
+        return
     extraction = merged_config.get("extraction", {})
     if not isinstance(extraction, dict):
-        return
-
-    # NOTE: reads the raw merged dict, where `agentic.enabled` may disagree with
-    # `mode` (reconcile_mode_and_agentic makes `mode` authoritative in IDPConfig).
-    # Behaviour deliberately unchanged here; see _extraction_is_simple for the
-    # mode-first rule.
-    agentic_enabled = bool(extraction.get("agentic", {}).get("enabled"))
-    if not agentic_enabled:
         return
 
     # Global extraction model
@@ -1061,9 +1380,9 @@ def _validate_agentic_openai(
         result["valid"] = False
         result["errors"].append(
             f"extraction.model '{global_model}' is an OpenAI Responses model, which "
-            "is NOT compatible with agentic extraction (extraction.agentic.enabled=true). "
-            "Set agentic.enabled=false or choose a Converse model — Claude, Amazon "
-            "Nova Pro (not Nova Lite, which fails mid-stream on this path; "
+            "is NOT compatible with agentic extraction (extraction.mode: advanced). "
+            "Set extraction.mode to 'simple' or choose a Converse model — Claude, "
+            "Amazon Nova Pro (not Nova Lite, which fails mid-stream on this path; "
             "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
             "Astra support agentic extraction."
         )
@@ -1079,11 +1398,41 @@ def _validate_agentic_openai(
             result["errors"].append(
                 f"Class '{class_name}' overrides extraction with OpenAI Responses "
                 f"model '{override}', which is NOT compatible with agentic extraction "
-                "(extraction.agentic.enabled=true). Set agentic.enabled=false or "
+                "(extraction.mode: advanced). Set extraction.mode to 'simple' or "
                 "choose a Converse model for this class — Claude, Amazon Nova "
                 "Premier/Pro (not Nova Lite, which fails mid-stream on this path; "
                 "see docs/extraction-and-confidence.md), xAI Grok, or OpenAI GPT-6 "
                 "Astra support agentic extraction."
+            )
+
+    if not escalates:
+        return
+    escalation_remedy = (
+        "Escalation in agentic extraction (extraction.mode: advanced) runs the "
+        "same agent loop. Choose a Converse escalation model — Claude, Amazon Nova "
+        "Premier/Pro, xAI Grok or OpenAI GPT-6 Astra — or set "
+        "extraction.validation.fail_action to 'warn' or 'reject', or set "
+        "extraction.mode to 'simple', where escalation is a plain model call that "
+        "OpenAI GPT-5.x supports."
+    )
+    if escalation_model and is_openai_responses_model(escalation_model):
+        result["valid"] = False
+        result["errors"].append(
+            f"extraction.validation.escalation_model '{escalation_model}' is an "
+            "OpenAI Responses model, which is NOT compatible with agentic "
+            f"extraction. {escalation_remedy}"
+        )
+    for cls in merged_config.get("classes", []) or []:
+        if not isinstance(cls, dict):
+            continue
+        override = cls.get(X_AWS_IDP_EXTRACTION_ESCALATION_MODEL)
+        if override and is_openai_responses_model(override):
+            class_name = cls.get("x-aws-idp-document-type", "<unnamed>")
+            result["valid"] = False
+            result["errors"].append(
+                f"Class '{class_name}' overrides the extraction escalation model "
+                f"with OpenAI Responses model '{override}', which is NOT compatible "
+                f"with agentic extraction. {escalation_remedy}"
             )
 
 
@@ -1287,6 +1636,84 @@ def _modality_supplies_content(modality: Dict[str, Any]) -> bool:
     )
 
 
+def _confidence_pass_can_run(merged_config: Dict[str, Any]) -> bool:
+    """False only when the confidence block turns scoring off.
+
+    Read through ``ConfidenceConfig`` rather than by re-reading ``mode`` and
+    ``enabled`` here: the model is what the runtime reads, and it folds the legacy
+    ``enabled: false`` into ``mode: off``. ``integrated`` still counts as able to run,
+    because simple extraction scores a class with list fields in the separate pass
+    even then. ``validate_config`` calls this only after ``IDPConfig`` has accepted
+    the merged configuration, so the block validates here.
+    """
+    from idp_common.config.models import ConfidenceConfig
+
+    return ConfidenceConfig.model_validate(
+        _dict_at(merged_config, "extraction", "confidence")
+    ).enabled
+
+
+def _validate_confidence_prompt_as_sent(
+    validated: Any, merged_config: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Refuse a confidence prompt ``AssessmentService`` would refuse on every document.
+
+    The prompt judged is the one the separate confidence pass sends: built the way
+    the runtime builds it, from the validated configuration with prompt comments
+    removed (``without_prompt_comments``), through ``select_confidence_task_prompt``,
+    which appends ``extraction.geometry.task_prompt_bbox`` in the LLM-box geometry
+    modes. The service refuses an empty prompt ("task_prompt is required"), and
+    this does too: the placeholder check above skips an empty one, so an explicit
+    ``""`` used to pass. When the prompt carries ``{DOCUMENT_IMAGE}`` the service applies
+    ``document_image_placeholder_error`` to it, and this applies the same rule.
+
+    Classification and extraction are not checked for this, because they do not
+    refuse a repeated ``{DOCUMENT_IMAGE}``: they log a warning and fall back.
+    Classification's context-pages and packet prompts then send the images after
+    the text; extraction and classification's page prompt send the text without the
+    images.
+
+    Skipped when the confidence block turns scoring off, as the placeholder check
+    above is, because the prompt is then never sent.
+    """
+    if not _confidence_pass_can_run(merged_config):
+        return
+
+    from idp_common.config import without_prompt_comments
+    from idp_common.extraction.prompt_assembly import (
+        DOCUMENT_IMAGE_PLACEHOLDER,
+        document_image_placeholder_error,
+        geometry_requires_llm_boxes,
+        select_confidence_task_prompt,
+    )
+
+    extraction = without_prompt_comments(validated, as_model=True).extraction
+    prompt = select_confidence_task_prompt(extraction)
+    path = "extraction.confidence.task_prompt"
+    if geometry_requires_llm_boxes(extraction.geometry.mode):
+        path += " (with extraction.geometry.task_prompt_bbox appended)"
+
+    if not prompt:
+        # The service's own test (``if not prompt_template``), so an empty prompt,
+        # or one holding nothing but a comment, is refused and whitespace is left
+        # to the placeholder check above. An absent prompt never reaches here: the
+        # merge fills it from the system defaults.
+        result["valid"] = False
+        result["errors"].append(
+            f"{path} is empty, and the confidence pass refuses a document when "
+            "it has no prompt. Remove the key to use the system default prompt."
+        )
+        return
+
+    if DOCUMENT_IMAGE_PLACEHOLDER in prompt:
+        error = document_image_placeholder_error(prompt)
+        if error:
+            result["valid"] = False
+            result["errors"].append(
+                f"{path}: {error} The confidence pass refuses a document otherwise."
+            )
+
+
 def _validate_task_prompt_placeholders(
     merged_config: Dict[str, Any], result: Dict[str, Any]
 ) -> None:
@@ -1296,70 +1723,90 @@ def _validate_task_prompt_placeholders(
     Checks for missing required placeholders that would cause silent failures
     when custom task_prompts are provided.
 
-    Required placeholders by section:
-    - ocr: {DOCUMENT_IMAGE}
+    Required placeholders by prompt:
+    - ocr.task_prompt: {DOCUMENT_IMAGE}
     - classification: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - extraction: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
-    - assessment: {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, {EXTRACTION_RESULTS}
-    - summarization: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+    - extraction.task_prompt: {DOCUMENT_TEXT} or {DOCUMENT_IMAGE}
+    - extraction.confidence.task_prompt: {EXTRACTION_RESULTS}, and at least one of
+      {DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}
+    - summarization.task_prompt: {DOCUMENT_TEXT}, {EXTRACTION_RESULTS}
+
+    The confidence prompt lives at ``extraction.confidence.task_prompt``. A pre-0.6
+    ``assessment.task_prompt`` is not read here: ``validate_config`` checks the
+    merged configuration, and the merge runs the migration chain, which moves that
+    block under ``extraction.confidence`` and leaves no top-level ``assessment``.
+    {DOCUMENT_IMAGE} alone is not required of it, because removing that placeholder
+    is the documented way to make the confidence pass text-only (the assessment
+    service attaches page images only when the prompt asks for them).
     """
-    # Validation rules: section -> (required_placeholders, require_all_flag)
-    # require_all_flag: True = ALL placeholders required, False = ANY one required
-    validation_rules = {
-        "ocr": (
+    # Validation rules: (section, prompt path, ALL of these, at least ONE of these
+    # (empty = no such requirement), message).
+    validation_rules = [
+        (
+            "ocr",
+            ("ocr",),
             ["{DOCUMENT_IMAGE}"],
-            True,  # Must have DOCUMENT_IMAGE
+            [],
             "ocr.task_prompt must include {DOCUMENT_IMAGE} placeholder. "
             "Without this placeholder, the OCR model will not receive the document image, "
             "resulting in OCR failures. "
             "Either add the required placeholder or remove task_prompt to use system defaults.",
         ),
-        "classification": (
+        (
+            "classification",
+            ("classification",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "{path} must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the classification model will not receive document content, "
             "resulting in classification failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "extraction": (
+        (
+            "extraction",
+            ("extraction",),
+            [],
             ["{DOCUMENT_TEXT}", "{DOCUMENT_IMAGE}"],
-            False,  # Must have at least one
             "extraction.task_prompt must include {DOCUMENT_TEXT} or {DOCUMENT_IMAGE} placeholder. "
             "Without these placeholders, the LLM will not receive document content from OCR, "
             "resulting in silent extraction failures. "
             "Either add at least one required placeholder or remove task_prompt to use system defaults.",
         ),
-        "assessment": (
-            ["{DOCUMENT_IMAGE}", "{OCR_TEXT_CONFIDENCE}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have all three
-            "assessment.task_prompt must include {DOCUMENT_IMAGE}, {OCR_TEXT_CONFIDENCE}, and {EXTRACTION_RESULTS} placeholders. "
-            "Without these placeholders, the assessment model cannot evaluate extraction quality or provide bounding boxes. "
-            "Either add all required placeholders or remove task_prompt to use system defaults.",
+        (
+            "confidence",
+            ("extraction", "confidence"),
+            ["{EXTRACTION_RESULTS}"],
+            ["{DOCUMENT_TEXT}", "{OCR_TEXT_CONFIDENCE}", "{DOCUMENT_IMAGE}"],
+            "extraction.confidence.task_prompt must include {EXTRACTION_RESULTS} and at least one of "
+            "{DOCUMENT_TEXT}, {OCR_TEXT_CONFIDENCE} or {DOCUMENT_IMAGE}. "
+            "Without them, the confidence model is not shown the values it is asked to score "
+            "or the document to score them against. "
+            "Either add the required placeholders or remove task_prompt to use system defaults.",
         ),
-        "summarization": (
+        (
+            "summarization",
+            ("summarization",),
             ["{DOCUMENT_TEXT}", "{EXTRACTION_RESULTS}"],
-            True,  # Must have both
+            [],
             "summarization.task_prompt must include {DOCUMENT_TEXT} and {EXTRACTION_RESULTS} placeholders. "
             "Without these placeholders, the summarization model cannot generate accurate summaries. "
             "Either add all required placeholders or remove task_prompt to use system defaults.",
         ),
-    }
+    ]
 
-    # Check each section that has validation rules
-    for section_name, (
-        required_placeholders,
-        require_all,
-        error_message,
-    ) in validation_rules.items():
-        section = merged_config.get(section_name, {})
+    for section_name, prompt_path, all_of, any_of, error_message in validation_rules:
+        section = _dict_at(merged_config, *prompt_path)
         if section_name == "classification":
             # One prompt per call the active strategy makes; see
             # `_classification_task_prompts`.
             prompts = _classification_task_prompts(merged_config)
         else:
             prompts = [
-                (f"{section_name}.task_prompt", section.get("task_prompt", ""), {})
+                (
+                    ".".join(prompt_path + ("task_prompt",)),
+                    section.get("task_prompt", ""),
+                    {},
+                )
             ]
 
         # Special case: OCR task_prompt is only used when backend is 'bedrock'
@@ -1369,11 +1816,11 @@ def _validate_task_prompt_placeholders(
                 # Skip OCR validation for non-bedrock backends (Textract doesn't use prompts)
                 continue
 
-        # Skip validation for disabled sections (assessment, summarization)
-        if section_name in ["assessment", "summarization"]:
-            if not section.get("enabled", True):
-                # Section is explicitly disabled, skip validation
-                continue
+        # Skip validation when the prompt is never sent.
+        if section_name == "confidence" and not _confidence_pass_can_run(merged_config):
+            continue
+        if section_name == "summarization" and not section.get("enabled", True):
+            continue
 
         for path, task_prompt, modality in prompts:
             if not task_prompt:
@@ -1383,22 +1830,9 @@ def _validate_task_prompt_placeholders(
                 # asks for it or not, and the service normalises the prompt to
                 # match. See `_classification_task_prompts`.
                 continue
-            # Check which placeholders are present
-            present_placeholders = [
-                placeholder
-                for placeholder in required_placeholders
-                if placeholder in task_prompt
-            ]
-
-            # Determine if validation passes
-            if require_all:
-                # ALL placeholders must be present
-                validation_passed = len(present_placeholders) == len(
-                    required_placeholders
-                )
-            else:
-                # At least ONE placeholder must be present
-                validation_passed = len(present_placeholders) > 0
+            validation_passed = all(p in task_prompt for p in all_of) and (
+                not any_of or any(p in task_prompt for p in any_of)
+            )
 
             if not validation_passed:
                 result["valid"] = False

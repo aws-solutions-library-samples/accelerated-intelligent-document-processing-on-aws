@@ -53,7 +53,7 @@ accepts from ca-central-1 (verified 2026-10-12).
 Three shipped defaults name models that cannot be called from ca-central-1. On
 stack create and update, the custom resource rewrites them in the ConfigSchema,
 the shipped default configuration and the managed configurations through a
-one-way Canada table (`CA_MODEL_MAPPINGS`). Configuration versions you saved
+one-way Canada table (`CA_MODEL_MAPPINGS`). Configuration profiles you saved
 yourself are not rewritten, the same as in EU regions.
 
 | Setting | Shipped default | In a Canada stack | Why |
@@ -144,24 +144,28 @@ alternative is offered in the region before selecting it. See [Document Knowledg
   stack is not rewritten. The picklists hide both, but a stored value stays
   until someone edits it.
 - **Embedding calls are not costed.** Multi-document discovery's embedding
-  model (`global.cohere.embed-v4:0` in Canada, `us.cohere.embed-v4:0`
-  elsewhere) emits no metering entry — `generate_embedding` returns a bare
-  vector — and neither id has a row in `config_library/pricing.yaml`, so
+  model (`global.cohere.embed-v4:0` in Canada, `eu.cohere.embed-v4:0` in EU
+  Regions, `us.cohere.embed-v4:0` elsewhere) emits no metering entry —
+  `generate_embedding` returns a bare vector — and none of these ids has a row
+  in `config_library/pricing.yaml`, so
   embedding usage does not appear in cost reporting. Pre-existing and not
   specific to Canada. The coverage gates record this per id rather than as a
   blanket rule for embeddings: `_COVERAGE_EXEMPT` in
   `lib/idp_common_pkg/tests/unit/reporting/test_pricing_lookup.py` and
   `EMBEDDING_MODELS` in `scripts/tests/test_model_surface_consistency.py` name
   the Knowledge Base embedding models, and `NON_SELECTABLE_DEFAULTS` names
-  `us.cohere.embed-v4:0`. `global.cohere.embed-v4:0` is in none of them, and
-  needs no entry only because it reaches a stack through the swap table rather
-  than through any surface those gates walk — so a shipped preset or code
-  default naming it would fail them with no entry to point at.
+  `us.cohere.embed-v4:0`. `global.cohere.embed-v4:0` and `eu.cohere.embed-v4:0`
+  are in none of them. They reach a stack two ways that those gates do not walk:
+  the swap table, and the Region-aware code fallbacks in
+  `idp_common/regional_models.py`. The fallbacks are held to the swap
+  table instead, by `src/lambda/update_configuration/test_eu_region.py`. A shipped
+  preset or a `config/models.py` default naming either id would fail the coverage
+  gates with no entry to point at.
 - **ca-west-1 is handled, but the model lists are derived from ca-central-1.**
   A `ca-west-1` stack resolves to the same `ca` region type and gets the same
   picklists, swaps and Knowledge Base default, which is validated for
-  ca-central-1 only. Checked live on 2026-10-13: of the 47 ids the Canada
-  picklists offer, four cannot be called from ca-west-1 —
+  ca-central-1 only. Checked live on 2026-10-13: of the ids the Canada
+  picklists offered then, four could not be called from ca-west-1 —
   `global.xai.grok-4.6`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`,
   `us.anthropic.claude-opus-4-5-20251101-v1:0` and
   `us.anthropic.claude-sonnet-4-5-20250929-v1:0` — and
@@ -190,8 +194,7 @@ a Launch Stack button in the [Deployment Guide](./deployment.md) and a plain
 `idp-cli deploy --region ca-central-1` resolves the published template without
 your having to name one. ⚠️ **0.6.11 and every release before it have no
 ca-central-1 artifacts** — Canada joined the published set in 0.6.12, so both
-routes work only from that release on, and until it is published the Launch
-Stack button answers 404. To deploy an earlier release, or unreleased code,
+routes work only from that release on. To deploy an earlier release, or unreleased code,
 supply the template yourself in one of two forms:
 
 ```bash

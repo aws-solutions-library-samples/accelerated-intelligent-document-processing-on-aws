@@ -15,7 +15,9 @@ doc — and its output is a ranked findings list, not a merge verdict.
 > its most consequential findings were not individual bugs but two *shapes* of bug
 > that recur across unrelated subsystems, and that no existing gate detects either.
 > Both are mechanically searchable. Sections **Class 1** and **Class 2** below are
-> those searches. If you run this skill and only produce a list of nits, you have not
+> those searches. **Class 3** is a third shape that a later audit of the agents found
+> and per-file tooling cannot see at all: a property that holds only across several
+> components. If you run this skill and only produce a list of nits, you have not
 > run it — go back to those two sections.
 
 ## Hard constraint — read-only by construction
@@ -89,7 +91,7 @@ So the procedure is:
 3. **Run the baseline measurements yourself** (they are cheap and shared) so every
    reviewer argues against the same numbers.
 4. **Consolidate.** Lay every finding out in one list and ask explicitly: *which of
-   these are the same shape?* Then run the Class 1 and Class 2 searches over the whole
+   these are the same shape?* Then run the Class 1, Class 2 and Class 3 searches over the whole
    tree to find the instances the reviewers missed. Promote the shape to a top-level
    finding and demote the instances to examples under it.
 5. **Rank by consequence** and write the report.
@@ -110,7 +112,7 @@ thin and stating it precisely would be false precision:
 - **Wall clock: under an hour fanned out, because the reviewers run in parallel.** The
   long pole is consolidation, which is serial and cannot start until the last reviewer
   lands. The baseline measurements themselves are seconds to a few minutes each; the
-  Class 1 and Class 2 tree-wide searches are the slowest.
+  Class 1, Class 2 and Class 3 tree-wide searches are the slowest.
 
 Record what the run actually cost in the report. Two or three real numbers replace this
 estimate with something worth having, and nobody has recorded one yet.
@@ -670,8 +672,8 @@ explicitly `continue-on-error: false`.
 step that turns "the gate runs" into "the gate blocks", and it is the one the parity
 test cannot cover.
 
-**Read both branches.** `develop` is what pull requests target, but `main` is the
-repository's **default** branch and the one releases are cut from, and it carries its
+**Read both branches.** `develop` is what pull requests target and the repository's
+**default** branch, but `main` is the one releases are cut from, and it carries its
 own independent protection setting. Checking only `develop` is why `main` being equally
 unprotected went unnoticed. Read the two endpoints that answer at ordinary permission
 levels, and do **not** infer protection state from the protection endpoint alone:
@@ -679,7 +681,7 @@ levels, and do **not** infer protection state from the protection endpoint alone
 ```bash
 R=aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
 
-gh api "repos/$R" -q '.default_branch'   # main — note which branch that is
+gh api "repos/$R" -q '.default_branch'   # develop — note which branch that is
 
 # 1. Classic branch protection — take it from the BRANCH object. The `protected`
 #    field is returned at `pull` level and settles the question either way. Per
@@ -821,6 +823,42 @@ between runs with no change to the tree — record the date beside them and do n
 difference as a trend. Before filing anything
 from this review, search the open issues — the 2026-09 pass found several of its own
 findings already filed, and re-filing them is noise.
+
+### J. Agent capability census
+
+Generated from the agent capability manifest, `scripts/tests/agent_capabilities.yaml`,
+whose universe `scripts/tests/test_agent_capabilities.py` derives from source on
+every run. Run the gate first; a census of a manifest that fails its own gate is a
+census of something else.
+
+```bash
+python3 -m pytest -q scripts/tests/test_agent_capabilities.py \
+  scripts/tests/test_analytics_role_grants.py
+python3 - <<'PY'
+import sys; sys.path.insert(0, "scripts/tests")
+import test_agent_capabilities as c
+entries = c.manifest()["entries"]
+print("derived surfaces:", len(c.derived_surfaces()))
+print("entries:", len(entries), " needing a control:",
+      sum(c.needs_control(e) for e in entries.values()))
+print("open findings:", len(c.open_findings()))
+for f in c.open_findings():
+    print("  ", f)
+for name, e in sorted(entries.items()):
+    ext = [o for o in e.get("outputs", [])
+           if c.manifest()["vocabulary"]["outputs"][o]["external"]]
+    print(f"{name:40} reads={e.get('reads')} external_outputs={ext} "
+          f"controls={len(e.get('control') or [])}")
+PY
+```
+
+Record the derived-surface count, the number of entries that combine untrusted input,
+private reads and an external output, and the open findings by id. A surface count
+that grew with no new entry fails the gate, so the number to watch is the open
+findings: one that has sat unchanged across two reviews is a decision someone owes,
+not a measurement. The census reports declarations; whether an entry is *true* is
+what `.claude/skills/agent-capability-review.md` establishes, so cite that audit's
+latest result next to the census rather than reading the manifest as verified.
 
 ## Class 1 — a control that exists as an artifact but is never consulted at the decision point
 
@@ -1066,6 +1104,35 @@ entries and the PR numbers in them), do the same by hand: take the shape of that
 and grep for it tree-wide. This is the highest-yield twenty minutes in the whole
 review.
 
+## Class 3 — a property that exists only across components
+
+**The search.** Some outcomes are not a property of any one file, resource or
+function: they hold only when several components are combined, and every
+per-component check passes on each of them. The worked case is a model's reach: a
+renderer that loads remote images, a content policy that allows them, a model whose
+input includes document text, and a tool or grant that reads private data. None of
+those four lines is wrong on its own, and Bandit, Semgrep, Checkov, the OSV audit and
+ZAP each read one file or one resource at a time, so none has anything to report.
+
+To find the class, start from an outcome rather than a component: "where can a
+model's output go?", "who can read what this table holds?", "what does this cached
+value key on?". Then walk every component on the path and write down which one
+decides. A path where no component decides is the finding.
+
+What closes it is a gate that holds the combination as data and checks the
+combination, not the parts: `scripts/tests/agent_capabilities.yaml` with
+`test_agent_capabilities.py` is the instance for agents (an entry with untrusted
+input, private reads and an external output must name a control per channel), and
+`scripts/api_rbac_expectations.yaml` with `scan_api_rbac.py` is the one for
+authorization. A combination held only in prose (a row under `security/threat-modeling/`, a docstring)
+is a Class 1 finding as well, because nothing consults it.
+
+**Where to look first.** The model-facing surfaces (measurement J lists them), every
+place a key or identifier is composed from several values (session, user, tenant,
+profile), and every output a browser renders. For each, report the components on the
+path and which of them, if any, limits the outcome, labelled verified, inferred or
+unverified in the same way as every other finding.
+
 ## Known non-defects — do not re-report (delete a row when it stops being true)
 
 A withdrawal is a finding too: recording *why* something is not a defect is what
@@ -1156,6 +1223,7 @@ Suggested report shape:
 ### 1. <Class 1> Controls that exist but are never consulted     [measured]
 <the shape, then each instance with file:line>
 ### 2. <Class 2> Fixes applied to the instance, not the class    [measured]
+### 3. <Class 3> Properties that exist only across components     [measured]
 ...
 ### N. <single finding>                                          [inferred]
 
@@ -1168,7 +1236,7 @@ Suggested report shape:
 
 ## Reporting back to the user
 
-Lead with the two classes and the count of instances of each, then the baseline
+Lead with the three classes and the count of instances of each, then the baseline
 numbers that moved since the last run, then the ranked list. Say plainly how the
 review was run (how many subagents, or single-agent) because that determines how much
 weight the cross-dimension conclusions carry.

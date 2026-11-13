@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Iterator, Mapping, Optional, Sequence
 
 from idp_common.dynamodb.client import (
     CONDITIONAL_CHECK_FAILED,
@@ -188,6 +188,51 @@ class ReviewStore:
             txn.append(history)
         self.client.transact_write_items(txn)
 
+    def put_manual_holding(
+        self,
+        record: ReviewItemRecord,
+        *,
+        replaces: Optional[ReviewItemRecord],
+        history: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Create a Send to review item (HOLDING, no phase-1 run).
+
+        Allowed only where the document has no item, or its item's cycle has ended
+        (complete, rejected or withdrawn) at the ``Version`` read. Raises
+        ``DynamoDBTransactionCanceledError`` when that no longer holds.
+        """
+        terminal = (
+            QueueItemState.COMPLETE.value,
+            QueueItemState.REJECTED.value,
+            QueueItemState.WITHDRAWN.value,
+        )
+        put: dict[str, Any] = {"Item": item_to_dynamo(record)}
+        if replaces is None:
+            put["ConditionExpression"] = "attribute_not_exists(PK)"
+        else:
+            put["ConditionExpression"] = "#v = :old AND #st IN (:t0, :t1, :t2)"
+            put["ExpressionAttributeNames"] = {"#v": "Version", "#st": "State"}
+            put["ExpressionAttributeValues"] = to_dynamo(
+                {
+                    ":old": replaces.version,
+                    ":t0": terminal[0],
+                    ":t1": terminal[1],
+                    ":t2": terminal[2],
+                }
+            )
+        items = [{"Put": put}]
+        if history is not None:
+            items.append(history)
+        self.client.transact_write_items(items)
+
+    def delete_item_if_cycle(self, doc_key: str, cycle_id: str) -> None:
+        """Delete the document's item only while it is still ``cycle_id``'s."""
+        self.client.delete_item(
+            keys.item_key(doc_key),
+            condition_expression="CycleId = :c",
+            expression_attribute_values={":c": cycle_id},
+        )
+
     def replace_txn_item(
         self,
         record: ReviewItemRecord,
@@ -352,6 +397,31 @@ class ReviewStore:
             start_key=start_key,
             client=client,
         )
+
+    def queue_scope_rows(
+        self, ref: QueueRef, *, client: Optional[DynamoDBClient] = None
+    ) -> Iterator[dict[str, Any]]:
+        """Every item of a queue (OPEN and CLAIMED), oldest first, as raw rows.
+
+        Each row carries only ``Profile``, ``State`` and ``EnqueuedAt`` (a projected
+        QueueIndex query, followed across pages), so a caller can count the items its
+        scope admits without hydrating records (rows are not ``ReviewItemRecord``s).
+        """
+        pages = (client or self.client).query_pages(
+            "#qp = :h",
+            expression_attribute_names={
+                "#qp": "QueuePK",
+                "#p": "Profile",
+                "#st": "State",
+                "#e": "EnqueuedAt",
+            },
+            expression_attribute_values={":h": ref.partition},
+            index_name=keys.QUEUE_INDEX,
+            scan_index_forward=True,
+            projection_expression="#p, #st, #e",
+        )
+        for page in pages:
+            yield from page.get("Items", [])
 
     def count_queue(
         self, ref: QueueRef, *, open_only: bool, client: Optional[DynamoDBClient] = None
@@ -616,6 +686,34 @@ class ReviewStore:
         if expires_after:
             item["ExpiresAfter"] = expires_after
         return {"Put": {"Item": to_dynamo(item)}}
+
+    def put_history(
+        self,
+        doc_key: str,
+        cycle_id: str,
+        event: str,
+        actor: Optional[str],
+        details: Mapping[str, Any],
+        expires_after: Optional[int],
+        *,
+        now_ms: int,
+        now_iso: str,
+    ) -> None:
+        """Append one history entry outside an item write (best-effort callers)."""
+        self.client.transact_write_items(
+            [
+                self.history_txn_item(
+                    doc_key,
+                    cycle_id,
+                    event,
+                    actor,
+                    details,
+                    expires_after,
+                    now_ms=now_ms,
+                    now_iso=now_iso,
+                )
+            ]
+        )
 
     def list_history(
         self, doc_key: str, cycle_id: str, limit: int = 200

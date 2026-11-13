@@ -2,6 +2,9 @@
 title: "Classification Confidence — Does the Score Carry Signal?"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 > **A focused study, not a release audit.** It answers one question: when
 > classification reports a confidence, is the number worth acting on — and does the
 > answer depend on the classifier? For "which extraction config should I pick?" see
@@ -19,19 +22,20 @@ title: "Classification Confidence — Does the Score Carry Signal?"
 summarization disabled
 **Pricing:** `config_library/pricing.yaml` (rates as of 2026-08)
 
-> **The Nova 2 Lite `topk` column was re-measured on v0.6.13; the rest of this page was not.**
-> The v0.6.13 classification-variant benchmark
+> **The Nova 2 Lite `topk` column was re-measured on v0.6.13 and again on v0.6.14; the rest of
+> this page was not.** The classification-variant benchmark
 > ([configuration guidance §5.6](../config-guidance.md#56-classification-granularity-modality-and-strategy))
-> ran the same 20 packets and 298 pages with Nova 2 Lite, `topk` and 3 candidates, and its
-> `page-both` variant is this page's configuration. It reads **page class accuracy 0.839**
-> (here 0.846), **calibration separation +0.033** (here +0.044), mean confidence 0.948 on
-> correct pages and 0.915 on wrong ones (here 0.947 and 0.903), a median of **0.95** on wrong
-> pages (unchanged), 6.0% of pages below 0.9 (here 8.4%) and $0.00095 of classification per
-> page (here $0.00090). So the conclusion below — the default classifies about as accurately
-> as Haiku 4.5 and its confidence barely separates right from wrong — still describes the
-> default on this corpus. Haiku 4.5 and the `off` control were not re-run, so their columns
-> are v0.6.7's. Data: `benchmarks/results/v0.6.13/clsvariants/summary.json`, key
-> `nova2lite-page-both`.
+> ran the same 20 packets with Nova 2 Lite, `topk` and 3 candidates, and its `page-both`
+> variant is this page's configuration. On v0.6.14 it scored 19 of the 20 packets (286 pages;
+> the twentieth failed in extraction on a content-filter refusal, not in classification) and
+> reads **page class accuracy 0.818** (v0.6.13 0.839, here 0.846), **calibration separation
+> +0.034** (v0.6.13 +0.033, here +0.044), mean confidence 0.947 on correct pages and 0.914 on
+> wrong ones (here 0.947 and 0.903), a median of **0.95** on wrong pages (unchanged), 7.0% of
+> pages below 0.9 (here 8.4%) and $0.00097 of classification per page (here $0.00090). So the
+> conclusion below — the default classifies about as accurately as Haiku 4.5 and its confidence
+> barely separates right from wrong — still describes the default on this corpus. Haiku 4.5 and
+> the `off` control were not re-run, so their columns are v0.6.7's. Data:
+> `benchmarks/results/v0.6.14/clsvariants/summary.json`, key `nova2lite-page-both`.
 
 Reproduce with:
 

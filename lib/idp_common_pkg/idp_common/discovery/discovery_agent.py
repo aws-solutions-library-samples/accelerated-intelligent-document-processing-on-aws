@@ -16,8 +16,9 @@ idp_common patterns and BedrockClient infrastructure.
 import io
 import logging
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from jinja2 import Environment, FileSystemLoader
 from pydantic import BaseModel, Field
@@ -25,6 +26,8 @@ from pydantic import BaseModel, Field
 from idp_common import image
 from idp_common.bedrock.client import BedrockClient
 from idp_common.discovery.clustering_service import ClusteringService, ClusterResult
+from idp_common.discovery.discovered_text import clean_report, clean_schema_text
+from idp_common.discovery.regional_defaults import default_analysis_model_id
 
 logger = logging.getLogger(__name__)
 
@@ -84,9 +87,18 @@ class ClusterAnalysisTool:
         self,
         cluster_result: ClusterResult,
         clustering_service: ClusteringService,
+        cluster_id: Optional[int] = None,
     ):
+        """
+        Args:
+            cluster_result: Full clustering result
+            clustering_service: ClusteringService for sampling methods
+            cluster_id: The one cluster this tool answers for. ``None`` answers for
+                any cluster, which only a caller outside an agent run should use.
+        """
         self.cluster_result = cluster_result
         self.clustering_service = clustering_service
+        self.cluster_id = cluster_id
 
     def get_cluster_docids_by_distance_to_centroid(
         self, cluster_id: int, max_docs: int = 20
@@ -101,6 +113,16 @@ class ClusterAnalysisTool:
         Returns:
             Dict with cluster info and document IDs sorted by distance to centroid
         """
+        if self.cluster_id is not None and cluster_id != self.cluster_id:
+            return {
+                "status": "error",
+                "content": [
+                    {
+                        "text": f"This analysis covers cluster {self.cluster_id} only; "
+                        f"cluster {cluster_id} is not available."
+                    }
+                ],
+            }
         docs = self.clustering_service.get_docs_by_distance_to_centroid(
             self.cluster_result, cluster_id, max_docs=max_docs
         )
@@ -124,12 +146,44 @@ class ClusterAnalysisTool:
 class DocumentVisualTool:
     """Tool for the Strands agent to view document images."""
 
-    def __init__(self, images: Dict[int, bytes]):
+    def __init__(
+        self,
+        images: Dict[int, bytes],
+        allowed_doc_ids: Optional[Iterable[int]] = None,
+        max_views: Optional[int] = None,
+    ):
         """
         Args:
             images: Mapping of document index to image bytes
+            allowed_doc_ids: The documents this tool may return, normally the
+                members of the cluster under analysis. ``None`` allows every key
+                of ``images``.
+            max_views: How many distinct documents this tool returns before it
+                refuses further ones (``max_sample_size``). Viewing a document
+                again does not count twice. ``None`` means no limit.
         """
         self.images = images
+        self.allowed_doc_ids = (
+            None if allowed_doc_ids is None else {int(d) for d in allowed_doc_ids}
+        )
+        self.max_views = max_views
+        self._viewed: Set[int] = set()
+        self._lock = threading.Lock()
+
+    def _refusal(self, doc_id: int) -> Optional[str]:
+        """Why ``doc_id`` may not be returned, or None; records the view if it may."""
+        if self.allowed_doc_ids is not None and doc_id not in self.allowed_doc_ids:
+            return f"Document {doc_id} is not in the cluster under analysis"
+        with self._lock:
+            if doc_id in self._viewed:
+                return None
+            if self.max_views is not None and len(self._viewed) >= self.max_views:
+                return (
+                    f"The sample limit of {self.max_views} documents is reached; "
+                    "write the schema from the documents already inspected"
+                )
+            self._viewed.add(doc_id)
+        return None
 
     def get_document_image(self, doc_id: int) -> Any:
         """
@@ -146,6 +200,9 @@ class DocumentVisualTool:
                 "status": "error",
                 "content": [{"text": f"Document {doc_id} not found"}],
             }
+        refusal = self._refusal(doc_id)
+        if refusal:
+            return {"status": "error", "content": [{"text": refusal}]}
 
         image_bytes = self.images[doc_id]
 
@@ -262,7 +319,7 @@ class DiscoveryAgent:
 
     def __init__(
         self,
-        analysis_model_id: str = "us.anthropic.claude-sonnet-4-6",
+        analysis_model_id: Optional[str] = None,
         bedrock_client: Optional[BedrockClient] = None,
         max_sample_size: int = 5,
         max_workers: int = 3,
@@ -273,19 +330,23 @@ class DiscoveryAgent:
         Initialize the discovery agent.
 
         Args:
-            analysis_model_id: Bedrock model ID for schema generation agent
+            analysis_model_id: Bedrock model ID for schema generation agent.
+                Defaults to the cluster-analysis default callable from ``region``
+                (see :mod:`idp_common.regional_models`).
             bedrock_client: Optional BedrockClient (used for region info)
             max_sample_size: Maximum documents to sample per cluster
             max_workers: Maximum parallel cluster analysis workers
             system_prompt: Optional custom system prompt (overrides template)
             region: AWS region for Strands BedrockModel
         """
-        self.analysis_model_id = analysis_model_id
         self.bedrock_client = bedrock_client
         self.max_sample_size = max_sample_size
         self.max_workers = max_workers
         self.custom_system_prompt = system_prompt
         self.region = region or (bedrock_client.region if bedrock_client else None)
+        self.analysis_model_id = analysis_model_id or default_analysis_model_id(
+            self.region
+        )
 
     def _load_system_prompt(self) -> str:
         """Load and render the extraction prompt template."""
@@ -400,8 +461,17 @@ class DiscoveryAgent:
 
         try:
             # Create tools
-            cluster_tool = ClusterAnalysisTool(cluster_result, clustering_service)
-            visual_tool = DocumentVisualTool(images)
+            # Both tools are bound to this cluster, and the image tool to the
+            # sample size: the prompt asks for at most max_sample_size documents
+            # from this cluster, and these hold the agent to that in code.
+            cluster_tool = ClusterAnalysisTool(
+                cluster_result, clustering_service, cluster_id=cluster_id
+            )
+            visual_tool = DocumentVisualTool(
+                images,
+                allowed_doc_ids=cluster_result.get_cluster_indices(cluster_id),
+                max_views=self.max_sample_size,
+            )
 
             # Create fresh agent
             agent = self._create_agent(cluster_tool, visual_tool)
@@ -419,7 +489,10 @@ class DiscoveryAgent:
             return DiscoveredClass(
                 cluster_id=cluster_id,
                 classification=result.get("classification", f"Cluster_{cluster_id}"),
-                json_schema=result.get("json_schema", {}),
+                # Cleaned here, where the model's output enters the pipeline, so
+                # the job record the UI shows and the profile it saves into both
+                # carry plain text.
+                json_schema=clean_schema_text(result.get("json_schema", {})),
                 document_count=cluster_size,
                 sample_doc_ids=sample_ids,
             )
@@ -603,4 +676,4 @@ class DiscoveryAgent:
             context="discovery/reflection",
         )
 
-        return self.bedrock_client.extract_text_from_response(response)
+        return clean_report(self.bedrock_client.extract_text_from_response(response))

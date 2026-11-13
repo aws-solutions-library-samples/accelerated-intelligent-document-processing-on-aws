@@ -23,7 +23,6 @@ import {
 import type { BoxProps } from '@cloudscape-design/components';
 import { useNavigate } from 'react-router-dom';
 import SchemaBuilder from '../json-schema-builder/SchemaBuilder';
-import PromptPreview from './PromptPreview';
 import FieldDescription, { stripInlineMarkdown } from './FieldDescription';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import useUserRole from '../../hooks/use-user-role';
@@ -2071,7 +2070,7 @@ const ConfigBuilder = ({
         tabs={[
           {
             id: 'configuration',
-            label: 'Configuration',
+            label: 'Processing Settings',
             content: (
               <ExtBox style={{ height: 'calc(70vh - 60px)', overflow: 'auto' }} padding="s">
                 <SpaceBetween size="l">
@@ -2137,15 +2136,6 @@ const ConfigBuilder = ({
                 },
               ]
             : []),
-          {
-            id: 'prompt-preview',
-            label: 'Prompt Preview',
-            content: (
-              <ExtBox style={{ height: 'calc(70vh - 60px)', overflow: 'auto' }} padding="s">
-                <PromptPreview formValues={formValues} />
-              </ExtBox>
-            ),
-          },
         ]}
       />
 

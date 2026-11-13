@@ -48,7 +48,13 @@ CHECKS
       its enforcement point is the dispatcher's generated manifest, which S1 and
       the manifest drift guard already require to exist for every routable op.
   S4  Scope enforcement — ops flagged `scope_checked`/`scope_filtered` must
-      reference allowedConfigVersions in their enforced_in file.
+      reference the caller's config-version scope in the code the operation
+      itself can reach (its dispatch branch and that branch's call closure).
+      A `scope_filtered` op must also filter what it returns item by item
+      (finding kind `S4-per-item`): somewhere in the code it reaches, following
+      calls into `idp_common`, a recognised per-item scope predicate is called
+      inside an iteration over results, or a whole-list scope filter is called,
+      and that predicate bottoms out at `scope_allows`.
   S5  Template auth — every API Gateway Method is COGNITO_USER_POOLS except the
       allowlisted CORS (OPTIONS) and static-SPA (GET) routes.
   S6  Function URL universe — every AWS::Lambda::Url in template.yaml is
@@ -69,6 +75,39 @@ CHECKS
       `transport_enforces:`, which produces a finding naming the divergence
       (WARN, FAIL under --strict) and requires a gap id — so aligning the
       declared policy cannot make the real divergence disappear from the report.
+  S10 Scope-keyed arguments — an operation whose arguments name a configuration
+      profile, a stored object or a session (decided by the words of each
+      argument's name, `SCOPE_KEYED_WORDS`, over schema.graphql including input
+      types and the entry's `args:`) must declare how that object is scoped:
+      `scope_checked`/`scope_filtered` (verified by S4), `document_scope_checked`
+      (the code it reaches checks the object's own profile), `testset_checked`
+      (the code it reaches calls the test-set scope check) or `ownership`
+      (verified as S3 verifies it, whatever the op's groups). An operation only Admins or IAM principals can call satisfies it by
+      its policy, since neither carries a configuration scope. S4 alone could not
+      see an undeclared operation: it checks only the operations that opt in.
+  M1  MCP tool universe — the `mcp_tools:` section, `MCP_TOOL_POLICY` in
+      `idp_common/mcp_access.py`, the handler's `TOOLS` registry and the
+      gateway's `IDP_TOOLS_SCHEMA` name the same tools, in every direction.
+  M2  MCP declarations match the code — each tool's groups, `write`,
+      `unscoped_only` and `equivalent_op` equal its `MCP_TOOL_POLICY` row.
+  M3  MCP is never the more permissive way in — a tool admits no role its
+      `equivalent_op` refuses.
+  M3  also requires every tool to be either scope-checked/filtered or
+      `unscoped_only`, and `unscoped_only` wherever its REST equivalent carries no
+      configuration scope.
+  M4  MCP enforcement is called — the handler calls `verify_caller` and
+      `authorize_tool`; the interceptor calls `resolve_caller`, `authorize_tool`,
+      `filter_tool_list` and `sign_caller`; a tool flagged `scope_checked` or
+      `scope_filtered` calls the shared scope helper. Calls only, read from the
+      AST, so a mention in a comment or a string does not count. This is a
+      PRESENCE check: it cannot see what a caller does with the result (catching a
+      refusal and carrying on passes it). The behaviour is held by the unit tests
+      in lib/idp_common_pkg/tests/unit/lambdas/test_agentcore_mcp_handler_scope.py
+      and test_mcp_identity_interceptor.py.
+  M5  MCP clients — every client the `AgentCoreGateway` resource admits is
+      declared in `mcp_clients:` with a kind; the interceptor's environment names
+      exactly the `user` clients, and `McpDefaultCredential` registers exactly the
+      `registry` ones.
 
 EXIT CODES
 ----------
@@ -102,8 +141,8 @@ REPO = Path(__file__).resolve().parents[2]
 # Methods intentionally unauthenticated (CORS preflight + static SPA serving).
 ALLOWED_UNAUTH_METHODS = {
     "HttpApiOptionsMethod",  # CORS preflight (MOCK)
-    "WebUIRootMethod",       # GET / static SPA
-    "WebUIProxyMethod",      # GET /{proxy+} static SPA
+    "WebUIRootMethod",  # GET / static SPA
+    "WebUIProxyMethod",  # GET /{proxy+} static SPA
 }
 
 # The complete policy vocabulary of the `groups:` key, in the expectations file
@@ -175,6 +214,7 @@ def weaker_policy_problem(enforceable: object, declared: object) -> str | None:
         return None
     # Same rank, both sentinels: equal, which the caller reports separately.
     return None
+
 
 # Substrings that count as a server-side enforcement pattern in a resolver.
 ENFORCE_PATTERNS = (
@@ -284,6 +324,8 @@ def unscoped_key_accesses(text: str) -> list[str]:
             if not any(term in expr.lower() for term in _CALLER_KEY_TERMS):
                 unscoped.append(" ".join(expr.split())[:120])
     return unscoped
+
+
 SCOPE_PATTERNS = (
     "allowedConfigVersions",
     "allowed_config_versions",
@@ -293,18 +335,29 @@ SCOPE_PATTERNS = (
     # `scope_allows`, so the DynamoDB attribute name appears nowhere in the branch.
     #
     # The bare local name `allowed_versions` is deliberately NOT here: it is the
-    # weakest of the candidates, and dropping it costs nothing (all 19 flagged
-    # operations — 4 `scope_filtered` + 15 `scope_checked` — still pass on the three
-    # above).
+    # weakest of the candidates, and dropping it costs nothing (every flagged
+    # operation passes on the others).
     #
     # It does not make the check strict, though, and nothing here should be read as
     # claiming otherwise: these are substring matches over unparsed source, so a
     # docstring, a function name or an unused parameter mentioning one of them
     # satisfies S4 just as a real call does. Two such benign mentions already exist in
-    # `list_documents_gsi_resolver/index.py`. S4 establishes that an operation's own
-    # code path *refers* to the scope; the per-site unit suites establish that it
-    # enforces it.
+    # `list_documents_gsi_resolver/index.py`. This half of S4 establishes that an
+    # operation's own code path *refers* to the scope. For a `scope_filtered`
+    # operation the per-item half (`op_per_item_scope_filter`) also requires a
+    # scope predicate applied to each returned item; the per-site unit suites
+    # establish that the value being matched is the caller's real scope.
     "scope_allows",
+    # The shared single-document form of the rule, `idp_common.document_scope`.
+    # Its entry points resolve the caller's scope and apply `scope_allows` inside the
+    # library, so an operation calling one of them names neither the attribute nor the
+    # matcher in its own branch — the same reason `scope_allows` is listed above.
+    # Listed by entry point rather than by the module name, so a file that imports
+    # the module without calling it does not pass on the import line.
+    "require_document_scope",
+    "assert_document_in_scope",
+    "assert_profile_in_scope",
+    "refuse_if_scoped",
 )
 
 # --- Function URL route checks (S6-S9) ---------------------------------------
@@ -318,6 +371,9 @@ FUNCTION_URL_OPEN_ROUTES = {
 # Ways the handler can name the identity the TRANSPORT verified, as opposed to
 # one the client asserted in the request body.
 VERIFIED_IDENTITY_TOKENS = (
+    # The chat streaming endpoint verifies the caller's Cognito ID token
+    # (src/lambda/chat_stream_processor/app.py).
+    "_verified_caller(",
     "resolve_caller_sub(",
     "_caller_sub(",
     "caller_sub_from_request_context",
@@ -538,14 +594,18 @@ def _iter_fields(body: str):
         end = hard_end
         for j in range(line_no, hard_end):
             s = lines[j].strip()
-            if j > line_no and d == 0 and (
-                s == "" or s.startswith("#") or s.startswith('"')
+            if (
+                j > line_no
+                and d == 0
+                and (s == "" or s.startswith("#") or s.startswith('"'))
             ):
                 end = j
                 break
             d += (
-                lines[j].count("(") + lines[j].count("[")
-                - lines[j].count(")") - lines[j].count("]")
+                lines[j].count("(")
+                + lines[j].count("[")
+                - lines[j].count(")")
+                - lines[j].count("]")
             )
         yield name, "\n".join(lines[line_no:end])
 
@@ -590,7 +650,7 @@ def template_methods(template_text: str) -> list[tuple[str, str]]:
         logical = m.group(1)
         # find AuthorizationType within this resource's block (until next 2-space id)
         block_start = m.start()
-        nxt = re.search(r"\n  \w+:\n", template_text[m.end():])
+        nxt = re.search(r"\n  \w+:\n", template_text[m.end() :])
         block_end = m.end() + (nxt.start() if nxt else 0)
         block = template_text[block_start : block_end or len(template_text)]
         am = re.search(r"AuthorizationType:\s*(\w+)", block)
@@ -712,6 +772,7 @@ def _first_index(text: str, tokens) -> int:
 # Callee names that resolve a transport-verified caller identity. Mirrors
 # VERIFIED_IDENTITY_TOKENS above, as callee names rather than substrings.
 VERIFIED_IDENTITY_CALLEES = (
+    "_verified_caller",
     "_resolve_caller_sub",
     "resolve_caller_sub",
     "_caller_sub",
@@ -912,8 +973,10 @@ def enforced_group_names(text: str) -> set[str] | None:
 # operation that kept `scope_allows(allowed_versions, ...)` while `allowed_versions`
 # became a hardcoded `None` still passes. That shape is what the per-site unit
 # suites assert (a DynamoDB error must deny, an out-of-scope document must not be
-# returned), and no static rule over one module substitutes for them. What S4 does
-# catch, and did, is an operation that refers to the scope **nowhere**.
+# returned), and no static rule over one module substitutes for them. What this
+# reference check catches is an operation that refers to the scope **nowhere**;
+# the per-item rule below (`op_per_item_scope_filter`) additionally catches a
+# `scope_filtered` operation that refers to the scope but filters no item by it.
 
 
 class _CallCollector(ast.NodeVisitor):
@@ -983,9 +1046,7 @@ def _selects_literal(test: ast.AST, literal: str) -> bool:
         left = node.left
         for operator, comparator in zip(node.ops, node.comparators):
             if isinstance(operator, ast.Eq):
-                if _names_literal(left, literal) or _names_literal(
-                    comparator, literal
-                ):
+                if _names_literal(left, literal) or _names_literal(comparator, literal):
                     return True
             elif isinstance(operator, ast.In):
                 if _names_literal(comparator, literal):
@@ -1098,7 +1159,976 @@ def op_scope_source(
     return None, "\n".join(ast.unparse(node) for node in reachable)
 
 
+# --- S4 per-item: a scope-filtered result must be filtered item by item -------
+#
+# The reference check above establishes that an operation's code mentions the
+# scope. For a `scope_filtered` operation that is not enough: the operation
+# returns a COLLECTION, and the property it declares is that every member of that
+# collection was admitted by the caller's scope. So for those operations S4 also
+# requires, in the code the operation can reach, at least one call to a recognised
+# per-item scope predicate made inside an iteration — a comprehension's element or
+# condition, the body of a `for`/`while` loop, or the predicate given to
+# `filter(...)` — or a call to a recognised whole-list scope filter.
+#
+# Reach follows calls OUT of the resolver module into first-party `idp_common`
+# modules, because a resolver that is a thin dispatcher over a library service
+# applies its filter in the service, not in the resolver. Calls are resolved per
+# module: a name against the module's own functions and then its `idp_common`
+# imports, an attribute call (`self.x()`, `_SERVICE.x()`) against the module's own
+# functions and then the functions of the `idp_common` modules it imports.
+#
+# A predicate counts only if its definition, where the scanner can resolve one,
+# itself bottoms out at `scope_allows` — so a recognised helper renamed onto a
+# function that no longer consults the scope stops satisfying the rule.
+#
+# What this still does not prove: that the filtered collection is the one
+# returned (a filter over a copy that is discarded passes), or that the scope
+# value was resolved from the UsersTable. Those remain the per-site unit suites'.
+
+#: Per-ITEM scope predicates: each answers "does the caller's scope admit this one
+#: item?" and so counts only when called inside an iteration over results.
+SCOPE_ITEM_PREDICATES: dict[str, str] = {
+    # idp_common.config_scope — the canonical matcher every consumer shares:
+    # does this scope admit this profile name?
+    "scope_allows": "canonical scope matcher",
+    # ReviewQueueService — may this caller see this review item? (Admin, or
+    # `_admits` on the item's profile)
+    "_sees": "review item visibility",
+    # ReviewQueueService — Admin, or `scope_allows` on a bare profile name
+    "_admits": "review profile admission",
+    # list_documents_gsi_resolver — `scope_allows` on a tracking row's ConfigVersion
+    "_item_in_config_scope": "document-list row filter",
+    # list_documents_range_resolver — the per-document RBAC filter, scope first
+    "_should_include_document": "document-range row filter",
+}
+#: Whole-LIST scope filters: each takes a collection and returns the admitted
+#: subset, so a call to one is a per-item filter wherever it appears.
+SCOPE_LIST_FILTERS: dict[str, str] = {
+    # idp_common.config_scope — the scope's admitted subset of a list of names
+    "filter_profiles": "admitted subset of profile names",
+}
+_CANONICAL_SCOPE_MATCHER = "scope_allows"
+_FIRST_PARTY_PACKAGE = "idp_common"
+
+
+class _SourceModule:
+    """One parsed module and the first-party names it imports."""
+
+    def __init__(self, dotted: str | None, path: Path, tree: ast.Module):
+        self.dotted = dotted
+        self.path = path
+        self.functions = _module_functions(tree)
+        # local name -> (module dotted name, attribute or None for a module alias)
+        self.name_imports: dict[str, tuple[str, str | None]] = {}
+        self.imported_modules: list[str] = []
+        self.tree = tree
+
+
+class _FirstPartyIndex:
+    """Parses `idp_common` modules on demand from ``<root>/idp_common/...``."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._cache: dict[str, _SourceModule | None] = {}
+
+    def file_for(self, dotted: str) -> Path | None:
+        parts = dotted.split(".")
+        if parts[0] != _FIRST_PARTY_PACKAGE:
+            return None
+        base = self.root.joinpath(*parts)
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def module(self, dotted: str) -> _SourceModule | None:
+        if dotted not in self._cache:
+            self._cache[dotted] = None  # guards an import cycle while parsing
+            path = self.file_for(dotted)
+            if path is not None:
+                try:
+                    tree = ast.parse(path.read_text())
+                except (OSError, SyntaxError):
+                    tree = None
+                if tree is not None:
+                    self._cache[dotted] = self.link(dotted, path, tree)
+        return self._cache[dotted]
+
+    def link(self, dotted: str | None, path: Path, tree: ast.Module) -> _SourceModule:
+        mod = _SourceModule(dotted, path, tree)
+        is_package = path.name == "__init__.py"
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                base = node.module or ""
+                if node.level:
+                    if not dotted:
+                        continue
+                    package = dotted.split(".")
+                    if not is_package:
+                        package = package[:-1]
+                    package = package[: len(package) - (node.level - 1)]
+                    base = ".".join(package + ([base] if base else []))
+                if base.split(".")[0] != _FIRST_PARTY_PACKAGE:
+                    continue
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    submodule = f"{base}.{alias.name}"
+                    if self.file_for(submodule) is not None:
+                        mod.name_imports[local] = (submodule, None)
+                        mod.imported_modules.append(submodule)
+                    else:
+                        mod.name_imports[local] = (base, alias.name)
+                        if base not in mod.imported_modules:
+                            mod.imported_modules.append(base)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] == _FIRST_PARTY_PACKAGE:
+                        mod.imported_modules.append(alias.name)
+        return mod
+
+    def lookup(
+        self, dotted: str, name: str, depth: int = 0
+    ) -> tuple[_SourceModule, ast.AST] | None:
+        """``name`` as defined in ``dotted``, following a package re-export."""
+        mod = self.module(dotted)
+        if mod is None or depth > 3:
+            return None
+        if name in mod.functions:
+            return mod, mod.functions[name]
+        imported = mod.name_imports.get(name)
+        if imported and imported[1]:
+            return self.lookup(imported[0], imported[1], depth + 1)
+        return None
+
+
+def _call_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
+
+
+def _resolve_call(
+    index: _FirstPartyIndex, mod: _SourceModule, call: ast.Call
+) -> tuple[_SourceModule, ast.AST] | None:
+    func = call.func
+    name = _call_name(call)
+    if name is None:
+        return None
+    if name in mod.functions:
+        return mod, mod.functions[name]
+    if isinstance(func, ast.Name):
+        imported = mod.name_imports.get(name)
+        if imported and imported[1]:
+            return index.lookup(imported[0], imported[1])
+        return None
+    # Attribute call. A module alias names its module exactly; anything else
+    # (`self.store.x`, `_SERVICE.x`) is looked up in the modules this one imports.
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        alias = mod.name_imports.get(func.value.id)
+        if alias and alias[1] is None:
+            return index.lookup(alias[0], name)
+    for dotted in mod.imported_modules:
+        found = index.lookup(dotted, name)
+        if found is not None:
+            return found
+    return None
+
+
+def _item_dispatch_entries(tree: ast.Module, op: str) -> list[ast.AST]:
+    """The code an operation's own dispatch selects: `if` branches and dict tables.
+
+    Adds the table form (`{"op": handler_fn, ...}`) to `_dispatch_branches`,
+    because a resolver dispatching through a dict names the operation nowhere in
+    an `if` test. Only a value naming a function the module defines counts, so a
+    groups table keyed by the same names contributes nothing.
+    """
+    entries: list[ast.AST] = list(_dispatch_branches(tree, op))
+    functions = _module_functions(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if (
+                isinstance(key, ast.Constant)
+                and key.value == op
+                and isinstance(value, ast.Name)
+                and value.id in functions
+            ):
+                entries.append(functions[value.id])
+    return entries
+
+
+def _predicate_credited(
+    index: _FirstPartyIndex,
+    mod: _SourceModule,
+    call: ast.Call,
+    seen: set[int] | None = None,
+) -> bool:
+    """Whether this call is a recognised scope predicate that consults the scope."""
+    name = _call_name(call)
+    if name not in SCOPE_ITEM_PREDICATES and name not in SCOPE_LIST_FILTERS:
+        return False
+    if name == _CANONICAL_SCOPE_MATCHER:
+        return True
+    resolved = _resolve_call(index, mod, call)
+    if resolved is None:
+        return False
+    def_mod, definition = resolved
+    seen = set() if seen is None else seen
+    if id(definition) in seen:
+        return False
+    seen.add(id(definition))
+    return any(
+        _predicate_credited(index, def_mod, inner, seen)
+        for inner in ast.walk(definition)
+        if isinstance(inner, ast.Call)
+    )
+
+
+def _per_item_filter_sites(
+    index: _FirstPartyIndex, mod: _SourceModule, fn: ast.AST
+) -> list[str]:
+    """Each recognised per-item scope filter in ``fn``, as ``predicate`` names."""
+    sites: list[str] = []
+
+    def credited_calls(nodes) -> list[str]:
+        out = []
+        for root in nodes:
+            for node in ast.walk(root):
+                if isinstance(node, ast.Call) and _call_name(node) in (
+                    SCOPE_ITEM_PREDICATES
+                ):
+                    if _predicate_credited(index, mod, node):
+                        out.append(_call_name(node) or "")
+        return out
+
+    for node in ast.walk(fn):
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp)):
+            parts = [node.elt] + [c for g in node.generators for c in g.ifs]
+            sites.extend(credited_calls(parts))
+        elif isinstance(node, ast.DictComp):
+            parts = [node.key, node.value] + [c for g in node.generators for c in g.ifs]
+            sites.extend(credited_calls(parts))
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            sites.extend(credited_calls(node.body))
+        elif isinstance(node, ast.Call):
+            name = _call_name(node)
+            if name in SCOPE_LIST_FILTERS and _predicate_credited(index, mod, node):
+                sites.append(name or "")
+            elif (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "filter"
+                and node.args
+            ):
+                predicate = node.args[0]
+                if isinstance(predicate, (ast.Name, ast.Attribute)):
+                    probe = ast.Call(func=predicate, args=[], keywords=[])
+                    if _call_name(probe) in SCOPE_ITEM_PREDICATES and (
+                        _predicate_credited(index, mod, probe)
+                    ):
+                        sites.append(_call_name(probe) or "")
+                else:
+                    sites.extend(credited_calls([predicate]))
+    return sites
+
+
+def op_per_item_scope_filter(
+    text: str,
+    op: str,
+    *,
+    sole_op: bool,
+    first_party_root: Path,
+    source_path: Path | None = None,
+) -> tuple[str | None, list[str]]:
+    """The recognised per-item scope filters a `scope_filtered` operation reaches.
+
+    Returns ``(error, sites)``: ``error`` when the operation's own entry cannot be
+    found (a finding in itself), else the list of ``module:function:predicate``
+    sites. An empty list is the finding this check exists for.
+
+    The entry is the operation's own dispatch — never `scope_enforced_in`, which
+    names where the scope is *resolved*, typically a shared caller-context helper
+    that iterates over nothing.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError as exc:
+        return f"could not parse {op}'s enforced_in file: {exc}", []
+    index = _FirstPartyIndex(first_party_root)
+    resolver = index.link(None, source_path or Path("<resolver>"), tree)
+
+    entries = _item_dispatch_entries(tree, op)
+    if not entries:
+        if not sole_op:
+            return (
+                "no per-operation dispatch on this name (an `if` test or a "
+                "dispatch-table entry) could be found, and this file is the "
+                "enforced_in for more than one operation, so the code that builds "
+                "this operation's result cannot be isolated",
+                [],
+            )
+        entries = [
+            resolver.functions.get("handler")
+            or resolver.functions.get("lambda_handler")
+            or tree
+        ]
+
+    reachable: list[tuple[_SourceModule, ast.AST]] = [(resolver, e) for e in entries]
+    seen: set[int] = {id(e) for e in entries}
+    pending = list(reachable)
+    while pending:
+        mod, node = pending.pop()
+        for call in ast.walk(node):
+            if not isinstance(call, ast.Call):
+                continue
+            target = _resolve_call(index, mod, call)
+            if target is None or id(target[1]) in seen:
+                continue
+            seen.add(id(target[1]))
+            reachable.append(target)
+            pending.append(target)
+
+    sites = []
+    for mod, node in reachable:
+        where = f"{mod.dotted or 'resolver'}:{getattr(node, 'name', '<module>')}"
+        sites.extend(f"{where}:{p}" for p in _per_item_filter_sites(index, mod, node))
+    return None, sites
+
+
 # --- checks ------------------------------------------------------------------
+
+
+# --- S10: an operation keyed on a scoped object declares how it is scoped -----
+#
+# S4 checks the operations that DECLARE a scope check, which is how the discovery
+# operations went unchecked: they took a `configVersion` and declared nothing. S10
+# closes that from the other side. Its universe is derived, not listed: every
+# operation whose arguments (schema.graphql, following input types, plus the
+# entry's own `args:`) include one of these names, compared case-insensitively.
+#
+#: The kind of object an argument names is decided by a RULE over the words of its
+#: name, not by a list of spellings: a list of seven names missed `objectKeys`,
+#: `s3Uri`, `s3Prefix`, `profileName` and `configProfile`, which name the same
+#: things. A name is split into words at case changes, digits and underscores
+#: (`s3Prefix` -> s, 3, prefix) and is of a kind when any word is in that kind's set.
+#: Profile wins over object, and object over session, when a name has words of two.
+SCOPE_KEYED_WORDS: dict[str, frozenset[str]] = {
+    # a configuration profile, or a revision or version of one (but see
+    # SCOPE_VERSION_OF_OTHER_THING_WORDS)
+    "profile": frozenset({"profile", "profiles", "version", "versions", "revision"}),
+    # a stored object: an S3 key, URI, prefix, path or bucket
+    "object": frozenset(
+        {"key", "keys", "uri", "uris", "prefix", "prefixes", "path", "bucket"}
+    ),
+    # a chat or agent session
+    "session": frozenset({"session", "sessions"}),
+}
+#: A version or revision word names a configuration profile's version unless the
+#: name also says whose version it is: `versionId` (an S3 object version),
+#: `baseRevision` (the revision an edit was based on), `testSetVersion`,
+#: `installedVersion` (a feature's). The rule is "a version qualified by another
+#: noun is that noun's version"; these are the qualifying nouns the API uses. A
+#: name with the word `profile` or `config` is a profile whatever else it says.
+SCOPE_VERSION_OF_OTHER_THING_WORDS = frozenset({"id", "base", "test", "installed"})
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+")
+_VERSION_WORDS = frozenset({"version", "versions", "revision"})
+
+
+def scope_keyed_kind(name: str) -> str | None:
+    """The kind of object argument ``name`` names, or None (see SCOPE_KEYED_WORDS)."""
+    words = {w.lower() for w in _NAME_WORDS.findall(name)}
+    if (
+        words & {"profile", "profiles", "config"}
+        and words & (SCOPE_KEYED_WORDS["profile"])
+    ):
+        return "profile"
+    if words & {"profile", "profiles"}:
+        return "profile"
+    if words & _VERSION_WORDS and not words & SCOPE_VERSION_OF_OTHER_THING_WORDS:
+        return "profile"
+    for kind in ("object", "session"):
+        if words & SCOPE_KEYED_WORDS[kind]:
+            return kind
+    return None
+
+
+#: Which entry flags answer for each kind of argument. A profile argument needs the
+#: profile scope; a document key may instead be governed by the test-set scope (a
+#: test-set document) or by ownership; a session needs ownership or profile scope.
+SCOPE_KEYED_DECLARATIONS: dict[str, tuple[str, ...]] = {
+    "profile": ("scope_checked", "scope_filtered"),
+    "object": (
+        "scope_checked",
+        "scope_filtered",
+        "document_scope_checked",
+        "testset_checked",
+        "ownership",
+    ),
+    "session": ("ownership", "scope_checked"),
+}
+#: What `testset_checked` must be backed by in the code the operation reaches: the
+#: shared per-set rule (`idp_common.testset_scope.assert_can_access_test_set`) or the
+#: test-set resolver's one-line wrapper over it.
+TESTSET_SCOPE_PATTERNS = ("assert_can_access_test_set", "_assert_set_access")
+#: What `document_scope_checked` must be backed by: a call that checks the OBJECT an
+#: operation names (a document, key, or source/destination prefix) against the
+#: caller's profile scope, through the profile the object is recorded or mapped
+#: under. It is the declaration an operation needs when it names a profile AND an
+#: object, because `scope_checked` is then read as the profile check. Entry points,
+#: as SCOPE_PATTERNS lists them; each must be reached by at least one declaring
+#: operation (test_scan_api_rbac_scope_keyed_arguments.py).
+DOCUMENT_SCOPE_PATTERNS = (
+    # reprocess_document_resolver: each document's recorded profile
+    "_enforce_document_scope",
+    # discovery_upload_resolver: a multi-document source prefix's mapped profile
+    "_assert_source_in_scope",
+    # upload_resolver: the destination's mapped (or named) profile, through
+    # prefix_mappings.resolve_config_assignment's scope argument
+    "allowed_profiles=",
+)
+#: (operation, argument kind) pairs S10 does not require a declaration for, each with
+#: the reason for that one pair. Registered in scripts/tests/gate_exemptions.json.
+#: An entry that no longer shields a finding (the op is gone, takes no argument of
+#: that kind, or now declares one) is itself a FAIL, so it cannot outlive its reason
+#: and pre-exempt the next operation of that name.
+SCOPE_KEYED_ARGUMENT_EXEMPT: dict[tuple[str, str], str] = {
+    ("bulkSkipAllReviews", "object"): (
+        "input.objectKeys is scope-checked document by document, but in the shared "
+        "library rather than in bulk_review_resolver/index.py, which is all S10 "
+        "reads: every path (dry run, inline run, async job) goes through "
+        "idp_common.review_queues.bulk_jobs.BulkSkipService, whose classify step "
+        "(review_skip.classify -> in_scope) checks each document's recorded profile "
+        "against the caller's allowedConfigVersions and reports an out-of-scope or "
+        "unknown key as NOT_PERMITTED. The by-profile form is checked in the "
+        "resolver by _enforce_scope, which scope_checked declares. Follow-up: call "
+        "a DOCUMENT_SCOPE_PATTERNS check from the resolver so S10 can see it."
+    ),
+    ("autoDetectSections", "object"): (
+        "documentKey names an upload in the discovery bucket, which IAM bounds this "
+        "function to and which is a shared Admin/Author workspace: an upload is not "
+        "stamped with a profile or an uploader, so there is no per-object scope to "
+        "check it against. The profile the operation reads is scope-checked. "
+        "Follow-up: stamp discovery uploads so the key can be checked."
+    ),
+    ("uploadDiscoveryDocument", "object"): (
+        "bucket and prefix are the destination of a new upload, not a stored object "
+        "being read: the presigned POST is limited to the deployment's bucket "
+        "allow-list and the write-once key rule (s3_targets), and IAM gives this "
+        "function write on the discovery bucket only, the shared Admin/Author "
+        "workspace, where nothing is stamped with a profile."
+    ),
+    ("getSampleDocumentUrl", "object"): (
+        "s3Key must lie under the bundled samples/ prefix (the resolver refuses any "
+        "other key, '..' and a leading '/'): those are the sample documents shipped "
+        "with the solution, which belong to no profile."
+    ),
+    ("generateDraftLabels", "object"): (
+        "objectKeys select documents inside the named test set, read under that "
+        "set's own prefix; Admins and Authors are not test-set scoped by design "
+        "(docs/rbac.md), and a document enters a test set only through operations "
+        "that check its profile. The profile this operation runs is scope-checked."
+    ),
+    ("startTestRun", "object"): (
+        "objectKeys select documents inside the named test set, read under that "
+        "set's own prefix; Admins and Authors are not test-set scoped by design "
+        "(docs/rbac.md), and a document enters a test set only through operations "
+        "that check its profile. The run's profile is scope-checked."
+    ),
+}
+
+
+def _scalar_and_input_arguments(schema_text: str) -> dict[str, set[str]]:
+    """``{input type name: every field name it holds, nested inputs included}``."""
+    direct: dict[str, list[tuple[str, str]]] = {}
+    for m in re.finditer(r"\binput\s+(\w+)[^{]*\{([^}]*)\}", schema_text):
+        direct[m.group(1)] = re.findall(
+            r"^\s*(\w+)\s*:\s*\[?\s*(\w+)", m.group(2), re.MULTILINE
+        )
+
+    def expand(name: str, seen: frozenset) -> set[str]:
+        out: set[str] = set()
+        for field, type_name in direct.get(name, ()):
+            out.add(field)
+            if type_name in direct and type_name not in seen:
+                out |= expand(type_name, seen | {type_name})
+        return out
+
+    return {name: expand(name, frozenset({name})) for name in direct}
+
+
+def schema_field_arguments(schema_text: str) -> dict[str, set[str]]:
+    """Map each Query/Mutation field -> the names of every argument it takes.
+
+    An argument typed as an ``input`` contributes that input's field names too,
+    recursively, because ``updateTestSetDocumentSections(input: ...)`` carries its
+    ``objectKey`` one level down and a reader of top-level names alone misses it.
+    """
+    inputs = _scalar_and_input_arguments(schema_text)
+    result: dict[str, set[str]] = {}
+    for type_name in ("Query", "Mutation"):
+        body = _extract_type_body(schema_text, type_name)
+        if body is None:
+            continue
+        for field, defn in _iter_fields(body):
+            m = re.match(r"\s*\w+\s*\((.*?)\)\s*:", defn, re.S)
+            names: set[str] = set()
+            if m:
+                for arg, arg_type in re.findall(r"(\w+)\s*:\s*\[?\s*(\w+)", m.group(1)):
+                    names.add(arg)
+                    names |= inputs.get(arg_type, set())
+            result[field] = names
+    return result
+
+
+def scope_keyed_kinds(argument_names) -> dict[str, list[str]]:
+    """``{kind: [argument names of that kind]}`` for the scope-keyed arguments."""
+    kinds: dict[str, list[str]] = {}
+    for name in sorted(argument_names):
+        kind = scope_keyed_kind(name)
+        if kind:
+            kinds.setdefault(kind, []).append(name)
+    return kinds
+
+
+def ownership_problem(text: str, enforced_in: str) -> str | None:
+    """Why an ``ownership: true`` declaration is not backed by ``text``, or None.
+
+    The S3 rule, as a function, so S10 applies the same test to an ownership
+    declaration on an operation with a group list (S3 reads ownership only on
+    ``ANY``/``ANY_GROUP`` operations).
+    """
+    if not any(p in text for p in OWNERSHIP_PATTERNS):
+        return f"ownership scoping expected but no owner/user check in {enforced_in}"
+    if any(p in text for p in OWNERSHIP_REFUSAL_PATTERNS):
+        return None
+    unscoped = unscoped_key_accesses(text)
+    if not unscoped:
+        return None
+    return (
+        f"ownership scoping declared and the caller is resolved in {enforced_in}, "
+        f"but nothing there refuses a caller who is not the owner, and "
+        f"{len(unscoped)} data access(es) are not keyed by the caller: "
+        f"{'; '.join(unscoped[:2])}"
+    )
+
+
+def _unscoped_policy(groups: object) -> bool:
+    """Whether every caller this policy admits is outside configuration scope.
+
+    An Admin is never restricted by ``allowedConfigVersions`` (``docs/rbac.md``,
+    and every resolver skips the lookup for one), and an IAM principal carries no
+    Cognito identity to look up. An operation only they can call has no scoped
+    caller, so S10 has nothing to require of it.
+    """
+    return groups == POLICY_IAM_ONLY or groups == ["Admin"]
+
+
+# --- MCP tool checks (M1-M5) ---------------------------------------------------
+# The MCP server is the third way in. Its authorization is a table in
+# idp_common.mcp_access, applied by a gateway interceptor and by the handler; these
+# checks hold that table, the tool registry, the gateway's tool schema, the
+# expectations file and the template's client wiring to one another. They read
+# source (AST and text), never import it, so the scan needs no runtime.
+
+MCP_ACCESS_MODULE = "lib/idp_common_pkg/idp_common/mcp_access.py"
+MCP_HANDLER = "src/lambda/agentcore_mcp_handler/index.py"
+MCP_TOOL_REGISTRY = "src/lambda/agentcore_mcp_handler/tools/__init__.py"
+MCP_GATEWAY_MANAGER = "src/lambda/agentcore_gateway_manager/index.py"
+MCP_INTERCEPTOR = "src/lambda/mcp_identity_interceptor/index.py"
+MCP_INTERCEPTOR_FUNCTION = "McpIdentityInterceptorFunction"
+MCP_GATEWAY_RESOURCE = "AgentCoreGateway"
+
+#: What each half must call. Named functions, matched as call targets in the AST,
+#: so a mention in a comment or a string does not count.
+MCP_HANDLER_CALLS = ("verify_caller", "authorize_tool")
+MCP_INTERCEPTOR_CALLS = (
+    "resolve_caller",
+    "authorize_tool",
+    "filter_tool_list",
+    "sign_caller",
+)
+#: The shared helper a tool flagged scope_checked / scope_filtered must call.
+MCP_SCOPE_HELPERS = {
+    "scope_checked": ("require_document_keys_in_scope", "require_profile_in_scope"),
+    "scope_filtered": ("document_keys_in_scope",),
+}
+#: Template property on the gateway resource, and interceptor environment
+#: variable, carrying the client ids of each kind.
+MCP_GATEWAY_CLIENT_PROPERTIES = ("ClientId", "ConnectorClientId")
+MCP_INTERCEPTOR_CLIENT_ENV = {
+    "user": "MCP_USER_CLIENT_IDS",
+}
+#: The kind whose clients are resolved from the credential registry, and the
+#: resource that registers a template client there.
+MCP_REGISTRY_KIND = "registry"
+MCP_REGISTRY_RESOURCE = "McpDefaultCredential"
+
+
+def _module_assignments(tree: ast.Module) -> dict[str, ast.AST]:
+    out: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    out[target.id] = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            if node.value is not None:
+                out[node.target.id] = node.value
+    return out
+
+
+def _literal_strings(node: ast.AST, names: dict[str, ast.AST]) -> list[str] | None:
+    """A tuple/list of string literals, following one module-level name."""
+    if isinstance(node, ast.Name) and node.id in names:
+        node = names[node.id]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        values = []
+        for elt in node.elts:
+            if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+                return None
+            values.append(elt.value)
+        return values
+    return None
+
+
+def mcp_tool_policy_from_source(text: str) -> dict[str, dict] | None:
+    """``MCP_TOOL_POLICY`` as ``{tool: {roles, write, unscoped_only,
+    equivalent_op}}``, read from the module's AST, or ``None`` when it cannot be
+    read in full. A partial read is ``None`` rather than a smaller table, so an
+    entry the reader could not understand is a FAIL, never a missing row."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    names = _module_assignments(tree)
+    table = names.get("MCP_TOOL_POLICY")
+    if not isinstance(table, ast.Dict):
+        return None
+    out: dict[str, dict] = {}
+    for key, value in zip(table.keys, table.values):
+        if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+            return None
+        if not isinstance(value, ast.Call):
+            return None
+        kwargs = {kw.arg: kw.value for kw in value.keywords if kw.arg}
+        roles = (
+            _literal_strings(kwargs.get("roles"), names) if "roles" in kwargs else None
+        )
+        entry = {"roles": roles}
+        for flag in ("write", "unscoped_only"):
+            node = kwargs.get(flag)
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, bool)):
+                return None
+            entry[flag] = node.value
+        op = kwargs.get("equivalent_op")
+        if not (isinstance(op, ast.Constant) and isinstance(op.value, str)):
+            return None
+        entry["equivalent_op"] = op.value
+        if roles is None:
+            return None
+        out[key.value] = entry
+    return out
+
+
+def mcp_registry_tools(text: str) -> set[str] | None:
+    """Keys of the handler's ``TOOLS`` registry."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    node = _module_assignments(tree).get("TOOLS")
+    if not isinstance(node, ast.Dict):
+        return None
+    keys = {
+        k.value
+        for k in node.keys
+        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+    }
+    return keys if len(keys) == len(node.keys) else None
+
+
+def mcp_schema_tools(text: str) -> set[str] | None:
+    """Tool names in the gateway manager's ``IDP_TOOLS_SCHEMA``."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    node = _module_assignments(tree).get("IDP_TOOLS_SCHEMA")
+    if not isinstance(node, ast.List):
+        return None
+    names = set()
+    for elt in node.elts:
+        if not isinstance(elt, ast.Dict):
+            return None
+        found = None
+        for k, v in zip(elt.keys, elt.values):
+            if isinstance(k, ast.Constant) and k.value == "name":
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    found = v.value
+        if found is None:
+            return None
+        names.add(found)
+    return names
+
+
+def called_function_names(text: str) -> set[str] | None:
+    """Every name called in ``text`` (``f(...)`` and ``mod.f(...)``)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                out.add(node.func.id)
+            elif isinstance(node.func, ast.Attribute):
+                out.add(node.func.attr)
+    return out
+
+
+def _block_refs(block: str, key: str) -> list[str]:
+    """Logical ids referenced by ``key:`` in a resource block, in either the
+    single-value form (``Key: !Ref X``) or a ``!Join``/list of ``!Ref`` lines
+    directly beneath it."""
+    refs: list[str] = []
+    lines = block.splitlines()
+    for i, line in enumerate(lines):
+        m = re.match(rf"^(\s*){re.escape(key)}:\s*(.*)$", line)
+        if not m:
+            continue
+        indent, rest = len(m.group(1)), m.group(2)
+        refs += re.findall(r"!Ref\s+(\w+)", rest)
+        for follow in lines[i + 1 :]:
+            if follow.strip() and len(follow) - len(follow.lstrip()) <= indent:
+                break
+            refs += re.findall(r"!Ref\s+(\w+)", follow)
+    return refs
+
+
+def mcp_checks(
+    repo: Path, spec: dict, ops: dict[str, dict], app_groups: set[str]
+) -> list[Finding]:
+    """M1-M5. Returns findings; never raises on a missing or unreadable source,
+    which is itself a FAIL so a check cannot pass by having nothing to read."""
+    findings: list[Finding] = []
+
+    def fail(check: str, message: str, op: str = "") -> None:
+        findings.append(Finding(check, "FAIL", message, op))
+
+    declared = spec.get("mcp_tools")
+    if not isinstance(declared, dict) or not declared:
+        fail("M1", "api_rbac_expectations.yaml has no mcp_tools section")
+        return findings
+
+    def source(rel: str) -> str | None:
+        path = repo / rel
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    policy_text = source(MCP_ACCESS_MODULE)
+    policy = mcp_tool_policy_from_source(policy_text) if policy_text else None
+    registry_text = source(MCP_TOOL_REGISTRY)
+    registry = mcp_registry_tools(registry_text) if registry_text else None
+    schema_text = source(MCP_GATEWAY_MANAGER)
+    schema = mcp_schema_tools(schema_text) if schema_text else None
+    for rel, value in (
+        (MCP_ACCESS_MODULE, policy),
+        (MCP_TOOL_REGISTRY, registry),
+        (MCP_GATEWAY_MANAGER, schema),
+    ):
+        if value is None:
+            fail("M1", f"could not read the MCP tool set from {rel}")
+    if policy is None or registry is None or schema is None:
+        return findings
+
+    # M1: one universe, closed in every direction.
+    universes = {
+        "mcp_tools (expectations)": set(declared),
+        "MCP_TOOL_POLICY": set(policy),
+        "TOOLS registry": registry,
+        "IDP_TOOLS_SCHEMA": schema,
+    }
+    union = set().union(*universes.values())
+    for label, members in universes.items():
+        for missing in sorted(union - members):
+            fail("M1", f"MCP tool '{missing}' is absent from {label}", missing)
+
+    def resolve(groups: object) -> set[str] | None:
+        if groups == POLICY_ANY_GROUP:
+            return set(app_groups)
+        if isinstance(groups, list) and all(isinstance(g, str) for g in groups):
+            return set(groups)
+        return None
+
+    for tool in sorted(set(declared) & set(policy)):
+        entry = declared[tool] or {}
+        code = policy[tool]
+        groups = resolve(entry.get("groups"))
+        # M2: the expectations and the code agree, field by field.
+        if groups is None:
+            fail(
+                "M2",
+                f"groups {entry.get('groups')!r} is not a group list or "
+                f"{POLICY_ANY_GROUP}",
+                tool,
+            )
+        elif groups != set(code["roles"]):
+            fail(
+                "M2",
+                f"declared groups {sorted(groups)} differ from "
+                f"MCP_TOOL_POLICY roles {sorted(code['roles'])}",
+                tool,
+            )
+        unknown = set(code["roles"]) - set(app_groups)
+        if unknown:
+            fail(
+                "M2",
+                f"MCP_TOOL_POLICY names roles the stack does not create: "
+                f"{sorted(unknown)}",
+                tool,
+            )
+        for flag in ("write", "unscoped_only"):
+            if bool(entry.get(flag)) != code[flag]:
+                fail(
+                    "M2",
+                    f"{flag}: expectations say {bool(entry.get(flag))}, "
+                    f"MCP_TOOL_POLICY says {code[flag]}",
+                    tool,
+                )
+        if entry.get("equivalent_op") != code["equivalent_op"]:
+            fail(
+                "M2",
+                f"equivalent_op: expectations say "
+                f"{entry.get('equivalent_op')!r}, MCP_TOOL_POLICY says "
+                f"{code['equivalent_op']!r}",
+                tool,
+            )
+        # M3: never more permissive than the REST operation it corresponds to.
+        equivalent = entry.get("equivalent_op")
+        if equivalent not in ops:
+            fail(
+                "M3", f"equivalent_op '{equivalent}' is not a declared operation", tool
+            )
+        elif groups is not None:
+            rest = resolve(ops[equivalent].get("groups"))
+            if rest is None:
+                fail(
+                    "M3",
+                    f"equivalent_op '{equivalent}' has a policy "
+                    f"({ops[equivalent].get('groups')!r}) MCP cannot match",
+                    tool,
+                )
+            elif not groups <= rest:
+                fail(
+                    "M3",
+                    f"admits {sorted(groups - rest)}, which '{equivalent}' refuses",
+                    tool,
+                )
+            # Scope: an MCP tool is either filtered or checked by the caller's
+            # scope, or refused to any caller who has one. And where the REST
+            # operation it mirrors cannot be scoped either (no scope_checked or
+            # scope_filtered there), it must be the latter: MCP cannot be the way
+            # a scoped caller reaches what the UI keeps from them.
+            scoped_here = bool(
+                entry.get("scope_checked") or entry.get("scope_filtered")
+            )
+            scoped_rest = bool(
+                ops[equivalent].get("scope_checked")
+                or ops[equivalent].get("scope_filtered")
+            )
+            if not entry.get("unscoped_only") and not scoped_here:
+                fail(
+                    "M3", "neither unscoped_only nor scope_checked/scope_filtered", tool
+                )
+            if not scoped_rest and not entry.get("unscoped_only"):
+                fail(
+                    "M3",
+                    f"'{equivalent}' carries no configuration scope, so "
+                    "this tool must be unscoped_only",
+                    tool,
+                )
+        # M4 (per tool): the scope helper is called where the flag says.
+        for flag, helpers in MCP_SCOPE_HELPERS.items():
+            if not entry.get(flag):
+                continue
+            rel = entry.get("enforced_in") or ""
+            text = source(rel) if rel else None
+            calls = called_function_names(text) if text else None
+            if calls is None:
+                fail("M4", f"{flag}: enforced_in '{rel}' cannot be read", tool)
+            elif not calls & set(helpers):
+                fail("M4", f"{flag}: '{rel}' calls none of {list(helpers)}", tool)
+
+    # M4 (both halves): the shared authorization helpers are called.
+    for rel, required in (
+        (MCP_HANDLER, MCP_HANDLER_CALLS),
+        (MCP_INTERCEPTOR, MCP_INTERCEPTOR_CALLS),
+    ):
+        text = source(rel)
+        calls = called_function_names(text) if text else None
+        if calls is None:
+            fail("M4", f"{rel} cannot be read")
+            continue
+        for name in required:
+            if name not in calls:
+                fail("M4", f"{rel} does not call {name}")
+
+    # M5: every client the gateway admits has a resolution rule, and only those.
+    clients = spec.get("mcp_clients")
+    if not isinstance(clients, dict) or not clients:
+        fail("M5", "api_rbac_expectations.yaml has no mcp_clients section")
+        return findings
+    kinds = set(MCP_INTERCEPTOR_CLIENT_ENV) | {MCP_REGISTRY_KIND}
+    for client, kind in clients.items():
+        if kind not in kinds:
+            fail(
+                "M5",
+                f"mcp_clients '{client}' has kind {kind!r}; expected one of "
+                f"{sorted(kinds)}",
+            )
+    template = source("template.yaml") or ""
+    gateway_block = _resource_block(template, MCP_GATEWAY_RESOURCE)
+    interceptor_block = _resource_block(template, MCP_INTERCEPTOR_FUNCTION)
+    if not gateway_block:
+        fail("M5", f"template.yaml has no {MCP_GATEWAY_RESOURCE} resource")
+    if not interceptor_block:
+        fail("M5", f"template.yaml has no {MCP_INTERCEPTOR_FUNCTION} resource")
+    if not gateway_block or not interceptor_block:
+        return findings
+    admitted = {
+        ref
+        for prop in MCP_GATEWAY_CLIENT_PROPERTIES
+        for ref in _block_refs(gateway_block, prop)
+    }
+    if admitted != set(clients):
+        fail(
+            "M5",
+            f"{MCP_GATEWAY_RESOURCE} admits {sorted(admitted)}; "
+            f"mcp_clients declares {sorted(clients)}",
+        )
+    for kind, env in MCP_INTERCEPTOR_CLIENT_ENV.items():
+        wired = set(_block_refs(interceptor_block, env))
+        expected = {c for c, k in clients.items() if k == kind}
+        if wired != expected:
+            fail(
+                "M5",
+                f"{MCP_INTERCEPTOR_FUNCTION} {env} names {sorted(wired)}; "
+                f"mcp_clients declares {sorted(expected)} as {kind}",
+            )
+    registry = {c for c, k in clients.items() if k == MCP_REGISTRY_KIND}
+    if registry:
+        block = _resource_block(template, MCP_REGISTRY_RESOURCE)
+        registered = set(_block_refs(block, "ClientId")) if block else set()
+        if registered != registry:
+            fail(
+                "M5",
+                f"{MCP_REGISTRY_RESOURCE} registers {sorted(registered)}; "
+                f"mcp_clients declares {sorted(registry)} as {MCP_REGISTRY_KIND}",
+            )
+    return findings
 
 
 def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
@@ -1140,7 +2170,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     if not app_groups:
         findings.append(
             Finding(
-                "S0", "FAIL",
+                "S0",
+                "FAIL",
                 "no AWS::Cognito::UserPoolGroup found in template.yaml, so the "
                 "group vocabulary could not be read — ANY_GROUP cannot be "
                 "resolved and every group name below is unverifiable",
@@ -1152,7 +2183,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             if groups not in POLICY_SENTINELS:
                 findings.append(
                     Finding(
-                        "S0", "FAIL",
+                        "S0",
+                        "FAIL",
                         f"{where} '{name}' declares groups '{groups}', which is "
                         f"not a group list nor one of {list(POLICY_SENTINELS)} — "
                         "an unrecognised policy would be read as the most "
@@ -1164,7 +2196,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         if not isinstance(groups, list) or not groups:
             findings.append(
                 Finding(
-                    "S0", "FAIL",
+                    "S0",
+                    "FAIL",
                     f"{where} '{name}' declares groups {groups!r}; expected a "
                     f"non-empty list of group names or one of "
                     f"{list(POLICY_SENTINELS)}",
@@ -1176,7 +2209,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         if bogus:
             findings.append(
                 Finding(
-                    "S0", "FAIL",
+                    "S0",
+                    "FAIL",
                     f"{where} '{name}' requires group(s) {bogus} that no "
                     f"AWS::Cognito::UserPoolGroup in template.yaml creates "
                     f"(known: {sorted(app_groups)}) — an unmatchable group name "
@@ -1204,7 +2238,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for op in sorted(routable - expected):
         findings.append(
             Finding(
-                "S1", "FAIL",
+                "S1",
+                "FAIL",
                 f"routable op '{op}' has no entry in api_rbac_expectations.yaml "
                 "(add its RBAC policy)",
                 op,
@@ -1213,7 +2248,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for op in sorted(expected - routable):
         findings.append(
             Finding(
-                "S1", "FAIL",
+                "S1",
+                "FAIL",
                 f"expectations entry '{op}' is not a routable op "
                 "(stale — remove it or fix the name)",
                 op,
@@ -1230,7 +2266,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue  # not in schema (ddb-direct-only or conditional feature op)
         if dec == "AWS_AUTH_IGNORED" and exp_for_schema != "AWS_AUTH_IGNORED":
             gap_or_fail(
-                op, "S2",
+                op,
+                "S2",
                 "schema uses @aws_auth(cognito_groups) which is SILENTLY IGNORED "
                 "on this multi-auth API — the field is open to any authenticated "
                 "user at the gateway; use @aws_cognito_user_pools(cognito_groups) "
@@ -1252,7 +2289,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             dw = sorted(dec) if isinstance(dec, set) else dec
             ww = sorted(want) if isinstance(want, set) else want
             gap_or_fail(
-                op, "S2",
+                op,
+                "S2",
                 f"schema.graphql declares {dw} but expectations say {ww}",
             )
 
@@ -1261,8 +2299,10 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         src = repo / o["enforced_in"]
         if not src.exists():
             findings.append(
-                Finding("S3", "FAIL",
-                        f"enforced_in file missing: {o['enforced_in']}", op))
+                Finding(
+                    "S3", "FAIL", f"enforced_in file missing: {o['enforced_in']}", op
+                )
+            )
             continue
         text = src.read_text()
         groups = o["groups"]
@@ -1270,7 +2310,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             # must have a real enforcement pattern
             if not any(p in text for p in ENFORCE_PATTERNS):
                 gap_or_fail(
-                    op, "S3",
+                    op,
+                    "S3",
                     f"no group-enforcement pattern found in {o['enforced_in']}",
                 )
         else:  # ANY / ANY_GROUP
@@ -1289,33 +2330,12 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             # `scope_checked` requirements below and in S4 are unchanged for
             # ANY_GROUP ops.
             if o.get("ownership"):
-                if not any(p in text for p in OWNERSHIP_PATTERNS):
-                    gap_or_fail(
-                        op, "S3",
-                        f"ownership scoping expected but no owner/user check in "
-                        f"{o['enforced_in']}",
-                    )
-                elif not any(p in text for p in OWNERSHIP_REFUSAL_PATTERNS):
-                    # Names the subject, never refuses. See the comment on
-                    # OWNERSHIP_REFUSAL_PATTERNS: this is the direction the
-                    # subject-only match cannot see, and it is the one that
-                    # reaches production, because a resolver that refuses on the
-                    # wrong branch still fails the live matrix.
-                    #
-                    # Unless every access is aimed at the caller's own partition,
-                    # in which case there is nothing to refuse — computed per
-                    # access, so a file holding one caller-keyed access beside
-                    # one that is not still reports.
-                    unscoped = unscoped_key_accesses(text)
-                    if unscoped:
-                        gap_or_fail(
-                            op, "S3",
-                            f"ownership scoping declared and the caller is "
-                            f"resolved in {o['enforced_in']}, but nothing there "
-                            f"refuses a caller who is not the owner, and "
-                            f"{len(unscoped)} data access(es) are not keyed by "
-                            f"the caller: {'; '.join(unscoped[:2])}",
-                        )
+                # Names the subject, never refuses: see OWNERSHIP_REFUSAL_PATTERNS
+                # and `ownership_problem`. Judged per access, so a file holding one
+                # caller-keyed access beside one that is not still reports.
+                problem = ownership_problem(text, o["enforced_in"])
+                if problem:
+                    gap_or_fail(op, "S3", problem)
             elif not o.get("known_gap"):
                 # ANY with no ownership and no gap is fine (intentionally open),
                 # but flag if it's a mutation with no enforcement at all so a
@@ -1324,10 +2344,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                     p in text for p in ENFORCE_PATTERNS + OWNERSHIP_PATTERNS
                 ):
                     findings.append(
-                        Finding("S3", "WARN",
-                                f"ANY-auth mutation with no visible check in "
-                                f"{o['enforced_in']} — confirm this is intended",
-                                op))
+                        Finding(
+                            "S3",
+                            "WARN",
+                            f"ANY-auth mutation with no visible check in "
+                            f"{o['enforced_in']} — confirm this is intended",
+                            op,
+                        )
+                    )
 
     # --- S4: scope enforcement ---------------------------------------------
     # Scoped to the code the OPERATION can reach, not the whole file — see
@@ -1355,27 +2379,151 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             continue
         if not any(p in reachable for p in SCOPE_PATTERNS):
             gap_or_fail(
-                op, "S4",
+                op,
+                "S4",
                 "scope enforcement flagged but nothing this operation can reach "
                 f"in {o['enforced_in']} references allowedConfigVersions — a "
                 "sibling operation's reference in the same module does not "
                 "enforce anything here",
             )
+            continue
+        if not o.get("scope_filtered"):
+            continue
+        # A filtered listing must filter each item — see `op_per_item_scope_filter`.
+        error, sites = op_per_item_scope_filter(
+            src.read_text(),
+            op,
+            sole_op=ops_per_file[o["enforced_in"]] == 1,
+            first_party_root=repo / "lib" / "idp_common_pkg",
+            source_path=src,
+        )
+        if error:
+            gap_or_fail(op, "S4-per-item", f"{error} ({o['enforced_in']})")
+        elif not sites:
+            gap_or_fail(
+                op,
+                "S4-per-item",
+                "declared scope_filtered, but no code this operation can reach "
+                f"from {o['enforced_in']} (following calls into idp_common) "
+                "applies a per-item scope check to what it returns: expected a "
+                f"call to one of {sorted(SCOPE_ITEM_PREDICATES)} inside an "
+                "iteration over the results, or to one of "
+                f"{sorted(SCOPE_LIST_FILTERS)}",
+            )
+
+    # --- S10: scope-keyed arguments -----------------------------------------
+    # Derived universe: every op whose arguments name a profile, document or
+    # session. Each must say how that object is scoped, and the saying is checked:
+    # scope flags by S4 above, `testset_checked` and `ownership` here.
+    field_arguments = schema_field_arguments(schema_text)
+    s10_shielded: set[tuple[str, str]] = set()
+    for op in sorted(ops):
+        o = ops[op]
+        arguments = set(field_arguments.get(op, set())) | set(
+            (o.get("args") or {}).keys()
+        )
+        kinds = scope_keyed_kinds(arguments)
+        if not kinds or _unscoped_policy(o["groups"]):
+            continue
+        for kind, names in sorted(kinds.items()):
+            answering = SCOPE_KEYED_DECLARATIONS[kind]
+            if kind == "object" and "profile" in kinds:
+                # One `scope_checked` cannot answer for two arguments: on an op that
+                # also names a profile it is read as the profile check, so the
+                # document key needs a declaration of its own.
+                answering = tuple(f for f in answering if f != "scope_checked")
+            if not any(o.get(flag) for flag in answering):
+                if (op, kind) in SCOPE_KEYED_ARGUMENT_EXEMPT:
+                    s10_shielded.add((op, kind))
+                    continue
+                gap_or_fail(
+                    op,
+                    "S10",
+                    f"takes {kind} argument(s) {names} but declares none of "
+                    f"{list(answering)}: say how the caller is confined to the "
+                    f"{kind} it names (and make the resolver do it), or record a "
+                    "known_gap if it is not",
+                )
+        src = repo / o["enforced_in"]
+        if not src.exists():
+            continue  # reported by S3
+        text = src.read_text()
+        if o.get("testset_checked"):
+            error, reachable = op_scope_source(
+                text,
+                op,
+                declared_entry=o.get("scope_enforced_in"),
+                sole_op=ops_per_file[o["enforced_in"]] == 1,
+            )
+            if error:
+                gap_or_fail(op, "S10", f"{error} ({o['enforced_in']})")
+            elif not any(p in reachable for p in TESTSET_SCOPE_PATTERNS):
+                gap_or_fail(
+                    op,
+                    "S10",
+                    "declared testset_checked, but nothing this operation can reach "
+                    f"in {o['enforced_in']} calls one of {list(TESTSET_SCOPE_PATTERNS)}",
+                )
+        if o.get("document_scope_checked"):
+            error, reachable = op_scope_source(
+                text,
+                op,
+                declared_entry=o.get("scope_enforced_in"),
+                sole_op=ops_per_file[o["enforced_in"]] == 1,
+            )
+            if error:
+                gap_or_fail(op, "S10", f"{error} ({o['enforced_in']})")
+            elif not any(p in reachable for p in DOCUMENT_SCOPE_PATTERNS):
+                gap_or_fail(
+                    op,
+                    "S10",
+                    "declared document_scope_checked, but nothing this operation can "
+                    f"reach in {o['enforced_in']} calls one of "
+                    f"{list(DOCUMENT_SCOPE_PATTERNS)}",
+                )
+        if o.get("ownership") and isinstance(o["groups"], list):
+            # S3 verified ownership for ANY/ANY_GROUP ops only.
+            problem = ownership_problem(text, o["enforced_in"])
+            if problem:
+                gap_or_fail(op, "S10", problem)
+
+    for op, kind in sorted(set(SCOPE_KEYED_ARGUMENT_EXEMPT) - s10_shielded):
+        # Stale: it shields nothing today, so it would only pre-exempt whatever next
+        # takes this name. Not routed through gap_or_fail: a known_gap must not
+        # downgrade a dead exemption.
+        findings.append(
+            Finding(
+                "S10",
+                "FAIL",
+                f"SCOPE_KEYED_ARGUMENT_EXEMPT entry ({op!r}, {kind!r}) shields no "
+                "finding (the operation is gone, takes no such argument, or now "
+                "declares a scope) — delete the entry",
+                op,
+            )
+        )
 
     # --- S5: template method auth ------------------------------------------
     for logical, auth in template_methods(template_text):
         if logical in ALLOWED_UNAUTH_METHODS:
             if auth != "NONE":
                 findings.append(
-                    Finding("S5", "WARN",
-                            f"{logical} expected AuthorizationType NONE, got {auth}"))
+                    Finding(
+                        "S5",
+                        "WARN",
+                        f"{logical} expected AuthorizationType NONE, got {auth}",
+                    )
+                )
             continue
         if auth != "COGNITO_USER_POOLS":
             findings.append(
-                Finding("S5", "FAIL",
-                        f"{logical} has AuthorizationType {auth} — expected "
-                        "COGNITO_USER_POOLS (add to ALLOWED_UNAUTH_METHODS only "
-                        "if intentionally public)"))
+                Finding(
+                    "S5",
+                    "FAIL",
+                    f"{logical} has AuthorizationType {auth} — expected "
+                    "COGNITO_USER_POOLS (add to ALLOWED_UNAUTH_METHODS only "
+                    "if intentionally public)",
+                )
+            )
 
     # --- S6-S9: Lambda Function URL routes ----------------------------------
     endpoints: dict[str, dict] = spec.get("function_url_endpoints") or {}
@@ -1411,7 +2559,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for logical in sorted(set(url_resources) - set(endpoints)):
         findings.append(
             Finding(
-                "S6", "FAIL",
+                "S6",
+                "FAIL",
                 f"Function URL '{logical}' in template.yaml has no "
                 "function_url_endpoints entry in api_rbac_expectations.yaml "
                 "(declare its routes and their authorization)",
@@ -1421,7 +2570,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     for logical in sorted(set(endpoints) - set(url_resources)):
         findings.append(
             Finding(
-                "S6", "FAIL",
+                "S6",
+                "FAIL",
                 f"function_url_endpoints entry '{logical}' is not an "
                 "AWS::Lambda::Url in template.yaml (stale — remove it or fix "
                 "the name)",
@@ -1440,29 +2590,49 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         # the accepted-risk register.
         for bad in sorted(set(ep) - ENDPOINT_ENTRY_KEYS):
             findings.append(
-                Finding("S6", "FAIL",
-                        f"{logical} declares unknown key '{bad}' — a misspelled "
-                        f"key is silently ignored (known: "
-                        f"{sorted(ENDPOINT_ENTRY_KEYS)})", logical))
+                Finding(
+                    "S6",
+                    "FAIL",
+                    f"{logical} declares unknown key '{bad}' — a misspelled "
+                    f"key is silently ignored (known: "
+                    f"{sorted(ENDPOINT_ENTRY_KEYS)})",
+                    logical,
+                )
+            )
         for route, rc in declared_routes.items():
             for bad in sorted(set(rc or {}) - ROUTE_POLICY_KEYS):
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"route '{route}' on {logical} declares unknown key "
-                            f"'{bad}' — a misspelled key is silently ignored "
-                            f"(known: {sorted(ROUTE_POLICY_KEYS)})", route))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"route '{route}' on {logical} declares unknown key "
+                        f"'{bad}' — a misspelled key is silently ignored "
+                        f"(known: {sorted(ROUTE_POLICY_KEYS)})",
+                        route,
+                    )
+                )
 
         if res:
             if res["auth_type"] == "NONE":
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} has AuthType NONE — the Function URL is "
-                            "reachable unauthenticated", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} has AuthType NONE — the Function URL is "
+                        "reachable unauthenticated",
+                        logical,
+                    )
+                )
             elif res["auth_type"] != ep.get("auth_type"):
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} AuthType is {res['auth_type']} but "
-                            f"expectations say {ep.get('auth_type')}", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} AuthType is {res['auth_type']} but "
+                        f"expectations say {ep.get('auth_type')}",
+                        logical,
+                    )
+                )
             # Resolve the handler from the template rather than trusting the
             # expectations file, so a retargeted URL cannot keep pointing the
             # scan at the old (still-clean) source file. Both halves of that
@@ -1472,28 +2642,43 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             code_uri = function_code_uri(main_text, res["target"])
             if not res["target"]:
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical}: could not resolve TargetFunctionArn to a "
-                            "function logical id, so the declared handler cannot "
-                            "be checked against the target's CodeUri", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical}: could not resolve TargetFunctionArn to a "
+                        "function logical id, so the declared handler cannot "
+                        "be checked against the target's CodeUri",
+                        logical,
+                    )
+                )
             elif not code_uri:
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} targets {res['target']}, which has no "
-                            "resolvable CodeUri in template.yaml, so the declared "
-                            "handler cannot be checked against it", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} targets {res['target']}, which has no "
+                        "resolvable CodeUri in template.yaml, so the declared "
+                        "handler cannot be checked against it",
+                        logical,
+                    )
+                )
             if code_uri and not ep["handler"].startswith(code_uri.rstrip("/")):
                 findings.append(
-                    Finding("S6", "FAIL",
-                            f"{logical} targets {res['target']} (CodeUri "
-                            f"{code_uri}) but expectations name handler "
-                            f"{ep['handler']}", logical))
+                    Finding(
+                        "S6",
+                        "FAIL",
+                        f"{logical} targets {res['target']} (CodeUri "
+                        f"{code_uri}) but expectations name handler "
+                        f"{ep['handler']}",
+                        logical,
+                    )
+                )
 
         handler_src = repo / ep["handler"]
         if not handler_src.exists():
             findings.append(
-                Finding("S6", "FAIL",
-                        f"handler file missing: {ep['handler']}", logical))
+                Finding("S6", "FAIL", f"handler file missing: {ep['handler']}", logical)
+            )
             continue
         handler_text = handler_src.read_text()
         actual_routes = app_routes(handler_text)
@@ -1502,9 +2687,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         except HandlerUnparseable as exc:
             # A check that cannot be run is not a check that passed.
             findings.append(
-                Finding("S7", "FAIL",
-                        f"could not parse {ep['handler']}, so the route-level "
-                        f"identity checks did not run: {exc}", logical))
+                Finding(
+                    "S7",
+                    "FAIL",
+                    f"could not parse {ep['handler']}, so the route-level "
+                    f"identity checks did not run: {exc}",
+                    logical,
+                )
+            )
             continue
         # The identity decision may live in a sibling module of the same Lambda
         # package (the app file imports FastAPI, so pure logic is factored out to
@@ -1518,15 +2708,25 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             set(actual_routes) - set(declared_routes) - FUNCTION_URL_OPEN_ROUTES
         ):
             findings.append(
-                Finding("S6", "FAIL",
-                        f"{ep['handler']} serves '{route}' with no "
-                        "function_url_endpoints route entry (declare its "
-                        "authorization)", route))
+                Finding(
+                    "S6",
+                    "FAIL",
+                    f"{ep['handler']} serves '{route}' with no "
+                    "function_url_endpoints route entry (declare its "
+                    "authorization)",
+                    route,
+                )
+            )
         for route in sorted(set(declared_routes) - set(actual_routes)):
             findings.append(
-                Finding("S6", "FAIL",
-                        f"declared route '{route}' is not served by "
-                        f"{ep['handler']} (stale entry)", route))
+                Finding(
+                    "S6",
+                    "FAIL",
+                    f"declared route '{route}' is not served by "
+                    f"{ep['handler']} (stale entry)",
+                    route,
+                )
+            )
 
         for route, rc in declared_routes.items():
             body = actual_routes.get(route)
@@ -1538,16 +2738,22 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             c_at = _first_index(body, CLIENT_IDENTITY_TOKENS)
             if v_at < 0:
                 route_gap_or_fail(
-                    rc, route, "S7",
+                    rc,
+                    route,
+                    "S7",
                     f"route resolves no transport-verified caller identity in "
-                    f"{ep['handler']}")
+                    f"{ep['handler']}",
+                )
             elif 0 <= c_at < v_at:
                 route_gap_or_fail(
-                    rc, route, "S7",
+                    rc,
+                    route,
+                    "S7",
                     "route prefers the request-body caller identity over the "
                     f"transport-verified one in {ep['handler']} — the verified "
                     "identity must be resolved first, the body value is a "
-                    "fallback only")
+                    "fallback only",
+                )
 
             # Structural half of S7: resolving the verified identity first means
             # nothing if a later statement overwrites it. The token comparison
@@ -1560,12 +2766,15 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 if rebound is not None:
                     name, lines = rebound
                     route_gap_or_fail(
-                        rc, route, "S7",
+                        rc,
+                        route,
+                        "S7",
                         f"'{name}' holds the transport-verified caller identity "
                         f"in {ep['handler']} but is assigned {len(lines)} times "
                         f"(lines {lines}) — a later assignment can substitute a "
                         "client-supplied identity for the verified one no matter "
-                        "how it is spelled; resolve it once and do not rebind it")
+                        "how it is spelled; resolve it once and do not rebind it",
+                    )
 
             # --- S8: a contradicting body identity must be refused -------
             # The comparison lives in a shared resolver, so look across the
@@ -1577,11 +2786,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 for fn in package_functions
             ):
                 route_gap_or_fail(
-                    rc, route, "S8",
+                    rc,
+                    route,
+                    "S8",
                     f"{ep['handler']} accepts a body-supplied caller identity "
                     "but never refuses one that contradicts the verified "
                     "identity (expected an explicit rejection, not a silent "
-                    "preference)")
+                    "preference)",
+                )
 
             # --- S9: downstream group enforcement ------------------------
             groups = rc.get("groups")
@@ -1590,17 +2802,24 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 src = repo / enforced_in
                 if not src.exists():
                     findings.append(
-                        Finding("S9", "FAIL",
-                                f"enforced_in file missing: {enforced_in}",
-                                route))
+                        Finding(
+                            "S9",
+                            "FAIL",
+                            f"enforced_in file missing: {enforced_in}",
+                            route,
+                        )
+                    )
                 else:
                     text = src.read_text()
                     if not any(p in text for p in ENFORCE_PATTERNS):
                         route_gap_or_fail(
-                            rc, route, "S9",
+                            rc,
+                            route,
+                            "S9",
                             f"no group-enforcement pattern found in "
                             f"{enforced_in} — a Function URL route declared "
-                            f"for {groups} reaches this handler directly")
+                            f"for {groups} reaches this handler directly",
+                        )
                     else:
                         # Compare the handler's group list with the declared one
                         # in BOTH directions where possible. Reading the module
@@ -1611,11 +2830,14 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                         if actual is not None:
                             if actual != set(groups):
                                 route_gap_or_fail(
-                                    rc, route, "S9",
+                                    rc,
+                                    route,
+                                    "S9",
                                     f"{enforced_in} enforces "
                                     f"{sorted(actual)} but the route declares "
                                     f"{sorted(groups)} — the code and the "
-                                    "expectations must name the same groups")
+                                    "expectations must name the same groups",
+                                )
                         else:
                             # No group-list constant found, so fall back to
                             # containment. NOTE this direction is ASYMMETRIC: it
@@ -1631,10 +2853,13 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                             missing = [g for g in groups if f'"{g}"' not in text]
                             if missing:
                                 route_gap_or_fail(
-                                    rc, route, "S9",
+                                    rc,
+                                    route,
+                                    "S9",
                                     f"{enforced_in} has a group check but does "
                                     f"not name {missing} — declared groups "
-                                    f"{groups}")
+                                    f"{groups}",
+                                )
             # --- S9: declared policy vs what the transport can enforce -----
             # `groups` is the route's POLICY and must equal the equivalent REST
             # operation's — one user action, one policy. `transport_enforces` is
@@ -1652,7 +2877,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 if enforceable == declared_floor:
                     findings.append(
                         Finding(
-                            "S9", "FAIL",
+                            "S9",
+                            "FAIL",
                             f"route declares transport_enforces {enforceable!r}, "
                             "which equals its groups — remove the key rather than "
                             "asserting a divergence that does not exist",
@@ -1662,7 +2888,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 elif weaker_policy_problem(enforceable, declared_floor):
                     findings.append(
                         Finding(
-                            "S9", "FAIL",
+                            "S9",
+                            "FAIL",
                             weaker_policy_problem(enforceable, declared_floor) or "",
                             route,
                         )
@@ -1670,7 +2897,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                 elif not rc.get("residual_gap") and not rc.get("known_gap"):
                     findings.append(
                         Finding(
-                            "S9", "FAIL",
+                            "S9",
+                            "FAIL",
                             f"route enforces only {enforceable!r} but declares "
                             f"{declared_floor!r}, with no residual_gap/known_gap "
                             "naming the limitation — an unrecorded gap between the "
@@ -1682,7 +2910,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
                     gid = rc.get("residual_gap") or rc.get("known_gap")
                     findings.append(
                         Finding(
-                            "S9", "FAIL" if strict else "WARN",
+                            "S9",
+                            "FAIL" if strict else "WARN",
                             f"route declares {declared_floor!r} but this transport "
                             f"can only enforce {enforceable!r}, so a caller the "
                             "declared policy would refuse is not refused here "
@@ -1696,17 +2925,28 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
             if equivalent:
                 if equivalent not in ops:
                     findings.append(
-                        Finding("S9", "FAIL",
-                                f"equivalent_op '{equivalent}' is not a "
-                                "declared operation", route))
+                        Finding(
+                            "S9",
+                            "FAIL",
+                            f"equivalent_op '{equivalent}' is not a declared operation",
+                            route,
+                        )
+                    )
                 elif ops[equivalent]["groups"] != groups:
                     findings.append(
-                        Finding("S9", "FAIL",
-                                f"route groups {groups} disagree with the "
-                                f"equivalent REST op '{equivalent}' "
-                                f"({ops[equivalent]['groups']}) — one entry "
-                                "path is more permissive than the other",
-                                route))
+                        Finding(
+                            "S9",
+                            "FAIL",
+                            f"route groups {groups} disagree with the "
+                            f"equivalent REST op '{equivalent}' "
+                            f"({ops[equivalent]['groups']}) — one entry "
+                            "path is more permissive than the other",
+                            route,
+                        )
+                    )
+
+    # --- M1-M5: MCP tools ------------------------------------------------
+    findings.extend(mcp_checks(repo, spec, ops, app_groups))
 
     # --- known_gaps integrity ----------------------------------------------
     referenced = {o["known_gap"] for o in ops.values() if o.get("known_gap")}
@@ -1719,8 +2959,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
     }
     for gid in sorted(referenced - set(known_gaps)):
         findings.append(
-            Finding("S0", "FAIL",
-                    f"operation references undefined known_gap '{gid}'"))
+            Finding("S0", "FAIL", f"operation references undefined known_gap '{gid}'")
+        )
     # A gap the DYNAMIC harness assigns at runtime has no operation to reference
     # it — the condition is a property of the response, not of a declared
     # operation — so the orphan check's premise does not hold for it. Declaring
@@ -1733,22 +2973,34 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         assigner = spec.get("assigned_by") if isinstance(spec, dict) else None
         if not assigner:
             findings.append(
-                Finding("S0", "WARN",
-                        f"known_gap '{gid}' is defined but no operation references "
-                        "it (fixed? remove it)"))
+                Finding(
+                    "S0",
+                    "WARN",
+                    f"known_gap '{gid}' is defined but no operation references "
+                    "it (fixed? remove it)",
+                )
+            )
             continue
         assigner_path = REPO / assigner
         if not assigner_path.is_file():
             findings.append(
-                Finding("S0", "FAIL",
-                        f"known_gap '{gid}' declares assigned_by '{assigner}', "
-                        "which is not a file in this repo"))
+                Finding(
+                    "S0",
+                    "FAIL",
+                    f"known_gap '{gid}' declares assigned_by '{assigner}', "
+                    "which is not a file in this repo",
+                )
+            )
         elif gid not in assigner_path.read_text():
             findings.append(
-                Finding("S0", "FAIL",
-                        f"known_gap '{gid}' declares assigned_by '{assigner}', "
-                        f"but that file does not mention '{gid}' — the gap is "
-                        "registered and assigned by nothing"))
+                Finding(
+                    "S0",
+                    "FAIL",
+                    f"known_gap '{gid}' declares assigned_by '{assigner}', "
+                    f"but that file does not mention '{gid}' — the gap is "
+                    "registered and assigned by nothing",
+                )
+            )
 
     # --- accepted-risk register (always surfaced for auditability) ---------
     # Each declared gap is emitted so the report explicitly lists accepted
@@ -1768,7 +3020,8 @@ def run_checks(strict: bool, repo: Path | None = None) -> list[Finding]:
         ops_list = ", ".join(sorted(gap_ops.get(gid, [])))
         findings.append(
             Finding(
-                "GAP", "FAIL" if strict else "WARN",
+                "GAP",
+                "FAIL" if strict else "WARN",
                 f"{gid}: {summary} — affects: {ops_list}",
             )
         )
@@ -1780,8 +3033,10 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Static RBAC scan for the IDP UI API.")
     ap.add_argument("--json", metavar="PATH", help="write findings as JSON to PATH")
     ap.add_argument(
-        "--strict", action="store_true",
-        help="treat known_gap WARNs as failures (verify a gap was fixed)")
+        "--strict",
+        action="store_true",
+        help="treat known_gap WARNs as failures (verify a gap was fixed)",
+    )
     args = ap.parse_args()
 
     findings = run_checks(args.strict)

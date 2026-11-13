@@ -2,6 +2,9 @@
 title: "AppSync → REST API Migration"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Migrating off AWS AppSync: how the new transport mirrors GraphQL
 
 This document is the reference for the UI ⇄ backend transport. It explains
@@ -175,13 +178,13 @@ migration preserves parity as follows:
   transport had otherwise lost: under AppSync a field the caller's groups did not
   satisfy was rejected at the API layer, and a field with no directive was not
   reachable by a lower-privilege caller by accident.
-  - ⚠️ **Restored for group-scoped operations only.** 8 of the 164 declared
+  - ⚠️ **Restored for group-scoped operations only.** 8 of the 180 declared
     operations are declared `ANY`, where the dispatcher checks authentication but
     not group membership, so for those a forgotten resolver check is still
     reachable by any authenticated caller. They are the caller's own profile and
     chat session list, the published release number, the two fine-tuning job reads
     and the three feature-platform reads;
-    154 operations require a group, 27 of them via `ANY_GROUP`
+    170 operations require a group, 27 of them via `ANY_GROUP`
     ("any group the stack creates", so a self-registered caller in no group is
     refused). See [RBAC](./rbac.md) for the full breakdown.
     The `idp_common.api_adapter` passthrough for events that already carry their

@@ -149,7 +149,7 @@ This analysis produces structured configuration templates that can be used to co
 - Shared across both BDA and Pipeline processing modes
 
 **BDA Blueprint Automation (BDA mode only):**
-- **Sync BDA/IDP Resolver** (`nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py`): Synchronizes blueprints between a configuration version and a BDA project. It backs the `syncBdaIdp` operation, so it runs **only when a user asks for it** from the Configuration page — nothing triggers it on a configuration change. Supports `bda_to_idp`, `idp_to_bda`, `bidirectional` (the default) and `cleanup_orphaned` directions, and enforces Admin/Author plus config-version scope server-side
+- **Sync BDA/IDP Resolver** (`nested/api-resolvers/src/lambda/sync_bda_idp_resolver/index.py`): Synchronizes blueprints between a configuration profile and a BDA project. It backs the `syncBdaIdp` operation, so it runs **only when a user asks for it** from the Configuration page — nothing triggers it on a configuration change. Supports `bda_to_idp`, `idp_to_bda`, `bidirectional` (the default) and `cleanup_orphaned` directions, and enforces Admin/Author plus configuration-profile scope server-side
 - **Blueprint Optimization Function** (`src/lambda/blueprint_optimization/index.py`): Iteratively refines a discovered class's BDA blueprint against a supplied ground-truth file. Invoked asynchronously by the discovery processor, and only when `use_bda` and `enable_blueprint_optimization` are both set, a ground-truth file was provided, and the document is a PDF
 - **BDA Blueprint Service** (`lib/idp_common_pkg/idp_common/bda/bda_blueprint_service.py`): Blueprint lifecycle management, schema conversion, and project synchronization
 - **Schema Converter** (`lib/idp_common_pkg/idp_common/bda/schema_converter.py`): Transforms discovery results to BDA-compatible schemas
@@ -223,9 +223,9 @@ This method analyzes documents from scratch without any prior knowledge or label
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: >-
       You are an expert in processing forms. Analyze forms line by line to identify 
       field names, data types, and organizational structure. Focus on creating 
@@ -291,9 +291,9 @@ This method uses existing labeled data or known field definitions to optimize th
 discovery:
   with_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: >-
       You are an expert in processing forms. Use provided ground truth data as 
       reference to optimize field extraction and ensure consistency with expected 
@@ -330,7 +330,7 @@ In Multi-Section Package mode, the UI displays:
 The **"✨ Auto-detect sections"** button uses an LLM to automatically identify section boundaries:
 
 1. The PDF is uploaded to S3
-2. The `autoDetectSections` GraphQL mutation calls a Lambda that sends the full PDF to Bedrock
+2. The `autoDetectSections` operation (`POST /op/autoDetectSections`) calls a Lambda that sends the full PDF to Bedrock
 3. The LLM returns a JSON array of sections: `[{"start": 1, "end": 2, "type": "Letter"}, ...]`
 4. Page ranges are auto-populated with the LLM's boundary detection, including type labels
 5. User can review, adjust ranges, edit labels, then click "Start Discovery"
@@ -342,10 +342,10 @@ The auto-detect prompt is fully configurable via the Discovery Configuration in 
 ```yaml
 discovery:
   auto_split:
-    model_id: "us.amazon.nova-pro-v1:0"
+    model_id: "us.anthropic.claude-opus-4-6-v1:1m"
     temperature: 0.0    # Low temperature for consistent boundary detection
     top_p: 0.1
-    max_tokens: 4096
+    max_tokens: ""      # empty = the model's maximum output
     system_prompt: >-
       You are an expert document analyst. Your task is to identify
       distinct document sections within a multi-page document package.
@@ -363,7 +363,7 @@ from idp_common.discovery.classes_discovery import ClassesDiscovery
 discovery = ClassesDiscovery(
     input_bucket="my-bucket",
     input_prefix="lending_package.pdf",
-    version="my-config-version"
+    version="my-config-profile"
 )
 
 # Auto-detect section boundaries
@@ -428,9 +428,9 @@ graph LR
     E --> F[Discovered Classes + Schemas]
 ```
 
-1. **Embed** — Each document's first page is rendered to an image and embedded as a vector using Amazon Bedrock (`us.cohere.embed-v4:0` by default)
+1. **Embed** — Each document's first page is rendered to an image and embedded as a vector using Amazon Bedrock (`us.cohere.embed-v4:0` by default; a stack deployed in an EU Region uses `eu.cohere.embed-v4:0` and one in Canada `global.cohere.embed-v4:0`, because the `us.` profile cannot be called from either — see [EU Region Model Support](eu-region-model-support.md))
 2. **Cluster** — Embeddings are clustered using KMeans with automatic K selection via silhouette analysis (scikit-learn). Clusters with fewer than `min_cluster_size` (default: 2) documents are filtered as noise.
-3. **Analyze** — For each cluster, a Strands agent with Claude (`us.anthropic.claude-sonnet-4-6`) examines sample document images and generates a classification name + JSON Schema definition
+3. **Analyze** — For each cluster, a Strands agent with Claude (`us.anthropic.claude-sonnet-4-6` by default; `eu.anthropic.claude-sonnet-4-6` in an EU Region) examines sample document images and generates a classification name + JSON Schema definition
 4. **Reflect** — The agent produces a Markdown reflection report reviewing all discovered classes, their relationships, and potential overlaps
 
 #### Supported File Types
@@ -504,7 +504,7 @@ discovery = MultiDocumentDiscovery(
 # Local pipeline
 result = discovery.run_local_pipeline(
     document_dir="/path/to/documents/",
-    config_version="v1",  # Optional: save to DynamoDB config
+    config_version="v1",  # Optional: configuration profile to save into
 )
 
 # Or S3 pipeline
@@ -565,16 +565,22 @@ The Discovery module supports comprehensive configuration through the deployment
 ### Model Configuration
 
 **Supported Models:**
-- `us.amazon.nova-lite-v1:0` - Fast, cost-effective for simple documents
-- `us.amazon.nova-pro-v1:0` - Balanced performance and accuracy (recommended)
-- `us.anthropic.claude-haiku-4-5-20251001-v1:0` - Fast processing
-- `us.anthropic.claude-haiku-5-5` - Fastest and cheapest; first Haiku with reasoning effort
-- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - High accuracy, but an AWS
-  Health notice puts it in legacy with end of life on 2027-04-08
-- `us.anthropic.claude-sonnet-4-6` - High accuracy, Active
-- `us.anthropic.claude-sonnet-5` - Latest capabilities
-- `us.anthropic.claude-sonnet-5-5` - 1M default context window and the cheapest
-  cache reads of any Claude here. **Not available for Multi-Document Discovery
+
+Discovery is not covered by the benchmark suite, so the notes below describe the
+models rather than rank their discovery quality. Try candidates on your own
+documents.
+
+- `us.amazon.nova-lite-v1:0` - Lowest input and output token prices of the models
+  listed here (`config_library/pricing.yaml`)
+- `us.amazon.nova-pro-v1:0` - The shipped default for discovery with and without
+  ground truth (`base-discovery.yaml`)
+- `us.anthropic.claude-haiku-4-5-20251001-v1:0`
+- `us.anthropic.claude-haiku-5-5` - First Haiku with reasoning effort
+- `us.anthropic.claude-sonnet-4-5-20250929-v1:0` - An AWS Health notice puts it
+  in legacy with end of life on 2027-04-08
+- `us.anthropic.claude-sonnet-4-6` - Active
+- `us.anthropic.claude-sonnet-5`
+- `us.anthropic.claude-sonnet-5-5` - 1M default context window. **Not available for Multi-Document Discovery
   cluster analysis** — see the note below
 
 > **⚠️ Two Claude models are not available for Multi-Document Discovery cluster
@@ -623,15 +629,15 @@ The Discovery module supports comprehensive configuration through the deployment
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0        # Creativity level (0.0-1.0)
+    temperature: 0.0        # Creativity level (0.0-1.0)
     top_p: 0.1             # Nucleus sampling (0.0-1.0)
-    max_tokens: 10000      # Maximum response length
+    max_tokens: ""         # Maximum response length; empty = the model's maximum
 ```
 
 **Parameter Guidelines:**
 - **Temperature**: Use 1.0 for creative structure discovery, 0.0 for consistent results
 - **Top P**: Lower values (0.1) for focused analysis, higher for diverse interpretations
-- **Max Tokens**: 10000+ recommended for complex documents with many fields
+- **Max Tokens**: leave empty (the default), which requests the model's maximum output; set a number only to cap the response below that
 
 ### Prompt Customization
 
@@ -758,16 +764,16 @@ UpdateSchemaConfig:
 discovery:
   without_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: "You are an expert in processing forms..."
     user_prompt: "This image contains forms data..."
   with_ground_truth:
     model_id: "us.amazon.nova-pro-v1:0"
-    temperature: 1.0
+    temperature: 0.0
     top_p: 0.1
-    max_tokens: 10000
+    max_tokens: ""    # empty = the model's maximum output
     system_prompt: "You are an expert in processing forms..."
     user_prompt: "This image contains unstructured data..."
   output_format:
@@ -811,7 +817,10 @@ discovery:
      selected profile first, then saves only the newly discovered ones. For
      multi-section discovery, the schema is cleared once before the batch runs,
      so all sections in the run are rebuilt into a clean schema. A confirmation
-     warning is shown while Replace is selected.
+     warning is shown while Replace is selected. Replace is refused on the
+     **active** profile, because documents arriving during the run would be
+     classified against an empty class list; use Add, or discover into another
+     profile and activate it afterwards.
 5. Upload a document file (PDF, PNG, JPG, TIFF)
 6. For PDFs, choose a **Discovery Mode**:
    - **Single Section Document** — discovers one class from the whole document; optionally upload a ground truth JSON file
@@ -823,6 +832,26 @@ discovery:
 > Multiple Documents (multi-doc clustering), and Policy Discovery alike. In
 > Replace mode, class discovery clears the profile's `classes` list while Policy
 > Discovery clears its `policy_classes` list.
+
+**Which profiles you can use.** Discovery holds the profile you choose to your
+configuration-profile scope (`allowedConfigVersions`), as the Configuration page
+does: the picker lists only the profiles in your scope, and the server refuses any
+other. A discovery job must name the profile it saves into; it is never saved into
+whichever profile happens to be active. See [RBAC](rbac.md#scope-enforcement-points).
+
+**What discovery saves.** Everything a model writes into a discovered class or rule
+— descriptions, titles, `examples`, `enum` and `default` values, prompts, and any
+other text — and the multi-document reflection report are kept to plain text before
+they are saved or shown: URLs, markdown images and HTML are removed (a markdown link
+keeps its text), and lengths are capped — 1,000 characters for a description, 4,000
+for a prompt, 200 for other values and 10 example values per field. String values of `$schema`,
+`$id`, `$ref`, `type`, `format`, `pattern` and `-regex` keys are machine syntax, and
+the field names in `required` must keep matching the properties, so those are saved
+as discovered. Classes you wrote yourself are not changed. Multi-document
+discovery's agent views only documents in the cluster it is analysing, and at most
+the configured `max_sample_size` of them, and for a user with a configuration-profile
+scope it reads only the discovery bucket or an Input-bucket prefix that a
+configuration prefix mapping places inside that scope.
 
 **Monitoring Progress:**
 - Progress messages refreshed by 10-second polling (e.g., "Analyzing document structure with AI...", "Saving to configuration..."); GraphQL subscriptions are not used
@@ -980,7 +1009,7 @@ write:
 - **Job details page** (single-document discovery): *"This sample appears to
   contain N 'X' records"* with an **Enable several records per section** action.
   Clicking it sets `x-aws-idp-multi-instance: true` on that class in the job's
-  configuration version (clearing any `x-aws-idp-instance-array` designation) and
+  configuration profile (clearing any `x-aws-idp-instance-array` designation) and
   reminds you that committed evaluation baselines for the class then need
   `scripts/migrate_multi_instance_baselines.py`. If the class already has the flag
   (a re-run keeps it), the panel says so instead.
@@ -1000,7 +1029,7 @@ arrives, and the extraction-time detection probe is there to catch that.
 
 Measured once, on the shipped `samples/paystub_multi_instance.pdf` (three
 records) and `samples/bank-statement-multipage.pdf` (one document, several pages)
-with the default discovery model at its default temperature of 1.0: the count was
+with the default discovery model: the count was
 right in every run (3 in four of four runs, 1 in one of one), and the key never
 reached the saved schema. Three control runs without the question produced the
 same 12 properties each time, while three runs with it produced 12, 11 and 12
@@ -1479,7 +1508,7 @@ graph TD
 
 The sync direction can be specified when calling the sync operation:
 
-**GraphQL API:**
+**API operation** (`POST /op/syncBdaIdp`; the shape below is the contract in `schema.graphql`):
 ```graphql
 mutation SyncBdaIdp {
   syncBdaIdp(direction: "bidirectional") {
@@ -1654,11 +1683,13 @@ BDA currently has limitations with complex nested structures that affect sync op
 }
 ```
 
-**Nested Arrays Not Supported:**
-Arrays within object definitions are not supported by BDA:
+A top-level object like `employee` can be written inline, as above, or under `$defs` and referenced with `$ref`. BDA itself accepts only the second form, so the sync converts an inline object into a blueprint definition and a reference to it. The field keeps its name in the blueprint either way.
+
+**Arrays of Objects Within Objects Not Supported:**
+BDA does not accept an array of objects inside an object definition:
 
 ```json
-// ❌ NOT SUPPORTED: Arrays within object definitions
+// ❌ NOT SUPPORTED: An array of objects within an object definition
 {
   "Employee": {
     "type": "object",
@@ -1679,6 +1710,22 @@ Arrays within object definitions are not supported by BDA:
   }
 }
 ```
+
+An array of plain values, such as `{"type": "array", "items": {"type": "string"}}`, is kept inside an object definition, as long as no top-level array uses that object as its items. BDA rejects an array nested inside an array's items, so in an object such as `Employee` above, which `employees` uses as its items, an array of plain values is dropped too. Each dropped field is reported as a warning for the class.
+
+**Characters BDA does not accept in descriptions:**
+BDA rejects a whole blueprint when the class description or any field's description (which becomes the field's instruction) contains a character outside the set it accepts. That set is ASCII without `^`, `` ` ``, `{`, `}` and `~`, plus the accented Latin letters and a few symbols such as `€`, `£`, `°` and `©`. Typographic dashes, the left single quote (`‘`), the ellipsis, the no-break space, bullets, Greek, Cyrillic, CJK and emoji are all rejected. The right single quote and both curly double quotes are accepted.
+
+The sync therefore rewrites those characters in the blueprint it sends. Your configuration is not changed. Where an equivalent exists, the character is replaced: dashes become `-`, the left single quote and backticks become `'`, other curly quotes outside the set become straight quotes, `…` becomes `...`, unusual spaces become a plain space, a bullet becomes `-`, `×` becomes `x`, `→` becomes `->`, and `{` and `}` become `(` and `)`. Accented letters outside the set lose the accent, so `ý` becomes `y`. A character with no equivalent, such as a CJK character, `^` or `~`, is removed. Each removal is reported as an `unsupported_characters` warning for the class, and a description that is blank, or has nothing left after removal, becomes `-`.
+
+**Characters BDA does not accept in a class name:**
+The class name becomes the blueprint's `class`, which BDA limits to the same characters as descriptions and to 60 characters. The sync does not replace the characters there, because the class name is what comes back from BDA: a sync from BDA to IDP reads it as the class name. Instead, each character BDA does not accept is written as `_x` followed by its code point and `_`, so `Invoice — {EU}` reaches BDA as `Invoice _x2014_ _x007B_EU_x007D_`, and the accelerator turns it back into `Invoice — {EU}` when it reads the class from BDA, including in the results it stores for each document. A class name that only uses characters BDA accepts is sent unchanged. A class whose name is longer than 60 characters after this escaping fails to sync with a message that says so; shorten the name.
+
+**Integer fields:**
+BDA rejects a whole blueprint that declares `"type": "integer"` anywhere. The sync sends such a field as `number` and adds `(a whole number)` to its instruction, or `(whole numbers)` for a list of integers, so BDA is still told to return a whole number. Your configuration is not changed. A later sync from BDA to IDP reads the field back as `number`.
+
+**Classes with no fields BDA can hold:**
+BDA rejects a blueprint with no fields. A class that has no properties, such as one describing boilerplate pages, or whose every field is dropped for one of the reasons above, is therefore not sent to BDA. The sync names it in a warning, alongside the fields it dropped from it, and does not count it as synced; the rest of the sync goes ahead. The Web UI shows the warning in the sync message, `idp-cli config-sync-bda` and `config-activate` list the class as not sent, and the SDK returns it in `unsent_classes` (`bda_unsent_classes` from `activate`). In replace mode, a blueprint synced for that class earlier is removed. In merge mode it is kept, with the fields it had when it was last synced. To have BDA recognise such a document type, give the class at least one field BDA can represent.
 
 ##### AWS Standard Blueprint Handling
 
@@ -1775,7 +1822,7 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 
 **3. Pre-Sync Validation Checklist:**
 - ✅ No nested objects within object definitions
-- ✅ No arrays within object definitions  
+- ✅ No arrays of objects within object definitions, and no arrays at all in an object used as a top-level array's items
 - ✅ All array properties have description or instruction fields
 - ✅ Field names follow BDA naming conventions (no special characters like &, /)
 - ✅ Schema uses supported data types (string, number, boolean)
@@ -1891,10 +1938,10 @@ Flatten complex structures — avoid nested objects and place arrays at the top 
 ### Configuration Tuning
 
 **Model Selection Guidelines:**
-- **Nova Lite**: Simple forms with clear structure
-- **Nova Pro**: Most document types (recommended default)
-- **Claude Sonnet 4.5 / 4.6**: Complex layouts, handwritten content
-- **Claude Models**: Alternative for specific use cases
+- **Nova Pro** is the shipped default. Discovery model quality has not been
+  benchmarked, so if the default's output is not good enough for your documents,
+  compare it against a larger model (a Claude Sonnet, for example) on a few
+  representative samples.
 
 **Parameter Optimization:**
 ```yaml
@@ -1955,7 +2002,7 @@ Causes:
 
 Solutions:
 - Verify BDA permissions in IAM role
-- Check the BDA project ARN on the configuration version. It is not a stack
+- Check the BDA project ARN on the configuration profile. It is not a stack
   parameter: it is stored on the configuration record in the Configuration
   table, as the BdaProjectArn attribute alongside BdaSyncStatus and
   BdaLastSyncedAt. Read it in the UI under Configuration -> View/Edit Config,
@@ -2022,7 +2069,7 @@ Causes:
 
 Solutions:
 - Split large documents into smaller sections
-- Use faster models (Nova Lite) for initial analysis
+- Try a smaller model, such as Nova Lite, for initial analysis (discovery latency is not benchmarked, so compare on your own document)
 - Implement retry logic with exponential backoff
 - Consider preprocessing to simplify document structure
 ```
@@ -2089,7 +2136,7 @@ def discovery_with_fallback(discovery_service, document_key, ground_truth_key=No
 
 **Configuration Table:**
 - Discovery feature stores all custom classes as an array in Configuration table with "custom" key.
-- ~~DynamoDB has hard limit of 400 KB per item.~~ **Resolved**: Configuration data is now gzip-compressed before storing to DynamoDB, achieving 37-95x compression ratios. Configurations with 3,000+ document classes fit comfortably within the 400KB limit.
+- DynamoDB limits an item to 400 KB, so configuration data is gzip-compressed before it is stored. `lib/idp_common_pkg/tests/unit/config/test_compression_matrix.py` asserts that synthetic configurations of at least 500 classes fit within that limit at 10, 20 and 30 fields per class, and its sweep currently reaches its 3,000-class ceiling at each without exceeding it. Its classes are highly repetitive, so a real configuration compresses less; check the size of yours if it holds hundreds of classes.
 
 **Discovery Output Format:**
 - Output format is configured via View/Edit Configuration. JSON format should follow custom classes format.  

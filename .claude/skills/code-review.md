@@ -92,6 +92,9 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] Dedicated LogGroup per Lambda with KMS encryption
 - [ ] cfn-nag + checkov suppression metadata where needed (with justification)
 - [ ] `make validate-buildspec` passes
+- [ ] `make terraform-check` passes (it includes `make terraform-scan-diff`), and so does the `terraform/translator` suite in `make test` — the release's Terraform module is generated from these templates (see the "Terraform parity" checks in `pr-review.md`)
+- [ ] A renamed logical ID or nested stack of a stateful resource has a `terraform/translator/renames.yaml` entry; a changed create-only property of one comes with a note on how existing Terraform deployments upgrade
+- [ ] No `custom-output edge: ... [stateful, UNHANDLED]` in the translator's output; a new `STABLE_CUSTOM_OUTPUTS` entry states, from the handler's code, why its output does not change on Update
 
 ### Security
 - [ ] No credentials, API keys, or secrets in code or templates
@@ -101,12 +104,30 @@ make fastcommit         # fastlint (skip UI) + auto-commit + push
 - [ ] Input validation on all API endpoints
 - [ ] DOMPurify used for any HTML rendering in UI
 
+### Agent capability
+Apply when the change touches a tool, an agent, a prompt, a model call, an MCP tool
+or client, a markdown renderer, the web UI content policy, or the grants of a role
+that runs a model.
+- [ ] I can say, from the code, what the model can **read** (its tools, and the
+      credentials they run with), what **document-derived or external text** reaches
+      it, and where its **output** can go
+- [ ] Where all three hold (untrusted text in, private data readable, an external
+      channel out), each external channel is limited by code, not by a prompt
+      instruction
+- [ ] `scripts/tests/agent_capabilities.yaml` is updated to match: new surfaces have
+      an entry, changed `reads`/`inputs`/`outputs` are reflected, and every named
+      `control` and `test` still exists (`python3 -m pytest
+      scripts/tests/test_agent_capabilities.py scripts/tests/test_analytics_role_grants.py`)
+- [ ] A capability nothing limits yet is recorded as a `finding` in the manifest and
+      in `PENDING_CONTROL_FINDINGS`, not left out
+
 ## Documentation
 - [ ] New features documented in `docs/`
 - [ ] YAML frontmatter with `title` field
 - [ ] License header after frontmatter
 - [ ] `CHANGELOG.md` updated for user-facing changes
 - [ ] Cross-references to related docs where appropriate
+- [ ] Touches a surface Quick Start calls, or renames a page, navigation item or product term? → Quick Start still works, and its agent's prompt, `docs/quick-start.md` and its stories still match (see `.claude/rules/quick-start.md`)
 
 ## Testing
 - [ ] Unit tests added (`@pytest.mark.unit`)

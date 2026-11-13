@@ -351,11 +351,13 @@ def select(
 ) -> Selection:
     """The stories and flows an MR runs, and the lines its reply shows.
 
-    A persona whose group cannot sign in is reported in ``dropped_personas`` only
-    when its flow would otherwise have been taken, since that is the flow the MR
-    lost. ``uncovered`` holds the leads of added entries that select no story of
-    the catalogue on their own, as :func:`uncovered_unreleased` reads the nightly's,
-    so an entry whose story the caps left out is not called uncovered.
+    ``available_groups`` holds the ``UX_TEST_PERSONAS`` entries a run can sign in
+    with, and a persona whose own entry (``Persona.credentials_key``) is not among
+    them is reported in ``dropped_personas`` only when its flow would otherwise
+    have been taken, since that is the flow the MR lost. ``uncovered`` holds the
+    leads of added entries that select no story of the catalogue on their own, as
+    :func:`uncovered_unreleased` reads the nightly's, so an entry whose story the
+    caps left out is not called uncovered.
     """
     by_id = {story.id: story for story in catalogue.stories}
     scores = [
@@ -381,7 +383,7 @@ def select(
     for key in _candidates([by_id[score.story] for score in chosen_scores]):
         if len(flows) >= catalogue.runs.mr_flows:
             break
-        if catalogue.persona(key.persona).group not in groups:
+        if catalogue.persona(key.persona).credentials_key not in groups:
             if key.persona not in dropped:
                 dropped.append(key.persona)
             continue

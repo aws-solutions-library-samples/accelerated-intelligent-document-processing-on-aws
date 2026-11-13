@@ -30,13 +30,19 @@ from strands import Agent, tool
 from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models import BedrockModel
 from strands.types.agent import AgentInput
-from strands.types.content import CachePoint, ContentBlock, Message
+from strands.types.content import (
+    CachePoint,
+    ContentBlock,
+    Message,
+    SystemContentBlock,
+)
 from strands.types.media import (
     DocumentContent,
     ImageContent,
     ImageSource,
 )
 
+from idp_common.agents.common.strands_bedrock_model import strands_guardrail_kwargs
 from idp_common.bedrock.client import (
     ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
@@ -64,6 +70,7 @@ from idp_common.utils.bedrock_utils import (
     async_exponential_backoff_retry,
     is_max_tokens_agent_error,
 )
+from idp_common.utils.metering import attach_failure_metering
 from idp_common.utils.strands_agent_tools.todo_list import (
     create_todo_list,
     update_todo,
@@ -1278,6 +1285,40 @@ def _accumulate_token_usage(response: Any, token_usage: dict[str, int]) -> None:
             token_usage[key] += response.metrics.accumulated_usage.get(key, 0)
 
 
+def _agent_run_metering(
+    agent: Any, context: str, model_id: str
+) -> dict[str, "BedrockUsage"]:
+    """The metering of every model call ``agent`` has completed, or ``{}``.
+
+    Read from ``agent.event_loop_metrics.accumulated_usage``. Strands adds a model
+    call's usage there as soon as the response has been received, before it
+    inspects the stop reason, so a call that ended in ``max_tokens`` is in it. The
+    total spans every ``invoke_async`` on the agent: a new invocation appends an
+    ``AgentInvocation`` record but does not reset the accumulated total. So one
+    reading covers every feedback round and every resumed retry, and it is read
+    exactly once per run — adding readings together would count earlier calls
+    twice. A call that raised before returning a response recorded nothing, and
+    nothing is invented for it.
+
+    This is the same total the success path reads off the ``AgentResult``, whose
+    ``metrics`` is this same ``EventLoopMetrics`` object, and it is keyed the same
+    way, so a run's usage reads identically whether or not it produced an
+    extraction.
+    """
+    metrics = getattr(agent, "event_loop_metrics", None)
+    usage = getattr(metrics, "accumulated_usage", None)
+    if not isinstance(usage, dict):
+        return {}
+    token_usage = _initialize_token_usage()
+    for key in token_usage:
+        token_usage[key] += usage.get(key, 0) or 0
+    if not any(token_usage.values()):
+        return {}
+    return {
+        f"{context}/bedrock/{metering_model_id(model_id)}": BedrockUsage(**token_usage)
+    }
+
+
 def _build_system_prompt(
     base_prompt: str,
     custom_instruction: str | None,
@@ -1326,6 +1367,39 @@ def _build_system_prompt(
     return complete_prompt, schema_json
 
 
+def _system_prompt_caching_enabled(model_id: str, prompt_cache: str = "auto") -> bool:
+    """Whether the system prompt carries a trailing ``cachePoint`` for this model.
+
+    The one decision both consumers read: ``_build_system_prompt_content`` places
+    the block, and ``_build_model_config`` gates tool caching on it. The ``:1m``
+    suffix is removed before the lookup, as ``_build_model_config`` does before it
+    forwards the id to Bedrock.
+    """
+    if prompt_cache == "off":
+        return False
+    return supports_prompt_caching(model_id.removesuffix(":1m"))
+
+
+def _build_system_prompt_content(
+    system_prompt: str, model_id: str, prompt_cache: str = "auto"
+) -> str | list[SystemContentBlock]:
+    """The agent's system prompt, ending in a ``cachePoint`` when caching applies.
+
+    strands 1.48 deprecates the ``BedrockModel`` ``cache_prompt`` option (it emits
+    a ``UserWarning`` on every request) in favour of a ``cachePoint`` block in the
+    system content itself, which is what this returns. The request strands builds
+    from it is the same as the one ``cache_prompt="default"`` produced: the text
+    block, then ``{"cachePoint": {"type": "default"}}``. A model that is not sent
+    cache points, or ``extraction.prompt_cache: off``, gets the plain string.
+    """
+    if not _system_prompt_caching_enabled(model_id, prompt_cache):
+        return system_prompt
+    return [
+        SystemContentBlock(text=system_prompt),
+        SystemContentBlock(cachePoint=CachePoint(type="default")),
+    ]
+
+
 def _build_model_config(
     model_id: str,
     max_tokens: int | None,
@@ -1342,7 +1416,8 @@ def _build_model_config(
     1. Creates boto3 Config with retry and timeout settings
     2. Determines model-specific max token limits
     3. Validates and caps max_tokens if needed
-    4. Auto-detects and enables caching support (prompt and tool caching)
+    4. Auto-detects caching support and enables tool caching (the system-prompt
+       cache point is a system content block: _build_system_prompt_content)
 
     Args:
         model_id: Bedrock model identifier (supports us.*, eu.*, and global.anthropic.*)
@@ -1366,7 +1441,7 @@ def _build_model_config(
     if is_openai_responses_model(model_id):
         raise ValueError(
             f"OpenAI Responses-API models ({model_id}) do not support agentic/"
-            "Strands extraction. Use standard extraction (agentic.enabled=false)."
+            "Strands extraction. Use simple extraction (extraction.mode: simple)."
         )
 
     # Configure retry behavior and timeouts using boto3 Config.
@@ -1524,8 +1599,10 @@ def _build_model_config(
             "Prompt caching disabled by configuration (extraction.prompt_cache: off)",
             extra={"model_id": model_id},
         )
-    elif supports_prompt_caching(model_id):
-        model_config["cache_prompt"] = "default"
+    elif _system_prompt_caching_enabled(model_id, prompt_cache):
+        # The system-prompt cache point is not set here: it is a block in the
+        # system content (_build_system_prompt_content), because strands 1.48
+        # deprecates the BedrockModel ``cache_prompt`` option.
         logger.info(
             "Prompt caching enabled for model",
             extra={"model_id": model_id, "auto_detected": True},
@@ -2039,6 +2116,8 @@ async def _run_shard_agent(
         checkpoint_callback=checkpoint_callback,
         emit_field_assessment=emit_field_assessment,
         schema_validator=schema_validator,
+        # Shards exist only on the extraction path.
+        strands_throttle_retries=False,
     )
 
 
@@ -2212,6 +2291,7 @@ async def structured_output_async(
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
+    strands_throttle_retries: bool = True,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Extract structured data using Strands agents with tool-based validation.
@@ -2266,6 +2346,13 @@ async def structured_output_async(
                      approaches it. Raising it eats into the time the retry ladder
                      and the work itself have inside one shard invocation — see the
                      budget in ``idp_common.timeout_budget`` before changing it.
+        strands_throttle_retries: Keep Strands' default ``ModelRetryStrategy``,
+                     which retries a throttle inside each model call (default
+                     True). Agentic extraction passes False: its calls sit inside
+                     ``invoke_agent_with_retry`` with a Step Functions retrier
+                     behind it, and a retrier inside the call sleeps past the
+                     ladder's allowance and the Lambda deadline (#1759). Keep the
+                     default for a caller with no such retrier.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)
@@ -2488,9 +2575,16 @@ async def structured_output_async(
         model=BedrockModel(
             **model_config,
             **inference_params,
+            # The guardrail in GUARDRAIL_ID_AND_VERSION, when one is configured.
+            # This model is built here rather than by create_strands_bedrock_model
+            # because its boto config, session and request fields are its own;
+            # the guardrail must still reach it like every other model call.
+            **strands_guardrail_kwargs(),
         ),  # pyright: ignore[reportArgumentType]
         tools=tools,
-        system_prompt=final_system_prompt,
+        system_prompt=_build_system_prompt_content(
+            final_system_prompt, model_id, config.extraction.prompt_cache
+        ),
         state={
             "current_extraction": None,
             "images": {},
@@ -2502,6 +2596,23 @@ async def structured_output_async(
         conversation_manager=SummarizingConversationManager(
             summary_ratio=summary_ratio, preserve_recent_messages=preserve_recent
         ),
+        # With ``strands_throttle_retries=False`` (agentic extraction, the caller that
+        # has a Step Functions retrier behind this ladder) throttling is retried by
+        # ``invoke_agent_with_retry`` alone, for the reason botocore is pinned to one
+        # attempt above: a ladder inside the call is one
+        # neither the cumulative allowance nor the Lambda deadline can see. Strands'
+        # default ``ModelRetryStrategy`` sleeps 4+8+16+32+64 s inside a single model
+        # call and restarts that schedule after every successful one, so with the
+        # ladder around it persistent throttling slept 834 s of a 900 s function, and
+        # a throttle met 30 s before the deadline still slept 124 s (#1759, measured
+        # on a virtual clock with a real Agent and botocore client). ``None`` is
+        # Strands' spelling for one attempt. ``retry_strategy`` rejects a subclass; a
+        # separate hook could read the deadline, but it would still be a second
+        # ladder outside the backoff allowance. Agentic rules discovery keeps
+        # Strands' default: it runs from an SQS-triggered Lambda with no published
+        # deadline and no task-level retrier, so the in-call retries are the only
+        # throttle tolerance it has beyond this ladder's 90 s.
+        **({} if strands_throttle_retries else {"retry_strategy": None}),
     )
     if existing_data:
         agent.state.set("current_extraction", existing_data.model_dump(mode="json"))
@@ -2536,14 +2647,21 @@ async def structured_output_async(
             extra={"buffer_summary": buffer_summary},
         )
 
-    response, result = await _invoke_agent_for_extraction(
-        agent=agent,
-        prompt_content=prompt_content,
-        data_format=data_format,
-        max_extraction_retries=3,
-        schema_validator=schema_validator,
-        model_id=model_id,
-    )
+    try:
+        response, result = await _invoke_agent_for_extraction(
+            agent=agent,
+            prompt_content=prompt_content,
+            data_format=data_format,
+            max_extraction_retries=3,
+            schema_validator=schema_validator,
+            model_id=model_id,
+        )
+    except Exception as e:
+        # Throttle exhaustion, an invalid tool-use sequence, a context overflow, an
+        # unsalvageable max_tokens stop: every one of them can come after turns the
+        # model already answered and Bedrock already billed (#1923).
+        attach_failure_metering(e, _agent_run_metering(agent, context, model_id))
+        raise
 
     # Accumulate token usage
     _accumulate_token_usage(response, token_usage)
@@ -2638,7 +2756,10 @@ async def structured_output_async(
         "Failed to extract structured data",
         extra={"data_format": data_format.__name__},
     )
-    raise ValueError("Failed to generate valid structured output.")
+    raise attach_failure_metering(
+        ValueError("Failed to generate valid structured output."),
+        _agent_run_metering(agent, context, model_id),
+    )
 
 
 def structured_output(
@@ -2659,6 +2780,7 @@ def structured_output(
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
+    strands_throttle_retries: bool = True,
 ) -> tuple[BaseModel, BedrockInvokeModelResponse]:
     """
     Synchronous version of structured_output_async.
@@ -2750,6 +2872,7 @@ def structured_output(
                         schema_validator=schema_validator,
                         emit_field_assessment=emit_field_assessment,
                         attach_page_images=attach_page_images,
+                        strands_throttle_retries=strands_throttle_retries,
                     )
                 )
             except Exception as e:
@@ -2787,6 +2910,7 @@ def structured_output(
                 schema_validator=schema_validator,
                 emit_field_assessment=emit_field_assessment,
                 attach_page_images=attach_page_images,
+                strands_throttle_retries=strands_throttle_retries,
             )
         )
 

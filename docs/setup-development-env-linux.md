@@ -2,6 +2,9 @@
 title: "Development Environment Setup Guide on Linux"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Development Environment Setup Guide on Linux
 
 # Introduction
@@ -96,26 +99,25 @@ sudo apt update && sudo apt install git -y
 
 ### Clone Repository
 
+```bash
 git clone https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws
-
-### Go to directory
-
 cd accelerated-intelligent-document-processing-on-aws/
+```
 
-### Run the setup script for development tools which is scripts directory
+### Run the setup script for development tools
 
-cd scripts  
+The setup scripts are in `scripts/setup/`. Run them from the repository root.
 
 **For Amazon Linux 2023:**
 ```bash
-chmod +x ./dev_setup_al2023.sh
-./dev_setup_al2023.sh
+chmod +x ./scripts/setup/dev_setup_al2023.sh
+./scripts/setup/dev_setup_al2023.sh
 ```
 
 **For Ubuntu 24.04:**
 ```bash
-chmod +x ./dev_setup_ubuntu.sh
-./dev_setup_ubuntu.sh
+chmod +x ./scripts/setup/dev_setup_ubuntu.sh
+./scripts/setup/dev_setup_ubuntu.sh
 ```
 
 ### To upgrade the python version run this command on EC2 instance
@@ -188,6 +190,8 @@ https://docs.aws.amazon.com/cli/latest/userguide/getting-started-quickstart.html
 # Step 6: Install the IDP CLI
 
 ## Install the CLI and Dependencies
+
+`make setup-venv` needs [`uv`](https://docs.astral.sh/uv/) on `PATH`: it reads the dependency lock, so the installed versions are the ones CI tests.
 
 ```bash
 make setup-venv

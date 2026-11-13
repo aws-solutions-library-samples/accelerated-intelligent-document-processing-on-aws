@@ -93,14 +93,17 @@ EXPECTED = ["Dependency Audit (SCA)", "Static Checks (lint, types, scans)"]
 # UI tests along with it. It is now four independent jobs and each is its own
 # context, so requiring only the lint one would leave every test suite advisory —
 # a strictly weaker gate than before the split, reached by a change that looks like
-# a speedup. Naming them here is what makes that regression fail.
+# a speedup. Naming them here is what makes that regression fail. The Terraform
+# offline gate is its own job for the same reason, so it is listed too.
 MUST_BE_REQUIRED = {
     "Static Checks (lint, types, scans)": "make lint-cicd",
+    "Scripts Coverage (gate suites)": "make coverage-all-cicd",
     "Unit Tests (idp_common)": "make test-cicd",
     "Package and Lambda Test Suites": "make test-packages-cicd",
     "UI Unit Tests": "npx vitest run",
     "SRT Security Review": "make srt-scan",
     "Dependency Audit (SCA)": "scripts/security/dep_audit.py",
+    "Terraform Checks (offline translate + validate)": "make terraform-check",
 }
 
 # The mirror image: contexts this repo does produce, but not on every pull
@@ -1477,8 +1480,8 @@ def test_main_exit_codes_and_json_report(
         "not an issue state; #933 is already closed"
     )
     # A run reads one branch, and the JSON names the ones it did not read. `main`
-    # is the default branch and is equally unprotected; it went unexamined for
-    # months because only `develop` was ever checked.
+    # is the branch releases are cut from and is equally unprotected; it went
+    # unexamined for months because only `develop` was ever checked.
     assert report["shared_branches"] == ["develop", "main"]
     assert report["branches_not_read_by_this_run"] == ["main"]
 

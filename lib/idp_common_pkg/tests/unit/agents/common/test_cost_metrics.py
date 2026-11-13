@@ -107,6 +107,8 @@ class TestControlPlaneCostHookDeltaEmission:
         #         to zero, which would leave a stale 200/100 baseline).
         # Tick 3: 80-30=50 in, 40-15=25 out — honest delta over the reset.
         assert mock_emit.call_count == 3
+        second = mock_emit.call_args_list[1].kwargs
+        assert (second["bedrock_tokens_in"], second["bedrock_tokens_out"]) == (30, 15)
         third = mock_emit.call_args_list[2].kwargs
         assert third["bedrock_tokens_in"] == 50
         assert third["bedrock_tokens_out"] == 25
@@ -163,14 +165,17 @@ class TestControlPlaneCostHookDeltaEmission:
         assert mock_emit.call_count == 1
 
     def test_concurrent_invocations_no_torn_delta(self):
-        """Regression: two threads invoking the same reused agent
-        concurrently (e.g. parallel ``stream_async`` from a warm
-        container) must not misattribute tokens by interleaving a
-        read-modify-write on ``_last_input_tokens`` /
-        ``_last_output_tokens``. The state update is guarded by
-        ``self._state_lock``; the sum of emitted deltas across N
-        concurrent invocations should equal the total observed
-        accumulated_usage from all ticks.
+        """Ten threads invoking one reused agent emit deltas summing to its total.
+
+        Concurrent invocations of one agent share one
+        ``event_loop_metrics.accumulated_usage``, so this is modelled as one
+        shared counter that each thread advances by its own invocation's tokens
+        before its hook fires. (Giving each thread its own event with a fixed
+        total, as this test used to, describes no real agent: a thread holding
+        the smaller total that reaches the lock second looks like a counter
+        reset under any implementation, so the test failed intermittently on
+        scheduling alone.) The sum is exact whatever the interleaving; the
+        deterministic interleaving that broke it is pinned by the next test.
         """
         import threading
 
@@ -178,11 +183,9 @@ class TestControlPlaneCostHookDeltaEmission:
             component="analytics-agent",
             bedrock_model="us.anthropic.claude-3-7-sonnet-20250219-v1:0",
         )
-
-        # 10 ticks presenting monotonically-increasing accumulated_usage
-        # numbers. Interleaved firing from multiple threads must still
-        # produce deltas that sum to the final total (1000 in / 100 out).
-        events = [_make_after_invocation_event(i * 100, i * 10) for i in range(1, 11)]
+        event = _make_after_invocation_event(0, 0)
+        usage = event.agent.event_loop_metrics.accumulated_usage
+        advance = threading.Lock()
         emitted_in: list[int] = []
         emitted_out: list[int] = []
         emit_lock = threading.Lock()
@@ -192,29 +195,104 @@ class TestControlPlaneCostHookDeltaEmission:
                 emitted_in.append(kwargs.get("bedrock_tokens_in") or 0)
                 emitted_out.append(kwargs.get("bedrock_tokens_out") or 0)
 
+        def _invocation():
+            with advance:
+                usage["inputTokens"] += 100
+                usage["outputTokens"] += 10
+            hook._on_after_invocation(event)
+
         with patch(
             "idp_common.agents.common.cost_metrics.emit_control_plane_cost_metric",
             side_effect=_capture,
         ):
-            threads = [
-                threading.Thread(target=hook._on_after_invocation, args=(ev,))
-                for ev in events
-            ]
+            threads = [threading.Thread(target=_invocation) for _ in range(10)]
             for t in threads:
                 t.start()
             for t in threads:
                 t.join()
 
-        # The final observed totals were 1000 / 100. Regardless of the
-        # order threads happened to run, the emitted deltas must sum to
-        # exactly these totals — any torn read-modify-write would show
-        # up as an under- or over-count on one side.
         assert sum(emitted_in) == 1000, (
             f"input deltas {emitted_in} sum to {sum(emitted_in)}, expected 1000"
         )
         assert sum(emitted_out) == 100, (
             f"output deltas {emitted_out} sum to {sum(emitted_out)}, expected 100"
         )
+
+    def test_a_stale_usage_read_is_not_mistaken_for_a_reset(self):
+        """The usage read happens under the lock that orders the deltas.
+
+        Invocation A reads the shared usage (500 / 50) and is held there;
+        invocation B then adds its own tokens (to 1000 / 100) and runs its hook
+        as far as it can. If A's read was taken outside the lock, B emits
+        1000 / 100 first and A's 500 / 50 then looks like a counter that went
+        backwards, so it is re-emitted in full: 1500 / 150 for 1000 / 100 used.
+        Under the lock, B waits for A and the deltas are 500 / 50 each.
+
+        The schedule is forced, not hoped for: A is held inside its read until
+        B has either finished or blocked on the hook's lock, which is detected
+        by wrapping the lock rather than by sleeping.
+        """
+        import threading
+
+        hook = ControlPlaneCostHook(component="analytics-agent", bedrock_model="m")
+        a_reading = threading.Event()
+        a_go = threading.Event()
+        b_stopped = threading.Event()
+
+        class _SharedUsage(dict):
+            def get(self, key, default=None):
+                value = super().get(key, default)
+                if threading.current_thread().name == "A" and key == "outputTokens":
+                    a_reading.set()
+                    assert a_go.wait(10)
+                return value
+
+        class _ContendedLock:
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                if not self._lock.acquire(blocking=False):
+                    if threading.current_thread().name == "B":
+                        b_stopped.set()
+                    self._lock.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                self._lock.release()
+
+        hook._state_lock = _ContendedLock()
+        usage = _SharedUsage(inputTokens=500, outputTokens=50)
+        event = MagicMock()
+        event.agent.event_loop_metrics.accumulated_usage = usage
+        emitted = []
+
+        def _invoke_b():
+            hook._on_after_invocation(event)
+            b_stopped.set()
+
+        with patch(
+            "idp_common.agents.common.cost_metrics.emit_control_plane_cost_metric",
+            side_effect=lambda **k: emitted.append(
+                (k["bedrock_tokens_in"], k["bedrock_tokens_out"])
+            ),
+        ):
+            a = threading.Thread(
+                target=hook._on_after_invocation, args=(event,), name="A"
+            )
+            a.start()
+            assert a_reading.wait(10)
+            usage.update(inputTokens=1000, outputTokens=100)
+            b = threading.Thread(target=_invoke_b, name="B")
+            b.start()
+            assert b_stopped.wait(10)
+            a_go.set()
+            a.join(10)
+            b.join(10)
+
+        assert not a.is_alive() and not b.is_alive()
+        assert sum(i for i, _ in emitted) == 1000, emitted
+        assert sum(o for _, o in emitted) == 100, emitted
 
     def test_missing_metrics_does_not_raise(self):
         """Telemetry must never break the agent — if the metrics

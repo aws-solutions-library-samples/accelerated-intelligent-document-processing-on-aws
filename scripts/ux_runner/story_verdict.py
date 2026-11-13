@@ -212,7 +212,13 @@ _PATH_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 #: imports nothing of the catalogue's.
 _EXPECTATIONS: tuple[str, ...] = ("allowed", "refused", "not_offered")
 _KINDS: tuple[str, ...] = ("read", "commit_point")
-_SIGN_IN_GROUPS: tuple[str, ...] = ("Admin", "Author", "Reviewer", "Viewer")
+_SIGN_IN_GROUPS: tuple[str, ...] = (
+    "Admin",
+    "Annotator",
+    "Author",
+    "Reviewer",
+    "Viewer",
+)
 _SEVERITIES: tuple[str, ...] = ("blocker", "major")
 _STOPS: tuple[str, ...] = ("end_turn", "max_turns", "budget", "error", "timeout")
 _AUDIT_STATES: tuple[str, ...] = ("clean", "violations", "unavailable", "not_run")

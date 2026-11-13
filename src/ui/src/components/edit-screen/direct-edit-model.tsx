@@ -17,6 +17,7 @@
 // enforces all of these.
 import React, { useCallback } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
+import { defineMessages, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 import { Link } from '@cloudscape-design/components';
 
 import useAppContext from '../../contexts/app';
@@ -28,6 +29,7 @@ import { isBdaModeConfig } from '../../utils/processing-mode';
 import { baselineCopyBlockedReason, copyDocumentToBaseline } from '../common/copy-to-baseline';
 import { getConfigClassOptions } from '../common/config-class-options';
 import { saveDocumentGroupingOrThrow } from '../common/document-grouping';
+import { PROCESS_CHANGES_LABEL } from '../common/labels';
 import { inReviewQueueEditReason, isInReviewQueue, normalizeHitlStatus } from '../common/review-status';
 import type { GroupedSection } from '../common/section-grouping';
 import { HOME_CRUMB, editActiveHref, editTrail } from '../review-queues/breadcrumbs';
@@ -48,9 +50,8 @@ import type { RawDocument } from './use-edit-mode';
 import type { EditorSession } from './use-editor-session';
 import useSectionEvaluation from './use-section-evaluation';
 
-export const PROCESS_ROLE_REASON = 'Process Changes needs the Admin or Reviewer role.';
-export const PROCESS_OWNER_REASON =
-  "Process Changes needs an Admin, or the reviewer who holds this document's open review. Start the review first.";
+export const PROCESS_ROLE_REASON = `${PROCESS_CHANGES_LABEL} needs the Admin or Reviewer role.`;
+export const PROCESS_OWNER_REASON = `${PROCESS_CHANGES_LABEL} needs an Admin, or the reviewer who holds this document's open review. Start the review first.`;
 export { BDA_REGROUP_REASON };
 export const EDIT_ROLE_REASON = "Editing needs the Admin or Author role, or a Reviewer who holds this document's review.";
 /** updateDocumentSections is Admin, Reviewer and Annotator; an Annotator regroups only test-set documents. */
@@ -58,24 +59,67 @@ export const REGROUP_ROLE_REASON = 'Edit Page Grouping needs the Admin or Review
 /** The tracking row says in review, but the review item is missing or has finished (the mirror lags). */
 export const MIRROR_LAG_REASON = "This document's review is being updated. Reload in a moment.";
 
-/** The document's HITL review events, in the shape History's Review Activity lists. */
+/** The legacy record of a whole-document skip; any other legacy record is one section's review. */
+const SKIP_ALL_SECTION = 'ALL_SKIPPED';
+const text = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+
+const historyMessages = defineMessages<{
+  section: { readonly sectionId: string };
+  notResubmitted: NoMessageValues;
+  job: { readonly jobId: string };
+}>({
+  section: {
+    id: 'editScreen.reviewActivity.section',
+    defaultMessage: 'Section {sectionId}',
+    description:
+      'Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. "2".',
+  },
+  notResubmitted: {
+    id: 'editScreen.reviewActivity.notResubmitted',
+    defaultMessage: 'Not resubmitted for downstream processing',
+    description:
+      'Part of a Review Activity note: Skip All Reviews ran without re-running Summarization, Evaluation and the post-processing hook.',
+  },
+  job: {
+    id: 'editScreen.reviewActivity.job',
+    defaultMessage: 'Job {jobId}',
+    description: 'Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id.',
+  },
+});
+
+/**
+ * The document's HITL review events, in the shape History's Review Activity lists. The
+ * legacy review writes `reviewedAt` and `reviewedBy`/`reviewedByEmail` (a finished section
+ * has no `action`; Skip All Reviews is `skip_all`); `timestamp`, `user` and `action` are
+ * read as well, for records in that shape.
+ */
 export const documentReviewHistory = (
   events: DirectEditDocument['hitlReviewHistory'],
+  intl: IntlShape,
 ): { at: string; event: string; actor: string | null; details: string | null }[] =>
-  (events ?? [])
-    .filter((e) => !!e.timestamp && !!e.action)
-    .map((e) => {
-      const reason = typeof e.reason === 'string' ? e.reason : undefined;
-      const note = [typeof e.note === 'string' ? e.note : undefined, e.sectionId ? `Section ${e.sectionId}` : undefined]
-        .filter(Boolean)
-        .join(' · ');
-      return {
-        at: e.timestamp as string,
-        event: e.action as string,
-        actor: e.user ?? null,
+  (events ?? []).flatMap((e) => {
+    const at = text(e.timestamp) ?? text(e.reviewedAt);
+    const sectionId = text(e.sectionId);
+    const event = text(e.action) ?? (sectionId ? 'section_reviewed' : undefined);
+    if (!at || !event) return [];
+    const reason = text(e.reason);
+    const note = [
+      text(e.note),
+      sectionId && sectionId !== SKIP_ALL_SECTION ? intl.formatMessage(historyMessages.section, { sectionId }) : undefined,
+      e.resubmitted === false ? intl.formatMessage(historyMessages.notResubmitted) : undefined,
+      text(e.jobId) ? intl.formatMessage(historyMessages.job, { jobId: e.jobId as string }) : undefined,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    return [
+      {
+        at,
+        event,
+        actor: text(e.user) ?? text(e.reviewedByEmail) ?? text(e.reviewedBy) ?? null,
         details: reason || note ? JSON.stringify({ reason, note: note || undefined }) : null,
-      };
-    });
+      },
+    ];
+  });
 
 export interface DirectEditOptions {
   objectKey: string;
@@ -89,6 +133,7 @@ export interface DirectEditOptions {
 }
 
 export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }: DirectEditOptions, session: EditorSession): EditModel => {
+  const intl = useIntl();
   const adapter = useDocumentEdit(objectKey, seed);
   const { document: doc, loading, loadError, reload } = adapter;
   const { user } = useAppContext();
@@ -170,6 +215,16 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
   // Why they are unavailable, for the menus (an item that does not apply stays, disabled).
   const unfinishedReason = inReview ? IN_REVIEW_SHORT_REASON : !isEditableStatus(status) ? PROCESSING_REASON : undefined;
   const readOnly = readOnlyReason !== undefined;
+  // The same reason, said in full for the page's read-only notice.
+  let readOnlyNotice: string | undefined;
+  if (inReview)
+    readOnlyNotice =
+      lock === 'mirror-lag'
+        ? 'View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.'
+        : 'This document is in a review queue. Edits are made in the queue.';
+  else if (readOnlyReason === PROCESSING_REASON)
+    readOnlyNotice = 'View only. This document is still processing; its results can be edited once processing finishes.';
+  else if (readOnlyReason === EDIT_ROLE_REASON) readOnlyNotice = `View only. ${EDIT_ROLE_REASON}`;
   // In review, the editing actions stay on the bar, disabled with the in-review reason.
   const showEditing = !readOnly || inReview;
   const { dirty, saving } = session;
@@ -209,23 +264,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         },
         offerReport: true,
       },
-      notices: [
-        inReview && {
-          id: 'in-review',
-          type: 'info',
-          content:
-            lock === 'mirror-lag'
-              ? 'View only. This document is marked as in a review queue, but its review item is missing or has finished. Reload in a moment.'
-              : 'This document is in a review queue. Edits are made in the queue.',
-        },
-        !inReview &&
-          readOnlyReason === PROCESSING_REASON && {
-            id: 'processing',
-            type: 'info',
-            content: 'View only. This document is still processing; its results can be edited once processing finishes.',
-          },
-        !inReview && readOnlyReason === EDIT_ROLE_REASON && { id: 'role', type: 'info', content: `View only. ${EDIT_ROLE_REASON}` },
-      ],
+      notices: [],
       bar: {
         showSave: showEditing,
         saveDisabledReason: readOnlyReason ?? (!dirty ? 'No changes to save' : saving ? 'Saving your changes…' : undefined),
@@ -252,6 +291,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
         sections: adapter.sections,
         pages: adapter.pages,
         readOnly,
+        readOnlyReason: readOnlyNotice,
         loadSection: adapter.loadSection,
         saveSection: onSave,
         initialSectionId,
@@ -271,7 +311,7 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
             Moving pages rewrites this document&apos;s <b>section grouping</b>. The extracted field values are <b>kept</b> and the document
             is <b>not</b> reprocessed, so they may no longer match their pages. To have the pipeline redo them, open the document
             page&apos;s <b>More Actions › Edit Page Grouping</b> and choose <b>Save and Re-extract</b>: this screen&apos;s{' '}
-            <b>Process Changes</b> re-runs evaluation and summarization only.
+            <b>{PROCESS_CHANGES_LABEL}</b> re-runs evaluation and summarization only.
           </>
         ),
         save: async (next) => {
@@ -282,11 +322,11 @@ export const useDirectEditModel = ({ objectKey, initialSectionId = null, seed }:
       },
       // A finished queue review's activity, then the document's own review events.
       history: {
-        reviewActivity: [...(seed?.reviewActivity ?? []), ...documentReviewHistory(doc.hitlReviewHistory)],
+        reviewActivity: [...(seed?.reviewActivity ?? []), ...documentReviewHistory(doc.hitlReviewHistory, intl)],
         baseline: evaluation.baseline,
       },
       process: {
-        confirm: { bdaMode },
+        confirm: { kind: 'reprocess', bdaMode },
         run: async () => {
           await adapter.processChanges();
           return { to: leaveTo, message: `Processing the changes to ${name}: evaluation and summarization are re-running.` };

@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { stripPromptCommentsInConfig } from './promptComments';
 import {
   Box,
   SpaceBetween,
@@ -627,12 +628,16 @@ export const simpleIntegratedDowngraded = (
  *
  * - `wrapped` applies to BOTH stages: `ExtractionService._get_class_schema` and
  *   `AssessmentService._get_class_schema` each wrap independently from config.
- * - `probe` applies to the EXTRACTION step ONLY, and to Simple mode only. It is
- *   added in `ExtractionService._build_wire_schema`, which returns the schema
- *   untouched when `agentic.enabled` — so claiming it in Advanced mode, or on the
- *   confidence step (assessment wraps but never augments), made this alert state
- *   something false. It applies to every class when detection is on, not just a
- *   flagged one, which is why it comes from the config rather than the class.
+ * - `probe` applies to the EXTRACTION step ONLY, in BOTH modes. Simple mode adds
+ *   it in `ExtractionService._build_wire_schema`; Advanced mode adds it to the
+ *   transport model of the single-agent call in
+ *   `ExtractionService._agentic_probe_model` (#772). Advanced does NOT add it to a
+ *   section split into page-range shards, and the preview cannot know whether a
+ *   section will be sharded (that depends on its page count), so the bullet says
+ *   so rather than the flag being dropped. Claiming it on the confidence step
+ *   (assessment wraps but never augments) would state something false. It applies
+ *   to every class when detection is on, not just a flagged one, which is why it
+ *   comes from the config rather than the class.
  * - `forcedTool` is Simple-only: the forced toolConfig is built in the non-agentic
  *   branch of `_invoke_extraction_model`, and Advanced already sends the schema as
  *   the Strands tool. Assessment never sends a forced tool at all. It is ALSO
@@ -702,7 +707,7 @@ export const schemaDivergenceFor = (
   const isExtraction = selectedStep === 'extraction';
   return {
     wrapped: Boolean(selectedClass?.[X_AWS_IDP_MULTI_INSTANCE]),
-    probe: boolish(detection.enabled, false) && mode === 'simple' && isExtraction,
+    probe: boolish(detection.enabled, false) && isExtraction,
     forcedTool: boolish(forcedTool.enabled, false) && mode === 'simple' && isExtraction && modelCanBeForced(extraction.model),
     restatesSchema: boolish(agentic.restate_schema_in_system_prompt, true) && mode === 'advanced' && isExtraction,
   };
@@ -1160,59 +1165,71 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
   // 'extraction' and 'confidence' views this composes the actual template that
   // will run given confidence.mode + geometry.mode (mirrors the Python
   // prompt_assembly selectors), so the preview reflects real behavior.
-  const stepConfig = useMemo((): StepConfig => {
-    const extraction = (formValues?.extraction as Record<string, unknown>) || {};
-    const confidence = (extraction.confidence as Record<string, unknown>) || {};
-    const geometry = (extraction.geometry as Record<string, unknown>) || {};
-    const mode = String(confidence.mode ?? 'separate');
-    const geomMode = String(geometry.mode ?? 'ocr_only');
-    const needsBbox = LLM_BOX_GEOMETRY_MODES.includes(geomMode);
-    // v0.6: bbox block lives under geometry; confidence prompt under confidence.
-    const bboxBlock = String(geometry.task_prompt_bbox ?? '');
+  // The step's prompts, built from either the values as typed (the Raw tabs show
+  // exactly that, comments included) or the values as sent: {# ... #} comments
+  // are removed before any request (idp_common/prompt_comments.py), so the
+  // rendered tabs and the token counts use the stripped values.
+  const stepConfigFor = useCallback(
+    (sent: Record<string, unknown>): StepConfig => {
+      const extraction = (sent.extraction as Record<string, unknown>) || {};
+      const confidence = (extraction.confidence as Record<string, unknown>) || {};
+      const geometry = (extraction.geometry as Record<string, unknown>) || {};
+      const mode = String(confidence.mode ?? 'separate');
+      const geomMode = String(geometry.mode ?? 'ocr_only');
+      const needsBbox = LLM_BOX_GEOMETRY_MODES.includes(geomMode);
+      // v0.6: bbox block lives under geometry; confidence prompt under confidence.
+      const bboxBlock = String(geometry.task_prompt_bbox ?? '');
 
-    if (selectedStep === 'extraction') {
-      // A Simple + integrated section on a list-bearing class is downgraded to a
-      // separate pass server-side and gets the PLAIN prompt; show that.
-      const integrated = mode === 'integrated' && !simpleIntegratedDowngraded(formValues, selectedClass);
-      let task = String(extraction.task_prompt ?? '');
-      if (integrated) {
-        // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
-        // the 1S-TopK template, Advanced the tool-based one. The two differ, so
-        // picking by mode is load-bearing rather than cosmetic.
-        const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
-        const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
-        task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
-        if (needsBbox) task = appendBboxBlock(task, bboxBlock);
+      if (selectedStep === 'extraction') {
+        // A Simple + integrated section on a list-bearing class is downgraded to a
+        // separate pass server-side and gets the PLAIN prompt; show that.
+        const integrated = mode === 'integrated' && !simpleIntegratedDowngraded(formValues, selectedClass);
+        let task = String(extraction.task_prompt ?? '');
+        if (integrated) {
+          // Mirrors prompt_assembly.select_extraction_task_prompt: Simple mode uses
+          // the 1S-TopK template, Advanced the tool-based one. The two differ, so
+          // picking by mode is load-bearing rather than cosmetic.
+          const topk = String(extraction.task_prompt_extraction_with_confidence_topk ?? '');
+          const tool = String(extraction.task_prompt_extraction_with_confidence ?? '');
+          task = (extractionModeOf(formValues) === 'simple' ? topk : tool) || String(extraction.task_prompt ?? '');
+          if (needsBbox) task = appendBboxBlock(task, bboxBlock);
+        }
+        return {
+          system_prompt: String(extraction.system_prompt ?? ''),
+          task_prompt: task,
+          model: String(extraction.model ?? ''),
+        };
       }
-      return {
-        system_prompt: String(extraction.system_prompt ?? ''),
-        task_prompt: task,
-        model: String(extraction.model ?? ''),
-      };
-    }
 
-    if (selectedStep === 'confidence') {
-      let task = String(confidence.task_prompt ?? '');
-      if (needsBbox) task = appendBboxBlock(task, bboxBlock);
-      return {
-        system_prompt: String(confidence.system_prompt ?? ''),
-        task_prompt: task,
-        model: String(confidence.model ?? ''),
-      };
-    }
+      if (selectedStep === 'confidence') {
+        let task = String(confidence.task_prompt ?? '');
+        if (needsBbox) task = appendBboxBlock(task, bboxBlock);
+        return {
+          system_prompt: String(confidence.system_prompt ?? ''),
+          task_prompt: task,
+          model: String(confidence.model ?? ''),
+        };
+      }
 
-    if (CLASSIFICATION_STEPS.includes(selectedStep)) {
-      return resolveClassificationStepPrompt(
-        (formValues?.classification as Record<string, unknown>) || {},
-        selectedStep as ClassificationStep,
-        classes.length,
-      );
-    }
+      if (CLASSIFICATION_STEPS.includes(selectedStep)) {
+        return resolveClassificationStepPrompt(
+          (sent.classification as Record<string, unknown>) || {},
+          selectedStep as ClassificationStep,
+          classes.length,
+        );
+      }
 
-    const cfg = formValues?.[selectedStep];
-    if (!cfg || typeof cfg !== 'object') return {};
-    return cfg as StepConfig;
-  }, [formValues, selectedStep, selectedClass, classes]);
+      const cfg = sent[selectedStep];
+      if (!cfg || typeof cfg !== 'object') return {};
+      return cfg as StepConfig;
+    },
+    [formValues, selectedStep, selectedClass, classes],
+  );
+  const stepConfig = useMemo(
+    () => stepConfigFor(stripPromptCommentsInConfig(formValues || {}) as Record<string, unknown>),
+    [stepConfigFor, formValues],
+  );
+  const rawStepConfig = useMemo(() => stepConfigFor(formValues || {}), [stepConfigFor, formValues]);
 
   // Whether this step needs a class selection
   const needsClassSelection = selectedStep === 'extraction' || selectedStep === 'confidence';
@@ -1314,10 +1331,10 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
     return {
       renderedSystemPrompt: renderedSystem,
       renderedTaskPrompt: renderPrompt(taskTemplate, subs),
-      rawSystemPrompt: sysTemplate,
-      rawTaskPrompt: taskTemplate,
+      rawSystemPrompt: rawStepConfig.system_prompt || '',
+      rawTaskPrompt: rawStepConfig.task_prompt || '',
     };
-  }, [stepConfig, buildSubstitutions, schemaDivergence.restatesSchema, selectedClass]);
+  }, [stepConfig, rawStepConfig, buildSubstitutions, schemaDivergence.restatesSchema, selectedClass]);
 
   // The forced toolSpec, when one is actually sent. Empty otherwise, which is what
   // keeps it out of both the tab list and the token total. Two forms: the pretty
@@ -1444,8 +1461,9 @@ const PromptPreview = ({ formValues }: PromptPreviewProps): React.JSX.Element =>
             {schemaDivergence.probe && (
               <span>
                 <strong>Multi-instance Section Detection</strong> is on, so one extra property (<code>IDPDocumentInstanceCount</code>) is
-                added to the schema sent for every class, asking the model how many instances the pages contain. It is stripped from the
-                result and never appears in your extracted data.
+                added to the schema sent for every class, asking the model how many instances the pages contain. In Advanced mode it is not
+                added when a section is split into page-range shards. It is stripped from the result and never appears in your extracted
+                data.
               </span>
             )}
             <span>The section&apos;s stored metadata is the authoritative record of what was sent.</span>

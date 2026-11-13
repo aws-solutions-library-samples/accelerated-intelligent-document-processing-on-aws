@@ -1,13 +1,17 @@
 ---
 title: "IDP Monitor"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP Monitor
 
 **IDP Monitor** is an AI-powered operations dashboard for your IDP Accelerator deployment. An AI Assistant answers plain-language questions about your pipeline — failures, cost, throughput, latency — by translating them into SQL against your reporting data and assembling a live dashboard view on the fly. Scheduled Agents run those same questions automatically on a cron you choose and notify you with the results. Underneath the AI layer, a library of configurable widgets shows what your document pipeline is doing right now and what it has cost you, on one screen inside the IDP web UI.
 
 ## What it does
 
-Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration version or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen — ask a question in plain language and get an instant answer with the relevant widgets, or browse the dashboard directly.
+Once an IDP Accelerator pipeline is in production, the questions change. Is throughput keeping up? Which document type is failing, and why? What did yesterday cost, and which configuration profile or model drove it? Which documents came back with low confidence and are waiting for human review? Answering these from raw CloudWatch logs, Step Functions histories and reporting tables is slow, and it gets slower as volume grows. IDP Monitor puts the answers on one screen — ask a question in plain language and get an instant answer with the relevant widgets, or browse the dashboard directly.
 
 
 
@@ -50,12 +54,12 @@ IDP Monitor ships with a library of widgets you can turn on and arrange per dash
 - **Human-in-the-Loop** — the size and age of the human review queue
 - **Workflows** — workflow concurrency and capacity utilization
 - **Document Distribution** — classification distribution, including documents that mix several types
-- **Configuration Context** — which pipeline configuration versions produced the documents in the window, so you can correlate a change in behaviour with a configuration deployment
+- **Configuration Context** — which configuration profiles produced the documents in the window, so you can correlate a change in behaviour with a configuration change
 
 **Cost widgets**
 
 - **Cost Trends** — spend over time
-- **Cost Distribution** — by document type and by configuration version
+- **Cost Distribution** — by document type and by configuration profile
 - **Pipeline Stage Cost** — cost broken down by pipeline stage (OCR, classification, extraction, assessment, and so on)
 - **Service Cost** — what the pipeline's own Lambda functions and control-plane agents cost, separately from per-document inference
 - **High-Cost Documents** — a ranked list you can open document by document

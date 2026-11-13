@@ -2,6 +2,9 @@
 title: "Test Studio"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Studio
 
 The Test Studio provides a comprehensive interface for managing test sets, running tests, and analyzing results directly from the web UI.
@@ -24,7 +27,7 @@ When the [Test Set Generator](extensions/idp-data-generator.md) extension is
 installed, the **Test Sets** tab shows a **Generate Test Set** button. It
 opens a modal to generate labeled synthetic documents (PDF + ground-truth JSON)
 — either from a plain-language description of a document type, or from an
-existing configuration version's document class. You can add an optional
+existing configuration profile's document class. You can add an optional
 **scenario** theme (with an AI **Suggest** helper), choose a **quality** level
 (faster vs. higher quality), and see an estimated cost/time band before starting.
 Generation runs as a background job; the resulting test set appears in the list
@@ -59,7 +62,7 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 3. **DocSplit-Poly-Seq**: 500 multi-page packets with 13 document types
 4. **Fake-W2-Tax-Forms**: 2,000 synthetic US W-2 tax form images with 45-field ground truth
 
-All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration version** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Versions](configuration.md#managed-configuration-versions) for details.
+All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration profile** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles) for details.
 
 ---
 
@@ -147,7 +150,7 @@ Use with: `config_library/unified/ocr-benchmark/config.yaml`
 
 ### Common Features
 
-Both datasets share these deployment characteristics:
+The pre-deployed datasets share these deployment characteristics:
 
 - **Fully Automatic**: Complete deployment during stack creation with zero user effort
 - **Version Control**: Dataset version pinned in CloudFormation, updateable via parameter
@@ -331,9 +334,8 @@ Use with: `config_library/unified/fake-w2/config.yaml`
 
 ---
 
-### Common Features
+### Choosing a dataset
 
-All datasets share these deployment characteristics:
 **OmniAI-OCR-Benchmark** is ideal for:
 - Testing classification across diverse document types
 - Evaluating extraction on complex nested schemas
@@ -347,21 +349,20 @@ All datasets share these deployment characteristics:
 
 ---
 
-### Common Features
-
-All datasets share these deployment characteristics:
-
 ### Backend Components
+
+The UI reaches every backend operation below through the REST API, as
+`POST /op/<operation>` on the API Gateway dispatcher, not through GraphQL.
 
 #### TestSetResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_set_resolver/index.py`
-- **Purpose**: Handles GraphQL operations for test set management
+- **Purpose**: Handles the test set management operations
 - **Features**: Creates test sets, scans TestSetBucket for direct uploads, validates file matching, manages test set status
 
 #### TestSetFileCopier Lambda
 - **Location**: `src/lambda/test_set_file_copier/index.py`
 - **Purpose**: Copies files from source buckets to the test set bucket
-- **Features**: Pattern-based file matching, baseline validation, automatic baseline filtering for Input Bucket sources, time-based file filtering, file count recount, supports both create and append modes
+- **Features**: Pattern-based file matching, baseline validation, Input Bucket documents without a baseline added unlabeled, documents already in the set skipped, time-based file filtering, file count recount, supports both create and append modes
 
 #### TestSetZipExtractor Lambda
 - **Location**: `src/lambda/test_set_zip_extractor/index.py`
@@ -380,11 +381,11 @@ All datasets share these deployment characteristics:
 
 #### TestResultsResolver Lambda
 - **Location**: `nested/api-resolvers/src/lambda/test_results_resolver/index.py`
-- **Purpose**: Handles GraphQL queries for test results and comparisons, plus asynchronous cache updates
+- **Purpose**: Handles the test results and comparison operations, plus asynchronous cache updates
 - **Features**: 
   - Result retrieval with cached metrics
   - Comparison logic and metrics aggregation
-  - Dual event handling (GraphQL + SQS)
+  - Dual event handling (API operations from the dispatcher, and SQS messages)
   - Asynchronous cache update processing
   - Progress-aware status updates
 
@@ -396,8 +397,8 @@ All datasets share these deployment characteristics:
   - 15-minute visibility timeout for long-running calculations
   - Automatic retry handling
 
-### GraphQL Schema
-- **Location**: `nested/api-resolvers/src/api/schema.graphql`
+### API Operations
+- **Contract**: `nested/api-resolvers/src/api/schema.graphql`. No GraphQL service evaluates it; it is the typed contract the UI's types and the dispatcher's argument validation are generated from (see [architecture.md](./architecture.md))
 - **Operations**: `getTestSets`, `addTestSet`, `addTestSetFromUpload`, `createEmptyTestSet`, `addDocumentsToTestSet`, `addDocumentsToTestSetByKey`, `addDocumentsToTestSetFromUpload`, `removeDocumentsFromTestSet`, `deleteTestSets`, `getTestRuns`, `startTestRun`, `abortTestRuns`, `compareTestRuns`
 
 ### Frontend Components
@@ -439,7 +440,7 @@ Test Studio has two subsystems: **test-set management** (creating, updating,
 and validating the folder of documents you run against) and **test-run
 management** (starting a run, tracking it, and aggregating its metrics).
 Each has an **online** path (the user is in the UI and the UI drives every
-transition through GraphQL) and an **offline** path (something happens
+transition through the REST API) and an **offline** path (something happens
 outside the UI — a direct S3 edit, or a CLI command — and the workflow has
 to catch up later).
 
@@ -631,8 +632,18 @@ The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
 files** button that reports the match count before you commit. When reading from
-the input bucket, documents with no ground truth in the evaluation baseline bucket
-are skipped rather than failing, so a broad pattern is safe. Patterns match the full
+the input bucket, a matching document with no ground truth in the evaluation baseline
+bucket is added **unlabeled**, as it is from every other source: its input is copied
+and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
+A broad pattern therefore brings in every file it matches, labeled or not, and
+one unlabeled document makes the whole set read as `unlabeled` until it is
+draft-labeled. A pattern re-applied when adding documents leaves every document
+already in the set as it is, labeled or not, so labels drafted or reviewed in the set
+are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
+From the input bucket a `.zip` the pattern matches is left out, because a `.zip`
+written into a set's folder is read as a test-set upload; a pattern that matches
+only `.zip` files fails with that reason. Every other matching file is copied.
+Patterns match the full
 object key: `*` matches within one folder level, `**` matches across folders, `?`
 matches a single character. The folder path before the first wildcard must be typed
 as it exists in the bucket; everything after it is matched regardless of case.
@@ -674,6 +685,14 @@ acts on the set as a whole, while **Add documents**, **Generate draft labels**,
 **Edit ground truth**, **Clear draft labels** and **Remove** sit above the document list and
 act on its documents. See [Publishing a version](#publishing-a-version).
 
+**Edit ground truth** means the same here and in the **Test Sets** list's **Actions**: it
+opens the review-effort dialog (**Set up team annotation**), which sizes the review and
+continues to the set's queue with **Continue to annotation**. For a set whose documents
+are all labelled there is no review to size, so the primary button is **Review the set's
+documents**, which opens the set's queue with its reviewed documents shown; the
+**Nothing to review** alert says that labels can still be corrected one document at a
+time, from a document's **Edit**.
+
 A document's Test Studio item is the same edit page as a production review item:
 
 - **Edit | View** switches between the ground-truth editor and the original PDF or
@@ -714,17 +733,17 @@ The same **Add documents** menu is available in two places: on the Test Sets tab
 
 - **From files in a bucket** (Admin only): Select a bucket, enter a file pattern, and optionally filter by modification time. Matching a pattern searches the whole bucket, so this source is not offered to Authors
 - **From a zip upload**: Upload a zip file containing new documents and, optionally, their baselines. A zip with only `input/` adds unlabeled documents; a set that was fully labeled then shows as unlabeled until those documents are draft-labeled or reviewed
-- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why.
+- **From processed documents**: Pick documents that have finished processing from a list of completed Production documents, newest first, with their configuration profile, a filter, and **Load older documents** for earlier ones. Each is copied into the set with any ground truth already saved for it in the evaluation baseline bucket. A document with **no** ground truth is added **unlabeled** rather than skipped, and the dialog names those documents before you confirm. If the set is labeled or draft-labeled, the dialog instead warns that one unlabeled document is enough to make the whole set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. A document already in the set is skipped rather than copied again, so labels reviewed in the set are never overwritten. Available to Admins and Authors. Every selected document is checked on the server before anything is copied: it must have finished processing under a configuration profile the caller may access, so a user scoped to certain profiles cannot add documents outside them. If any selected document fails that check, the whole request is refused with one message that does not say which document or why. Admins can also open this dialog from the Document List: select documents there and choose **Add to test set**, then pick the set (see [Adding documents to a test set](web-ui.md#adding-documents-to-a-test-set)).
 - **Generate synthetic documents**: Opens the generator already pointed at this set (requires the synthetic data generator extension)
 
 
 On the table, the set shows an "Updating..." status while files are being added and the file count updates when it completes. On the set's page, a notice reports that documents are arriving and the list refreshes when they land; for generation it follows the job and refreshes when the job completes.
 
 **Key behaviors:**
-- **Automatic baseline filtering** (Input Bucket pattern import only): Files without matching baseline data in the evaluation bucket are automatically excluded rather than failing. Documents added **From processed documents** are never excluded for this reason; they arrive unlabeled instead. A result message reports the counts (e.g., "Added 8 of 12 files (4 excluded - no baseline data)").
-- **Idempotent**: Adding a document that already exists overwrites it. File counts are always recounted from S3 for accuracy.
+- **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
+- **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still writes over the input and baseline files it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
-- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns.
+- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
 
 ### File Structure Requirements
 ```
@@ -748,7 +767,7 @@ my-test-set/
   A *partially* labeled set (baselines for some documents but not others) is
   still a validation error, since that indicates an incomplete upload rather
   than a deliberate label-later workflow.
-- When using Input Bucket as source, files without baselines are automatically excluded (not treated as an error)
+- When using Input Bucket as source, files without baselines are added unlabeled (not treated as an error), so the set can be partially labeled; it reads as `unlabeled` until those documents are draft-labeled
 - Status: COMPLETED (valid), FAILED (validation errors), QUEUED/COPYING (creating), UPDATING (adding documents)
 - These rules apply to a zip upload exactly as they do to folders found in the bucket: the
   zip extractor accepts an archive with no `baseline/` folder as an unlabeled set and still
@@ -914,6 +933,10 @@ offers one page at a time rather than jumping to an arbitrary page, because the
 underlying listing is token-based and page N's position is only known once N-1
 has been read.
 
+The dialog also says where the labels go: generated labels are written to the set's
+ground truth immediately, as draft labels to review, and its current labels are
+preserved in the set's published version.
+
 Creating a test set normally requires ground truth up front, which is the
 expensive part. Draft labeling inverts that: upload documents **only**, run the
 active configuration over them to produce machine-generated ground-truth
@@ -979,17 +1002,25 @@ above; **Process Changes** flips the label to *Reviewed*.
 **Saved changes are drafts until Process Changes.** A draft is stored under
 `<set>/drafts/` in the TestSetBucket, outside `baseline/`, so it is not part of a
 published version or a test run, and the label, the queue's progress and the
-confidence curve are unchanged until it is applied. Drafts survive **Re-extract**,
-**Clear draft labels** and **Reset labels**, move with their sections on **Edit Page
-Class**, and are deleted with the document when it is removed from the set. Once enough of the set is
+confidence curve are unchanged until it is applied. **Re-extract** deletes the draft
+of each section whose fields it writes back, because the draft's edits were made over
+the fields it replaces: those edits are lost, and the section opens with the
+re-extracted values. A section the re-extract does not write — another section of the
+packet, or authored ground truth, whose values it keeps — keeps its draft. Drafts
+survive **Generate draft labels**, **Clear draft labels** and **Reset labels**, move
+with their sections on **Edit Page Class**, and are deleted with the document when it
+is removed from the set. Once enough of the set is
 reviewed, publish a version to freeze it as a benchmark.
 
 **A field you edit stops carrying the model's confidence.** The score describes
 the value the model produced, so once you have replaced that value it says nothing
 about what is on screen. An edited field shows *"Edited — the model's confidence no
 longer applies"* in place of the percentage, and its provenance label changes from
-*Predicted:* to *Your value:*. Suppression is per field: correcting one field does
-not hide the confidence of the others.
+*Ground truth:* to *Your value:*. A test-set document's values are labelled *Ground
+truth:* whatever their source (draft, reviewed, synthetic or uploaded), and the JSON
+tab's panel is titled **Ground truth**; *Predicted:* labels model output on a
+production document only. Suppression is per field: correcting one field does not
+hide the confidence of the others.
 
 **Leaving the editor with unsaved edits prompts first.** This covers in-app
 navigation as well as closing the tab — clicking a nav link with corrections
@@ -1054,9 +1085,10 @@ assessment settings — but not across prompt tweaks.
 > (written when a set is created by the confbench planner or the synthetic-data
 > generator, and what the class picker and test runner already use); and the
 > configuration the set's **draft-labeling jobs** resolved (every labeling job's run
-> carries the `ConfigVersion` the runner resolved). If the jobs disagree — say one
-> document was re-extracted under another profile — no single curve applies and the
-> combined curve is used, labeled `mixed`. Within that profile it then resolves the
+> carries the `ConfigVersion` the runner resolved). A job that failed labeled nothing
+> and is not counted. If the jobs disagree — say one document was re-extracted under
+> another profile — no single curve applies and the combined curve is used, labeled
+> `mixed`. Within that profile it then resolves the
 > **revision family**: every run records a *confidence fingerprint* — a hash of the
 > confidence-relevant configuration (extraction model and sampling parameters,
 > assessment settings), so a prompt edit keeps the fingerprint and a model swap
@@ -1153,7 +1185,7 @@ test set(s), then share the queue link
 (`#/review-queues/test-sets/<test-set-id>`; an older
 `#/test-studio/sets/<test-set-id>/annotate` link opens it too). You can copy that link from the
 **Copy queue link** button on the queue itself, or open the queue for any set via
-**Actions → Edit ground truth**.
+**Actions → Edit ground truth**, which goes there through the review-effort dialog.
 
 An annotator must be assigned at least one test set — an account with none is
 denied every set by the scope check, so the create form refuses to submit without
@@ -1199,13 +1231,35 @@ every field to reach them: **Edit | View**, **Reports** (**History**, **Processi
 Report**), **Skip**, **Cancel**, **Save** and **Process Changes**, or the view switch,
 **Reports** and **Claim** for an Annotator viewing an unassigned document. **Edit Page
 Grouping** is on the **Document Editor** panel, beside its **Section** and **Show Fields**
-dropdowns. **Save** keeps the open section's changes as a
-draft, which is not reviewed: you, a later session or the next assignee after a
-**Skip** open the document with it, and switching sections with unsaved changes asks
-first. **Process Changes** saves the open section's changes, applies every section's
-draft (the rest as they are) and re-runs evaluation and summarization on the
-document's review copy (OCR, classification and extraction are not repeated). Authored ground truth has no review copy, so for it **Process Changes**
-only marks the labels reviewed. The title is the document's name with its status (**To review**,
+dropdowns. Editing is draft-first: the fields are editable as soon as you may work the
+document, with no step to start. **Save** keeps the open section's changes as a
+draft, which is not reviewed and opens no version (*Saved your changes to {name} as a
+draft. Process Changes writes them as reviewed ground truth.*): you, a later session or
+the next assignee after a **Skip** open the document with it, and switching sections
+with unsaved changes asks first. **Process Changes** saves the open section's changes,
+applies every section's draft (the rest as they are) and re-runs evaluation and
+summarization on the document's review copy (OCR, classification and extraction are not
+repeated). Authored ground truth has no review copy, so for it **Process Changes** only
+marks the labels reviewed. When no draft version of the set is open, **Process Changes**
+first asks **Open a new version and save ground truth**: it opens the next version of
+the set, the current version stays as it is, and your labels are written as reviewed
+ground truth; **Cancel** leaves everything unchanged. While a draft version is open it
+runs at once, and the header shows a `v{base} → v{draft}` badge (*Corrections go into
+version v{draft}; v{base} is preserved.*); the queue page shows the same badge. Without
+an open version a banner explains the steps: *Save keeps a draft. Process Changes opens
+the next version of this set (the current version stays as it is) and writes these
+labels as reviewed ground truth. Publish version on the test set freezes it.*
+
+When you can't edit a document, the fields are shown read-only and one notice at the
+top says why: it is assigned to someone else (*View only. This document is assigned to
+{name}.*), nobody holds it (*View only. Claim this document to work on it; it is then
+assigned to you and shows in Home › Tasks.*, with **Claim** in the notice), it isn't
+assigned to you, or your role can't edit these labels. **Edit** and **View** keep their
+labels. A document with confidence alerts opens on the **Confidence alerts only**
+filter, with a notice such as *3 fields are below the confidence threshold.* and **Next
+alert**, which steps through the open section's alert fields.
+
+The title is the document's name with its status (**To review**,
 **Reviewed** or **Skipped**), and the **Document Editor** panel has a **Section**
 dropdown at its top left. The notices share one alert.
 
@@ -1220,14 +1274,12 @@ packets ranks fewer documents at a time than a set of single-section ones.
 > is a user-management change rather than a URL rotation.
 
 `allowedTestSets` is a separate axis from `allowedConfigVersions` (which restricts
-*which config versions'* documents a user sees). A user can carry both.
+*which configuration profiles'* documents a user sees). A user can carry both.
 
-A **Reviewer** works Test Studio queues without `allowedTestSets` and without being
-listed on a queue: they see, claim and label the documents of every test set whose
-configuration profile is in their `allowedConfigVersions`, or every test set when they
-have no such restriction. A set drafted under several profiles has no single profile
-and is shown only to Reviewers with no restriction. Reviewers claim their own
-documents; Admins assign documents to Annotators only.
+A **Reviewer** works Production review queues only. Test Studio queues, labelling and
+test-set file reads are for Admins, Authors and Annotators: a Reviewer who labels test
+sets also needs the Annotator role, with the sets in their `allowedTestSets`. Admins
+assign documents to Annotators only.
 
 ### Working the queue collaboratively
 
@@ -1274,38 +1326,94 @@ To find misclassifications *measured against a baseline*, use the
 [Classification errors](#finding-classification-errors) panel on a test run.
 
 
-A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the config
-version that produced these labels — not the deployment's currently active
+A section's class is changed in **Edit Page Grouping**, whose class list holds the classes defined by the configuration
+profile that produced these labels — not the deployment's currently active
 configuration, which may have moved on since. A badge above the fields always
 names which config the class list came from, and says so explicitly when it is a
 fallback ("… (active config)", "built-in default"), because a list of classes
 from the wrong config looks exactly like a list of classes from the right one.
 
 The order is: the config stamped on the baseline; failing that the test set's own
-declared version; failing that the deployment's **active** config. Hand-uploaded
+declared profile; failing that the deployment's **active** config. Hand-uploaded
 and synthetic ground truth carries no stamp — nothing produced it through the
 pipeline — so those sets fall to the active config rather than to the built-in
 preset. After a section's class is changed and saved in **Edit Page Grouping**, the
 section says **Fields still reflect the previous class** and offers **Re-extract**,
-which re-runs that one document and waits for the new labels before returning, so you
-are never left looking at fields from the previous class.
+which re-runs that document and waits for the new labels before returning, so you
+are never left looking at fields from the previous class. On a document with one
+section it re-extracts the whole document; on a document with several it re-extracts
+only the section you are looking at (see below). The note names the class the fields
+were extracted under, so a section changed twice before it is re-extracted (Invoice to
+W2, then to Payslip) still says Invoice, and a section changed back to that class shows
+no note. The note stays with its section when a later save moves pages and renumbers
+the sections, and when a different section is re-extracted. It also survives a page
+reload: the save records the class the fields were extracted under on the section's
+ground truth (`extractedAsClass` in its `result.json`, and in its draft if it has one),
+and the editor reads it when it opens the section. Re-extracting the section, or a
+**Generate draft labels** run that rewrites it, removes it from the section and from its
+draft once the new fields are written; a re-extract deletes that section's draft
+instead, so the section opens with the re-extracted values. For a section of
+authored ground truth, whose values a re-extract keeps, the record goes when the
+re-extract corrects the class. Saving or confirming the section's labels keeps it, because the
+values are still the ones extracted under the earlier class. A class change saved
+by a release that predates this is not recorded, so its note does not survive a reload.
 
 The corrected class is sent into the re-run itself, not merely written onto the
 existing labels: the document is re-processed with classification **skipped** and
 your chosen class applied to every page, so extraction genuinely runs against that
 class's schema. (Writing it onto the labels alone does not work — the run
 classifies from the source document and would re-derive the class you just
-corrected.)
+corrected.) A configuration that uses Bedrock Data Automation (`use_bda: true`)
+classifies the document itself and does not apply your class, so if the run comes
+back under a different class the re-extract fails with that reason and nothing is
+written: the class stays corrected and the fields stay as they were, for you to
+correct by hand or re-extract under a configuration that does not use Bedrock Data
+Automation.
 
 Two consequences worth knowing:
 
-- **Re-extraction replaces this document's labels**, including confirmed ones.
+- **Re-extraction replaces the labels it re-extracts**, including confirmed ones:
+  the document's on a single-section document, the one section's on a packet.
   Asking to re-extract after correcting the class is a statement that the current
   labels are wrong, so they stop counting as reviewed. Everything else in the set
-  is untouched.
+  is untouched. Authored ground truth (labels with no **Draft** or **Reviewed**
+  source) keeps its field values; only the class is corrected.
 - **A class the configuration does not define stays selectable** if the document
   already carries it, so a class that was later renamed can still be seen and
   corrected rather than silently blanked.
+
+**On a document with more than one section, Re-extract works on one section.**
+Changing the class for the whole document would merge all of its sections into one
+and discard their ground truth, because a whole-document re-run applies one class to
+every page and produces a single section. So on a packet the notice explains this
+and its **Re-extract** button re-extracts only the open section: the document is
+re-run with its grouping fixed, every other section keeping the pages and class its
+ground truth records, and only that section's labels are replaced. Every other
+section's labels, reviewed or not, are left exactly as they were. The re-run still
+extracts every section of the document, so it costs about as much as re-extracting
+the whole document; only the chosen section is written back. Each section must
+record its pages and a class for this to work; set them in **Edit Page Grouping**
+first if one does not. If the run does not come back with that section on the same
+pages under the corrected class, the re-extract fails and the section's fields are
+left as they were, with the reason as the error. That is what happens under a
+configuration that uses Bedrock Data Automation (`use_bda: true`), which does not
+apply a forced grouping.
+
+**Edit Page Grouping cannot save while a re-extract or a draft-labeling job is still
+to write that document.** The job writes its sections over the document's ground
+truth when it finishes, so a grouping saved in between would be overwritten by a
+whole-document re-extract, or would make a section re-extract fail. The save is
+refused with a message saying so; wait for the job to finish (a re-extract usually
+takes under a minute) and save again. A job that has already written the document,
+or one that started more than six hours ago or has no recorded start time, does not
+block the save.
+
+The API follows the same rule. `reextractTestSetDocument` takes an optional
+`sectionId` with `documentClass` to re-extract one section. A `documentClass` without
+`sectionId` on a document whose baseline has more than one section is refused with a
+bad-request error, before anything is written, whose message says to pass `sectionId`
+instead; `generateDraftLabels` refuses a forced class there too, and forces a class
+only onto exactly one named document.
 
 Annotators can do this within their assigned sets; the operation is scope-checked
 per test set like every other annotation operation.
@@ -1364,7 +1472,7 @@ grouping writes the page grouping and the class and nothing else: extracted valu
 their **Reviewed** provenance and the edit history all survive. Those values
 were extracted from a different set of pages, so they may no longer match — the
 warning afterwards names the sections that moved so you know which to check, and
-**Re-extract**, offered after a class change, is there if you would rather the model redo one. It is
+**Re-extract**, offered after a class change (on one section at a time on a document with several), is there if you would rather the model redo it. It is
 never done for you, because re-extraction is exactly the annotation loss this exists
 to avoid.
 
@@ -1378,6 +1486,15 @@ A few rules the board enforces, all for the same reason — a packet split is a
   delete it.
 - A page the split had dropped entirely **can** be added. That is precisely the defect
   a reviewer is here to fix, so it is allowed in.
+- A section you add starts with no field values, even when you deleted another section
+  in the same edit: the board never gives an added section the number of a section the
+  document already had, because a save keeps each section's fields under the number it
+  is sent with.
+- After a save, **Edit Page Grouping** is unavailable, with the reason *Loading the saved
+  grouping…*, until the editor has re-read the saved sections. The save renumbers them,
+  so a grouping opened from the sections shown before the re-read would name the wrong
+  ones. If the re-read fails, the reason says so instead; choose **Refresh** to load
+  the saved grouping.
 
 Sections are renumbered so their ids follow page order. Several consumers take a
 section's group index from its position in a list, and nothing otherwise guarantees
@@ -1413,19 +1530,22 @@ without opening each tab in turn.
 ### Annotating creates a new version of the set
 
 Correcting ground truth changes what every previously-scored run was measured against, so
-starting an annotation session is an explicit step: **Start annotating** opens a *version
-transition*, shown in the header as e.g. `v1 → v2`.
+writing reviewed ground truth opens a *version transition*, shown in the header as e.g.
+`v1 → v2`. Editing doesn't need one: **Save** keeps a draft, which changes no ground
+truth. The first **Process Changes** on a set with no open transition asks **Open a new
+version and save ground truth**, and confirming it opens the transition and writes the
+labels.
 
-Agreeing to it is what names the version you are moving away from. The labels themselves
+Opening it is what names the version you are moving away from. The labels themselves
 were already copied to `{testSetId}/versions/{n}/baseline/` when that version was
 published, so `v1` keeps meaning the bytes it meant when a run scored against it, and
-starting a session does not disturb them. A set that arrived with its own ground truth and
+opening the transition does not disturb them. A set that arrived with its own ground truth and
 was never published gets that state published first as `v1` — without it, the labels a set
 was uploaded with are exactly the ones overwritten with no record of what they were.
 
-Until the transition is open the editor is read-only. You can read every document and its
-labels; you cannot change them. That ordering is the point: editing first and versioning
-afterwards would record what the labels *became*, not what they were.
+That ordering is the point: drafts stay out of the ground truth, and the version opens
+before any reviewed label is written, so it records what the labels *were*, not only
+what they became.
 
 **Copy queue link** includes the transition (`?v=2`). A link from a transition that has
 since been published still works — the set is still annotatable — but the workspace says
@@ -1502,7 +1622,7 @@ be able to discard the team's annotation work.
 
 ![Run Test Set form with the test set, test set version, configuration profile and revision, file limit and context fields](../images/test-studio-run-test-set.png)
 
-### Configuration Versioning
+### Configuration Profiles and Revisions
 The Test Studio supports running tests with specific Configuration Profiles and
 revisions:
 - **Profile selection**: Choose from available Configuration Profiles (e.g., `default`, `Production`, `lending`)
@@ -1511,7 +1631,7 @@ revisions:
 - **Comparison**: Compare two runs of the *same* profile at different revisions — this is how you tell "the prompt change helped" from "the ground truth moved", because each run also pins the test-set version it scored against
 - **Retention**: A revision pinned by a run is exempt from revision pruning, so later saves never push it out of the profile's history, but its body still expires `DataRetentionInDays` after the revision was cut, like every revision's ([Retention](configuration-profiles.md#retention))
 - **Validation**: A run that names a profile that does not exist, or a revision whose body cannot be read (deleted, pruned, expired under the Configuration bucket's `DataRetentionInDays` lifecycle rule, or never cut), is rejected when submitted rather than queued to fail per document
-- **Context Generation**: Test context automatically includes the selected version information
+- **Context Generation**: Test context automatically includes the selected profile and revision
 
 For full details on configuration profiles and their revisions, see [configuration-profiles.md](configuration-profiles.md).
 
@@ -1572,7 +1692,7 @@ The abort then waits for the run's documents to reach a final status. A document
 ![Test results for a Fake-W2-Tax-Forms run: cost, confidence and accuracy summary above the weighted overall score distribution](../images/test-studio-results.png)
 
 - Comprehensive metrics display including:
-  - **Test run metadata**: Configuration version, duration, context, file counts
+  - **Test run metadata**: Configuration profile and revision, duration, context, file counts
   - **Overall accuracy and confidence metrics**
   - **Cost metrics**: Total cost and average cost per page
   - **Accuracy breakdown** (precision, recall, F1-score, false alarm rate, false discovery rate)
@@ -1587,7 +1707,7 @@ The abort then waits for the run's documents to reach a final status. A document
     differently from the ground truth, and how (see
     [Finding classification errors](#finding-classification-errors))
   - **Cost breakdown** by service and context
-- Side-by-side test comparison with all metrics including configuration versions
+- Side-by-side test comparison with all metrics including configuration profiles and revisions
 - Export capabilities (JSON/CSV downloads include all metrics)
 - Integrated delete operations
 
@@ -1721,7 +1841,7 @@ Three kinds are distinguished, because they call for different fixes:
 
 | Issue | Meaning | What to do |
 |---|---|---|
-| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue and re-extract, then re-run. |
+| **Wrong class** | The document was assigned a different class than the ground truth. | Correct the class in the annotation queue (and re-extract the document, or on a packet the section), then re-run. |
 | **No matching section** | No predicted section the evaluation recorded holds exactly the pages the ground truth expects: the prediction split them, merged them with other pages or left some out, or, where the row says *not recorded*, the evaluation's record of the document is incomplete. The row lists the recorded predicted sections over those pages, with their classes and pages. | A *splitting* problem, not a labelling one — look at how classification groups pages into sections ([`sectionSplitting`](./classification.md#section-splitting)) rather than at the class list. A listed section under another class also means those pages were extracted with that class's schema. A row that says *not recorded* need not be a splitting problem: see the limit on classes excluded from processing below. |
 | **Page order** | Right class and right pages, wrong order. | Extraction is unaffected. This is what "Split Accuracy With Order" penalises and "Without Order" does not. |
 
@@ -1779,7 +1899,7 @@ class is corrected — see
 
 ### Field-Level Metrics
 
-Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns (Stickler v0.4.0+):
+Test results include detailed per-field extraction performance metrics displayed in an interactive table with optional confidence calibration columns:
 
 **Displayed Columns:**
 1. **Field Name**: The name of the extracted field (hierarchical with expand/collapse)
@@ -1805,7 +1925,7 @@ happened to get, and the point estimate alone cannot distinguish 100% measured o
 observations from 100% measured on 300. The two justify completely different decisions.
 
 This matters more per field than it does overall. A run's overall accuracy firms up
-quickly — within roughly the first hundred documents — because every document contributes
+much faster than any single field's, because every field of every document contributes
 to it. A field that appears once per document gains one observation per document, so a
 badly-broken field can sit inside a healthy-looking overall score until the set is large
 enough to expose it. At a measured 90% accuracy:

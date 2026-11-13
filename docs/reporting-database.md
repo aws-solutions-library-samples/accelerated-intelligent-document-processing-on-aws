@@ -2,10 +2,10 @@
 title: "Reporting Database"
 ---
 
-# Reporting Database
-
 Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 SPDX-License-Identifier: MIT-0
+
+# Reporting Database
 
 The GenAI IDP Accelerator includes a comprehensive reporting database that captures detailed metrics about document processing. This database is implemented as AWS Glue tables over Amazon S3 data in Parquet format, making it queryable through Amazon Athena for analytics and reporting purposes.
 
@@ -46,7 +46,7 @@ The `document_evaluations` table contains document-level evaluation metrics:
 | false_alarm_rate | double | False alarm rate (0-1) |
 | false_discovery_rate | double | False discovery rate (0-1) |
 | execution_time | double | Time taken to evaluate (seconds) |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 This table is partitioned by date (YYYY-MM-DD format).
 
@@ -66,7 +66,7 @@ The `section_evaluations` table contains section-level evaluation metrics:
 | false_alarm_rate | double | Section false alarm rate (0-1) |
 | false_discovery_rate | double | Section false discovery rate (0-1) |
 | evaluation_date | timestamp | When the evaluation was performed |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 This table is partitioned by date (YYYY-MM-DD format).
 
@@ -89,7 +89,7 @@ The `attribute_evaluations` table contains attribute-level evaluation metrics:
 | confidence | string | Confidence score from extraction |
 | confidence_threshold | string | Confidence threshold used |
 | evaluation_date | timestamp | When the evaluation was performed |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 This table is partitioned by date (YYYY-MM-DD format).
 
@@ -136,6 +136,15 @@ This table is partitioned by date (YYYY-MM-DD format).
 
 The `metering` table captures detailed usage metrics and cost information for each document processing operation:
 
+**Rows are per run.** Each processing run of a document writes the usage of that run
+only. A run that resubmits a stored document (**Process Changes**, finishing or
+skipping a review, `idp-cli rerun-inference` or the SDK rerun) reports the stages it ran
+and none of the earlier runs' usage, so summing a document's rows over all runs gives
+its total usage without counting any run twice. The document's tracking record (the
+**Estimated Cost** in the Web UI) keeps the cumulative total of every run. Documents
+reprocessed before this behaviour was introduced keep the figures they were saved
+with: their rows are not rewritten.
+
 | Column | Type | Description |
 |--------|------|-------------|
 | document_id | string | Unique identifier for the document |
@@ -148,7 +157,7 @@ The `metering` table captures detailed usage metrics and cost information for ea
 | estimated_cost | double | Calculated total cost in USD (value × unit_cost) |
 | timestamp | timestamp | Document COMPLETION time — when the workflow ended and the row was written. Same value as the partition. |
 | initial_event_time | timestamp | Original queue time — when the document was first enqueued. Preserved for consumers who need queue-time semantics. |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 **Partitioned by `date` + `hour`** (both string; `YYYY-MM-DD` and `HH`).
 Partition values reflect **completion time** (write time), not queue
@@ -176,7 +185,8 @@ Aggregate columns on `metering_hourly` / `metering_daily` (cost per
 service/unit): `sum_value, sum_cost`.
 
 Aggregate columns on `metering_docs_hourly` / `metering_docs_daily`
-(doc-grain volume/pages): `n_docs, sum_pages`. `number_of_pages` is
+(doc-grain volume/pages/runs): `n_docs, sum_pages, n_runs`.
+`number_of_pages` is
 stamped identically on every metering row per document, so aggregating
 it at the (service_api, unit) grain of `metering_hourly` would fan the
 page count out by the number of rows a doc touches; the `metering_docs_*`
@@ -189,6 +199,21 @@ subquery to collapse the fan-out.
 processed across two hours counts twice). For strict cross-day
 unique-doc counts, query raw `metering` with
 `COUNT(DISTINCT document_id)`.
+
+`n_runs` counts document **runs** — one run is one
+`(document_id, timestamp)` pair in raw `metering`, so reprocessing a
+document raises `n_runs` without raising `n_docs`. Unlike `n_docs` it is
+additive: a run falls in exactly one hour, so `SUM(n_runs)` is exact at
+either grain and over any range it fully covers.
+
+⚠️ **`n_runs` is NULL for partitions older than the data-mart migration
+window**, and `SUM` skips NULLs — so a query reaching past that boundary
+returns a number covering only part of the range, with nothing marking it
+short. Select `COUNT(*)` and `COUNT("n_runs")` alongside any `SUM("n_runs")`
+and treat them differing as "partially recorded". The column carries the
+same warning as its Glue comment, so it is visible from the catalog too. See
+[`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
+measurements behind both claims.
 
 See [`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
 consumer tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),
@@ -340,7 +365,7 @@ Document sections are stored in dynamically created tables based on the section 
 | section_classification | string | Type/class of the section |
 | section_confidence | double | Confidence score for the section classification |
 | timestamp | timestamp | When the document was processed |
-| config_version | string | Configuration version used for processing |
+| config_version | string | Configuration profile used for processing |
 
 **Dynamic Data Columns:**
 The remaining columns are dynamically inferred from the JSON extraction results and vary by section type. Common patterns include:
@@ -696,7 +721,7 @@ GROUP BY
 ORDER BY 
   total_cost DESC;
 
--- Cost analysis by configuration version
+-- Cost analysis by configuration profile
 SELECT 
   config_version,
   COUNT(DISTINCT document_id) as document_count,
@@ -712,9 +737,9 @@ ORDER BY
   total_cost DESC;
 ```
 
-**Configuration version analysis:**
+**Configuration profile analysis:**
 ```sql
--- Compare accuracy across configuration versions
+-- Compare accuracy across configuration profiles
 SELECT 
   config_version,
   AVG(accuracy) as avg_accuracy,
@@ -729,7 +754,7 @@ GROUP BY
 ORDER BY 
   avg_f1_score DESC;
 
--- Filter documents by configuration version
+-- Filter documents by configuration profile
 SELECT 
   document_id,
   section_classification,
@@ -737,11 +762,11 @@ SELECT
 FROM 
   document_sections_w2
 WHERE 
-  config_version = 'v2.1'
+  config_version = 'Production'
   AND date >= '2024-01-01'
 LIMIT 100;
 
--- Cost vs quality by configuration version
+-- Cost vs quality by configuration profile
 SELECT 
   m.config_version,
   AVG(e.weighted_overall_score) as avg_quality,

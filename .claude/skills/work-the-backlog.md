@@ -916,7 +916,7 @@ the failures this repo keeps re-learning.
 | `ruff check`, `ruff format --check`, `check_lint_debt.py`, `make typecheck-pr` | **< 1 min** | every fixer agent, first, stopping on failure |
 | the targeted tests for the change (**first, as a fast fail** — ~6–8 s), then the whole `idp_common` unit suite — ⚠️ **with bounded workers**, see below | **~171 s at `-n 4`** | every fixer agent |
 | `check_coverage_debt.py`, with a report present | seconds | every fixer agent |
-| `make test-packages-cicd` (~12 min), `make test` (65 roots), `make lint-cicd`, `make typecheck`, `make test-hooks` | **minutes to tens of minutes** | **the merge agent and the batch integration agent — not fixer agents** |
+| `make test-packages-cicd` (~5 min on 4 CPUs; it no longer runs the `scripts` suites), `python3 scripts/coverage_all.py --only scripts`, `make test` (65 roots), `make lint-cicd`, `make typecheck`, `make test-hooks` | **minutes to tens of minutes** | **the merge agent and the batch integration agent — not fixer agents** |
 
 ⚠️ **Every fixer agent must cap its worker count. `make test-cicd` defaults to
 `pytest -n auto`, which takes *every* core**, so N agents running it unbounded is
@@ -968,8 +968,10 @@ in no module directory at all, and the capped runs go in parallel anyway so "eve
 it" costs one run's worth per round. The figures are in the hazards file.
 **Two exceptions, and they are not negotiable.** An agent whose change touches
 `scripts/`, a `Makefile`, `ruff.toml`, `pyrightconfig.json` or any gate **must**
-run `make test-packages-cicd` itself, because that is the suite most likely to
-catch its own change and deferring it wastes a review round. An agent that
+run the `scripts` suites itself (`python3 scripts/coverage_all.py --only scripts`, or
+`pytest scripts/tests scripts/sdlc/tests`), because those are the suites most likely
+to catch its own change and deferring them wastes a review round.
+`make test-packages-cicd` does not include them. An agent that
 touches a CloudFormation template must run `make cfn-lint` and
 `make check-arn-partitions`.
 
@@ -1040,6 +1042,29 @@ cannot be edited.
 
 ### 2b/2c. The nested adversarial review, and iteration
 
+**Tier the review by what the PR changes.** Every review costs a full agent, and in one
+run the reviews were the slowest step in the loop: most took 15 to 40 minutes, one took
+7.4 hours, and another ran for more than 2 hours before it was asked to report. So match
+the review to the risk:
+
+| PR changes | Review |
+|---|---|
+| Docs, comments, or config data only (no executable change) | None. The doc gate tier (link check plus doc tests) is the whole gate. |
+| Small code change in one module (roughly under 50 production lines) | One reviewer: revert-red plus adversarial mutations. Seeded random sampling is not required. |
+| Anything else | As below: full adversarial review, and a second round if the changes after review are substantial. |
+
+⚠️ **Time-box every reviewer at 45 minutes.** At that point the reviewer reports what it
+has, marking which claims it measured and which it did not. A review that is still
+running after an hour is costing more than it is likely to find. A partial report that
+says so is worth more than a complete one that arrives after the PR has merged, which
+happened here.
+
+**Run the full suite once per fixer, at the final head.** Use targeted tests until then.
+A reviewer runs targeted tests and its mutations, not the full suite. The batch gate in
+section 4 is what sees cross-module effects. This run's fixers often ran the full
+`idp_common` suite two or three times each (before review, after review, after a rebase),
+at 5 to 7 minutes a run.
+
 Tell the agent, in its own brief:
 
 > When your PR is open and your gates are green, **spawn a fresh subagent to
@@ -1064,6 +1089,11 @@ Tell the agent, in its own brief:
 > but if the rest of the change turns out not to be worth finishing, that sentence
 > is the difference between landing the valuable part and throwing the whole branch
 > away, and you are the only one who can write it cheaply.
+>
+> **Write the whole report to `scratch/backlog/reports/<issue>.md` as well as sending
+> it.** In one run, four final reports never reached the coordinator, and each one cost
+> a status-check round trip before the work could merge. A report on disk can be read
+> without one.
 >
 > **End your report with these four lines exactly, and nothing after them:**
 >
@@ -1228,12 +1258,30 @@ the ones in section 0b.
 
 ### Promotion
 
-When the integration agent reports the batch green, open **one** PR from
-`backlog/staging` to `develop`. **The gate is the full battery run locally on the
-merge commit, not the PR's checks.** Run every gate the `Developer Tests` and
-`Security Checks` workflows run, on that commit, record each one's numbers against
-the merge SHA, and merge on that evidence. Leave the PR's checks running and read
-them within the hour; they are corroboration, not the gate.
+⚠️ **One gate per batch, not two.** In one run, each batch paid for the full battery
+twice: once in the integration run on the frozen staging commit, and again on the
+promotion merge commit. Measured, the local battery takes about 72 minutes sequentially
+(4,350 s on one promotion). Both promotion re-runs that run made validated the same 7
+files `develop` had brought in, all in `scripts/sdlc/` and `terraform/translator/`, which
+three of the fifteen gates cover. Meanwhile the promotion PR's own CI, which runs its
+jobs in parallel, passed all 14 checks on #1908 and was never used as the gate. So:
+
+1. **Open the promotion PR directly** from a branch cut at the staging tip, with `develop`
+   merged in. Do not run a separate integration battery first.
+2. **Gate on that PR's CI** when it starts promptly. Merge when every required context
+   is green, SRT included.
+3. **Fall back to the local battery below only if CI has not started within about 20
+   minutes**, which is the queue stall recorded further down, or if a check fails for
+   an environment reason the local run can rule out.
+4. **If you do run the battery locally, run only what changed.** When
+   `git diff <last-green-sha> <merge-sha>` is empty, the earlier result stands. When it
+   is not empty, run only the gates that cover the changed paths, plus SRT and the
+   dependency audit, which always run.
+
+The integration agent described below is the fallback for step 3, not a step of its own.
+
+When the local battery is the gate, it is the full list below, run on the merge commit.
+Record each gate's numbers against the merge SHA and merge on that evidence.
 
 The list is the workflows' own, and it is longer than the battery a merge agent runs:
 
@@ -1241,9 +1289,10 @@ The list is the workflows' own, and it is longer than the battery a merge agent 
 make lint-cicd            # cfn-lint, validate-buildspec, check-arn-partitions, scans
 make typecheck            # whole tree
 make test-cicd -C lib/idp_common_pkg
+make coverage-all-cicd    # the only run of the scripts, idp_sdk and idp_cli suites
 make test-packages-cicd
 make api-test-static
-make check-coverage-debt
+make check-coverage-debt-cicd
 ( cd src/ui && npm ci && npm run build )
 CI=1 make srt-scan        # SRT; CI=1 or it can hang headlessly with no timeout
 python3 scripts/security/dep_audit.py
@@ -1382,7 +1431,8 @@ Measured on this host (16 cores, 123 GB, ~75 GB available):
 Battery wall-clock on this host: the `idp_common` unit suite is **77 s** alone at
 `-n auto`, **171 s** as one of four concurrent `-n 4` runs, and **224–243 s** as one
 of four concurrent `-n auto` runs — so its cost is a property of how many are running
-and with what worker cap, not of the suite. `make test-packages-cicd` **~12 min**;
+and with what worker cap, not of the suite. `make test-packages-cicd` **~5 min** on 4
+CPUs (305 s, 2026-11-12, after it stopped running the suites coverage measures);
 `pytest scripts/tests` **6–7 min**; the cheap checks **under a minute**.
 
 **So the two levers are independent and both matter:** N bounds how many agents run,
@@ -1518,7 +1568,29 @@ single biggest saving in coordinator context: resolving a conflict means reading
 a diff, and running the battery means reading a 10,000-line log, and doing either
 yourself is how the loop runs out of context before it runs out of backlog.
 
-Dispatch one merge agent per PR (or reuse the same one by name across the
+**First decide whether the merge needs a battery at all. Usually it does not.** Compare
+the files staging changed since the PR's base with the files the PR changes:
+
+```bash
+B=$(git merge-base github/backlog/staging github/<branch>)
+comm -12 <(git diff --name-only $B github/backlog/staging | sort) \
+         <(git diff --name-only $B github/<branch> | sort)
+```
+
+- **No shared files, or `CHANGELOG.md` only, and GitHub reports the PR `MERGEABLE`:**
+  merge directly, with no merge agent and no re-run. The fixer's gates on its own head
+  still describe the code, and the batch gate in section 4 is what sees interactions
+  between PRs. For a `CHANGELOG.md` conflict, resolve it keep-both, check that no
+  conflict markers or duplicate bullets remain, and push the merge commit. For a
+  docs-only PR, also run `make check-markdown-links` on the merge result, which takes
+  seconds.
+- **Shared files other than `CHANGELOG.md`, or a real conflict:** dispatch the merge
+  agent below and run its battery on the merge result.
+
+Measured in one run: re-running the affected suites at every merge cost 3 to 7 minutes
+per PR, and none of those re-runs found anything the batch gate would not have.
+
+When a merge agent is needed, dispatch one per PR (or reuse the same one by name across the
 sequence, which keeps its accumulated knowledge of the conflict shapes). Its
 brief:
 
@@ -1546,8 +1618,9 @@ brief:
 >    passes and the local battery stays the authority.
 > 4. **Run the battery on the merge result, not the branch.** `make test-cicd -C
 >    lib/idp_common_pkg`, `scripts/check_coverage_debt.py`, `ruff check`,
->    `ruff format --check`; add `make test-packages-cicd` if the PR touches
->    `scripts/` or a gate. Report exact counts. A log with no `N passed` summary
+>    `ruff format --check`; add `python3 scripts/coverage_all.py --only scripts`
+>    if the PR touches `scripts/` or a gate (`make test-packages-cicd` does not run
+>    the `scripts` suites). Report exact counts. A log with no `N passed` summary
 >    line did not run. ⚠️ **Do not edit anything in that worktree while the
 >    battery runs** — an interrupted run still writes a `coverage.xml`, and the
 >    ratchet will then report fabricated losses.
@@ -1589,9 +1662,10 @@ the judgement the run produced. Write what the defect was, what was measured,
 what the fix does, **what was withdrawn or narrowed and why**, and any residual
 filed separately. These comments are the repo's real defect history and are read
 later by people deciding whether a similar-looking report is the same bug. Draft
-from the agent's report rather than from the diff. `Fixes #N` does not auto-close
-here — the default branch is `main`, so develop-targeted PRs never trigger it.
-Close by hand.
+from the agent's report rather than from the diff. `develop` is the default branch,
+so a closing keyword (`Fixes #N`) that reaches it can close the issue automatically,
+with no comment. Write the closing comment anyway, and check the issue's state rather
+than assuming it either way.
 
 **Update the state file** after each merge: move the entry from `inFlight` to
 `merged`, increment `mergesSinceCheckIn` and `mergesSinceIntegration`, add any
