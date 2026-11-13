@@ -247,13 +247,13 @@ forever, the rule is run as a measurement and ratcheted: per file, the count may
   `npm run lint`, which runs with `--max-warnings 0` inside `npm run build`). It counts JSX text,
   user-facing attributes (`label`, `header`, `placeholder`, `ariaLabel`, ...), object properties
   including Cloudscape `i18nStrings` members, and strings in plain `.ts` modules (labels,
-  breadcrumbs, notifications). Its lists run in **exclude mode** only (an include list would hide
-  every descendant of a container it did not name): leaf-valued attributes and keys (`className`,
-  `iconName`, `id`, `href`, CSS properties), explicit callees (`logger.info`, `Object.keys`,
-  `Error` constructors) and full-match patterns for technical tokens (punctuation, units,
-  kebab/snake/dotted ids, URLs, MIME types, CSS values, emoji). The ESLint cache is
-  `.ui-i18n-eslintcache` at the repository root, outside `src/ui` so it does not disturb the
-  `ui-lint` checksum; about 15 s cold, 2.5 s warm.
+  breadcrumbs, notifications; `*.export.ts` modules are the exception, below). Its lists run in
+  **exclude mode** only (an include list would hide every descendant of a container it did not
+  name): leaf-valued attributes and keys (`className`, `iconName`, `id`, `href`, CSS properties),
+  explicit callees (`logger.info`, `Object.keys`, `Error` constructors) and full-match patterns
+  for technical tokens (punctuation, units, kebab/snake/dotted ids, URLs, MIME types, CSS values,
+  emoji). The ESLint cache is `.ui-i18n-eslintcache` at the repository root, outside `src/ui` so
+  it does not disturb the `ui-lint` checksum; about 15 s cold, 2.5 s warm.
 - **The baseline** is [`scripts/ui_string_debt.json`](../../../../scripts/ui_string_debt.json):
   the pinned count of every file with findings, the sha256 of the counting configuration they
   were measured with, a `highWaterMark` and `newDebtReasons`. It is registered as a count-pinned
@@ -273,9 +273,24 @@ forever, the rule is run as a measurement and ratcheted: per file, the count may
   `--allow-new-debt "<reason>"`, which it records in `newDebtReasons` so the growth stays
   reviewable; the justified case is upstream code merged before the gate existed, as the two
   `chore(ui): absorb upstream ...` commits of the foundation PR show. Export builders whose text
-  is English by design (CSV and markdown with `\n`) stay in the baseline until the conversion PR
-  that touches the file adds a file-local `/* eslint-disable i18next/no-literal-string -- export
-  content stays English */` block.
+  is English by design (CSV column headers, generated report headings) stay in the baseline until
+  the conversion PR that touches the screen moves the builder into a sibling `<name>.export.ts`
+  module holding only the export text and the function that assembles it. The counting rule is
+  off for `src/**/*.export.ts` (last object in `eslint.i18n.config.js`), so the module never
+  enters the baseline and the component's count drops; re-record it with `--write`. Never write
+  an `eslint-disable i18next/no-literal-string` comment: `npm run lint` does not register the
+  plugin and rejects the directive as an unknown rule, and registering it without the rule only
+  turns the error into an unused-directive warning that `--max-warnings 0` rejects. A component
+  file is never renamed into the pattern: it would excuse the whole screen.
+
+```ts
+// test-results.export.ts — the CSV a screen offers for download, English by design
+export const csvHeader = ['Test Run ID', 'Test Set', 'Status'];
+
+export function toCsv(rows: string[][]): string {
+  return [csvHeader, ...rows].map((row) => row.join(',')).join('\n');
+}
+```
 
 **Known gaps, stated with numbers** (measured 2026-11-05 on the tree the baseline was written
 against; nothing re-measures them until the follow-up gate below, so each comes with the way to

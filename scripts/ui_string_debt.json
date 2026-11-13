@@ -20,7 +20,7 @@
   ],
   "generator": "python3 scripts/check_ui_string_debt.py --write",
   "eslintConfig": "src/ui/eslint.i18n.config.js",
-  "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
+  "configSha256": "45a34ba460ea4fa7c91edeb5f58a0610d7dbf8c4dabf60be9d3fc9a19ee9afa5",
   "highWaterMark": {
     "files": 259,
     "findings": 6417
