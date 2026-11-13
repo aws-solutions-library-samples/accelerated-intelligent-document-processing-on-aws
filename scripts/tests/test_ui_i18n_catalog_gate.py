@@ -324,7 +324,8 @@ def test_an_absent_toolchain_skips_off_ci_and_says_so(tmp_path, monkeypatch, cap
     assert MODULE.main([]) == 0
     out = capsys.readouterr().out
     assert (
-        "⏭️  check-ui-i18n-catalog SKIPPED (not a pass: run make ui-lint first)" in out
+        "⏭️  check-ui-i18n-catalog SKIPPED (not a pass: run make setup-node first)"
+        in out
     )
     assert "✅" not in out
     assert calls == []
@@ -491,3 +492,44 @@ def test_the_real_repository_satisfies_the_gate(capsys):
     out = capsys.readouterr().out
     assert status == 0, out
     assert "✅ check-ui-i18n-catalog" in out
+
+
+def _stale_install(ui_root: Path) -> None:
+    """A lockfile that names a package the hidden lockfile of the install lacks."""
+    wanted = {
+        "packages": {"": {}, "node_modules/@formatjs/cli": {"version": "6.16.36"}}
+    }
+    (ui_root / "package-lock.json").write_text(json.dumps(wanted), encoding="utf-8")
+    (ui_root / "node_modules" / ".package-lock.json").write_text(
+        json.dumps({"packages": {}}), encoding="utf-8"
+    )
+
+
+def test_a_stale_install_skips_off_ci_and_names_the_remedy(
+    tmp_path, monkeypatch, capsys
+):
+    layout = _tree(tmp_path)
+    _stale_install(layout.ui_root)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    calls = _fake_run(monkeypatch)
+    assert MODULE.main([]) == 0
+    out = capsys.readouterr().out
+    assert "SKIPPED (not a pass: UI dependencies are out of date)" in out
+    assert "@formatjs/cli" in out
+    assert "make setup-node" in out
+    assert "✅" not in out
+    assert calls == [], "a stale install must not reach formatjs"
+
+
+def test_a_stale_install_fails_in_ci(tmp_path, monkeypatch, capsys):
+    layout = _tree(tmp_path)
+    _stale_install(layout.ui_root)
+    monkeypatch.setattr(MODULE, "REPO_ROOT", tmp_path)
+    _without_ci(monkeypatch)
+    monkeypatch.setenv("GITLAB_CI", "true")
+    _fake_run(monkeypatch)
+    assert MODULE.main([]) == 1
+    out = capsys.readouterr().out
+    assert "❌ check-ui-i18n-catalog" in out
+    assert "SKIPPED" not in out
