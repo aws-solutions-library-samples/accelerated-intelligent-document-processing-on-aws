@@ -991,23 +991,27 @@ def test_stop_all_end_to_end_changes_all_three_kinds_of_state(stopper, no_sleep)
 
 
 @pytest.mark.unit
-def test_construction_fails_when_the_stack_has_no_document_queue(
+def test_a_stack_with_no_document_queue_refuses_the_purge_it_cannot_do(
     aws_credentials, no_sleep
 ):
-    """``StackInfo`` raises when ``DocumentQueue`` is missing, and that propagates.
+    """Construction succeeds and the purge refuses, naming what is missing.
 
-    ``WorkflowStopper.__init__`` resolves stack resources eagerly, so a stack
-    that is not an IDP stack — or one whose queue resource has been renamed —
-    fails at construction rather than producing a stopper with a ``None`` queue
-    URL. That is the better failure: the guards inside ``purge_queue`` and
-    ``stop_executions`` exist for outputs that resolve to an empty string, not
-    for a stack that cannot be read at all.
+    ``StackInfo`` used to raise for a missing queue, which failed construction
+    here but also failed every caller that never touches the queue — including
+    the MCP results tool on a Terraform deployment, whose label stack lists no
+    resources. The queue URL now degrades to ``""``, and this is the guard that
+    makes that safe for the callers that do need it: ``purge_queue`` reports the
+    failure rather than purging the wrong queue or appearing to succeed.
     """
     with mock_aws():
         build_stack(create_state_machine(), with_queue=False)
 
-        with pytest.raises(ValueError, match="DocumentQueue not found"):
-            WorkflowStopper(stack_name=STACK_NAME, region=REGION)
+        stopper = WorkflowStopper(stack_name=STACK_NAME, region=REGION)
+
+        assert not stopper.queue_url
+        result = stopper.purge_queue()
+        assert result["success"] is False
+        assert "queue URL not found" in result["error"]
 
 
 @pytest.mark.unit

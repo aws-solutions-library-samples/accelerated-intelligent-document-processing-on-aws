@@ -60,7 +60,7 @@ class StackInfo:
             "S3EvaluationBaselineBucketName", ""
         )
         resources["TestSetBucket"] = outputs.get("S3TestSetBucketName", "")
-        resources["DocumentQueueUrl"] = self._get_queue_url()
+        resources["DocumentQueueUrl"] = self._get_queue_url(outputs)
         resources["LookupFunctionName"] = outputs.get("LambdaLookupFunctionName", "")
         resources["StateMachineArn"] = outputs.get("StateMachineArn", "")
 
@@ -104,8 +104,20 @@ class StackInfo:
             logger.error(f"Error getting stack outputs: {e}")
             raise
 
-    def _get_queue_url(self) -> str:
-        """Get SQS queue URL from stack resources"""
+    def _get_queue_url(self, outputs: Optional[Dict[str, str]] = None) -> str:
+        """The document queue's URL, from the stack output that carries it.
+
+        The output first, like every sibling resource above: a Terraform
+        deployment is represented by a label stack that carries the module's
+        outputs but lists none of its resources, so reading the resource list is
+        the one lookup here that cannot answer on that path and it raised for
+        every caller of ``get_resources()`` — including operations such as the
+        MCP ``get_results`` tool, which never sends to the queue. The resource
+        list stays as a fallback for a stack whose outputs predate the output.
+        """
+        from_output = (outputs or {}).get("SQSDocumentQueueUrl", "")
+        if from_output:
+            return from_output
         try:
             # List stack resources and find DocumentQueue
             paginator = self.cfn.get_paginator("list_stack_resources")
@@ -120,8 +132,12 @@ class StackInfo:
             raise ValueError("DocumentQueue not found in stack resources")
 
         except Exception as e:
-            logger.error(f"Error getting queue URL: {e}")
-            raise
+            # A queue URL nobody asked for must not fail the whole discovery: the
+            # callers that send to the queue check it, and the ones that do not
+            # (results retrieval, status lookups) used to get this exception
+            # instead of their own answer.
+            logger.warning(f"Could not resolve the document queue URL: {e}")
+            return ""
 
     def _get_table_name(self, logical_id: str) -> str:
         """
