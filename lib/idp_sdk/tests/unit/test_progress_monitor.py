@@ -955,6 +955,48 @@ class TestGetDocumentStatus:
         assert failed["error"] == "AccessDenied"
         assert failed["failed_step"] == "OCR"
 
+    def test_failed_reads_the_lowercase_keys_the_lookup_function_returns(
+        self, monitor, stubber
+    ):
+        """The lookup function sends `error`/`failed_step`, as the batch path reads.
+
+        Reading only the capitalised keys reported a refused document as
+        "Unknown error" although the refusal reason was in the response.
+        """
+        _expect_single(
+            stubber,
+            "refused.pdf",
+            {
+                "status": "FAILED",
+                "error": "Refused: outside every tenant's prefixes.",
+                "failed_step": "QueueSender",
+            },
+        )
+
+        failed = monitor.get_document_status("refused.pdf")
+
+        assert failed["error"] == "Refused: outside every tenant's prefixes."
+        assert failed["failed_step"] == "QueueSender"
+
+    def test_batch_failed_carries_the_refusal_reason(self, monitor, stubber):
+        _expect_batch(
+            stubber,
+            ["refused.pdf"],
+            [
+                {
+                    "object_key": "refused.pdf",
+                    "status": "FAILED",
+                    "error": "Refused: outside every tenant's prefixes.",
+                    "failed_step": "QueueSender",
+                }
+            ],
+        )
+
+        failed = monitor.get_batch_status(["refused.pdf"])["failed"]
+
+        assert failed[0]["error"] == "Refused: outside every tenant's prefixes."
+        assert failed[0]["failed_step"] == "QueueSender"
+
     def test_an_absent_status_field_reads_as_unknown(self, monitor, stubber):
         _expect_single(stubber, "a.pdf", {})
         assert monitor.get_document_status("a.pdf")["status"] == "UNKNOWN"
