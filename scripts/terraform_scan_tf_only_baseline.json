@@ -15,7 +15,7 @@
       "name": "X-Ray tracing is enabled for Lambda",
       "reason": "Won't fix, by decision: Lambda tracing is optional on purpose. The templates on the processing path declare the EnableXRayTracing parameter (default true) and EnableXRayTracingCondition, every function that opts in writes Tracing: !If [EnableXRayTracingCondition, Active, PassThrough] so the deployer can turn it off, and scripts/tests/test_xray_tracing.py holds that no function hardcodes a mode while deliberately not requiring any particular function to be traced. 102 of these are functions whose templates set no Tracing, which leaves them on PassThrough whatever the parameter says; that is accepted. Four are the functions of the custom-resource bridge the translator adds (terraform/translator/idp_tf/static_files.py), which run only during apply and destroy. The other 10 are root-module functions whose tracing_config is the EnableXRayTracingCondition expression, which checkov does not resolve in the root module; the same expression passes in every nested module. No CloudFormation-side suppression is needed: checkov has no CloudFormation counterpart of this check, and the SRT register records LAMBDA-004 (no X-Ray tracing) where SRT reports it.",
       "counts": {
-        "aws_lambda_function": 116
+        "aws_lambda_function": 118
       }
     },
     "CKV_AWS_144": {
@@ -36,7 +36,7 @@
       "name": "Ensure AWS Lambda function is configured to validate code-signing",
       "reason": "Accepted. No function in the templates has a CodeSigningConfigArn (the solution publishes no signing profile), and the generated functions match; code signing is a deployment choice that needs a signing profile and a signed artifact pipeline. Includes the four bridge functions of the custom-resource bridge the translator adds to every module with custom resources (terraform/translator/idp_tf/static_files.py).",
       "counts": {
-        "aws_lambda_function": 140
+        "aws_lambda_function": 142
       }
     },
     "CKV_AWS_310": {
