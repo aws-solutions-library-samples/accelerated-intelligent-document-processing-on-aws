@@ -21,6 +21,12 @@ well. That repository is a different implementation, so its state cannot simply 
 moved onto this module; a new deployment of the module adopts its buckets, tables,
 KMS key and user pool instead, with `idp-cli terraform migrate-from-genai-idp-terraform`.
 
+Demo video (about 3.5 minutes): deploying from the published module and from a local
+clone, updating, and planning a migration from `genai-idp-terraform`, all with
+`idp-cli`.
+
+https://github.com/user-attachments/assets/e207110a-3301-4242-9f41-4edc8dd7ade9
+
 ## What it is
 
 The Terraform module is generated from the accelerator's CloudFormation templates,
