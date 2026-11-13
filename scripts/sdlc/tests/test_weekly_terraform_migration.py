@@ -913,3 +913,37 @@ def test_a_dead_run_that_may_have_created_something_is_torn_down(
 
 def test_the_build_names_the_drivers_context_file():
     assert cbd.TERRAFORM_MIGRATION_CONTEXT_KEY == tmt.MIRROR_CONTEXT
+
+
+def test_a_terraform_deploy_role_can_list_what_its_policies_are_attached_to():
+    """Cloud Control's managed-policy delete calls iam:ListEntitiesForPolicy; the
+    fifth migration run's new-deployment delete was refused it and left the
+    deployment standing. Scoped to the policies the role may create."""
+    import fnmatch
+
+    statements = [
+        st
+        for p in cbd.terraform_deploy_role_template(SERVICE_ROLE_TEMPLATE.read_text())[
+            "Resources"
+        ]["TerraformDeployRole"]["Properties"]["Policies"]
+        for st in p["PolicyDocument"]["Statement"]
+    ]
+    (grant,) = [
+        st
+        for st in statements
+        if "iam:ListEntitiesForPolicy" in st.get("Action", [])
+        and st["Effect"] == "Allow"
+    ]
+    patterns = [
+        r["Fn::Sub"]
+        .replace("${AWS::Partition}", "aws")
+        .replace("${AWS::AccountId}", "1")
+        .replace("${ManagedStackNamePrefix}", cbd.MANAGED_STACK_NAME_PREFIX)
+        for r in grant["Resource"]
+    ]
+    ours = "arn:aws:iam::1:policy/idp-1-PATTERNSTACK-LambdaECRAccessPolicy-ab"
+    assert any(fnmatch.fnmatchcase(ours, p) for p in patterns)
+    assert not any(
+        fnmatch.fnmatchcase("arn:aws:iam::1:policy/SomeoneElsesPolicy", p)
+        for p in patterns
+    )
