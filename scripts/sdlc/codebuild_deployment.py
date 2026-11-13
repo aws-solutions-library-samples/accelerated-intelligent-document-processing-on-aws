@@ -5532,7 +5532,53 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
             deployer._empty_and_delete_bucket(bucket["physical_id"])
         except Exception as e:  # noqa: BLE001
             errors.append(f"S3 bucket {bucket['physical_id']}: {e}")
+    for role in retained_iam_roles(stack_name, retained):
+        try:
+            _delete_retained_role(role)
+        except Exception as e:  # noqa: BLE001
+            if "NoSuchEntity" not in str(e):
+                errors.append(f"IAM role {role}: {e}")
     return errors
+
+
+#: Retained-resource types the sweep deletes from ``other`` (the SDK puts every
+#: type it has no category for there).
+RETAINED_ROLE_TYPES = ("aws_iam_role", "AWS::IAM::Role")
+
+
+def retained_iam_roles(stack_name, retained):
+    """Names of the IAM roles this run retained, and only this run's: a role is
+    swept only when its name starts with ``<stack>-``, the prefix every role the
+    module generates carries (DOCUMENTKB's knowledge-base ingestion roles are
+    retained by design and were left behind)."""
+    out = []
+    for other in (retained or {}).get("other") or []:
+        name = str(other.get("physical_id") or "")
+        if other.get("type") in RETAINED_ROLE_TYPES and name.startswith(
+            f"{stack_name}-"
+        ):
+            out.append(name)
+    return out
+
+
+def _delete_retained_role(name):
+    iam = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
+    for page in iam.get_paginator("list_attached_role_policies").paginate(
+        RoleName=name
+    ):
+        for policy in page["AttachedPolicies"]:
+            iam.detach_role_policy(RoleName=name, PolicyArn=policy["PolicyArn"])
+    for page in iam.get_paginator("list_role_policies").paginate(RoleName=name):
+        for policy in page["PolicyNames"]:
+            iam.delete_role_policy(RoleName=name, PolicyName=policy)
+    for page in iam.get_paginator("list_instance_profiles_for_role").paginate(
+        RoleName=name
+    ):
+        for profile in page["InstanceProfiles"]:
+            iam.remove_role_from_instance_profile(
+                InstanceProfileName=profile["InstanceProfileName"], RoleName=name
+            )
+    iam.delete_role(RoleName=name)
 
 
 def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 * 3600):
@@ -5601,7 +5647,10 @@ def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 *
         for error in errors:
             print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
             findings.append(f"retained resource not deleted: {error}")
+        swept_roles = set(retained_iam_roles(stack_name, retained))
         for other in retained.get("other") or []:
+            if str(other.get("physical_id") or "") in swept_roles:
+                continue
             # The categories the sweep cannot delete. Retained by design, but
             # this run created them and nothing else will remove them.
             findings.append(

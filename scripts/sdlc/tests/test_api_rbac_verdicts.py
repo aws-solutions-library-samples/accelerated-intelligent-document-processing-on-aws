@@ -974,3 +974,33 @@ def test_every_scope_checked_discovery_operation_is_probed_live_or_named():
     probed = {field for field, _ in h.SCOPED_DISCOVERY_CELLS}
     assert not probed & _DISCOVERY_NOT_PROBED_LIVE
     assert probed | _DISCOVERY_NOT_PROBED_LIVE == universe
+
+
+@pytest.mark.parametrize(
+    ("documents", "expected"),
+    [
+        (
+            [
+                {"ObjectKey": "failed.pdf", "ObjectStatus": "FAILED"},
+                {"ObjectKey": "done.pdf", "ObjectStatus": "COMPLETED"},
+            ],
+            "done.pdf",
+        ),
+        ([{"ObjectKey": "only.pdf", "ObjectStatus": "FAILED"}], "only.pdf"),
+        ([], None),
+    ],
+    ids=["completed-first", "fallback-to-any", "none"],
+)
+def test_the_document_the_mcp_arms_use_is_a_completed_one(
+    monkeypatch, documents, expected
+):
+    """The Admin arm asserts get_results serves the document; a document that
+    failed processing has nothing to serve, so a COMPLETED one is chosen first."""
+    h = _load_harness()
+    monkeypatch.setattr(
+        h,
+        "call_body",
+        lambda base, op, args, token: (200, json.dumps({"Documents": documents})),
+    )
+    ctx = {"api_base": "https://x"}
+    assert h.resolve_document_object_key(ctx, {"Admin": "t"}) == expected

@@ -2041,10 +2041,19 @@ def resolve_document_object_key(ctx, tokens):
         documents = (json.loads(body) or {}).get("Documents") or []
     except Exception:  # noqa: BLE001 - an unreadable list is "no key", not a crash
         return None
-    for summary in documents:
-        if isinstance(summary, dict) and summary.get("ObjectKey"):
+    keyed = [
+        summary
+        for summary in documents
+        if isinstance(summary, dict) and summary.get("ObjectKey")
+    ]
+    # A COMPLETED document first: the Admin arm asserts the document is SERVED,
+    # and one that failed processing (Step 15 leaves such documents behind) has
+    # no results to serve, so picking it failed an authorization check for a
+    # reason that has nothing to do with authorization.
+    for summary in keyed:
+        if str(summary.get("ObjectStatus") or "").upper() == "COMPLETED":
             return str(summary["ObjectKey"])
-    return None
+    return str(keyed[0]["ObjectKey"]) if keyed else None
 
 
 def apply_dynamic_args(ops, ctx, tokens):
