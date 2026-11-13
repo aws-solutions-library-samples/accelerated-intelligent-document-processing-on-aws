@@ -3422,3 +3422,19 @@ def test_every_tree_is_measured_and_ratcheted_by_some_github_job() -> None:
             f"{job} says {sorted(elsewhere - others)} is measured elsewhere, but no "
             "other job requires it"
         )
+
+
+@pytest.mark.unit
+def test_gitlab_never_declares_a_tree_measured_elsewhere() -> None:
+    """GitLab ratchets every tree in one job, so it has no "elsewhere" to point at.
+
+    The cross-job closure test reads GitHub's workflow only. Without this, a
+    `--measured-elsewhere` added to `.gitlab-ci.yml` would pass every refusal in the
+    script and remove that tree from GitLab's ratchet with nothing to catch it. If
+    GitLab ever splits its coverage across jobs, extend the closure test to it instead.
+    """
+    text = (REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert "--measured-elsewhere" not in text, (
+        ".gitlab-ci.yml passes --measured-elsewhere, but GitLab has no second "
+        "coverage job, so that tree is now ratcheted nowhere on GitLab"
+    )

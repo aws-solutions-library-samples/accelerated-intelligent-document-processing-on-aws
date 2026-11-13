@@ -392,9 +392,13 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 #            worker count CI gives it. The job therefore costs its slowest tree
 #            rather than the sum, and which tree that is moves; measure rather than
 #            reading a figure here.
-#   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
-#            step below still requires it BY NAME, so dropping the wrong tree here
-#            turns the gate red rather than quietly narrowing it.
+#   --skip   by default leaves out the one tree an earlier CI step already measured
+#            (idp_common). The ratchet step below still requires it BY NAME, so
+#            dropping the wrong tree here turns the gate red rather than quietly
+#            narrowing it. GitHub's unit_tests also skips `scripts`, which its
+#            package_tests job measures and ratchets instead; the ratchet there passes
+#            --measured-elsewhere scripts, and test_coverage_debt.py's cross-job
+#            closure test asserts the other job requires it.
 COVERAGE_CICD_JOBS ?= 4
 COVERAGE_CICD_SKIP ?= --skip idp_common
 coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
@@ -407,8 +411,11 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report and refuse (exit 2), red-lining
 # every lint run for a condition the lint targets themselves cause.
-# Both CI configurations invoke it immediately after the test step instead. They pass no
-# arguments and need none: with no usable report the gate refuses rather than reporting
+# Both CI configurations invoke it immediately after the test step instead. GitLab
+# passes no arguments; GitHub, which splits the coverage trees across two jobs, passes
+# --measured-elsewhere in one and reaches this bare target with --require-tree in the
+# other (see test_every_tree_is_measured_and_ratcheted_by_some_github_job). Neither
+# needs more than that: with no usable report the gate refuses rather than reporting
 # success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.

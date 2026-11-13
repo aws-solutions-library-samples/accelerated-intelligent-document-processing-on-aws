@@ -587,7 +587,11 @@ invisible in a job log, where a one-ninth run and a complete run read the same.
 Both CIs now run `make coverage-all-cicd` first, which measures the other trees
 concurrently, and then reach the ratchet through `make check-coverage-debt-cicd`,
 which passes `--require-all-trees`: a tree with no report is **refused by name** and
-the run reaches no verdict. The required list is derived from
+the run reaches no verdict. On GitHub's 4-CPU runners the `scripts` tree is measured
+in `package_tests` instead, with every CPU, and ratcheted there with
+`--require-tree scripts`; `unit_tests` passes `--measured-elsewhere scripts`, and a
+static test in `test_coverage_debt.py` asserts the two jobs between them require every
+tree. The required list is derived from
 `check_coverage_debt.TREES` **inside the script**, so neither Makefile nor CI config
 holds a second copy of the registry's names and a tree added to it is required
 without an edit anywhere else. Issue #1256.
@@ -610,8 +614,9 @@ concurrent trees each asking for it request four times the machine, which on a 4
 runner is a slow-down dressed up as parallelism. The job costs its slowest tree rather
 than the sum, and which tree that is moves; re-measure rather than quoting a figure.
 
-⚠️ **`--only <one tree>` hands that tree every CPU, so it measures a configuration
-nothing runs.** `--jobs` is clamped by the number of trees selected, so one tree
+⚠️ **`--only <one tree>` hands that tree every CPU, so locally it measures a
+configuration CI does not run** (GitHub's `package_tests` is the one exception, where
+`scripts` does get every CPU). `--jobs` is clamped by the number of trees selected, so one tree
 collapses it to 1 and the worker share for one job is the whole machine. Pass
 `--workers N` to ask for the share CI would give that tree — without it, reproducing a
 CI figure means narrowing what `cpu_count()` sees with `taskset`, which is easy to
