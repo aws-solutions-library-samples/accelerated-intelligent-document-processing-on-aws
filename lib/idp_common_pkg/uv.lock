@@ -842,7 +842,7 @@ wheels = [
 
 [[package]]
 name = "idp-common"
-version = "0.6.14"
+version = "0.6.15"
 source = { editable = "." }
 dependencies = [
     { name = "anyio" },
