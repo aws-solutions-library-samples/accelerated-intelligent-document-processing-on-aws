@@ -62,8 +62,8 @@ job-level YAML parsing will find it. This script therefore also reads the
 ``check_name:`` input of each step, which is the convention the actions used here
 follow. One such context exists today: ``Test Results``, created by
 ``EnricoMi/publish-unit-test-result-action`` in ``developer-tests.yml``. It is
-reported as **advisory**, because its step is conditional (``if: always() &&
-hashFiles(...) != ''``), so on a run that produces no test-results file the check
+reported as **advisory**, because its step is conditional (``if: ${{ !cancelled()
+&& hashFiles(...) != '' }}``), so on a run that produces no test-results file the check
 is never created — the same "required but never reported" hazard as a
 path-filtered workflow. Actions that create a check run under a *default* name,
 with no ``check_name:`` input to read, remain outside this derivation; there are
