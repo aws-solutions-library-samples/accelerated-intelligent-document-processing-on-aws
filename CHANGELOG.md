@@ -70,6 +70,8 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
+- **`idp-cli` shows why a document was refused at ingest.** A document that strict tenant isolation refuses, because it is outside every tenant's prefixes, was reported by `run-inference --monitor` and `status` as "Unknown error", although the refusal reason was recorded. The status lookup now returns that reason, so the CLI and the SDK show it, with `QueueSender` as the failing step. See [Strict mode](docs/multi-tenancy.md#strict-mode).
+
 - **History › Review Activity lists the legacy review's events.** Section completions and Skip All Reviews for a document reviewed outside the queues were recorded but not shown; they now appear with who, when, the reason and note. See [Review History](docs/human-review.md#review-history).
 
 - **The configuration editor's code views run their background workers again.** The editor starts its JSON and YAML language workers from same-origin `blob:` URLs, and the web UI's Content-Security-Policy had no `worker-src`, so the browser refused them and the editor ran that work on the page's main thread, which can make the UI unresponsive. Both hosting modes now send `worker-src 'self' blob:`.
