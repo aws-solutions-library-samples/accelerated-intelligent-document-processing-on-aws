@@ -129,8 +129,11 @@ stages:
   - uv pip install -c "$LOCK_CONSTRAINTS" 'ruff==0.15.13'
   # Needed by publish.py for test imports
   - uv pip install -c "$LOCK_CONSTRAINTS" typer rich boto3
+  # `agents` for bedrock-agentcore: scripts/sdlc/tests/test_sandbox_network_probe.py
+  # pins the code-interpreter SDK's default, as GitHub's install ([all]) already
+  # provides.
   - uv pip install -c "$LOCK_CONSTRAINTS"
-                   -e "lib/idp_common_pkg[test,evaluation]"
+                   -e "lib/idp_common_pkg[test,evaluation,agents]"
                    -e "lib/idp_sdk[test]"
                    -e "lib/idp_cli_pkg[test]"
                    -e "lib/idp_feature_sdk[test]"
