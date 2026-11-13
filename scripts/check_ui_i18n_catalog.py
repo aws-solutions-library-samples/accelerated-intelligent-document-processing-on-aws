@@ -76,6 +76,9 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ui_deps_freshness import describe, stale_dependencies  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The npm script this gate replays. Its arguments are the single source of truth
@@ -313,10 +316,28 @@ def main(argv: list[str] | None = None) -> int:
                 f"the job the dependencies; do not relax this to a skip."
             )
             return 1
-        print(f"⏭️  {GATE} SKIPPED (not a pass: run make ui-lint first)")
+        print(f"⏭️  {GATE} SKIPPED (not a pass: run make setup-node first)")
         print(
             f"   {where} is missing, so the English catalog was not re-measured and no "
             f"translation catalog was compiled."
+        )
+        return 0
+
+    stale = stale_dependencies(layout.ui_root)
+    if stale:
+        what = describe(layout.relative(layout.ui_root), stale)
+        if in_ci():
+            print(
+                f"❌ {GATE}: {what}. In CI the job installs from the lockfile, so "
+                f"this is a job-configuration failure, not a reason to skip."
+            )
+            return 1
+        print(f"⏭️  {GATE} SKIPPED (not a pass: UI dependencies are out of date)")
+        print(
+            f"   {what}, so the English catalog was not re-measured and no translation catalog was compiled."
+        )
+        print(
+            "   Run `make setup-node` (or `npm ci` in src/ui) to bring them up to date."
         )
         return 0
 

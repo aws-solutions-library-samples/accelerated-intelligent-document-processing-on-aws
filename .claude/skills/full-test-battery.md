@@ -65,8 +65,8 @@ make typecheck     # basedpyright
 ```
 
 `make typecheck` fails with `make: basedpyright: No such file or directory` if the
-tool is absent — it is not in the `[test]` extra. `pip install basedpyright` (CI
-installs it via `npm install -g basedpyright`).
+tool is absent — it is not in the `[test]` extra. `make setup-node` installs it with
+`npm install -g basedpyright`, the command both CIs run.
 
 **Errors are the gate, and `develop` is at zero, so any error is yours.** That is the
 durable half and it needs no comparison: a single error is a regression. The eleven

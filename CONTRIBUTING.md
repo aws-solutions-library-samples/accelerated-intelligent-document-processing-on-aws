@@ -132,13 +132,21 @@ source .venv/bin/activate      # required — the gate targets need .venv/bin on
 # or, to install into the Python environment you are already in:
 make setup
 
-npm install -g basedpyright    # the type-check gate; neither target above installs it
+make setup-node                # only if the step above warned that Node was missing or too old
 ```
 
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint` and `ruff`, then verify that every first-party package
-resolved from the checkout. Every install is constrained to
+resolved from the checkout. Their last step is the Node side: when Node 22.12 or
+later is on `PATH` they run `npm ci` in `src/ui/` and `docs-site/` and install
+`basedpyright`; otherwise they print a warning naming what was not installed and
+still succeed, because deploying and `idp-cli` need no Node. That step does nothing
+when `CI` or `CODEBUILD_BUILD_ID` is set, or with `SKIP_NODE_SETUP=1`.
+`make setup-node` runs it on its own and fails on any error; run it again after a
+`git pull` that changes `src/ui/package-lock.json`, because the UI gates in
+`make fastlint` skip, rather than pass, while `src/ui/node_modules` does not match
+the lockfile. Every install is constrained to
 `lib/idp_common_pkg/uv.lock`, the same constraints both CI systems install against,
 so a local environment holds the versions CI tests; exporting the lock is why both
 targets need `uv`. Use them in preference to hand-rolling `pip install` lines.
@@ -154,9 +162,10 @@ pip install cfn-lint==1.51.0` even though `setup-venv` already installed
 `cfn-lint` at `.venv/bin/cfn-lint`. `make setup` does not have this problem,
 because it installs into the environment that is already active.
 
-**`basedpyright` comes from npm, not from either setup target.** It is a
-devDependency of the root `package.json` — which exists only to pin it — and
-both CI systems provision it with `npm install -g basedpyright`. The `make`
+**`basedpyright` comes from npm.** It is a devDependency of the root
+`package.json`, and both CI systems provision it with `npm install -g
+basedpyright`, which is also what `make setup-node` runs when it is not already on
+`PATH`. The `make`
 type-check targets invoke it as a bare command, so it has to be on `PATH`: a
 plain `npm install` at the repository root puts it in `node_modules/.bin/`,
 which is enough for `npx basedpyright` or `npm run typecheck` but not for
@@ -680,9 +689,9 @@ the callers, which are usually outside the diff — so a green `typecheck-pr` is
 not a substitute for `make typecheck` before you push. It defaults to comparing
 against `develop`; override with `make typecheck-pr TARGET_BRANCH=<branch>`.
 
-All three targets need `basedpyright` on `PATH`, and neither `make setup` nor
-`make setup-venv` installs it; `npm install -g basedpyright`, which is what both
-CI systems do, is the command that supplies it. Note that `make typecheck-pr`
+All three targets need `basedpyright` on `PATH`. `make setup-node` installs it
+with `npm install -g basedpyright`, the command both CI systems run, and `make
+setup` and `make setup-venv` do the same when Node is available. Note that `make typecheck-pr`
 exits 0 without `basedpyright` present when your branch changes no Python files
 at all, so a documentation-only branch will not tell you the tool is missing.
 `make typecheck` always tries to run it and so always says.
@@ -804,7 +813,7 @@ documented in [docs/deployment.md](docs/deployment.md) and
 | `make lint` | Everything: ruff, format, ARN partitions, filtered scans, data-plane tags, buildspec, `cfn-lint`, UI lint, codegen check |
 | `make fastlint` | `lint` without `cfn-lint`, UI lint, or codegen check |
 | `make check-lint-debt` | Re-measure `ruff.toml`'s per-file exclusions against the tree (part of `lint`, `fastlint` and `lint-cicd`) |
-| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/` or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
+| `make check-ui-i18n-catalog` | Fail if the UI's committed English message catalog (`src/ui/src/i18n/en.json`) is stale against its `defineMessages` calls, or a translation catalog would fail the UI build; check-only, `make ui-i18n-extract` rewrites (part of `lint`, `fastlint` and `lint-cicd`). Off CI it prints a visible skip, never a pass, when `npm ci` has not been run in `src/ui/`, `src/ui/node_modules` does not match `src/ui/package-lock.json`, or the installed FormatJS CLI has no native binary for your machine; CI measures the tree either way |
 | `make check-ui-string-debt` | Ratchet the UI's hardcoded user-facing strings against `scripts/ui_string_debt.json`: a file may not gain one, an unlisted file may not have any, and the baseline may not be stale (part of `lint`, `fastlint` and `lint-cicd`) |
 | `make lint-cicd` | `lint`'s set plus `ui-build-only`, which `lint` does not run — what both CIs run. Check-only for Python and the UI linter, but `codegen-check` regenerates `src/ui/src/graphql/generated/` and leaves it regenerated outside CI |
 | `make ruff-lint` | Ruff lint with auto-fix |
