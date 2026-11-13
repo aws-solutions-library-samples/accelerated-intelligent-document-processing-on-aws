@@ -1332,7 +1332,46 @@ def main() -> int:
             "configurations pass, now that they produce a report per tree"
         ),
     )
+    parser.add_argument(
+        "--measured-elsewhere",
+        action="append",
+        metavar="NAME",
+        default=[],
+        help=(
+            "With --require-all-trees: do not require this tree here, because another "
+            "job of the same CI run measures and ratchets it (repeatable). GitHub's "
+            "package_tests job carries the scripts tree, so unit_tests passes "
+            "--measured-elsewhere scripts. That the other job really requires it is "
+            "asserted statically in scripts/tests/test_coverage_debt.py."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.measured_elsewhere:
+        # Each refusal closes a way for this flag to quietly narrow the gate.
+        misspelled_trees = [
+            n for n in args.measured_elsewhere if n not in TREES_BY_NAME
+        ]
+        if misspelled_trees:
+            print(
+                f"🚫 --measured-elsewhere names tree(s) that do not exist: "
+                f"{', '.join(misspelled_trees)}. Known trees: "
+                f"{', '.join(t.name for t in TREES)}"
+            )
+            return 2
+        if not args.require_all_trees:
+            print(
+                "🚫 --measured-elsewhere only narrows --require-all-trees; without it "
+                "nothing is required, so there is nothing to narrow."
+            )
+            return 2
+        both = sorted(set(args.measured_elsewhere) & set(args.require_tree))
+        if both:
+            print(
+                f"🚫 {', '.join(both)} is both required here (--require-tree) and "
+                "measured elsewhere (--measured-elsewhere). Pick one."
+            )
+            return 2
 
     if args.require_all_trees:
         # Derived from the registry, never enumerated by the caller. A Makefile or CI
@@ -1340,9 +1379,14 @@ def main() -> int:
         # that goes stale is the one deciding what this gate is allowed to skip -- so a
         # tree added to the registry and forgotten there would be unratcheted while the
         # gate reported that every tree was required. Issue #1256.
+        elsewhere = set(args.measured_elsewhere)
         args.require_tree = [
             *args.require_tree,
-            *(t.name for t in TREES if t.name not in set(args.require_tree)),
+            *(
+                t.name
+                for t in TREES
+                if t.name not in set(args.require_tree) and t.name not in elsewhere
+            ),
         ]
 
     unknown = [n for n in args.require_tree if n not in TREES_BY_NAME]

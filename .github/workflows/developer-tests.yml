@@ -225,12 +225,18 @@ jobs:
       # guards (issue #1256). Trees are measured concurrently and `idp_common` is
       # skipped because the step above already produced its report; the ratchet below
       # still requires it by name.
+      #
+      # ⚠️ The `scripts` tree is NOT measured here: it is the longest tree (about 17
+      # minutes of this job at 2 workers on 2026-11-13) and package_tests below
+      # measures and ratchets it with all four CPUs. `--measured-elsewhere scripts`
+      # is the only tree this job's ratchet does not require, and
+      # scripts/tests/test_coverage_debt.py asserts that package_tests requires it.
       - name: Coverage reports for every other measurable tree (concurrent)
-        run: make coverage-all-cicd
+        run: make coverage-all-cicd COVERAGE_CICD_SKIP="--skip idp_common --skip scripts"
         continue-on-error: false
 
       - name: Coverage ratchet (per-file, every registry tree required by name)
-        run: make check-coverage-debt-cicd
+        run: make check-coverage-debt-cicd CHECK_COVERAGE_DEBT_ARGS="--measured-elsewhere scripts"
         continue-on-error: false
 
       - name: Upload coverage reports
@@ -354,6 +360,16 @@ jobs:
       - name: Run package and Lambda test suites
         id: run-package-tests
         run: make test-packages-cicd
+        continue-on-error: false
+
+      # The scripts tree's one CI run, under coverage, moved here from unit_tests:
+      # this job had spare time once test-packages-cicd stopped re-running the
+      # coverage-measured suites, and a single tree gets every CPU. Its ratchet
+      # requires the tree by name, so a report that was not produced fails here.
+      - name: Coverage report and ratchet for the scripts tree
+        run: |
+          make coverage-all-cicd COVERAGE_CICD_SKIP= COVERAGE_ARGS="--only scripts"
+          make check-coverage-debt CHECK_COVERAGE_DEBT_ARGS="--require-tree scripts"
         continue-on-error: false
 
   # UI unit tests (Vitest + jsdom, no browser).
