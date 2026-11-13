@@ -907,7 +907,7 @@ Three differences are worth reading before relying on either side:
 
 | | GitLab | GitHub |
 |---|---|---|
-| AWS credential | a **Bedrock-only** role, `idp-sdlc-GitLabReview` (`GitLabReviewRole` in `scripts/sdlc/cfn/credential-vendor.yml`), vended by the runner fleet's `gitlab-runners-prod` role and gated on the `GitLab:Group`/`GitLab:Project` session tags; the job names it as `AWS_CREDS_TARGET_ROLE` from the masked `AI_REVIEW_GITLAB_ROLE_ARN` project variable | a **Bedrock-only** role, `idp-sdlc-GitHubReview`, assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
+| AWS credential | a **Bedrock-only** role, `idp-sdlc-GitLabReview` (`GitLabReviewRole` in `scripts/sdlc/cfn/credential-vendor.yml`), which the job assumes itself from the integration-test session the runner fleet vends it (`--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN`, a masked project variable), before anything else uses AWS; the model process inherits only the review role's credentials | a **Bedrock-only** role, `idp-sdlc-GitHubReview`, assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
 | Posting token | `GITLAB_REVIEW_TOKEN`, a project access token that has to be provisioned — `CI_JOB_TOKEN` cannot create notes | the built-in `GITHUB_TOKEN` with `pull-requests: write`; nothing to provision |
 | Fork contributions | not reviewed — masked variables are absent from a fork pipeline | reviewed by the **hourly `schedule`**, which is triggered by the repository rather than by the contribution and so holds the credentials regardless of origin |
 
@@ -942,11 +942,22 @@ author-controlled text, which is why the notes below matter.
 
 **Both jobs confirm their role before reviewing.** Each passes
 `--require-aws-role`, and the script asks STS which role the job's credentials
-belong to and exits 1 on any other. On GitLab that is what turns a misconfiguration
-into a red advisory job rather than a review on the integration-test role: an unset
-`AI_REVIEW_GITLAB_ROLE_ARN`, or a **project-level** `AWS_CREDS_TARGET_ROLE`, which
-GitLab ranks above the job-level variable of the same name. The UX test jobs keep
-the integration-test role and its own Bedrock grant.
+belong to and exits 1 on any other.
+
+**On GitLab the job switches to the review role itself.** The project-level
+`AWS_CREDS_TARGET_ROLE` (the integration-test role) outranks any job-level
+variable of that name, so every job, this one included, starts on
+`idp-sdlc-GitLab`. The script's first AWS step is therefore to ask STS who it is
+and, when that is not the review role, to call `AssumeRole` on the ARN in
+`AI_REVIEW_GITLAB_ROLE_ARN` with those credentials, which `GitLabReviewRole`'s
+trust policy allows for the stack's `GitLabRole`. It then replaces the three
+credential variables in its own environment and removes every other source an
+SDK could fall back on (a profile, the shared files, container and web-identity
+credentials, instance metadata), so the model process inherits only the review
+role's session. An assume that fails, or an unset variable, exits 1 before any
+review runs. The first role's credential values stay registered with the posting
+check. The UX test jobs keep the integration-test role and its own Bedrock grant.
+GitHub's OIDC session already is the review role and takes no assume step.
 
 **Neither job runs the checkout's copy of the reviewer.** Each extracts
 `REVIEW_HARNESS_PATHS` (in `ai_mr_review.py`) from the target branch with
