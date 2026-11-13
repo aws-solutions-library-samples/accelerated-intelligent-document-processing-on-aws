@@ -231,6 +231,18 @@ def _coverage_tree_dirs(root: Path | None = None) -> set[str]:
     return covered
 
 
+def ci_run_dirs() -> set[str]:
+    """Every directory a pull request's CI runs pytest against, in this checkout.
+
+    The recipe-named directories plus the trees ``make coverage-all-cicd`` measures.
+    This is the one definition of "run by CI"; other gates that need the answer (the
+    threat-model and agent-capability citation checks) call it rather than parsing
+    the recipes themselves, so a suite moving from a recipe into a coverage tree
+    changes nothing for them.
+    """
+    return _covered_dirs() | _coverage_tree_dirs()
+
+
 def _recipe_workdirs(root: Path | None = None) -> set[str]:
     """Directories the root Makefile ``cd``s into before running pytest, by regex.
 
@@ -485,7 +497,7 @@ def test_every_test_dir_is_run_by_a_ci_recipe():
     module = _run_all_tests_module()
     missing = _uncovered(
         REPO_ROOT,
-        covered=_covered_dirs() | _coverage_tree_dirs(),
+        covered=ci_run_dirs(),
         quarantined=set(module.QUARANTINE),
     )
 
