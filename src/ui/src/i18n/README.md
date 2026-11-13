@@ -292,6 +292,10 @@ export function toCsv(rows: string[][]): string {
 }
 ```
 
+`src/ui/src/i18n/__tests__/eslint-i18n-config.test.ts` lints this example through both
+configurations: counted on a plain `.ts` path, silent on an `.export.ts` path, clean under
+`npm run lint`, and the file-local `eslint-disable` comment rejected there as an unknown rule.
+
 **Known gaps, stated with numbers** (measured 2026-11-05 on the tree the baseline was written
 against; nothing re-measures them until the follow-up gate below, so each comes with the way to
 re-measure it, and the figures will shrink as the conversion PRs land):
