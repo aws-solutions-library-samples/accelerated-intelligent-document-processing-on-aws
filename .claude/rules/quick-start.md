@@ -43,8 +43,10 @@ chat agent, so [agents.md](agents.md) applies too.
 
 ## Must
 - Say in the PR description whether the change affects Quick Start and how you
-  checked: open it, describe a document, review the drafted fields, approve, and
-  see the profile created and activated.
+  checked. A change to the journey, or to a contract it calls, is checked on a
+  stack: open it, describe a document, review the drafted fields, approve, and see
+  the profile created and activated. For any other change under these paths, the
+  offline suites under **Verify with** are the check; say so.
 - Change Quick Start's callers in the same change as any contract it shares with
   another page: the discovery uploads, the configuration profile API, the chat
   route and stream, and chat sessions. The stack wiring it reads counts too: the
@@ -71,7 +73,7 @@ chat agent, so [agents.md](agents.md) applies too.
 - `cd lib/idp_common_pkg && make test-unit`
 - `make ui-test`
 - `make ai-ux-test-stories-local STORY=draft-setup-from-a-description AS=platform-admin`,
-  against the review stack
+  against the review stack, for a change to the journey
 
 ## Sources
 - [docs/quick-start.md](../../docs/quick-start.md): the user journey, the CLI form
