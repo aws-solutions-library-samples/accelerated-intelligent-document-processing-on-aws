@@ -724,9 +724,9 @@ gate).
 
 GitHub can only require job-level contexts — never individual steps — so the
 mapping from gates to contexts is decided by how the jobs are arranged.
-Eleven of the thirteen shared gates live in `developer-tests.yml` (five jobs) and the other two in
+Eleven of the thirteen shared gates live in `developer-tests.yml` (six jobs) and the other two in
 `security-checks.yml` (two jobs), which is how thirteen gates produce
-seven requireable contexts.
+eight requireable contexts.
 
 Splitting `developer-tests.yml` into parallel jobs **improved** this. It used
 to be one job holding most of the shared gates, which collapsed them
@@ -736,15 +736,16 @@ mark names the part of the work that broke.
 
 ⚠️ **One consequence to act on if branch protection is ever enabled:** requiring
 only the lint context is now strictly weaker than requiring the old single job was,
-because the test suites are no longer inside it. All six contexts below have to be
+because the test suites are no longer inside it. All eight contexts below have to be
 required. `scripts/tests/test_check_branch_protection.py`'s `MUST_BE_REQUIRED`
-names all six for that reason.
+names all eight for that reason.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
 | `Lint, Type Check, and Static Scans` | `developer-tests.yml` / `developer_tests` | `lint-cicd`, `typecheck`, `api-test-static`, first-party dep check, service-role permissions |
-| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `coverage-all-cicd`, `check-coverage-debt-cicd` |
+| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `coverage-all-cicd` for every tree but `scripts`, `check-coverage-debt-cicd` with `--measured-elsewhere scripts` |
 | `Package and Lambda Test Suites` | `developer-tests.yml` / `package_tests` | `test-packages-cicd` |
+| `Scripts Coverage (gate suites)` | `developer-tests.yml` / `scripts_coverage` | `coverage-all-cicd --only scripts`, then `check-coverage-debt --require-tree scripts` |
 | `UI Unit Tests` | `developer-tests.yml` / `ui_tests` | `npx vitest run` |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |

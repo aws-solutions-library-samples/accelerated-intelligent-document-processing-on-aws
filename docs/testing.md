@@ -380,9 +380,9 @@ forever and block every merge.
 Three details are worth knowing about what it reads. Eleven of the thirteen shared gates
 live in `developer-tests.yml` and the other two — the SRT scan and the dependency
 audit — in `security-checks.yml`; because a context is a *job*, and those two
-workflows hold five and two jobs respectively, the thirteen gates produce seven
+workflows hold six and two jobs respectively, the thirteen gates produce eight
 requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
-it looks**: the test suites are their own contexts, so all seven have to be required
+it looks**: the test suites are their own contexts, so all eight have to be required
 for a red test run to block a merge. It reads **both** enforcement mechanisms,
 classic branch protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic

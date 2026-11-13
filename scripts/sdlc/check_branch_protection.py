@@ -39,8 +39,8 @@ one, otherwise the job **id**. So the mapping is per job, not per workflow and
 not per step. That matters here: eleven of the thirteen gates asserted by
 ``test_ci_gate_parity.py``'s ``SHARED_GATES`` live in
 ``.github/workflows/developer-tests.yml`` and the other two — the SRT scan and the
-dependency audit — in ``security-checks.yml``. Those workflows hold five and two
-jobs, so the thirteen gates produce **seven** requireable contexts.
+dependency audit — in ``security-checks.yml``. Those workflows hold six and two
+jobs, so the thirteen gates produce **eight** requireable contexts.
 
 ⚠️ **Requiring only the lint context is weaker than requiring the whole workflow
 once was.** ``developer-tests.yml`` used to be a single job, so requiring the

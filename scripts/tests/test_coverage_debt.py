@@ -51,6 +51,7 @@ import ast
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -3259,3 +3260,181 @@ class TestTheRemedyNamesTheCommandThatFixesThatFinding:
         assert "wholesale" in remedy, (
             f"the wider command is offered without saying what it moves: {remedy}"
         )
+
+
+@pytest.mark.unit
+class TestMeasuredElsewhere:
+    """`--measured-elsewhere` drops exactly the named tree from `--require-all-trees`.
+
+    It exists because GitHub's runners are small enough that the `scripts` tree is
+    measured in a different job from the rest. Each case keeps a control column, as the
+    class above does: the same fixture run without the flag must refuse the tree.
+    """
+
+    _helper = TestRequireAllTreesIsDerivedFromTheRegistry()
+    REFUSAL = TestRequireAllTreesIsDerivedFromTheRegistry.REFUSAL
+
+    def _run(self, monkeypatch, tmp_path, capsys, label, extra_args):
+        root = tmp_path / label
+        root.mkdir()
+        self._helper._healthy_plus(
+            root,
+            monkeypatch,
+            [_fake_tree(root, "absent")],
+            {"absent": {"total": 70.0, "files": {"pkg/mod.py": 70.0}}},
+        )
+        monkeypatch.setattr(
+            sys, "argv", ["check_coverage_debt.py", "--require-all-trees", *extra_args]
+        )
+        code = ccd.main()
+        return code, capsys.readouterr().out
+
+    def test_the_named_tree_is_not_required_and_the_control_still_refuses_it(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        code, out = self._run(
+            monkeypatch,
+            tmp_path,
+            capsys,
+            "elsewhere",
+            ["--measured-elsewhere", "absent"],
+        )
+        assert code == 0, out
+        assert self.REFUSAL not in out, out
+        control_code, control_out = self._run(
+            monkeypatch, tmp_path, capsys, "control", []
+        )
+        assert control_code == 2, control_out
+        assert self.REFUSAL in control_out, control_out
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--measured-elsewhere", "no_such_tree"],
+            ["--measured-elsewhere", "absent", "--require-tree", "absent"],
+        ],
+        ids=["unknown-tree", "required-and-elsewhere"],
+    )
+    def test_a_flag_that_would_narrow_silently_is_refused(
+        self, monkeypatch, tmp_path, capsys, args
+    ):
+        code, out = self._run(monkeypatch, tmp_path, capsys, "refused", args)
+        assert code == 2, out
+        assert "🚫" in out, out
+
+    def test_it_is_refused_without_require_all_trees(self, monkeypatch, capsys):
+        monkeypatch.setattr(
+            sys, "argv", ["check_coverage_debt.py", "--measured-elsewhere", "scripts"]
+        )
+        assert ccd.main() == 2
+        assert "only narrows --require-all-trees" in capsys.readouterr().out
+
+
+def _github_job_commands() -> dict[str, list[str]]:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/developer-tests.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    jobs: dict[str, list[str]] = {}
+    for name, job in workflow["jobs"].items():
+        lines: list[str] = []
+        for step in job.get("steps") or []:
+            lines.extend(
+                line.strip() for line in str(step.get("run", "")).splitlines() if line
+            )
+        jobs[name] = lines
+    return jobs
+
+
+def _makefile_default_skips() -> set[str]:
+    makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+    value = next(
+        line.split("=", 1)[1]
+        for line in makefile.splitlines()
+        if line.startswith("COVERAGE_CICD_SKIP")
+    )
+    return set(re.findall(r"--skip\s+(\S+)", value))
+
+
+def _assigned(command: str, variable: str) -> str | None:
+    match = re.search(rf'{variable}=("([^"]*)"|(\S*))', command)
+    if not match:
+        return None
+    return match.group(2) if match.group(2) is not None else match.group(3)
+
+
+def _coverage_by_job() -> dict[str, tuple[set[str], set[str], set[str]]]:
+    """``{job: (trees produced, trees required, trees declared elsewhere)}``."""
+    every = {t.name for t in ccd.TREES}
+    out: dict[str, tuple[set[str], set[str], set[str]]] = {}
+    for job, commands in _github_job_commands().items():
+        produced: set[str] = set()
+        required: set[str] = set()
+        elsewhere: set[str] = set()
+        for command in commands:
+            if "make test-cicd -C lib/idp_common_pkg" in command:
+                produced.add("idp_common")
+            if "make coverage-all-cicd" in command:
+                skip_value = _assigned(command, "COVERAGE_CICD_SKIP")
+                skips = (
+                    _makefile_default_skips()
+                    if skip_value is None
+                    else set(re.findall(r"--skip\s+(\S+)", skip_value))
+                )
+                only = set(re.findall(r"--only\s+(\S+?)\"?(?:\s|$)", command))
+                produced |= (only or every) - skips
+            if "make check-coverage-debt" in command:
+                args = _assigned(command, "CHECK_COVERAGE_DEBT_ARGS") or ""
+                named = set(re.findall(r"--require-tree\s+(\S+)", args))
+                gone = set(re.findall(r"--measured-elsewhere\s+(\S+)", args))
+                elsewhere |= gone
+                if "make check-coverage-debt-cicd" in command:
+                    required |= every - gone
+                required |= named
+        if produced or required:
+            out[job] = (produced, required, elsewhere)
+    return out
+
+
+@pytest.mark.unit
+def test_every_tree_is_measured_and_ratcheted_by_some_github_job() -> None:
+    """GitHub splits the coverage trees across jobs; the split must still be whole.
+
+    Three properties, each closing one way a tree drops out of CI unmeasured: every
+    registry tree is required by some job's ratchet; a job's ratchet requires only
+    trees that job produced (a report from another job is not on this runner); and a
+    tree one job declares measured elsewhere is required by another job.
+    """
+    by_job = _coverage_by_job()
+    assert len(by_job) >= 2, f"expected the coverage split across jobs, got {by_job}"
+    every = {t.name for t in ccd.TREES}
+    required_anywhere = set().union(*(req for _, req, _ in by_job.values()))
+    assert required_anywhere == every, (
+        f"trees no GitHub job's ratchet requires: {sorted(every - required_anywhere)}"
+    )
+    for job, (produced, required, elsewhere) in by_job.items():
+        assert required <= produced, (
+            f"{job} requires {sorted(required - produced)} but does not produce them"
+        )
+        others = set().union(*(r for j, (_, r, _) in by_job.items() if j != job))
+        assert elsewhere <= others, (
+            f"{job} says {sorted(elsewhere - others)} is measured elsewhere, but no "
+            "other job requires it"
+        )
+
+
+@pytest.mark.unit
+def test_gitlab_never_declares_a_tree_measured_elsewhere() -> None:
+    """GitLab ratchets every tree in one job, so it has no "elsewhere" to point at.
+
+    The cross-job closure test reads GitHub's workflow only. Without this, a
+    `--measured-elsewhere` added to `.gitlab-ci.yml` would pass every refusal in the
+    script and remove that tree from GitLab's ratchet with nothing to catch it. If
+    GitLab ever splits its coverage across jobs, extend the closure test to it instead.
+    """
+    text = (REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8")
+    assert "--measured-elsewhere" not in text, (
+        ".gitlab-ci.yml passes --measured-elsewhere, but GitLab has no second "
+        "coverage job, so that tree is now ratcheted nowhere on GitLab"
+    )
