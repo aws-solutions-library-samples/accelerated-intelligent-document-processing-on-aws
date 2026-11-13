@@ -1049,6 +1049,14 @@ integration_tests:
       )
       if migration_run:
           status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+      # And the CloudFormation nightly: a schedule that is none of the above, so
+      # every scheduled post in the channel names the run it is.
+      cloudformation_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and not (probe_run or region_run or terraform_run or migration_run)
+      )
+      if cloudformation_run:
+          status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -2111,10 +2119,11 @@ nightly_notification:
 
           # Same label as the post in integration_tests: the weekly variant-probe
           # schedule shares the channel, and its result must not read as the nightly's.
-          if (
+          probe_run = (
               os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
               and os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
-          ):
+          )
+          if probe_run:
               status = "🔬 WEEKLY VARIANT PROBES · " + status
           # And a weekly region run names its region, read exactly as the post in
           # integration_tests reads it.
@@ -2141,6 +2150,14 @@ nightly_notification:
           )
           if migration_run:
               status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+          # And the CloudFormation nightly, read exactly as the post in
+          # integration_tests reads it.
+          cloudformation_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and not (probe_run or region_run or terraform_run or migration_run)
+          )
+          if cloudformation_run:
+              status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
