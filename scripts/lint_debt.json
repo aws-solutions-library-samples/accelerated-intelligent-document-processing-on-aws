@@ -169,16 +169,14 @@
       "F541": 3
     },
     "src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py": {
-      "F541": 1,
-      "I001": 1
+      "F541": 1
     },
     "src/lambda/agentcore_mcp_handler/tools/batch_run.py": {
       "F541": 1,
       "I001": 1
     },
     "src/lambda/agentcore_mcp_handler/tools/batch_status.py": {
-      "F541": 1,
-      "I001": 1
+      "F541": 1
     },
     "src/lambda/api_handler/index.py": {
       "I001": 1
@@ -379,7 +377,6 @@
     "scripts/generate_govcloud_template.py",
     "scripts/generate_standard_classes.py",
     "scripts/sdlc/integration_test_deployment.py",
-    "scripts/sdlc/scan_api_rbac.py",
     "scripts/sdlc/tests/test_api_security_cases.py",
     "scripts/sdlc/tests/test_codebuild_failure_trail.py",
     "scripts/sdlc/tests/test_credential_refresh.py",
@@ -481,7 +478,7 @@
   ],
   "highWaterMark": {
     "lintDebtFiles": 71,
-    "lintFindings": 174,
-    "formatDebtFiles": 158
+    "lintFindings": 172,
+    "formatDebtFiles": 157
   }
 }

@@ -1522,3 +1522,82 @@ def test_the_reason_for_a_failure_survives_the_chat_posts_cut():
     head = text[:2000]
     assert "Findings:" in head and "migrate-apply: `migrate apply` exited 1" in head
     assert text.index("Findings:") < text.index("Phases:")
+
+
+# -- the forced old destroy after a failed adoption --------------------------------
+
+_ITEM_STATE = {
+    "resources": [
+        {
+            "mode": "managed",
+            "module": "module.a.module.concurrency_table[0]",
+            "type": "aws_dynamodb_table_item",
+            "name": "workflow_counter",
+            "instances": [{"attributes": {"table_name": "gone-table"}}],
+        },
+        {
+            "mode": "managed",
+            "module": "module.a",
+            "type": "aws_dynamodb_table_item",
+            "name": "kept",
+            "instances": [{"attributes": {"table_name": "live-table"}}],
+        },
+    ]
+}
+
+
+class _Ddb:
+    def describe_table(self, TableName):  # noqa: N803 - boto3 casing
+        if TableName == "gone-table":
+            raise RuntimeError(
+                "An error occurred (ResourceNotFoundException): Table not found"
+            )
+        return {"Table": {}}
+
+
+class _Proc:
+    def __init__(self, rc):
+        self.returncode = rc
+
+
+def _forced(tmp_path, monkeypatch, destroy_results):
+    run = tmt.Run(_settings(tmp_path))
+    calls = []
+    emptied = []
+    results = iter(destroy_results)
+
+    def terraform(directory, *args, log, timeout=0, check=True):
+        calls.append(args)
+        return _Proc(next(results) if args[0] == "destroy" else 0)
+
+    monkeypatch.setattr(run, "terraform", terraform)
+    monkeypatch.setattr(run, "old_state", lambda: _ITEM_STATE)
+    monkeypatch.setattr(run, "save", lambda: None)
+    monkeypatch.setattr(tmt, "empty_bucket", lambda s3, b: emptied.append(b))
+    run._boto_cache.update(dynamodb=_Ddb(), s3=object())
+    run.ctx["oldNames"] = {"buckets": ["idpo1-logs"]}
+    return run, calls, emptied
+
+
+def test_items_of_a_deleted_table_are_forgotten_before_the_destroy(
+    tmp_path, monkeypatch
+):
+    run, calls, _ = _forced(tmp_path, monkeypatch, [0])
+    run._old_destroy_forced()
+    rm = [c for c in calls if c[:2] == ("state", "rm")]
+    assert rm == [
+        (
+            "state",
+            "rm",
+            "module.a.module.concurrency_table[0].aws_dynamodb_table_item.workflow_counter",
+        )
+    ]
+    assert calls.index(rm[0]) < next(
+        i for i, c in enumerate(calls) if c[0] == "destroy"
+    )
+
+
+def test_the_buckets_are_emptied_again_before_the_second_attempt(tmp_path, monkeypatch):
+    run, calls, emptied = _forced(tmp_path, monkeypatch, [1, 0])
+    assert "attempt 2" in run._old_destroy_forced()
+    assert emptied == ["idpo1-logs", "idpo1-logs"]
