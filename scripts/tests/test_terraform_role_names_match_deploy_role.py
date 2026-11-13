@@ -56,7 +56,7 @@ def _driver():
     return codebuild_deployment
 
 
-def _role_name_globs(action: str) -> list[str]:
+def _role_name_globs(action: str, kind: str = "role") -> list[str]:
     """The role-name globs the deploy role allows ``action`` on, read off it."""
     cbd = _driver()
     assert cbd.MANAGED_STACK_NAME_PREFIX == MANAGED_PREFIX
@@ -72,8 +72,8 @@ def _role_name_globs(action: str) -> list[str]:
             for resource in resources if isinstance(resources, list) else [resources]:
                 text = resource["Fn::Sub"] if isinstance(resource, dict) else resource
                 text = text.replace("${ManagedStackNamePrefix}", MANAGED_PREFIX)
-                globs.append(text.split(":role/", 1)[1])
-    assert globs, f"the deploy role grants {action} on no role"
+                globs.append(text.split(f":{kind}/", 1)[1])
+    assert globs, f"the deploy role grants {action} on no {kind}"
     return globs
 
 
@@ -204,14 +204,34 @@ def module_roles(tmp_path_factory):
         for name, body in _blocks(path.read_text(), "aws_iam_role"):
             roles.append((f"{path.relative_to(out)}:{name}", body))
     assert roles, "the translated module declares no aws_iam_role at all"
-    return roles
+    return roles, out
+
+
+#: Managed-policy resource types the translator can emit, and the attribute that
+#: names each.
+POLICY_NAME_ATTRIBUTES = {
+    "aws_iam_policy": ("name", "name_prefix"),
+    "awscc_iam_managed_policy": ("managed_policy_name",),
+}
+
+
+@pytest.fixture(scope="module")
+def module_policies(module_roles):
+    _, out = module_roles
+    policies = []
+    for path in sorted(out.rglob("*.tf")):
+        text = path.read_text()
+        for kind, attributes in POLICY_NAME_ATTRIBUTES.items():
+            for name, body in _blocks(text, kind):
+                policies.append((f"{path.relative_to(out)}:{name}", body, attributes))
+    return policies
 
 
 def test_every_module_role_is_one_the_deploy_role_may_create_and_pass(module_roles):
     create = _role_name_globs("iam:CreateRole")
     pass_ = _role_name_globs("iam:PassRole")
     problems = []
-    for where, body in module_roles:
+    for where, body in module_roles[0]:
         expression = _top_level_attribute(body, "name") or _top_level_attribute(
             body, "name_prefix"
         )
@@ -265,3 +285,29 @@ def test_the_patterns_are_read_from_the_deploy_role():
         assert all(g.endswith(f"{MANAGED_PREFIX}*") for g in globs), globs
         assert not any(fnmatch.fnmatchcase("cfnbridge-x", g) for g in globs)
         assert any(fnmatch.fnmatchcase(f"{CI_STACK}-Role-abc", g) for g in globs)
+
+
+def test_every_module_managed_policy_is_one_the_deploy_role_may_create(
+    module_policies,
+):
+    """A managed policy left unnamed is named by Cloud Control with no stack
+    prefix, and the deploy role creates only policies under the prefix: the
+    first live adoption apply failed on exactly that (iam:CreatePolicy denied
+    for LambdaECRAccessPolicy)."""
+    assert module_policies, "the translated module declares no managed policy"
+    create = _role_name_globs("iam:CreatePolicy", kind="policy")
+    problems = []
+    for where, body, attributes in module_policies:
+        expression = next(
+            (e for a in attributes if (e := _top_level_attribute(body, a))), None
+        )
+        if expression is None:
+            problems.append(f"{where}: no name, so the provider generates one")
+            continue
+        prefix = _rendered_prefix(expression)
+        if prefix is None:
+            problems.append(f"{where}: name {expression} is not a readable template")
+            continue
+        if not any(fnmatch.fnmatchcase(prefix + "x", g) for g in create):
+            problems.append(f"{where}: {prefix!r}... is outside CreatePolicy {create}")
+    assert not problems, "\n".join(problems)
