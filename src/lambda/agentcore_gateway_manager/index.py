@@ -53,6 +53,10 @@ IDP_TOOLS_SCHEMA = [
                 "prefix": {
                     "type": "string",
                     "description": "Optional batch ID prefix (default: 'mcp-batch')"
+                },
+                "profile": {
+                    "type": "string",
+                    "description": "Optional Configuration Profile to process under. Without it the destination decides (a configured prefix mapping, else the active profile). A caller limited to some profiles must name one of them unless the destination already resolves to one."
                 }
             },
             "required": []

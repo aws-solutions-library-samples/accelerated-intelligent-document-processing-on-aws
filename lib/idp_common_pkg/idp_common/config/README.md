@@ -41,13 +41,22 @@ model_id = idp_config.extraction.model
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
 IDs, max-token limits, required prompt placeholders, schema-field warnings, and
-model/feature-compatibility guards). Two guards, with deliberately different
+model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
+covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
+the active strategy makes, the per-class model overrides, and the `model` a field
+evaluated with `LLM` names in its method-config. The two embedding fields are left
+out because `pricing.yaml` prices no embedding model, and
+`tests/unit/config/test_model_id_catalog_coverage.py` fails on a model field in
+`IDPConfig` that is not checked by one of those routes and not one of the two. IDs are compared as written, because the
+Bedrock client routes and sends them unchanged. Like the rest of the check, it does
+nothing when `pricing.yaml` is not on disk, as in a Lambda. Two guards, with
+deliberately different
 scopes — both hard errors at config time rather than an obscure mid-processing
 failure:
 
 | Guard | Rejects | Why |
 |---|---|---|
-| `_validate_agentic_openai` | OpenAI GPT-5.x with `extraction.agentic.enabled` | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
+| `_validate_agentic_openai` | OpenAI GPT-5.x when extraction is agentic — `extraction.mode: advanced`, or `agentic.enabled` with no `mode` — as resolved by the validated `IDPConfig`, which is what the runtime reads | Served via the `bedrock-mantle` Responses API, incompatible with the Converse-based Strands loop |
 | `_validate_discovery_openai` | OpenAI GPT-5.x **and xAI Grok** as a discovery model | Discovery ingests whole PDFs as Converse `document` blocks; both models take text + image only, so the document would be silently dropped |
 
 Grok is therefore rejected for **discovery** but not for agentic extraction. The
@@ -233,13 +242,33 @@ the model's field default**. The YAML wins on a normal load, so nothing shows un
 a field is *cleared* — and then that one call falls back to the code's opinion
 instead of the value the rest of the profile is running. A cleared model field used
 to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
-profile did not use.
+profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
+translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
+`idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
+the deploy-time swap gives the call's stored siblings. A model key absent from the
+data, rather than cleared, still takes the field default, the US id.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
-`scripts/tests/gate_exemptions.json`. It is the classification half of a gate that
-should eventually cover every section; `base-extraction.yaml` and its models are not
-compared yet.
+`scripts/tests/gate_exemptions.json`.
+
+The third property is also held for **every** section, in both patterns, by
+`tests/unit/config/test_system_defaults_value_parity.py`. It compares each value the
+merged system defaults ship with the owning model's default (read from a default
+instance, so a derived value is read as a caller sees it) and with the value a
+default `IDPConfig()` holds at the same path, which is where a parent
+`default_factory` passing its own value would show. A cleared numeric field
+falls back to the field default (`_default_if_none`), so this is the property that
+keeps clearing a field from changing what it does. Two shapes are excused by
+computation, and each is pinned: a top-level setting the two patterns ship
+differently (`PATTERN_DEPENDENT_PATHS`, today `notes` and `use_bda`), and a prompt
+whose code default is empty or `None` — the prompts that carry a code copy are
+listed in `PROMPTS_WITH_A_CODE_COPY` and never take it. Lists of models, such as
+`ocr.features`, are compared whole. Anything else that differs is listed one path
+at a time in `DEFAULT_PARITY_EXEMPT`, each with its reason, and an entry that no
+longer differs fails. The key-set directions are still
+asserted for classification only, and a field the YAML does not ship has no value
+to compare, so this gate says nothing about it.
 
 ## Files
 
@@ -453,7 +482,20 @@ Configuration is stored in DynamoDB with two record types:
 
 The same Default/Custom pattern is used for auxiliary records:
 - **`DefaultPricing` / `CustomPricing`** (`PricingConfig`) — service pricing for
-  cost estimation; Custom is deep-merged over Default (`get_merged_pricing`).
+  cost estimation, read through `get_merged_pricing`. Custom is laid over
+  Default **per model and per unit** (`merge_utils.overlay_pricing_rows`): a
+  Custom unit replaces the Default unit of the same name on the entry of the same
+  name, a unit or entry Default lacks is added, and a Default entry or unit Custom
+  does not mention is kept. A name repeated in Custom is applied in order, so the
+  last occurrence wins for each unit it names. The Pricing page saves
+  the full table, so a stack that has saved it gets prices for models a later
+  release adds, keeps its saved rate for every unit the table held (including ones
+  it never edited), and cannot delete a Default row: Custom records no deletions.
+  Only the reader merges; the stored records keep their shape, so an earlier
+  release reading the same Custom record replaces Default's list with it as it
+  always did. `delete_custom_pricing` (the page's **Restore default (All)**)
+  returns to Default. `tests/unit/config/test_pricing_row_merge.py` pins this
+  against the shipped `config_library/pricing.yaml`.
 - **`DefaultModelConfigLimits` / `CustomModelConfigLimits`**
   (`ModelConfigLimitsConfig`) — the ordered, first-match-wins list of per-model
   token limits, seeded from `config_library/model_config_limits.yaml`. Because

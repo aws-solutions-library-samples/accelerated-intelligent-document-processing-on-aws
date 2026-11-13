@@ -143,6 +143,13 @@ PASS_THROUGH_ATTRS: dict[tuple[str, str], str] = {
     ("AWS::SSM::Parameter", "Value"): "Value",
 }
 
+#: awscc types whose name the translator generates when the template leaves it
+#: unset: (CloudFormation name property, IAM's length limit). IAM names are unique
+#: per account, so the region joins the hash.
+GENERATED_NAMES: dict[str, tuple[str, int]] = {
+    "AWS::IAM::ManagedPolicy": ("ManagedPolicyName", 128),
+}
+
 AWSCC_REF_ATTR: dict[str, str] = {
     "AWS::ApiGateway::Authorizer": "authorizer_id",
     "AWS::ApiGateway::Deployment": "deployment_id",
@@ -720,6 +727,22 @@ class Translator:
             lines.append(f"{tf_name} = {rendered}")
         head, tail = self.meta_lines(plan, res)
         state_owned: list[str] = []
+        generated = GENERATED_NAMES.get(plan.cfn_type)
+        if generated and generated[0] not in plan.props:
+            # Cloud Control names an unnamed resource of this type with no stack
+            # prefix, and a deploying role scoped the usual way may create only
+            # names under the prefix. So the name is generated the way an unnamed
+            # role's is, <stack>-<LogicalId>-<hash>, and kept for the resource's
+            # lifetime as CloudFormation keeps the name it generated.
+            from .aws_mappers import default_name
+
+            cfn_prop, limit = generated
+            tf_name = hint.attr(cfn_prop)[0]  # type: ignore[index]
+            lines.insert(
+                0,
+                f"{tf_name} = {default_name(plan.logical_id, limit, global_name=True)}",
+            )
+            state_owned.append(tf_name)
         triggers: list[str] = []
         comments: list[str] = []
         keys: list[str] = []

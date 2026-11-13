@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Implementation: Test Set Source (provenance)
 
 First, smallest slice of the Test Sets & Ground-Truth Datasets work. Additive and

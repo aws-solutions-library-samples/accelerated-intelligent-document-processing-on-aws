@@ -22,8 +22,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
-from idp_common.utils.execution_names import execution_name_for
+from idp_common.utils.execution_names import (
+    RESUBMIT_TOKEN_ATTRIBUTE,
+    RESUBMIT_TOKEN_RE,
+    execution_name_for,
+)
 
+from .exceptions import ResubmitError, ResubmitNotConfigured
 from .models import DraftRecord, ReviewItemRecord
 
 logger = logging.getLogger(__name__)
@@ -50,8 +55,19 @@ def is_finalize_token(value: Any) -> bool:
     return isinstance(value, str) and bool(FINALIZE_TOKEN_RE.match(value))
 
 
-class FinalizeSender:
-    """Sends the finalize message for a FINALIZING item."""
+#: Message ``EventType`` of a resubmit after a skipped review.
+RESUBMIT_EVENT_TYPE = "ReviewSkipResubmit"
+
+
+class DocumentResubmitter:
+    """Puts a tracked document back on the DocumentQueue for another run.
+
+    The run re-uses the document's existing results (OCR, classification,
+    extraction and assessment are skipped) and re-runs the tail: summarization,
+    evaluation, rule validation and the post-processing hook. Unlike the review
+    finalize message (:class:`FinalizeSender`) it keeps the document's metering:
+    ``queue_processor`` moves the cumulative usage into the run's baseline.
+    """
 
     def __init__(
         self,
@@ -70,14 +86,12 @@ class FinalizeSender:
         self._input_bucket = input_bucket
         self._output_bucket = output_bucket
 
-    def build_message(self, item: ReviewItemRecord) -> tuple[str, dict[str, Any]]:
+    def _prepare(self, doc_key: str, *, reset_metering: bool) -> Any:
         from idp_common.models import Status
 
-        document = self._documents.get_document(item.doc_key)
+        document = self._documents.get_document(doc_key)
         if document is None:
-            raise LookupError(
-                f"tracking row missing for the finalize of {item.cycle_id}"
-            )
+            raise LookupError("tracking row missing for the resubmit")
         if self._input_bucket:
             document.input_bucket = self._input_bucket
         if self._output_bucket:
@@ -86,12 +100,70 @@ class FinalizeSender:
         document.start_time = None
         document.completion_time = None
         document.workflow_execution_arn = None
-        document.queued_time = datetime.now(timezone.utc).isoformat()
-        document.metering = {}
+        if reset_metering:
+            document.queued_time = datetime.now(timezone.utc).isoformat()
+            document.metering = {}
+        return document
+
+    def _body(self, document: Any, prefix: str) -> str:
         if self._working_bucket:
-            body = document.serialize_document(self._working_bucket, "review_finalize")
+            body = document.serialize_document(self._working_bucket, prefix)
         else:
             body = document.to_dict()
+        return json.dumps(body, default=str)
+
+    def resubmit(
+        self,
+        doc_key: str,
+        *,
+        idempotency_token: Optional[str] = None,
+        prefix: str = "hitl_complete",
+    ) -> str:
+        """Send the document; return the message id.
+
+        Raises :class:`ResubmitNotConfigured` with no queue URL, and
+        :class:`ResubmitError` for a missing document or any send failure.
+        """
+        if not self._queue_url:
+            raise ResubmitNotConfigured("QUEUE_URL is not configured")
+        if idempotency_token is not None and not RESUBMIT_TOKEN_RE.match(
+            idempotency_token
+        ):
+            raise ValueError("invalid resubmit idempotency token")
+        try:
+            document = self._prepare(doc_key, reset_metering=False)
+            attributes: dict[str, Any] = {
+                "EventType": {"DataType": "String", "StringValue": RESUBMIT_EVENT_TYPE},
+                "ObjectKey": {"DataType": "String", "StringValue": doc_key},
+            }
+            if idempotency_token:
+                attributes[RESUBMIT_TOKEN_ATTRIBUTE] = {
+                    "DataType": "String",
+                    "StringValue": idempotency_token,
+                }
+            response = self._sqs.send_message(
+                QueueUrl=self._queue_url,
+                MessageBody=self._body(document, prefix),
+                MessageAttributes=attributes,
+            )
+        except (LookupError, ValueError) as e:
+            raise ResubmitError(str(e)) from e
+        except Exception as e:  # any S3/SQS/serialisation failure is reported
+            raise ResubmitError(f"{type(e).__name__}: {e}") from e
+        logger.info("event=review_resubmit_sent token=%s", bool(idempotency_token))
+        return str(response.get("MessageId", ""))
+
+
+class FinalizeSender(DocumentResubmitter):
+    """Sends the finalize message for a FINALIZING item."""
+
+    def build_message(self, item: ReviewItemRecord) -> tuple[str, dict[str, Any]]:
+        try:
+            document = self._prepare(item.doc_key, reset_metering=True)
+        except LookupError:
+            raise LookupError(
+                f"tracking row missing for the finalize of {item.cycle_id}"
+            ) from None
         attributes = {
             "EventType": {"DataType": "String", "StringValue": FINALIZE_EVENT_TYPE},
             "ObjectKey": {"DataType": "String", "StringValue": item.doc_key},
@@ -100,7 +172,7 @@ class FinalizeSender:
                 "StringValue": item.finalize_token or "",
             },
         }
-        return json.dumps(body, default=str), attributes
+        return self._body(document, "review_finalize"), attributes
 
     def send(self, item: ReviewItemRecord) -> str:
         """Send the message; return its id. Raises on failure (the caller logs)."""

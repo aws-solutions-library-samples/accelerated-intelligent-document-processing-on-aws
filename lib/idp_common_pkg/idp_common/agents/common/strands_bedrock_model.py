@@ -7,11 +7,34 @@ Helper function for creating BedrockModel instances with automatic guardrail sup
 
 import logging
 import os
+from typing import Dict
 
 from botocore.config import Config
 from strands.models import BedrockModel
 
+from idp_common.bedrock.guardrail import guardrail_id_and_version_from_env
+
 logger = logging.getLogger(__name__)
+
+
+def strands_guardrail_kwargs() -> Dict[str, str]:
+    """``BedrockModel`` keyword arguments that apply the configured guardrail.
+
+    Parsed by the same function ``BedrockClient`` uses, so a guardrail set in
+    ``GUARDRAIL_ID_AND_VERSION`` reaches a Strands model exactly when it reaches
+    a ``converse`` call. Returns an empty dict when none is configured, so a
+    caller that builds ``BedrockModel(...)`` itself can splat it unconditionally
+    and leave the model unchanged in that case.
+    """
+    parsed = guardrail_id_and_version_from_env()
+    if parsed is None:
+        return {}
+    guardrail_id, guardrail_version = parsed
+    return {
+        "guardrail_id": guardrail_id,
+        "guardrail_version": guardrail_version,
+        "guardrail_trace": "enabled",
+    }
 
 
 def create_strands_bedrock_model(
@@ -102,26 +125,13 @@ def create_strands_bedrock_model(
         except Exception as e:
             logger.debug("Falling back to default Bedrock session (%s)", e)
 
-    # Get guardrail configuration from environment if available
-    guardrail_env = os.environ.get("GUARDRAIL_ID_AND_VERSION", "")
-    if guardrail_env:
-        try:
-            guardrail_id, guardrail_version = guardrail_env.split(":")
-            if guardrail_id and guardrail_version:
-                kwargs.update(
-                    {
-                        "guardrail_id": guardrail_id,
-                        "guardrail_version": guardrail_version,
-                        "guardrail_trace": "enabled",
-                    }
-                )
-                logger.debug(
-                    "Guardrails enabled for BedrockModel",
-                    extra={"guardrail_id": guardrail_id},
-                )
-        except ValueError:
-            logger.warning(
-                "Invalid GUARDRAIL_ID_AND_VERSION format, continuing without guardrails"
-            )
+    # Apply the guardrail from GUARDRAIL_ID_AND_VERSION when configured.
+    guardrail_kwargs = strands_guardrail_kwargs()
+    if guardrail_kwargs:
+        kwargs.update(guardrail_kwargs)
+        logger.debug(
+            "Guardrails enabled for BedrockModel",
+            extra={"guardrail_id": guardrail_kwargs["guardrail_id"]},
+        )
 
     return BedrockModel(model_id=model_id, boto_session=boto_session, **kwargs)

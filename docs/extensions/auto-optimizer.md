@@ -1,6 +1,10 @@
 ---
 title: "Auto Optimizer (Beta)"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Auto Optimizer (Beta)
 
 The **Auto Optimizer** is a fully autonomous AI agentic system that optimizes your document processing configuration — no manual prompt engineering or technical expertise required. It performs the same work a human expert would do manually over days or weeks, but fully autonomously in just a few hours.

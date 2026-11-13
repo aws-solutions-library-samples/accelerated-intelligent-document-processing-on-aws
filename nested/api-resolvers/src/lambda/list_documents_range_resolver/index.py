@@ -41,53 +41,16 @@ from config_scope import (  # noqa: E402
 # Vendored verbatim from idp_common/review_queues/statuses.py, for the same
 # reason; test_review_modules_vendored.py fails if the copies drift.
 from review_statuses import (  # noqa: E402
-    LegacyHitlStatus,
-    ReviewStatus,
-    normalize_hitl_status,
+    FINISHED_HITL_STATUSES,
+    REVIEWER_ACTIVE_STATUSES,
+    is_review_finished,
 )
 
-#: Legacy HITL statuses that make a document part of a Reviewer's working set.
-#: ``Review Pending`` is what ``releaseReview`` writes: a released review goes back
-#: to the queue for another Reviewer to claim. Matched exactly, in both document-list
-#: resolvers, so the two lists agree row for row.
-_REVIEWER_ACTIVE_STATUSES = (
-    LegacyHitlStatus.PENDING_REVIEW.value,
-    LegacyHitlStatus.REVIEW_PENDING.value,
-    LegacyHitlStatus.IN_PROGRESS.value,
-    LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
-)
-
-
-def _review_finished(hitl_status):
-    """Whether a stored HITLStatus says the document's review has finished.
-
-    A legacy review completed or skipped, or a queue review that ended complete or
-    rejected. Neither queue outcome is accompanied by ``HITLCompleted``: no
-    review-queue writer sets it. ``COMPLETED`` is the one finished spelling a real
-    writer stored that the exact-match normaliser does not know (the earlier
-    SageMaker A2I flow). The listDocuments resolver and the web UI's
-    ``isHitlReviewFinished`` apply the same rule.
-    """
-    return (
-        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
-        or hitl_status == "COMPLETED"
-    )
-
-
-#: Every stored HITLStatus value that reads as a finished review, derived from the
-#: declared vocabularies through ``_review_finished``. Matched exactly, as the
-#: listDocuments resolver must match it in its FilterExpression, so the two document
-#: lists agree row for row; the normaliser also accepts surrounding whitespace, which
-#: no writer stores.
-_FINISHED_HITL_STATUSES = frozenset(
-    value
-    for value in (
-        *(s.value for s in ReviewStatus),
-        *(s.value for s in LegacyHitlStatus),
-        "COMPLETED",
-    )
-    if _review_finished(value)
-)
+#: The shared review vocabulary (``review_statuses``, vendored from
+#: ``idp_common/review_queues/statuses.py``), under the names this module uses.
+_REVIEWER_ACTIVE_STATUSES = REVIEWER_ACTIVE_STATUSES
+_review_finished = is_review_finished
+_FINISHED_HITL_STATUSES = frozenset(FINISHED_HITL_STATUSES)
 
 # Same story for the log redactor: byte-identical copy of
 # idp_common/utils/log_sanitizer.py, kept in step by
@@ -134,6 +97,7 @@ class UnprocessedKeysError(RuntimeError):
 def _backoff_sleep(attempt):
     """Exponential backoff with full jitter, capped at one second."""
     time.sleep(random.uniform(0, min(1.0, 0.05 * 2**attempt)))  # nosec B311
+
 
 # Work budget: the most sequential DynamoDB Queries one invocation may issue.
 #
@@ -199,6 +163,7 @@ class DecimalEncoder(json.JSONEncoder):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _date_range(start_date: str, end_date: str):
     """Yield each date string (YYYY-MM-DD) from start_date to end_date inclusive."""
@@ -332,10 +297,7 @@ def _batch_get_documents(table_name, object_keys):
     # Process in chunks of BATCH_GET_LIMIT
     for i in range(0, len(object_keys), BATCH_GET_LIMIT):
         chunk = object_keys[i : i + BATCH_GET_LIMIT]
-        keys = [
-            {"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}}
-            for key in chunk
-        ]
+        keys = [{"PK": {"S": f"doc#{key}"}, "SK": {"S": "none"}} for key in chunk]
 
         request_items = {table_name: {"Keys": keys}}
         attempt = 0
@@ -398,6 +360,7 @@ def _deserialize_next_token(token: str):
 # RBAC helpers (mirrors list_documents_gsi_resolver pattern)
 # ---------------------------------------------------------------------------
 
+
 def _get_caller_identity(event):
     """Extract caller's Cognito groups, username, and email from the event identity.
 
@@ -433,7 +396,12 @@ def _get_caller_identity(event):
 
 def _is_reviewer_only(caller):
     """Check if caller is a reviewer-only user (no Admin/Author/Viewer groups)."""
-    return caller["is_reviewer"] and not caller["is_admin"] and not caller["is_author"] and not caller["is_viewer"]
+    return (
+        caller["is_reviewer"]
+        and not caller["is_admin"]
+        and not caller["is_author"]
+        and not caller["is_viewer"]
+    )
 
 
 def _get_user_allowed_config_versions(caller_email, caller_sub=""):
@@ -465,13 +433,10 @@ def _caller_scope_or_deny(caller):
     if caller["is_admin"]:
         return None
     try:
-        return _get_user_allowed_config_versions(
-            caller["email"], caller.get("sub", "")
-        )
+        return _get_user_allowed_config_versions(caller["email"], caller.get("sub", ""))
     except ScopeLookupError as e:
         logger.error(
-            "Denying listDocumentsByDateRange: config-version scope "
-            "unresolved: %s",
+            "Denying listDocumentsByDateRange: config-version scope unresolved: %s",
             e,
         )
         raise PermissionError(
@@ -507,10 +472,7 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
         reviewer_id = caller["username"]
         reviewer_email = caller["email"]
 
-        hitl_active = (
-            hitl_triggered is True
-            or hitl_status in _REVIEWER_ACTIVE_STATUSES
-        )
+        hitl_active = hitl_triggered is True or hitl_status in _REVIEWER_ACTIVE_STATUSES
         # Only non-empty identifiers can match an owner. `reviewer_email` comes
         # from the `email` claim alone and may legitimately be absent, and an
         # unowned document carries `HITLReviewOwner == ""` — so comparing the two
@@ -532,6 +494,7 @@ def _should_include_document(doc, caller, reviewer_only, allowed_versions):
 # ---------------------------------------------------------------------------
 # Handler
 # ---------------------------------------------------------------------------
+
 
 def handler(event, context):
     """AppSync Lambda resolver handler."""
@@ -620,7 +583,9 @@ def handler(event, context):
     # Collect list entries across shards until we have enough for a page
     collected_entries = []
     current_shard_idx = start_shard_idx
-    current_item_offset = start_item_offset if current_shard_idx == start_shard_idx else 0
+    current_item_offset = (
+        start_item_offset if current_shard_idx == start_shard_idx else 0
+    )
 
     # ISO strings for filtering
     start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S")
@@ -675,7 +640,9 @@ def handler(event, context):
     # soon as it has been applied, and the budget stop is checked before the query,
     # so an unconsumed offset is still pending against the shard being named.
     if result_next_token is None and current_shard_idx < len(shard_pairs):
-        result_next_token = _serialize_next_token(current_shard_idx, current_item_offset)
+        result_next_token = _serialize_next_token(
+            current_shard_idx, current_item_offset
+        )
 
     if budget_stop:
         logger.warning(
@@ -689,7 +656,9 @@ def handler(event, context):
     logger.info(f"Collected {len(collected_entries)} list entries")
 
     # Extract ObjectKeys from list entries
-    object_keys = [entry.get("ObjectKey") for entry in collected_entries if entry.get("ObjectKey")]
+    object_keys = [
+        entry.get("ObjectKey") for entry in collected_entries if entry.get("ObjectKey")
+    ]
 
     # Batch-fetch full document records
     documents_map = _batch_get_documents(table_name, object_keys)
@@ -703,7 +672,9 @@ def handler(event, context):
         if obj_key and obj_key in documents_map:
             doc = documents_map[obj_key]
             # RBAC filter
-            if not _should_include_document(doc, caller, reviewer_only, allowed_versions):
+            if not _should_include_document(
+                doc, caller, reviewer_only, allowed_versions
+            ):
                 continue
             # Add list entry PK/SK for potential deletion/reprocessing
             doc["ListPK"] = entry.get("PK")

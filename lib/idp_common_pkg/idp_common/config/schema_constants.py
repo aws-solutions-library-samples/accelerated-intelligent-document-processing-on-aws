@@ -62,8 +62,8 @@ UNCLASSIFIED_CLASS = "unclassified"
 X_AWS_IDP_EXTRACTION_MODEL = "x-aws-idp-extraction-model"
 
 # Per-class stronger model used to re-extract when full-schema validation fails
-# and extraction.agentic.validation.fail_action == "escalate". Overrides the
-# global extraction.agentic.validation.escalation_model for that class.
+# and extraction.validation.fail_action == "escalate". Overrides the
+# global extraction.validation.escalation_model for that class.
 X_AWS_IDP_EXTRACTION_ESCALATION_MODEL = "x-aws-idp-extraction-escalation-model"
 
 # Per-class prompt overrides for extraction. When present on a class, these

@@ -121,7 +121,6 @@ def _send(processor, **event):
         "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "sessionId": "s1",
         "prompt": "I process paystubs",
-        "callerSub": "admin@example.com",
         **event,
     }
     result = processor.handler(event, None)
@@ -141,6 +140,8 @@ def test_quick_start_mode_runs_the_quick_start_agent_with_memory(processor):
         session_id="s1",
         config={"cfg": True},
         session="session",
+        # Memory is keyed on the signed-in user; this event carries no `sub`.
+        user_id="",
     )
     factory.create_conversational_orchestrator.assert_not_called()
     assert _surface(processor) == "quick_start"

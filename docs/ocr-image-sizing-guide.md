@@ -2,6 +2,9 @@
 title: "OCR Image Sizing Best Practices Guide"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # OCR Image Sizing Best Practices Guide
 
 ## Overview

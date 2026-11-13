@@ -91,23 +91,21 @@ STATUS: dict[str, tuple[int, str]] = {
     "BDA.T05": (2, "Mitigated"),
     # Agents
     "AGT.T01": (6, "Mitigated"),
-    "AGT.T02": (4, "Mitigated"),
+    # "Partially Mitigated": the tool reads only the result of the query the agent
+    # ran, and code is checked before it is sent, but code in a session can still
+    # write that result to Amazon S3 in the session's region (the entry's residual,
+    # measured by `make stacktest-sandbox-network`), and the interpreter is the
+    # AWS-managed one with no VPC configuration.
+    "AGT.T02": (4, "Partially Mitigated"),
     "AGT.T03": (4, "Mitigated"),
     "AGT.T04": (2, "Mitigated"),
     "AGT.T05": (6, "Mitigated"),
     # Chat
     "CHAT.T01": (9, "Mitigated"),
     "CHAT.T02": (3, "Mitigated"),
-    # Its group half is closed by the ID-token check. Its session half is closed by
-    # one check on every agent chat send path (the REST resolver, the processor, the
-    # streaming route): a session id holding messages or agent memory is refused to a
-    # caller with no session record for it, and a failed lookup refuses. What the
-    # entry leaves is coverage — no live test drives the Function URL.
     "CHAT.T03": (6, "Mitigated"),
     "CHAT.T04": (3, "Mitigated"),
     "CHAT.T05": (4, "Partially Mitigated"),
-    # The streaming routes attribute a turn to the verified ID token's identity and
-    # refuse a body callerSub that differs from it.
     "CHAT.T06": (3, "Mitigated"),
     # MCP
     "MCP.T01": (8, "Partially Mitigated"),
@@ -132,7 +130,8 @@ STATUS: dict[str, tuple[int, str]] = {
     # that prefers the immutable `sub`. Partially Mitigated on the residuals the
     # entry writes out: rows the `sub` back-fill cannot reach, the token type being
     # a property of the authorizer, the class gate having no rule about the matcher,
-    # and the suppressed allowedTestSets lookup.
+    # and the suppressed allowedTestSets lookup. Chat-with-Document's stand-down on
+    # the streaming transport (GAP-07) is carried by AUTH.T14 and CHAT.T03.
     "AUTH.T07": (6, "Partially Mitigated"),
     "AUTH.T08": (6, "Mitigated"),
     "AUTH.T09": (6, "Mitigated"),
@@ -141,8 +140,9 @@ STATUS: dict[str, tuple[int, str]] = {
     "AUTH.T12": (3, "Mitigated"),
     "AUTH.T13": (4, "Partially Mitigated"),
     # Likelihood Low / Severity Medium, scored as its two nearest siblings
-    # (AUTH.T10, AUTH.T11) are. Both streaming routes verify the caller's ID token
-    # and apply their REST operations' group floors to it before the stream opens.
+    # (AUTH.T10, AUTH.T11) are. "Partially Mitigated" because the entry's own
+    # Mitigations field closes the identity-precedence and input-shape halves but
+    # leaves the group check unenforceable on the streaming transport (GAP-07).
     "AUTH.T14": (3, "Mitigated"),
     "AUTH.T15": (4, "Partially Mitigated"),
     "AUTH.T16": (6, "Partially Mitigated"),

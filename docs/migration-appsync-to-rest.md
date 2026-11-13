@@ -2,6 +2,9 @@
 title: "AppSync → REST API Migration"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Migrating off AWS AppSync: how the new transport mirrors GraphQL
 
 This document is the reference for the UI ⇄ backend transport. It explains
@@ -135,18 +138,11 @@ The replacement is a dedicated **Lambda Function URL** with
 incrementally:
 
 - **Auth:** the Function URL is `AuthType=AWS_IAM`; the browser SigV4-signs the
-  request with the authenticated **Cognito Identity Pool** credentials, which AWS
-  checks at the function edge. The authenticated Cognito role is granted
-  `lambda:InvokeFunction` on the streaming function (a Function URL invocation
-  requires `InvokeFunction`, *not* `InvokeFunctionUrl`). SigV4 proves only that a
-  signed-in user of the pool is calling — every user holds the same role, and a
-  Function URL forwards no Cognito claims — so the browser also sends its Cognito
-  User Pool **ID token** in an `x-idp-id-token` header inside the signed request.
-  The streaming function verifies that token against the user pool's published
-  keys (`src/lambda/chat_stream_processor/id_token.py`), refuses a request without
-  a valid one with a 403, and applies the REST operations' group floors,
-  configuration-profile scope and chat-history attribution to the identity it
-  carries.
+  request with the authenticated **Cognito Identity Pool** credentials, enforced
+  by AWS at the function edge (no token-verification code to maintain). The
+  authenticated Cognito role is granted `lambda:InvokeFunction` on the streaming
+  function (a Function URL invocation requires `InvokeFunction`, *not*
+  `InvokeFunctionUrl`).
 - **Same event payloads.** The chat processors emit the **same event objects**
   they previously published as mutations; the UI consumes them through the same
   message-handling code, only sourced from the stream instead of a subscription —
@@ -182,13 +178,13 @@ migration preserves parity as follows:
   transport had otherwise lost: under AppSync a field the caller's groups did not
   satisfy was rejected at the API layer, and a field with no directive was not
   reachable by a lower-privilege caller by accident.
-  - ⚠️ **Restored for group-scoped operations only.** 8 of the 168 declared
+  - ⚠️ **Restored for group-scoped operations only.** 8 of the 180 declared
     operations are declared `ANY`, where the dispatcher checks authentication but
     not group membership, so for those a forgotten resolver check is still
     reachable by any authenticated caller. They are the caller's own profile and
     chat session list, the published release number, the two fine-tuning job reads
     and the three feature-platform reads;
-    158 operations require a group, 27 of them via `ANY_GROUP`
+    170 operations require a group, 27 of them via `ANY_GROUP`
     ("any group the stack creates", so a self-registered caller in no group is
     refused). See [RBAC](./rbac.md) for the full breakdown.
     The `idp_common.api_adapter` passthrough for events that already carry their
@@ -255,8 +251,7 @@ migration preserves parity as follows:
   sessions) is still partitioned by the caller's identity (`PK = agent#<user>`,
   session ownership checks), so a user only sees their own records — exactly as
   the VTL/AppSync resolvers enforced.
-- **Streaming auth** is enforced by IAM at the Function URL edge and by a
-  verified Cognito ID token in the streaming function (§3), and the
+- **Streaming auth** is enforced by IAM at the Function URL edge (§3), and the
   **Feature Platform** install-hook fields use direct `lambda:InvokeFunction`
   with IAM instead of the old AppSync SigV4 mutation (see
   [§5 Feature Platform](#5-feature-platform)).

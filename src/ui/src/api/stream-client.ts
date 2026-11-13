@@ -8,15 +8,16 @@
 // It POSTs to a Lambda Function URL (AuthType=AWS_IAM, InvokeMode=RESPONSE_STREAM),
 // SigV4-signing the request with the authenticated Cognito Identity Pool
 // credentials, then reads the streamed Server-Sent-Events response body
-// incrementally and invokes a callback for each parsed event. The event shapes
+// incrementally and invokes a callback for each parsed event.
+//
+// The signature proves only that the caller is a signed-in user of the pool, so
+// the request also carries the user's Cognito ID token in the `x-idp-id-token`
+// header (`authorization` holds the signature). The endpoint verifies that token
+// and takes the caller's identity — whose chat session and memory this is — from
+// it, and from nothing in the request body. The event shapes
 // mirror exactly what the AppSync subscriptions delivered, so the existing UI
 // state machines (ChatPanel.handleUpdate, useAgentChat.addMessage) are reused
 // unchanged — only the source of events differs.
-//
-// The request also carries the caller's Cognito ID token in ID_TOKEN_HEADER,
-// inside the signed headers: SigV4 proves only that a signed-in user of the
-// pool is calling, and the endpoint verifies the token to learn which user and
-// which groups. A request without one is refused.
 //
 // Works identically whether the SPA is served via CloudFront or ALB: the
 // Function URL is addressed directly by the browser.
@@ -29,8 +30,6 @@ import { streamUrl, awsRegion } from '../aws-exports';
 import { fetchSharedAuthSession } from './auth-session';
 
 const logger = new ConsoleLogger('streamClient');
-
-export const ID_TOKEN_HEADER = 'x-idp-id-token';
 
 /** AWS credentials shape (subset) — what Amplify's fetchAuthSession exposes. */
 export interface StreamCredentials {
@@ -55,18 +54,23 @@ export interface StreamChatOptions {
   signal?: AbortSignal;
 }
 
+/** Header the endpoint reads the caller's Cognito ID token from. */
+export const ID_TOKEN_HEADER = 'x-idp-id-token';
+
+const getIdToken = async (): Promise<string> => {
+  const session = await fetchSharedAuthSession();
+  const token = session.tokens?.idToken?.toString();
+  if (!token) {
+    throw new Error('streamClient: no Cognito id token available');
+  }
+  return token;
+};
+
 const getStreamEndpoint = (): URL => {
   if (!streamUrl) {
     throw new Error('streamClient: VITE_STREAM_URL is not configured');
   }
   return new URL(streamUrl);
-};
-
-const getIdToken = async (): Promise<string> => {
-  const session = await fetchSharedAuthSession();
-  const token = session.tokens?.idToken?.toString();
-  if (!token) throw new Error('streamClient: no Cognito id token available');
-  return token;
 };
 
 /**

@@ -182,6 +182,8 @@ RUN_ROOTS = [
     # caller from verified claims, exact error classes) over a stub service.
     "nested/api-resolvers/src/lambda/notifications_resolver",
     "nested/api-resolvers/src/lambda/review_queues_resolver",
+    "nested/api-resolvers/src/lambda/bulk_review_resolver",
+    "nested/api-resolvers/src/lambda/bulk_review_worker",
     # syncBdaIdp mutates the BDA project linked to a Configuration Profile, so a
     # caller whose scope cannot be resolved must be refused in-band.
     "nested/api-resolvers/src/lambda/sync_bda_idp_resolver",
@@ -224,6 +226,13 @@ RUN_ROOTS = [
     "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
+    # Status lookup: a refused document must return its refusal reason as `error`,
+    # or the SDK and CLI report it as "Unknown error".
+    "src/lambda/lookup_function",
+    "src/lambda/mcp_credential_manager",
+    "src/lambda/mcp_default_credential",
+    "src/lambda/mcp_identity_interceptor",
+    "src/lambda/mcp_interceptor_attach",
     "src/lambda/queue_processor",
     "src/lambda/queue_sender",
     # Review queue sweeper: the no-table path, the deadline and the wiring.

@@ -107,6 +107,8 @@ from .models import (
     ManifestDocument,
     ManifestResult,
     ManifestValidationResult,
+    McpCredential,
+    McpCredentialIssued,
     MultiDocDiscoveryResult,
     # Stack models
     OrphanedResourceCleanupResult,
@@ -284,6 +286,8 @@ __all__ = [
     "TenantVerifyCheck",
     "TenantVerifyOutcome",
     "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
     "TenantVerifyResult",
 ]
 

@@ -10,6 +10,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -77,6 +78,13 @@ vi.mock('../../components/edit-screen/test-set-item-edit-adapter', () => ({
 
 import { TestSetItemPage } from '../ReviewQueuesRoutes';
 
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const crumbs = () =>
   createWrapper(document.body)
     .findBreadcrumbGroup()!
@@ -90,6 +98,7 @@ const renderAt = (path: string) =>
         <Route path="/review-queues/test-sets/:testSetId/items/:objectKey" element={<TestSetItemPage />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 beforeEach(() => {

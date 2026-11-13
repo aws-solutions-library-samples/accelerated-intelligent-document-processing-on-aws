@@ -11,7 +11,8 @@ Required environment variables:
     IDP_MCP_ENDPOINT       - AgentCore Gateway URL (MCPServerEndpoint from CloudFormation)
     IDP_MCP_TOKEN_URL      - Cognito OAuth token endpoint (MCPTokenURL from CloudFormation)
     IDP_MCP_CLIENT_ID      - Cognito app client ID (MCPConnectorClientId from CloudFormation)
-    IDP_MCP_CLIENT_SECRET  - Cognito app client secret (MCPConnectorClientSecret from CloudFormation)
+    IDP_MCP_CLIENT_SECRET  - Cognito app client secret (a service credential's, shown once on the
+                             MCP Configuration page, or the one at MCPConnectorClientSecretArn)
 """
 
 import asyncio
@@ -35,8 +36,8 @@ logger = logging.getLogger(__name__)
 REQUIRED_ENV_VARS = {
     "IDP_MCP_ENDPOINT": "MCPServerEndpoint",
     "IDP_MCP_TOKEN_URL": "MCPTokenURL",  # nosec B105 - CFN output name, not a secret
-    "IDP_MCP_CLIENT_ID": "MCPConnectorClientId",
-    "IDP_MCP_CLIENT_SECRET": "MCPConnectorClientSecret",  # nosec B105 - CFN output name, not a secret
+    "IDP_MCP_CLIENT_ID": "a service credential, or MCPConnectorClientId",
+    "IDP_MCP_CLIENT_SECRET": "a service credential, or the secret at MCPConnectorClientSecretArn",  # nosec B105 - where to find it, not a secret
 }
 
 
@@ -55,7 +56,7 @@ def _check_env_vars() -> dict[str, str]:
     for var, cf_output in REQUIRED_ENV_VARS.items():
         value = os.environ.get(var)
         if not value:
-            missing.append(f"  {var}  (from CloudFormation output: {cf_output})")
+            missing.append(f"  {var}  ({cf_output})")
         else:
             values[var] = value
 
@@ -64,7 +65,8 @@ def _check_env_vars() -> dict[str, str]:
             "IDP MCP Connector: Missing required environment variables:\n"
             + "\n".join(missing)
             + "\n\n"
-            "Set these variables using values from your IDP CloudFormation stack outputs.\n"
+            "Set these from a service credential on the IDP MCP Configuration page,\n"
+            "or from your IDP CloudFormation stack outputs.\n"
             "See: genaiic-idp-accelerator/docs/mcp-connector.md for setup instructions.",
             file=sys.stderr,
         )

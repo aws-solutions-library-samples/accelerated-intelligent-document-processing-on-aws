@@ -453,7 +453,7 @@ summarization:
 
 ## Confidence (Assessment) Configuration
 
-As of **config v0.6**, per-field **confidence** and **geometry** are **outputs of
+As of **config format 0.6**, per-field **confidence** and **geometry** are **outputs of
 extraction**, configured under `extraction.confidence.*` and
 `extraction.geometry.*` — there is no top-level `assessment.{model, geometry_mode,
 ...}` block anymore. Human-in-the-loop review is configured under the top-level
@@ -518,8 +518,11 @@ extraction:
 > `list_batch_size` is the one knob. Any leftover `granular.*` keys still validate
 > but are ignored — no config edit required.
 
-**For large documents**, prefer **Advanced (agentic) extraction** — it shards both
-extraction and confidence assessment and yields the best-calibrated confidence.
+**For sections that can hold more than about 400 list rows**, prefer **Advanced
+(agentic) extraction** — it shards both extraction and confidence assessment, and on
+the v0.6.14 benchmark it returned every row where Simple mode returned part of an
+800-row list on 8 of 13 runs at the shipped default
+([config-guidance §5.5](./benchmarking/config-guidance.md#55-recommendations-by-document-profile)).
 
 ### Classification confidence (`classification.combined.llm.confidence.*`)
 
@@ -622,6 +625,26 @@ How the settings apply:
 For how platform components post messages, see the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
+## Bulk Skip All Reviews Limit
+
+[Bulk Skip All Reviews](human-review.md#skip-all-reviews-for-many-documents) runs at
+once for up to `hitl.bulk_skip_sync_limit` documents, and as a background job (Home ›
+Jobs) above it. It is shown in the configuration editor as **Bulk skip synchronous
+limit** in the **Human-in-the-Loop (HITL) Review (Optional)** section:
+
+```yaml
+hitl:
+  bulk_skip_sync_limit: 50  # 1-100: documents a bulk Skip All Reviews runs at once
+```
+
+| Key | Default | Range | Meaning |
+|---|---|---|---|
+| `hitl.bulk_skip_sync_limit` | 50 | 1–100 | Documents a bulk Skip All Reviews request handles immediately. A stored value outside the range is clamped to it, never rejected, and no value can raise the immediate path above 100. |
+
+Like the Inbox settings, it is read from the **active** configuration profile, cached
+for about 60 seconds, applies whether or not `hitl.enabled` is set, and falls back to
+the default if the configuration cannot be read.
+
 ## Stack Parameters
 
 Key parameters that can be configured during CloudFormation deployment:
@@ -645,7 +668,7 @@ Key parameters that can be configured during CloudFormation deployment:
 
 ### Integration and Tracing Parameters
 - `EnableXRayTracing`: Enable X-Ray tracing for Lambda functions and Step Functions (default: true). Provides distributed tracing capabilities for debugging and performance analysis. It covers every traced Lambda function in the main stack, the unified pattern and the nested feature-platform stack, plus both state machines — so setting it to `false` turns tracing off, and stops the associated X-Ray charges, for everything the main stack creates. On `false` those functions run in `PassThrough` mode: they record nothing of their own and continue a trace only if a caller already sampled the request. It does **not** reach an extension you install from the Extensions catalog: each is a separate stack with its own parameters and traces unconditionally, and for those of its functions whose execution role can write a trace segment that means real X-Ray charges. See [monitoring.md](./monitoring.md#installed-extensions-trace-unconditionally).
-- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: true). See [mcp-server.md](mcp-server.md) for details.
+- `EnableMCP`: Enable Model Context Protocol (MCP) integration for external application access via AWS Bedrock AgentCore Gateway (default: false). See [mcp-server.md](mcp-server.md) for details.
 - `EnableECRImageScanning`: Enable automatic vulnerability scanning for the pattern stack's Lambda container images in ECR (default: false). Recommended for production deployments but may impact deployment reliability. See [troubleshooting.md](troubleshooting.md) for guidance.
 
 ### Processing Parameters
@@ -1359,7 +1382,7 @@ same setting would give different answers for different documents in one run.
 
 ## Prompt Preview
 
-The Configuration page includes a **Prompt Preview** tab that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
+The Configuration page's **Preview prompts** button opens a prompt preview that renders each step's prompt with your configuration values filled in. The step list follows the strategy you selected: under `combined` it offers one classification step, and under `split_then_classify` it offers a splitting step and a section classification step instead, alongside Extraction, Confidence Assessment and Summarization. This is useful for optimizing document class schemas and prompt templates — you can see how your class names, descriptions and JSON Schema attributes render into the prompt, and which placeholders a step leaves empty because it does not send them. Read it as what a step includes rather than as the exact bytes of the request. See [web-ui.md](web-ui.md#prompt-preview) for details.
 
 ## A `%` in a prompt is literal text
 
@@ -1428,7 +1451,7 @@ ask for, the placeholders it can use, and where `<<CACHEPOINT>>` goes.
 
 ### Bedrock Prompt Caching
 
-The solution supports Bedrock prompt caching to reduce costs and improve performance by caching static portions of prompts. It applies to the classification, extraction, assessment and summarization calls.
+The solution supports Bedrock prompt caching of the static portion of a prompt, which can lower its cost. It applies to the classification, extraction, assessment and summarization calls.
 
 #### How It Works
 
@@ -1447,7 +1470,7 @@ extraction:
     {DOCUMENT_TEXT}
 ```
 
-Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. This can significantly reduce token costs and improve response times.
+Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across similar requests, while content after it remains dynamic. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum (below) is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)). No benchmark in this repository has measured caching's effect on response time.
 
 #### Best Practices
 
@@ -1457,9 +1480,9 @@ Everything **before** the `<<CACHEPOINT>>` delimiter is cached and reused across
 
 #### Benefits
 
-- **Cost Savings**: Cached tokens cost significantly less than regular input tokens
-- **Performance**: Reduced processing time for cached content
-- **Token Efficiency**: Particularly beneficial for long system prompts or few-shot examples
+- **Cost**: A cache read is billed at 0.1× the input price on most Claude models, 0.05× on Claude Sonnet 5.5 and Opus 5.5, and 0.25× on Nova (per-model rates are in `config_library/pricing.yaml`). A cache write is billed at 1.25× on Claude models and at no charge on Nova, so on Claude a prefix that is written and not read again within five minutes costs more than no caching ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once))
+- **Share of the bill**: Only the prefix is discounted. On the `ocr-benchmark` corpus the prefix was about 1,000–2,900 of roughly 7,800 input tokens per document, so the discount applies to that fraction of the input rather than to the whole bill ([prompt caching study §6](./benchmarking/studies/prompt-caching.md#6-end-to-end-effect-on-cost))
+- **Where it matters most**: long system prompts or few-shot examples, where the prefix is a large share of each request
 
 #### Minimum cacheable prefix — per model, and not monotonic
 
@@ -1873,12 +1896,12 @@ Extraction supports a **cost-tiered** strategy: extract with a fast/cheap model,
 extraction:
   model: us.amazon.nova-pro-v1:0          # fast/cheap primary extractor
   validation:
-    enabled: true                          # on by default since v0.7
+    enabled: true                          # on by default since config format 0.7
     fail_action: escalate                  # default is 'warn' (free); escalate costs money
     escalation_model: us.anthropic.claude-opus-4-8   # stronger tier, used only on failure
 ```
 
-> **Moved in v0.7.** This block was `extraction.agentic.validation`. It now lives at
+> **Moved in config format 0.7.** This block was `extraction.agentic.validation`. It now lives at
 > `extraction.validation` because Simple extraction runs the same validate-and-retry
 > path, so the setting is no longer agentic-only. Stored configurations are migrated
 > automatically on read — no action is required.

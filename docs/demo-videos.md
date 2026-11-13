@@ -344,7 +344,7 @@ https://github.com/user-attachments/assets/d5e0d590-ce8b-4e14-b2b7-8bde31e57ec2
 ---
 
 ### Adding Documents to Existing Test Sets
-Incrementally grow test sets over time by adding newly reviewed documents with ground truth — with automatic baseline filtering, time-based file selection, and prepopulated file patterns.
+Incrementally grow test sets over time by adding newly reviewed documents with ground truth — with time-based file selection, and prepopulated file patterns.
 
 https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 

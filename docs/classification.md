@@ -139,20 +139,25 @@ classification* as `SectionClassification/…`. The combined strategy stays unde
   Each call carries up to 2k+1 pages: ×3 at k=1 and ×5 at k=2, in both text and
   image tokens.
 - **`strategy: split_then_classify` drops the class vocabulary from every splitting call
-  and classifies once per section instead of once per page.** A clear win on
-  long documents with few sections; roughly a wash on single-page documents, where it
-  adds a second call to save a prefix that was only paid once. Each call can use
+  and classifies once per section instead of once per page.** By call count it
+  should favour long documents with few sections, though long sections have not been
+  benchmarked; on single-page documents it adds a second call to save a prefix that was
+  only paid once. On 5–20-page packets it measured as a boundary gain and a label loss
+  ([The split-then-classify strategy](#the-split-then-classify-strategy)). Each call can use
   its own model, so splitting can run on a cheap model and classification on a
   stronger one.
 - **A declared document shape skips the boundary work.** Under
   `sectionSplitting: disabled` or `page`, split-then-classify makes no splitting calls:
   the segments are known, so it goes straight to section classification.
-- **The model choice outweighs all of it.** On the benchmark suite Nova 2 Lite,
-  Claude Haiku 4.5 and Claude Sonnet 5 reached the same classification accuracy
-  at $0.007, $0.047 and $0.189 per document respectively — see
-  [`benchmarking/config-guidance.md`](./benchmarking/config-guidance.md) §5.3.
-  With Sonnet 5 as the classifier, classification reached 67% of total document
-  cost on a 9-page benchmark row.
+- **The model choice outweighs all of it.** On the v0.6.14 benchmark grid (133
+  runs per model) Nova 2 Lite, Claude Haiku 5.5 and Claude Sonnet 5 placed the
+  section boundary correctly on 132, 133 and 133 runs, with the same downstream
+  extraction accuracy, at a classification cost of $0.0069, at least $0.0086 and
+  $0.1263 per document respectively. Haiku 5.5's figure is a lower bound, because
+  its banded pricing is held as one flat rate — see
+  [config-guidance §5.3](./benchmarking/config-guidance.md#53-classification-model).
+  Classification was about 1% of the whole per-document bill with Nova 2 Lite and
+  about 16% with Sonnet 5, rising to 35% on one 4-page run.
 
 ### Combinations refused when you save
 
@@ -1522,8 +1527,14 @@ The durable reasons to pick split-then-classify are not the prefix:
 - **One classification call per *section* instead of per page.** This is the one
   that scales, and it is the opposite of the regime measured above: on a 40-page
   statement, the combined strategy makes 40 classification calls to produce one answer
-  and split-then-classify makes one splitting pass plus one classification call. The
-  longer your sections, the better split-then-classify looks.
+  and split-then-classify makes one splitting pass plus one classification call. That
+  is call arithmetic, not a measurement: long sections have not been benchmarked. On
+  the 5–20-page packets of the v0.6.14 classification benchmark, split-then-classify at
+  packet granularity cost 72% of the default's classification spend per page, placed
+  more section boundaries correctly (0.688 against the default's 0.509), labelled fewer
+  of them correctly (0.854 against 0.926), and reported a confidence that barely
+  separates right pages from wrong ones; at page granularity it cost the same as the
+  default ([config-guidance §5.6](./benchmarking/config-guidance.md#56-classification-granularity-modality-and-strategy)).
 - **A different model per call.** Splitting and classification are
   different problems and the cheapest model that is good at one is often not the
   other. The combined strategy has a single model field for both.
@@ -1546,7 +1557,8 @@ Measure on your own corpus. The two calls are metered separately
 | Confidence unit | Per page | Per segment |
 | Parallelism | Pages run concurrently | Windows run in sequence |
 | Large packets | No practical limit | Windowed; `window_pages: 0` is limited by context |
-| Packets of same-class sections | Excellent (per-page `start` verdict) | Good, and improving with a packet view |
+| Packets of same-class sections | Separated two back-to-back statements correctly, but split a single statement with a reprinted header into one section per page ([measured below](#page-versus-packet-granularity-opposite-failure-modes)) | Kept the single statement whole, but merged the two back-to-back statements into one |
+| Section boundaries on real packets | 0.509 of true sections reproduced (the default: text and images, `combined`) | 0.600–0.710 under the `combined` strategy, at 29–59% of the default's classification cost per page; 19 packets, one run each, so a direction rather than a ranking ([config-guidance §5.6](./benchmarking/config-guidance.md#56-classification-granularity-modality-and-strategy)) |
 
 ## Customizing Classification in Pipeline Mode
 
@@ -1692,19 +1704,14 @@ shows a fully populated entry.
 
 ## Using CachePoint for Classification
 
-The solution integrates with Amazon Bedrock CachePoint for improved performance:
+The `<<CACHEPOINT>>` delimiter marks the end of the prompt prefix that Amazon Bedrock prompt caching may cache. Only that prefix is cached; model responses are never reused. A cache entry expires five minutes after the start of the request that wrote it, and each read restarts that timer ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once)). No benchmark in this repository has measured caching's effect on latency.
 
-- Caches frequently used prompts and responses
-- Reduces latency for similar classification requests
-- Optimizes costs through response reuse
-- Automatic cache management and expiration
-
-CachePoint is particularly beneficial with few-shot examples, as these can add significant token count to prompts. The `<<CACHEPOINT>>` delimiter in prompt templates separates:
+Few-shot examples make the cacheable prefix larger. The `<<CACHEPOINT>>` delimiter in prompt templates separates:
 
 - **Static portion** (before CACHEPOINT): Class definitions, few-shot examples, instructions
 - **Dynamic portion** (after CACHEPOINT): The specific document being processed
 
-This approach allows the static portion to be cached and reused across multiple document processing requests, while only the dynamic portion varies per document, significantly reducing costs and improving performance.
+This approach allows the static portion to be cached and reused across multiple document processing requests, while only the dynamic portion varies per document. On Claude models a cached prefix read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum is never cached, and a prefix written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)).
 
 Example task prompt with CachePoint for few-shot examples:
 
@@ -2010,7 +2017,7 @@ Classification supports few-shot example prompting at either granularity and und
 - **📏 Consistent Output**: Examples establish exact structure and formatting standards
 - **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classifications
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples significantly reduces costs
+- **💰 Cost with Caching**: Prompt caching can lower the cost of the examples when its prefix is read again within five minutes, as it can be when documents with the same configuration are processed close together, and on Claude models raises it when the prefix is written and not read again ([Using CachePoint for Classification](#using-cachepoint-for-classification))
 
 ### Few Shot Example Configuration
 
@@ -2252,16 +2259,18 @@ classification:
 
 | Mode | What the model is asked for | Notes |
 |------|-----------------------------|-------|
-| `topk` (default) | ranked candidate classes with probabilities | Best calibrated, and it answers "what else could this have been?" |
-| `verbalized` | one self-reported 0-1 number | Cheapest and the most overconfident. |
+| `topk` (default) | ranked candidate classes with probabilities | Chosen over `verbalized` on published evidence (below); not compared with it in this repository. It answers "what else could this have been?" |
+| `verbalized` | one self-reported 0-1 number | Asks for less output than `topk`. Published work finds a single self-reported number overconfident; not measured here. |
 | `off` | nothing extra | Costs nothing at all. |
 
-`topk` is the default for a measured reason. Asking for a single number gets
+`topk` is the default for a published reason. Asking for a single number gets
 ~0.95 on everything; making the model enumerate and rank alternatives forces it
 to distribute probability mass instead (Tian et al., *Just Ask for Calibration*,
 EMNLP 2023 — the same reasoning behind extraction's `G1/P1` confidence path). It
 produces exactly the "80 % W-2, 15 % 1099" shape, and the runner-ups are stored
-and shown in the UI.
+and shown in the UI. This repository's
+[classification confidence study](./benchmarking/studies/classification-confidence.md) compared `topk` with `off`
+only; it did not run `verbalized`, so the two scoring modes have not been compared here.
 
 **What it costs:** measured over 298 pages of a 13-class corpus, `topk` added
 **+17 % to the classification step** — which is only ~3 % of total document cost
@@ -2399,11 +2408,12 @@ A single self-reported confidence is usually poorly calibrated — models asked
 because it invites automated escalation on noise. Smaller models are the most
 overconfident, and the default classification model is a small one. That is why
 the shipped mode is `topk` rather than `verbalized`: ranking alternatives against
-each other is what makes the number carry information, where a single
-self-reported figure mostly does not. `off` is for a deployment that will not act
+each other is meant to make the number carry information where a single
+self-reported figure mostly does not. That is the published reasoning above; the
+comparison with `verbalized` has not been run in this repository. `off` is for a deployment that will not act
 on the score — it is the only setting that saves the output tokens.
 
-**This is measured, not asserted.** On 298 pages of a deliberately confusable
+**What has been measured is how informative the `topk` score is.** On 298 pages of a deliberately confusable
 13-class corpus, in `topk` mode ([full study](./benchmarking/studies/classification-confidence.md)):
 
 | | Nova 2 Lite (default) | Claude Haiku 4.5 |

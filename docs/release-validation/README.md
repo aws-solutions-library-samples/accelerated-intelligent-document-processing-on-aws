@@ -2,6 +2,9 @@
 title: "Release Validation Records"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Release Validation Records
 
 One record per release, capturing **every test that needs a real deployed stack** — the tiers

@@ -15,6 +15,9 @@ Public surface:
   Stickler under the distinct name ``IDPLLMComparator``.
 - ``register_idp_comparators()`` — idempotent registration with the global
   registry (invoked once by ``EvaluationService.__init__``).
+- ``collect_evaluation_metering()`` — scope collecting the Bedrock metering of
+  the comparator's calls, which ``EvaluationService.evaluate_document`` adds to
+  the document under the ``Evaluation`` context.
 - ``get_stickler_model(...)`` — build a ``StructuredModel`` subclass from an
   IDP config schema (goes through ``JsonSchemaFieldConverter`` +
   ``pydantic.create_model`` + the nullable-fields shim).
@@ -37,6 +40,7 @@ from stickler import StructuredModel
 
 from idp_common.evaluation.stickler_backend.comparators import (
     LLMComparator,
+    collect_evaluation_metering,
     register_idp_comparators,
 )
 from idp_common.evaluation.stickler_backend.doc_split import (
@@ -56,6 +60,7 @@ __all__ = [
     "SticklerConfigMapper",
     "StructuredModel",
     "attach_page_confidence",
+    "collect_evaluation_metering",
     "compute_boundary_and_label_accuracy",
     "compute_graded_packet_metrics",
     "get_stickler_model",

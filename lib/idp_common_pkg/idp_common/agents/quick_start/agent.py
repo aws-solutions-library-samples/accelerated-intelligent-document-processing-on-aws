@@ -9,6 +9,8 @@ from typing import Optional
 import boto3
 import strands
 
+from ...regional_models import SONNET_4_6_MODEL_ID, regional_default
+from ..common.config import stack_region
 from ..common.cost_metrics import with_cost_hook
 from ..common.strands_bedrock_model import create_strands_bedrock_model
 from .tools import (
@@ -28,7 +30,18 @@ from .tools import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+
+def default_model_id() -> str:
+    """The model used when the caller passes none: Claude Sonnet 4.6, translated
+    to the stack's Region (see
+    :func:`idp_common.agents.common.config._default_agent_model_id`)."""
+    return regional_default(SONNET_4_6_MODEL_ID, stack_region())
+
+
+#: :func:`default_model_id` as resolved for the Region the process starts in, kept
+#: for callers that import the name; the agent itself resolves it per call.
+DEFAULT_MODEL_ID = default_model_id()
+
 
 SYSTEM_PROMPT = """
 You are the Quick Start Agent for the GenAI IDP Accelerator. You help a new user
@@ -173,6 +186,7 @@ def create_quick_start_agent(
     """Create the Quick Start Agent with bootstrap tools."""
     if session is None:
         session = boto3.Session()
+    model_id = model_id or default_model_id()
 
     tools = [
         search_catalog,
@@ -190,14 +204,12 @@ def create_quick_start_agent(
     ]
 
     bedrock_model = create_strands_bedrock_model(
-        model_id=model_id or DEFAULT_MODEL_ID, boto_session=session
+        model_id=model_id, boto_session=session
     )
 
     return strands.Agent(
         tools=tools,
         system_prompt=SYSTEM_PROMPT,
         model=bedrock_model,
-        hooks=with_cost_hook(
-            kwargs.get("hooks"), "quick-start", model_id or DEFAULT_MODEL_ID
-        ),
+        hooks=with_cost_hook(kwargs.get("hooks"), "quick-start", model_id),
     )

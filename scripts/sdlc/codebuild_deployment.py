@@ -4980,6 +4980,26 @@ def terraform_deploy_role_template(
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    {
+                        # Cloud Control's AWS::IAM::ManagedPolicy delete handler
+                        # lists what a policy is attached to before deleting it,
+                        # which CloudFormation's own handling never needed. Read
+                        # only, and only on the policies the service role's
+                        # ManagedPoliciesWithinNamePrefix lets this role create.
+                        "Sid": "TerraformManagedPolicyEntities",
+                        "Effect": "Allow",
+                        "Action": ["iam:ListEntitiesForPolicy"],
+                        "Resource": [
+                            {
+                                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:"
+                                "policy/${ManagedStackNamePrefix}*"
+                            },
+                            {
+                                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:"
+                                "policy/*/${ManagedStackNamePrefix}*"
+                            },
+                        ],
+                    },
                     *(
                         copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
                         if terraform_migration
@@ -5083,6 +5103,9 @@ def _primary_param_pairs(permissions_boundary_arn, malware_mode):
         # Must equal the service role's CreatedRolePermissionsBoundaryArn.
         f"PermissionsBoundaryArn={permissions_boundary_arn}",
         f"MalwareScanning={malware_mode}",
+        # MCP is off by default, and the deploy path's MCP resources (gateway,
+        # interceptor, credential registry) are exercised only if it is on.
+        "EnableMCP=true",
     ]
 
 
@@ -5509,7 +5532,53 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
             deployer._empty_and_delete_bucket(bucket["physical_id"])
         except Exception as e:  # noqa: BLE001
             errors.append(f"S3 bucket {bucket['physical_id']}: {e}")
+    for role in retained_iam_roles(stack_name, retained):
+        try:
+            _delete_retained_role(role)
+        except Exception as e:  # noqa: BLE001
+            if "NoSuchEntity" not in str(e):
+                errors.append(f"IAM role {role}: {e}")
     return errors
+
+
+#: Retained-resource types the sweep deletes from ``other`` (the SDK puts every
+#: type it has no category for there).
+RETAINED_ROLE_TYPES = ("aws_iam_role", "AWS::IAM::Role")
+
+
+def retained_iam_roles(stack_name, retained):
+    """Names of the IAM roles this run retained, and only this run's: a role is
+    swept only when its name starts with ``<stack>-``, the prefix every role the
+    module generates carries (DOCUMENTKB's knowledge-base ingestion roles are
+    retained by design and were left behind)."""
+    out = []
+    for other in (retained or {}).get("other") or []:
+        name = str(other.get("physical_id") or "")
+        if other.get("type") in RETAINED_ROLE_TYPES and name.startswith(
+            f"{stack_name}-"
+        ):
+            out.append(name)
+    return out
+
+
+def _delete_retained_role(name):
+    iam = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
+    for page in iam.get_paginator("list_attached_role_policies").paginate(
+        RoleName=name
+    ):
+        for policy in page["AttachedPolicies"]:
+            iam.detach_role_policy(RoleName=name, PolicyArn=policy["PolicyArn"])
+    for page in iam.get_paginator("list_role_policies").paginate(RoleName=name):
+        for policy in page["PolicyNames"]:
+            iam.delete_role_policy(RoleName=name, PolicyName=policy)
+    for page in iam.get_paginator("list_instance_profiles_for_role").paginate(
+        RoleName=name
+    ):
+        for profile in page["InstanceProfiles"]:
+            iam.remove_role_from_instance_profile(
+                InstanceProfileName=profile["InstanceProfileName"], RoleName=name
+            )
+    iam.delete_role(RoleName=name)
 
 
 def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 * 3600):
@@ -5578,7 +5647,10 @@ def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 *
         for error in errors:
             print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
             findings.append(f"retained resource not deleted: {error}")
+        swept_roles = set(retained_iam_roles(stack_name, retained))
         for other in retained.get("other") or []:
+            if str(other.get("physical_id") or "") in swept_roles:
+                continue
             # The categories the sweep cannot delete. Retained by design, but
             # this run created them and nothing else will remove them.
             findings.append(
@@ -9342,8 +9414,9 @@ def validate_apigw_global_hosting(stack_name):
     if csp.startswith("'"):
         # The other half of the same mis-parse: API Gateway left the *outer*
         # quotes on, so the first directive reads `'script-src` and browsers
-        # discard it. With no `default-src` in this policy, discarding the first
-        # directive voids the protection while the header still looks present.
+        # discard it. script-src then falls back to `default-src 'self'`, which
+        # blocks the Monaco loader and inline script, while the header still
+        # looks present.
         # Only the LEADING quote is checked: a policy legitimately ends with one
         # whenever its last source is a keyword (`frame-ancestors 'none'`).
         return {
@@ -11627,7 +11700,6 @@ def terraform_migration_driver_command(
     old_name,
     new_name,
     module_url,
-    role_arn,
     terraform_bin,
     work_dir,
     region,
@@ -11635,6 +11707,11 @@ def terraform_migration_driver_command(
     boundary_arn,
     state_mirror=None,
 ):
+    """The driver's argv. No ``--terraform-assume-role-arn``: the driver and every
+    process it starts already run as the run's TFDeployRole through the AWS
+    profile (render_migration_aws_config), and that role's trust admits only the
+    build's principal, so asking it to assume itself is refused — by the SDK's
+    own lookups in ``migrate plan`` and by the new root's providers alike."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -11651,8 +11728,6 @@ def terraform_migration_driver_command(
         terraform_bin,
         "--terraform-module-url",
         module_url,
-        "--terraform-assume-role-arn",
-        role_arn,
         "--expected-account",
         account,
         "--upstream-iam-path",
@@ -11821,7 +11896,6 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
             old_name,
             new_name,
             module_url,
-            role_arn,
             terraform_bin,
             work_dir,
             region,
@@ -11861,8 +11935,38 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
         analysis = generate_migration_failure_summary(
             summary, migration_failure_evidence(work_dir)
         )
-        summary += f"\n\n{analysis}"
+        # First: chat posts keep only the start of the summary.
+        summary = f"{analysis}\n\n{summary}"
     return success, summary
+
+
+#: The driver's context beside run.json in a migration run's mirror
+#: (MIRROR_CONTEXT in terraform_migration_test.py).
+TERRAFORM_MIGRATION_CONTEXT_KEY = "context.json"
+
+
+def _migration_run_created_anything(client, bucket, prefix, keys) -> bool:
+    """Whether the mirrored context says the run created something. No context,
+    or one that cannot be read, counts as created: the reap then runs, and the
+    driver's own checks decide."""
+    key = prefix + TERRAFORM_MIGRATION_CONTEXT_KEY
+    if key not in keys:
+        return True
+    try:
+        context = json.loads(client.get_object(Bucket=bucket, Key=key)["Body"].read())
+    except Exception:  # noqa: BLE001
+        return True
+    return bool(context.get("created"))
+
+
+def _remove_s3_prefix(client, bucket, prefix) -> None:
+    """Delete every object version and delete marker under ``prefix``."""
+    paginator = client.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for item in page.get("Versions", []) + page.get("DeleteMarkers", []):
+            client.delete_object(
+                Bucket=bucket, Key=item["Key"], VersionId=item["VersionId"]
+            )
 
 
 def _reap_terraform_migration(new_name, bucket, keys, s3=None):
@@ -11888,6 +11992,16 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             "Body"
         ].read()
     )
+    if not _migration_run_created_anything(client, bucket, prefix, keys):
+        # Refused before it created anything (a preflight that failed, say): the
+        # build already removed its `-iam` pre-stack, so there is no role to
+        # assume and nothing to destroy. Read with this build's own credentials.
+        print(f"[{new_name}] the dead run created nothing; removing its mirror")
+        _remove_s3_prefix(client, bucket, prefix)
+        return {
+            "findings": [f"{new_name}: {f}" for f in cleanup_iam_resources(new_name)],
+            "timed_out": False,
+        }
     with tempfile.TemporaryDirectory(prefix="idp-tfmig-reap-") as tmp:
         config_path = os.path.join(tmp, "aws-config")
         with open(config_path, "w") as f:
@@ -11904,7 +12018,6 @@ def _reap_terraform_migration(new_name, bucket, keys, s3=None):
             record["old_name"],
             new_name,
             record["module_url"],
-            record["role_arn"],
             ensure_terraform_binary(),
             os.path.join(tmp, "work"),
             record["region"],

@@ -2,6 +2,9 @@
 title: "Deploying IDP in a Private Network"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Deploying IDP in a Private Network
 
 This runbook deploys the GenAI IDP Accelerator in a **fully private / air-gapped environment**:

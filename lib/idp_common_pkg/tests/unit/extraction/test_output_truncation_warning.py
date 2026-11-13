@@ -1170,3 +1170,24 @@ class TestBothDocTiersCarryTheCode:
             assert not re.search(
                 r"\b(all|any|every)\b[^.]{0,80}\btruncat", para, re.IGNORECASE
             ), para[:400]
+
+
+@pytest.mark.parametrize("model_id", sorted(_RESPONSES_API_MODELS))
+def test_the_agentic_refusal_names_the_family_not_the_vendor(model_id):
+    """#1911: the refusal said "choose a non-OpenAI model", but OpenAI GPT-6 Astra
+    is served through Converse and runs the agentic path. The message names the
+    family ``is_openai_responses_model`` matches and says Astra is allowed."""
+    svc = _svc(agentic=True)
+    svc.config.extraction.model = model_id
+    with pytest.raises(ValueError) as excinfo:
+        svc._invoke_extraction_model(
+            content=[{"text": "prompt"}],
+            system_prompt="sys",
+            section_info=_section_info(),
+        )
+    message = str(excinfo.value)
+    assert model_id in message
+    assert "non-OpenAI" not in message
+    assert "GPT-5.x Responses" in message
+    assert "GPT-6 Astra" in message
+    assert not is_openai_responses_model("us.openai.gpt-6-astra")

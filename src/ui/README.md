@@ -43,8 +43,7 @@ is the base URL of the API Gateway REST API (the `api` stage) that the UI reads 
 `src/api/rest-client.ts`; every operation is a `POST` to
 `${VITE_API_BASE_URL}/op/<fieldName>`. `VITE_STREAM_URL` is the Lambda **Function
 URL** of the chat-streaming function, read in `src/api/stream-client.ts` and
-SigV4-signed with Cognito Identity Pool credentials, with the user's Cognito ID
-token sent in the signed `x-idp-id-token` header — note that a Function URL is
+SigV4-signed with Cognito Identity Pool credentials — note that a Function URL is
 shaped `https://<id>.lambda-url.<region>.on.aws/`, not like an API Gateway URL.
 
 The `WebUITestEnvFile` output contains several further variables beyond the ones

@@ -1438,3 +1438,166 @@ def test_restore_rebuilds_the_old_root_and_fetches_the_new_one(tmp_path, monkeyp
     assert (run.old_dir / tmt.OLD_BACKEND_FILE).is_file()
     assert (run.old_dir / "terraform.tfvars").is_file()
     assert sorted(p.name for p in run.new_dir.iterdir()) == ["backend.tf", "main.tf"]
+
+
+@pytest.mark.parametrize("fail", ["preflight", "upstream-clone"])
+def test_a_run_refused_before_it_created_anything_clears_its_mirror(tmp_path, fail):
+    """Nothing to tear down, and the run's role goes with the build's `-iam`
+    cleanup, so a mirror left behind would only send every later build's reaper
+    to assume a role that no longer exists."""
+    s3 = _FakeS3({MIRROR_PREFIX + tmt.MIRROR_CONTEXT: b"{}"})
+    run = _Mirrored(_settings(tmp_path, state_mirror=MIRROR), fail=fail)
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    run.execute()
+    assert not run.ctx.get("created")
+    assert s3.deleted
+
+
+def test_a_run_that_created_something_and_failed_keeps_its_mirror(tmp_path):
+    s3 = _FakeS3({MIRROR_PREFIX + "old/terraform.tfstate": b"{}"})
+    _Mirrored.leftovers = ["bucket b"]
+    run = _Mirrored(_settings(tmp_path, state_mirror=MIRROR), fail="seed")
+    run._boto_cache.update(s3=s3, sts=_FakeSts())
+    run.execute()
+    assert run.ctx.get("created") and s3.deleted == []
+
+
+@pytest.mark.parametrize("boundary", [BOUNDARY, None])
+def test_the_new_deployment_gets_the_runs_boundary(tmp_path, monkeypatch, boundary):
+    """The deploy role creates only roles carrying the run's boundary, so the new
+    deployment, whose module attaches PermissionsBoundaryArn to every role, is
+    planned with it. A run given no boundary (by hand, as an administrator)
+    passes none."""
+    kw = (
+        dict(upstream_iam_path=PATH_, upstream_permissions_boundary_arn=boundary)
+        if boundary
+        else {}
+    )
+    run = tmt.Run(_settings(tmp_path, **kw))
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def migrate(command, *args):
+        seen["args"] = list(args)
+        raise _Stop()
+
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "{}")
+    monkeypatch.setattr(run, "secrets", lambda: {"users": [{"username": "a@b"}]})
+    monkeypatch.setattr(run, "migrate", migrate)
+    with pytest.raises(_Stop):
+        run.phase_migrate_plan()
+    args = seen["args"]
+    if boundary:
+        assert (
+            args[args.index("--parameters") + 1] == f"PermissionsBoundaryArn={boundary}"
+        )
+    else:
+        assert "--parameters" not in args
+
+
+def test_the_reason_for_a_failure_survives_the_chat_posts_cut():
+    """The GitLab job keeps the first 2000 characters for Slack; a run that
+    failed late fills that with its phase table unless the findings come first."""
+    phases = [
+        {"phase": f"phase-{i}", "status": "PASS", "seconds": 60.0, "detail": "x" * 180}
+        for i in range(14)
+    ] + [
+        {
+            "phase": "migrate-apply",
+            "status": "FAIL",
+            "seconds": 1.0,
+            "detail": "exited 1",
+        }
+    ]
+    text = tmt.summarise(
+        {
+            "status": "FAIL",
+            "phases": phases,
+            "findings": ["migrate-apply: `migrate apply` exited 1"],
+            "leftovers": [],
+        }
+    )
+    head = text[:2000]
+    assert "Findings:" in head and "migrate-apply: `migrate apply` exited 1" in head
+    assert text.index("Findings:") < text.index("Phases:")
+
+
+# -- the forced old destroy after a failed adoption --------------------------------
+
+_ITEM_STATE = {
+    "resources": [
+        {
+            "mode": "managed",
+            "module": "module.a.module.concurrency_table[0]",
+            "type": "aws_dynamodb_table_item",
+            "name": "workflow_counter",
+            "instances": [{"attributes": {"table_name": "gone-table"}}],
+        },
+        {
+            "mode": "managed",
+            "module": "module.a",
+            "type": "aws_dynamodb_table_item",
+            "name": "kept",
+            "instances": [{"attributes": {"table_name": "live-table"}}],
+        },
+    ]
+}
+
+
+class _Ddb:
+    def describe_table(self, TableName):  # noqa: N803 - boto3 casing
+        if TableName == "gone-table":
+            raise RuntimeError(
+                "An error occurred (ResourceNotFoundException): Table not found"
+            )
+        return {"Table": {}}
+
+
+class _Proc:
+    def __init__(self, rc):
+        self.returncode = rc
+
+
+def _forced(tmp_path, monkeypatch, destroy_results):
+    run = tmt.Run(_settings(tmp_path))
+    calls = []
+    emptied = []
+    results = iter(destroy_results)
+
+    def terraform(directory, *args, log, timeout=0, check=True):
+        calls.append(args)
+        return _Proc(next(results) if args[0] == "destroy" else 0)
+
+    monkeypatch.setattr(run, "terraform", terraform)
+    monkeypatch.setattr(run, "old_state", lambda: _ITEM_STATE)
+    monkeypatch.setattr(run, "save", lambda: None)
+    monkeypatch.setattr(tmt, "empty_bucket", lambda s3, b: emptied.append(b))
+    run._boto_cache.update(dynamodb=_Ddb(), s3=object())
+    run.ctx["oldNames"] = {"buckets": ["idpo1-logs"]}
+    return run, calls, emptied
+
+
+def test_items_of_a_deleted_table_are_forgotten_before_the_destroy(
+    tmp_path, monkeypatch
+):
+    run, calls, _ = _forced(tmp_path, monkeypatch, [0])
+    run._old_destroy_forced()
+    rm = [c for c in calls if c[:2] == ("state", "rm")]
+    assert rm == [
+        (
+            "state",
+            "rm",
+            "module.a.module.concurrency_table[0].aws_dynamodb_table_item.workflow_counter",
+        )
+    ]
+    assert calls.index(rm[0]) < next(
+        i for i, c in enumerate(calls) if c[0] == "destroy"
+    )
+
+
+def test_the_buckets_are_emptied_again_before_the_second_attempt(tmp_path, monkeypatch):
+    run, calls, emptied = _forced(tmp_path, monkeypatch, [1, 0])
+    assert "attempt 2" in run._old_destroy_forced()
+    assert emptied == ["idpo1-logs", "idpo1-logs"]

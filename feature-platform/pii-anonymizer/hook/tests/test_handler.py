@@ -244,6 +244,40 @@ def test_build_pii_config_from_args():
     assert cfg2["performance"]["dpi"] == 150
 
 
+_HAIKU = "anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", f"us.{_HAIKU}"),
+        ("us-west-2", f"us.{_HAIKU}"),
+        ("eu-central-1", f"eu.{_HAIKU}"),
+        ("eu-west-1", f"eu.{_HAIKU}"),
+        # The deploy-time swap leaves Haiku 4.5 alone in Canada: its us. profile
+        # is callable there.
+        ("ca-central-1", f"us.{_HAIKU}"),
+    ],
+)
+def test_the_default_model_is_callable_from_the_region(monkeypatch, region, expected):
+    monkeypatch.setenv("AWS_REGION", region)
+    mod = _load()
+    assert mod._build_pii_config({})["model"]["id"] == expected
+    assert mod._build_pii_config({"model_id": ""})["model"]["id"] == expected
+
+
+def test_the_default_model_reads_the_session_region(monkeypatch):
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-3")
+    assert _load()._build_pii_config({})["model"]["id"] == f"eu.{_HAIKU}"
+
+
+def test_a_configured_model_is_used_as_given(monkeypatch):
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    cfg = _load()._build_pii_config({"model_id": f"us.{_HAIKU}"})
+    assert cfg["model"]["id"] == f"us.{_HAIKU}"
+
+
 def test_redacted_input_key_deterministic():
     mod = _load()
     # Marker appended to the stem, beside the original (same folder).

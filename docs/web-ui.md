@@ -32,7 +32,7 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 - **Document Process Flow visualization** for detailed workflow execution monitoring and troubleshooting
 - **Document Analytics** for querying and visualizing processed document data
 - **Inbox** — a bell and an Inbox page for messages addressed to you or your groups, with read state, bulk actions and per-type muting (see [Inbox](#inbox))
-- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
+- **Home** and **Review Studio** — every user gets Home with their Inbox, and Annotators also get their assigned Tasks and Queues there; Admins and Reviewers also get **Jobs** (bulk Skip All Reviews runs); Admins manage the Default review queue and assign its items in Review Studio › Review Management; every document edit opens one edit page (see [Review Studio](#review-studio))
 - **Feedback & issue reporting** — report bugs or request features on GitHub directly from the UI, with your deployment details pre-filled
 
 ## Document List
@@ -58,6 +58,33 @@ Test Studio submits its documents through the same pipeline as ordinary uploads 
 - **Test Studio** — documents submitted by a [Test Studio](test-studio.md) run. Adds a **Test Run** column linking to that run's results, and holds the **Abort**, **Reprocess** and **Delete** actions: a run's results (and the confidence calibration derived from them) are scored against these exact documents, so a run's lifecycle is managed from **Test Executions**, not here.
 
 The two views are mutually exclusive by design — there is no combined view. On a stack that uses Test Studio regularly the test documents outnumber real uploads by an order of magnitude, so merging them would bury the uploads. The selection is not remembered between visits, so the list always opens on Production.
+
+### Review actions on selected documents
+
+Admins and Reviewers get a **Review** menu in the Document List's toolbar (Production
+view; in the Test Studio view it is shown disabled). It holds:
+
+- **Start Review** — claim the selected pending reviews (one opens the document).
+- **Release Review** (Admin) — release the selected claimed reviews.
+- **Skip All Reviews (N selected)** and **Skip All Reviews by profile…** — finish many
+  pending production reviews at once, with a reason, after a count of what will happen
+  (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
+- **Send to review (N selected)** — put finished documents into the Default review
+  queue, with a reason (see [Send to review](human-review.md#send-to-review)).
+
+N counts the selected rows each action applies to; the server decides each document
+and reports a result per document, which can be exported. Larger runs continue as a
+background job under **Home › Jobs**, where every bulk run is listed with its status,
+counts and results, and where a queued or running job can be cancelled and a finished
+one deleted (see [Skip All Reviews for many documents](human-review.md#skip-all-reviews-for-many-documents)).
+
+### Adding documents to a test set
+
+Admins can send processed documents straight to a [Test Studio](test-studio.md) test set from the Production view. Select the documents and choose **Add to test set**. The button is enabled once at least one selected document has finished processing.
+
+It opens the same dialog as Test Studio's **Add documents → From processed documents**, with your selection already chosen and a **Test set** field in place of a fixed set. Pick an existing set; a set that is not ready (still being created or updated, or failed) is listed but cannot be picked, and a new set is created in Test Studio first. Selected documents that have not finished processing are left out, and the dialog says how many. Everything else works as it does in Test Studio: a document with no ground truth is added unlabeled and named before you confirm, the dialog warns when that would make a labeled set read as unlabeled, and a document already in the set is skipped. A notice above the table confirms the add once it is queued. See [Adding documents to existing test sets](test-studio.md#adding-documents-to-existing-test-sets).
+
+The action is not shown in the Test Studio view, whose documents are copies made by test runs, or to users who are not Admins. Authors can still add processed documents from Test Studio.
 
 ### Deleting documents
 
@@ -145,8 +172,11 @@ beside it, left to right:
   - **Use As Evaluation Baseline** — copy the document's results into the evaluation
     baseline. The **Evaluation** field shows the copy while it runs and when it is done
     or has failed, and a failed copy is reported.
-  - **Skip All Reviews** — finish a pending review without checking it, with a reason
-    (see [Human review](human-review.md)).
+  - **Skip All Reviews** — finish a pending review without checking it, with a reason;
+    **Resubmit for downstream processing** (ticked by default) re-runs Summarization
+    and Evaluation (see [Human review](human-review.md)).
+  - **Send to review** — put the finished document into the Default review queue, with
+    a reason (see [Send to review](human-review.md#send-to-review)).
   - **Download All (ZIP)**, **Download Predictions (ZIP)** and **Download Baselines
     (ZIP)** — the document's outputs as a ZIP (see
     [Download Document Data](#download-document-data)).
@@ -167,7 +197,7 @@ still loading, it ran in BDA mode, or there is no report to show. Who may do wha
 |---|---|
 | Reports (except Estimated Cost), the downloads, Refresh, Details \| Source | every role |
 | Estimated Cost | Admin, Author, Viewer (it reads the stack's pricing) |
-| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Start Review | Admin, Reviewer |
+| Edit Page Grouping, Re-extract Sections, Reset Page Class, Skip All Reviews, Send to review, Start Review | Admin, Reviewer |
 | Edit Page Text | Admin (it saves the page text and reprocesses the document, and only Admins may do both) |
 | Use As Evaluation Baseline, Reprocess, Abort, Delete | Admin, Author |
 | Troubleshoot | Admin, Author, Viewer |
@@ -496,7 +526,7 @@ For the schema format itself and how to author it by hand, see the [JSON Schema 
 
 ## Prompt Preview
 
-The **Prompt Preview** tab in the Configuration page allows you to see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
+The **Preview prompts** button on the Configuration page (beside **Refresh**) opens the prompt preview, which lets you see exactly what prompts are sent to the LLM for each processing step, with configuration-derived placeholders filled in using your actual class definitions and schemas.
 
 ![Prompt Preview for the classification step, with configuration-derived values highlighted in the task prompt](../images/webui-prompt-preview.png)
 
@@ -515,7 +545,7 @@ The **Prompt Preview** tab in the Configuration page allows you to see exactly w
 ### How to Use
 
 1. Navigate to the Configuration page
-2. Click the **Prompt Preview** tab (alongside Configuration, Document Schema, Rule Schema)
+2. Choose **Preview prompts** in the editor's header, beside **Refresh**. It previews the values in the editor, saved or not, and opens over the **Processing Settings**, **Document Schema** and **Policy Schema** tabs
 3. Select a **Processing Step** from the dropdown: the classification step or steps your configured strategy makes (see above), Extraction, Confidence Assessment, or Summarization
 4. For Extraction or Confidence Assessment, select a **Document Class** to preview its schema in the prompt
 5. View the rendered prompts in the Task Prompt and System Prompt sub-tabs
@@ -666,7 +696,7 @@ The "Chat with Document" feature is available at the bottom of the Document Deta
 
 ### Model selection
 
-Chat has its own dedicated configuration section (**Configuration tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
+Chat has its own dedicated configuration section (**Processing Settings tab → "Chat-with-Document Configuration"**) — it is **independent from summarization**. This is important because chat sends the entire document text to the model in a single prompt, so a large-context model (such as `us.anthropic.claude-opus-4-8:1m` — the default — or `us.anthropic.claude-sonnet-4-6:1m`) is usually the best choice, even if you've configured a smaller, cheaper model for summarization.
 
 The Chat panel includes a **Model** selector that defaults to the `chat.model` in the current configuration of the profile that processed the document (its current revision, which may be newer than the one the document ran under). You can override the model for the current chat session via the dropdown. The list of selectable models comes from the `chat.model` enum in the configuration schema.
 
@@ -680,7 +710,7 @@ If a document is "too large for chat context window" — i.e. Bedrock returns an
 
 ### Chat history
 
-Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is used for the document contents across successive turns on the same document to reduce latency and cost.
+Your chat history is preserved while you remain on the Document Detail screen; leaving and returning erases it. Prompt caching is applied to the document contents across successive turns on the same document, so a turn that follows within five minutes can read them at the cache-read rate instead of the full input price. Its effect on latency has not been measured.
 
 ### Streaming & live status
 
@@ -689,7 +719,7 @@ Chat-with-Document runs as an asynchronous workflow so it can use long-latency l
 1. A **status pill** appears above the input area and transitions as the backend makes progress: **Queued → Loading document text → Querying {model} → Streaming response**.
 2. As soon as the model starts producing output, the assistant bubble appears with a blinking cursor and **tokens stream in** live (throttled to ~200 ms / 200-char batches server-side so the UI stays responsive under heavy throttling).
 3. When generation completes the status pill clears and the bubble finalizes with a timestamp and the model ID used.
-4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-profile scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, whether the chat turn is streamed or reaches the backend through the REST API; see [Scope Enforcement Points in the RBAC guide](./rbac.md#scope-enforcement-points).
+4. Errors render inline in the assistant bubble in red so you can see what went wrong without losing the context of the conversation. A configuration-profile scope denial — a document outside your `allowedConfigVersions` — is rendered the same way, on deployments where the chat turn reaches the backend through the REST API. Chat streamed from the Lambda Function URL is not restricted by that scope; see [Known Limitations in the RBAC guide](./rbac.md#known-limitations).
 
 The session is scoped to your user — other users cannot subscribe to or continue your chat session even if they know the session ID.
 
@@ -832,7 +862,8 @@ entry points:
   or **Delete** them. **More actions** offers **Mark all as read** and **Clear read**
   (which deletes every read message) without a selection. Each row's actions menu
   (**⋮**) opens, marks or deletes that one message. Opening a message shows its details
-  and marks it read; **Open related page** follows its link.
+  and marks it read; **Open related page** follows its link. The info icon opens a panel
+  describing the page.
 
 **Settings.** The settings button (gear icon) at the top right of the Inbox page opens
 **Inbox settings**, which lists the message types and lets you turn off the ones you
@@ -852,19 +883,18 @@ the cap is reached, the oldest read messages are removed first. Administrators s
 both in the configuration — see
 [Inbox message retention](configuration.md#inbox-message-retention).
 
-**What arrives in the Inbox.** HITL review queues post three kinds of message to the
-Annotator concerned, for production items and Test Studio documents alike:
+**What arrives in the Inbox.** HITL review queues post four kinds of message, for
+production items and Test Studio documents alike:
 
 | Type (Inbox settings) | Sent when |
 |---|---|
 | **Review item assigned to you** | An Admin assigns an item or document to you. |
 | **Your review claim was released** | An item you hold is unassigned, reassigned or moved by an Admin, or an Admin completes, rejects or removes it from review. |
 | **Task reminder** | An item or document assigned to you is still open after its queue's time limit; one reminder per assignment. |
+| **Review queue items waiting** | A document enters a review queue. Sent to the queue's members rather than to one Annotator, at most once per queue every 10 minutes. |
 
-Inbox settings also list **Review queue items waiting**, **Review claim expiring** and
-**Review claim expired**. This release does not send them: arrivals in a queue are
-announced to nobody (Admins see waiting work in Review Management), and assignments do
-not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
+Inbox settings also list **Review claim expiring** and **Review claim expired**. The
+accelerator does not send them, because assignments do not expire. See [Review queues](review-queues.md) for the queue workflow. Developers
 posting messages should read the
 [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md).
 
@@ -1050,7 +1080,7 @@ The web UI implementation includes several security features:
 - Session timeouts are enforced
 - CloudFront distribution uses secure configuration (or API Gateway with AWS-managed TLS for VPC-based hosting)
 - S3 buckets are configured with appropriate security policies
-- API access is controlled through Cognito (the REST API's User Pools authorizer) and, on the chat streaming Function URL, through IAM plus the user's Cognito ID token, which the function verifies
+- API access is controlled through Cognito (the REST API's User Pools authorizer) and IAM (the chat streaming Function URL)
 - Optional Web Application Firewall (WAF) protection for the REST API
 
 ### Web Application Firewall (WAF)

@@ -191,3 +191,56 @@ def test_pricing_with_invalid_price_values():
     assert invalid_cost is None, f"Expected NULL for invalid price, got {invalid_cost}"
     # Valid price returns the actual value
     assert valid_cost == 0.002, f"Expected 0.002, got {valid_cost}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("invalid_price", ["0x10", "nan", "1_000", ""])
+def test_an_entry_whose_every_price_is_invalid_still_matches(invalid_price):
+    """Its units are unpriced; the lookup does not move on to a shorter key.
+
+    A user table may key a Lambda hook on both the qualified and the bare name.
+    When every price in the longer entry was invalid the entry was left out of the
+    map, so the suffix walk carried on to the bare key and priced the unit from
+    it, while the web UI's cost panel keeps the entry and shows the unit unpriced
+    (``metering-cost.test.ts`` pins that side with the same table). An invalid
+    price is documented as unpriced until it is corrected.
+    """
+    config = IDPConfig.model_validate(
+        {
+            "pricing": [
+                {
+                    "name": "lambda_hook/GENAIIDP-hook",
+                    "units": [{"name": "pages", "price": invalid_price}],
+                },
+                {
+                    "name": "GENAIIDP-hook",
+                    "units": [{"name": "pages", "price": "0.01"}],
+                },
+            ]
+        }
+    )
+    reporter = SaveReportingData("test-bucket", config=config)
+
+    assert reporter._get_unit_cost("lambda_hook/GENAIIDP-hook", "pages") is None
+    # Non-vacuity: the shorter key is live and is what the walk used to reach.
+    assert reporter._get_unit_cost("GENAIIDP-hook", "pages") == 0.01
+
+
+@pytest.mark.unit
+def test_an_entry_with_no_units_still_matches():
+    """The same rule for ``units: []``, which the web UI also keeps as an entry."""
+    config = IDPConfig.model_validate(
+        {
+            "pricing": [
+                {"name": "lambda_hook/GENAIIDP-hook", "units": []},
+                {
+                    "name": "GENAIIDP-hook",
+                    "units": [{"name": "pages", "price": "0.01"}],
+                },
+            ]
+        }
+    )
+    reporter = SaveReportingData("test-bucket", config=config)
+
+    assert reporter._get_unit_cost("lambda_hook/GENAIIDP-hook", "pages") is None
+    assert reporter._get_unit_cost("GENAIIDP-hook", "pages") == 0.01

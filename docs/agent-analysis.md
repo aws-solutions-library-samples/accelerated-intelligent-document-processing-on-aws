@@ -19,7 +19,7 @@ The Agent Analysis feature provides intelligent data exploration and analysis ca
 - **Automated SQL Generation**: Analytics agents convert questions into optimized SQL queries
 - **Interactive Visualizations**: Generate charts, graphs, and tables from query results
 - **Real-time Analysis**: Get insights from your processed documents without manual data analysis
-- **Secure Code Execution**: Python visualization code runs in isolated AWS Bedrock AgentCore sandboxes
+- **Sandboxed Code Execution**: Python visualization code runs in AWS Bedrock AgentCore Code Interpreter sessions, which hold no AWS credentials and cannot reach public internet hosts, but can reach Amazon S3 in their own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **MCP Integration**: Connect external systems and tools via Model Context Protocol (MCP) servers
 
 https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/e2dea2c5-5eb1-42f6-9af5-469afd2135a7
 - **Intelligent Orchestration**: Automatic query routing based on content analysis and agent capabilities
 - **Multi-Agent Selection**: Select multiple agents simultaneously for complex analysis workflows
 - **MCP External Integration**: Connect custom external tools and systems via MCP servers
-- **Secure Architecture**: All code execution happens in AWS Bedrock AgentCore sandboxes, not in Lambda functions
+- **Sandboxed Architecture**: All code execution happens in AWS Bedrock AgentCore Code Interpreter sessions, not in Lambda functions; a session has no AWS credentials and cannot reach public internet hosts, but can reach Amazon S3 in its own region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **Database Schema Discovery**: Analytics agents automatically explore and understand your database structure
 - **Flexible Visualization**: Supports multiple chart types including bar charts, line charts, pie charts, and data tables
 - **Query History**: Track and manage previous questions through the web interface with agent selection memory
@@ -66,8 +66,8 @@ For data analysis queries, the Analytics Agent follows this workflow:
 
 1. **Database Discovery**: Agent explores database schema using `get_database_info` tool
 2. **SQL Generation**: Agent converts the question into optimized SQL queries with proper column quoting
-3. **Query Execution**: SQL queries are executed against Amazon Athena with results stored in S3
-4. **Data Processing**: Query results are securely transferred to AWS Bedrock AgentCore sandbox
+3. **Query Execution**: One read-only SQL statement at a time is executed against Amazon Athena, with results stored in S3
+4. **Data Processing**: The results of the last successful query are copied into the AWS Bedrock AgentCore sandbox
 5. **Visualization Generation**: Python code generates charts or tables from the data
 6. **Result Display**: Final visualizations are displayed in the web interface
 
@@ -75,11 +75,42 @@ For data analysis queries, the Analytics Agent follows this workflow:
 
 The Agent Analysis feature implements a security-first design:
 
-- **Sandboxed Execution**: All Python code runs in AWS Bedrock AgentCore, completely isolated from the rest of the AWS environment and the internet
+- **Sandboxed Execution**: All Python code runs in the AWS-managed Bedrock AgentCore Code Interpreter. A session holds no AWS credentials and cannot reach public internet hosts, but it can reach Amazon S3 in its own region; see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter)
 - **Secure Data Transfer**: Query results are transferred via S3 and AgentCore APIs, never through direct file system access
 - **Session Management**: Code interpreter sessions are properly managed and cleaned up after use
 - **Minimal Permissions**: Each component requests only the necessary AWS permissions
 - **Audit Trail**: Comprehensive logging and monitoring for security reviews
+
+#### Network reach of the Python interpreter
+
+The Python tool runs code on `aws.codeinterpreter.v1`, the AWS-managed interpreter
+the `bedrock_agentcore` SDK uses by default. What a session on it can reach is set by
+the managed service, not by this solution, and a session on that interpreter is not
+fully cut off from the network. Measured from a session in `us-west-2` on 2026-11-10:
+
+| From inside a session | Result |
+|---|---|
+| DNS lookup of a public name (`example.com`) | fails: the name does not resolve |
+| HTTPS GET to `https://example.com` | fails: the name does not resolve |
+| TCP connection to a public address (`1.1.1.1:443`) | fails: network unreachable |
+| DNS lookup of Amazon S3 in the session's region | succeeds |
+| HTTP PUT to a presigned URL for a bucket in the session's region | succeeds, and the object arrives in the bucket |
+| TCP connection to Amazon S3 in another region, or HTTPS to regional STS | fails: network unreachable |
+| TCP connection to other AWS endpoints in the region (DynamoDB, Lambda, Bedrock runtime, CloudWatch Logs), checked once by hand | fails: network unreachable |
+| Instance metadata service at `169.254.169.254` | answers (it issues a session token) but lists no role |
+| AWS credentials in the environment, in `~/.aws`, from the instance metadata service or a container credential endpoint | none present |
+
+So code running in a session has no credentials of its own and no general internet
+access, but it can send data to Amazon S3 in that region. The measured PUT went to a
+bucket in the same account; a presigned URL carries its own signature, so a bucket in
+another account in that region is expected to accept a PUT the same way, but that case
+was not measured. Treat the result of every query the agent runs as data that code in
+the session can read and can write to such a location. Only `us-west-2` was measured,
+and AWS endpoints other than those listed were not tested; another region may differ.
+
+To re-measure, run `make stacktest-sandbox-network` (it needs no stack, and creates
+and deletes its own bucket). It prints a pass/fail table against the posture above
+and exits 1 if the posture has changed.
 
 ### Data Flow
 
@@ -106,6 +137,12 @@ The analytics agent has access to four specialized tools:
 ### 2. Athena Query Tool
 
 - **Purpose**: Executes SQL queries against the analytics database
+- **Statements**: each call runs exactly one read-only statement — a `SELECT`
+  (optionally starting with `WITH`), or a `SHOW` or `DESCRIBE` statement for schema
+  discovery. Anything else (more than one statement, DDL, `INSERT`/`UPDATE`/`DELETE`/`MERGE`,
+  `UNLOAD`, `EXPLAIN`, `PREPARE`/`EXECUTE`, external or inline functions, table
+  functions, Lambda-backed catalogs, session statements) is refused before it reaches
+  Athena, and the agent is told why so it can rewrite the query
 - **Features**:
   - Automatic column name quoting for Athena compatibility
   - Query result storage in S3
@@ -114,14 +151,22 @@ The analytics agent has access to four specialized tools:
 
 ### 3. Code Sandbox Tool
 
-- **Purpose**: Securely transfers query results to AgentCore sandbox
-- **Security**: Isolated environment with no Lambda file system access
+- **Purpose**: Copies the results of the agent's most recent successful query into the
+  AgentCore sandbox as `query_results.csv`
+- **Input**: none. The tool takes no S3 location; it reads only the result object Athena
+  reported for the last query the agent ran successfully, refuses when there is none,
+  and names that query in its reply
+- **Environment**: Runs in the Code Interpreter session, with no access to the Lambda file system, no AWS credentials, and no public internet access, though it can reach Amazon S3 in the session's region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 - **Data Format**: CSV files containing query results
 
 ### 4. Python Execution Tool
 
 - **Purpose**: Generates visualizations and tables from query data
-- **Libraries**: Pandas, Matplotlib, and other standard Python libraries
+- **Libraries**: Pandas, NumPy, Matplotlib and standard-library computation modules.
+  Code that imports anything else, evaluates code dynamically, reaches module
+  internals, contains a URL, or reads or writes a path other than a literal file name
+  in the working directory is returned to the agent with an error instead of being run.
+  This is a check on the code's text, not a sandbox boundary
 - **Output**: JSON-formatted charts and tables for web display
 
 ## Using Agent Analysis
@@ -316,7 +361,7 @@ Key configuration settings:
 1. **Data Access**: Only authenticated users can access analytics features
 2. **Query Isolation**: Each user's queries are isolated and tracked separately
 3. **Audit Logging**: All queries and results are logged for security reviews
-4. **Sandbox Security**: Python code execution is completely isolated from system resources
+4. **Sandbox Reach**: Python code runs with no AWS credentials and no public internet access, but it can reach Amazon S3 in the session's region (see [Network reach of the Python interpreter](#network-reach-of-the-python-interpreter))
 
 ## Troubleshooting
 
@@ -384,10 +429,3 @@ The Agent Analysis feature has access to _all_ tables that the GenAIIDP stores i
 - Explore confidence scores across document types
 - Identify low-confidence extractions requiring review
 - Analyze relationships between confidence and accuracy
-
-## Future Enhancements
-
-Planned improvements for the Agent Analysis feature include:
-
-- **Dashboard Creation**: Save and share custom analytics dashboards
-- **Possible KB Unification**: Have one chat box in the UI which is capable of answering questions based either on the knowledge base (with semantic abilities), or on the Athena tables.

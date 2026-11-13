@@ -17,12 +17,27 @@ import uuid
 from datetime import datetime
 
 import boto3
-from boto3.dynamodb.conditions import Key
 import botocore.exceptions
 from idp_common.agents.analytics import get_analytics_config
 from idp_common.config_scope import unscoped_is_denied
 from idp_common.agents.common.config import configure_logging
 from idp_common.agents.factory import agent_factory
+from idp_common.chat_session_agents import (
+    SESSION_DATA_RESULTS_EVENT,
+    SESSION_REPLACED_EVENT,
+    SessionAgentGate,
+    needs_new_session,
+    opt_in_of,
+    requested_opt_ins,
+    select_orchestrator_agent_ids,
+)
+from idp_common.chat_session_owner import (
+    claim_chat_session,
+    has_stored_messages,
+    holds_data_results,
+    holds_session_row,
+    record_data_results,
+)
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 # Import Bedrock error handling
@@ -45,6 +60,7 @@ logger = logging.getLogger(__name__)
 
 _CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 _CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
+_CHAT_SESSION_OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE")
 _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
 # Agent Chat is available to Admin/Author/Viewer. This deployment declares FIVE
@@ -97,11 +113,10 @@ def _enforce_agent_chat_groups(event):
     real 403 before the response is committed. This copy of the check remains the
     last line of defence for any invocation that reaches the function directly.
 
-    Invocations with no ``identity`` are not group-checked: that is a direct
-    ``lambda:InvokeFunction``, gated by IAM instead. Both chat routes forward
-    verified claims: the resolver the dispatcher's, and the streaming Function
-    URL those of the ID token it verified (``_caller_identity`` in
-    src/lambda/chat_stream_processor/app.py).
+    Invocations with no ``identity`` are not group-checked: they are the backend
+    paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,
+    whose transport forwards no Cognito group claim — see ``_caller_identity`` in
+    src/lambda/chat_stream_processor/app.py). Those are gated by IAM instead.
     """
     if event.get("identity") is None:
         return
@@ -129,63 +144,127 @@ def _enforce_agent_chat_groups(event):
         raise PermissionError("Unauthorized: Quick Start requires the Admin group")
 
 
-def _session_belongs_to_another_user(session_id, user_id):
-    """True when ``session_id`` is in use but ``user_id`` holds no session for it.
+def _owner_sub(event):
+    """The Cognito ``sub`` of the signed-in user this turn belongs to, or ``""``.
 
-    A conversation's messages and agent memory are keyed by the session id alone,
-    and only the session list is keyed by user, so the session record is the one
-    statement of who owns a conversation. An id is in use when it has messages or
-    agent memory; memory is checked as well because it outlives the messages. An
-    id with neither is a new conversation. Any failure to tell reads as another
-    user's, so the turn is refused rather than served.
+    Read from ``identity``, which only an invoking transport sets: the
+    agent_chat resolver forwards the claims API Gateway verified, and the
+    streaming endpoint forwards the claims of the ID token it verified. A
+    request-body value is never a source for it. ``""`` for an invocation with no
+    identity, which then runs with no memory and stores nothing.
     """
-    if not _CHAT_MESSAGES_TABLE or not _CHAT_SESSIONS_TABLE:
+    identity = event.get("identity")
+    if not isinstance(identity, dict):
+        return ""
+    return str((identity.get("claims") or {}).get("sub") or "")
+
+
+def _enforce_session_owner(event, session_id, owner_sub, caller_sub):
+    """Refuse a turn on a session id another user owns, before memory loads.
+
+    Registers the id to the caller when nobody owns it yet and it has no stored
+    history (see ``idp_common.chat_session_owner``). The entry paths make the same
+    check first — the agent_chat resolver before it stores the user message, the
+    streaming endpoint before it opens the stream — so this is the same rule
+    applied where the work happens. Deliberately outside the handler's
+    ``try``, for the reason ``_enforce_agent_chat_groups`` is: inside it a
+    refusal would become an error message rather than a refusal.
+
+    Fails closed: with the owner table unconfigured, or a DynamoDB error, the
+    turn is refused rather than run against history nobody could attribute.
+    """
+    if not owner_sub:
+        return
+    if not session_id:
+        return  # rejected by the handler's own parameter validation
+    if not (_CHAT_SESSION_OWNERS_TABLE and _CHAT_MESSAGES_TABLE and _CHAT_SESSIONS_TABLE):
+        raise PermissionError(
+            "Unauthorized: chat session ownership cannot be verified on this "
+            "deployment"
+        )
+    dynamodb = boto3.resource("dynamodb")
+    messages_table = dynamodb.Table(_CHAT_MESSAGES_TABLE)
+    sessions_table = dynamodb.Table(_CHAT_SESSIONS_TABLE)
+    owned = claim_chat_session(
+        dynamodb.Table(_CHAT_SESSION_OWNERS_TABLE),
+        session_id,
+        owner_sub,
+        expires_after=int(time.time()) + (_DATA_RETENTION_DAYS * 24 * 60 * 60),
+        allow_new=True,
+        has_stored_messages=lambda: has_stored_messages(messages_table, session_id),
+        holds_earlier_record=lambda: holds_session_row(
+            sessions_table, caller_sub, session_id
+        ),
+    )
+    if not owned:
+        logger.warning("Rejecting agent chat: the session belongs to another user")
+        raise PermissionError("Unauthorized: this chat session belongs to another user")
+
+
+def _owners_table():
+    return boto3.resource("dynamodb").Table(_CHAT_SESSION_OWNERS_TABLE)
+
+
+def _session_holds_data_results(session_id, owner_sub):
+    """Whether this session already holds Analytics or Error Analyzer results.
+
+    Read from the session's owner row (``idp_common.chat_session_owner``). False
+    for a turn with no signed-in user: such a turn is built without memory, so no
+    earlier result reaches it. A read that fails answers True, which leaves
+    the opt-in agents out of this turn, or moves an opt-in turn to a new
+    session where the processor persists the turn itself.
+    """
+    if not owner_sub or not session_id:
         return False
     try:
-        dynamodb = boto3.resource("dynamodb")
-        owned = (
-            dynamodb.Table(_CHAT_SESSIONS_TABLE)
-            .get_item(Key={"userId": user_id, "sessionId": session_id})
-            .get("Item")
-        )
-        if owned:
-            return False
-        earlier = dynamodb.Table(_CHAT_MESSAGES_TABLE).query(
-            KeyConditionExpression=Key("PK").eq(session_id),
-            ProjectionExpression="PK",
-            Limit=1,
-        )
-        if earlier.get("Items"):
-            return True
-        memory_table = os.environ.get("ID_HELPER_CHAT_MEMORY_TABLE")
-        if not memory_table:
-            return False
-        memory = dynamodb.Table(memory_table).query(
-            KeyConditionExpression=Key("PK").eq(f"conversation#{session_id}"),
-            ProjectionExpression="PK",
-            Limit=1,
-        )
-        return bool(memory.get("Items"))
+        return holds_data_results(_owners_table(), session_id)
     except Exception as e:
-        logger.error(f"Could not verify ownership of chat session {session_id}: {e}")
+        logger.warning(
+            f"Could not read the data-results flag for session {session_id}; "
+            f"leaving opt-in agents out of this turn: {e}"
+        )
         return True
 
 
-def _refuse_foreign_session(event):
-    """Refuse a turn for a session that belongs to another user.
-
-    Applies to callers whose identity a chat route verified; a direct
-    ``lambda:InvokeFunction`` carries none and is gated by IAM. The REST resolver
-    applies the same check before it stores anything, and the streaming route
-    applies this one before its stream opens.
-    """
-    if event.get("identity") is None:
+def _emit_session_event(session_id, method, content=""):
+    """Send a session-level event to the stream, when one is attached."""
+    if _active_sink is None:
         return
-    session_id = event.get("sessionId") or ""
-    user_id = event.get("callerSub") or ""
-    if not user_id or _session_belongs_to_another_user(session_id, user_id):
-        logger.warning("Rejecting agent chat: session %s is not the caller's", session_id)
-        raise PermissionError("Unauthorized: this chat session belongs to another user")
+    try:
+        _active_sink(
+            session_id=str(session_id),
+            content=content,
+            method=method,
+            is_processing=True,
+            tool_metadata=None,
+        )
+    except Exception as e:
+        logger.warning(f"Could not send {method} event: {e}")
+
+
+def _data_results_recorder(session_id, owner_sub):
+    """What the turn's gate calls the first time a data agent returns a result.
+
+    Writes the flag on the session's owner row and tells the stream. Raises when
+    the flag could not be written, so the orchestrator withholds the result
+    instead of carrying it into memory unrecorded. ``None`` for a turn with no
+    signed-in user, which has no memory to carry anything forward.
+    """
+    if not owner_sub:
+        return None
+
+    def record():
+        if not record_data_results(
+            _owners_table(), session_id, owner_sub, int(time.time())
+        ):
+            raise RuntimeError(
+                "the session's owner record is missing, so its data results "
+                "could not be recorded"
+            )
+        logger.info(f"Session {session_id} now holds data-agent results")
+        _emit_session_event(session_id, SESSION_DATA_RESULTS_EVENT)
+
+    return record
 
 
 def _persist_chat_turn(
@@ -1176,7 +1255,11 @@ def handler(event, context):
     # 500 return, which would turn a denial into an application error. Raising
     # PermissionError here matches the resolver so the dispatcher maps it to 403.
     _enforce_agent_chat_groups(event)
-    _refuse_foreign_session(event)
+    # The user this turn belongs to, and the id their session list is filed
+    # under. Both come from the invoking transport, never from the request body.
+    owner_sub = _owner_sub(event)
+    caller_sub = event.get("callerSub", "") if owner_sub else ""
+    _enforce_session_owner(event, event.get("sessionId"), owner_sub, caller_sub)
 
     try:
         # Use cached boto3 session for warm Lambda containers (significant performance improvement)
@@ -1189,8 +1272,14 @@ def handler(event, context):
         # to a third-party MCP service, so callers must opt in explicitly.
         # `is True` so a non-boolean in the invoke payload cannot opt in.
         enable_code_intelligence = event.get("enableCodeIntelligence") is True
+        # Default off for the same reason: External MCP agents send their query
+        # to a server outside the deployment.
+        enable_external_mcp_agents = event.get("enableExternalMcpAgents") is True
+        opt_ins = requested_opt_ins(
+            enable_code_intelligence=enable_code_intelligence,
+            enable_external_mcp_agents=enable_external_mcp_agents,
+        )
         method = event.get("method", "chat")
-        caller_sub = event.get("callerSub", "")
         # False when invoked by the agent_chat resolver (non-streaming path),
         # which already stored the user message + session metadata itself.
         persist_user_message = event.get("persistUserMessage", True)
@@ -1200,6 +1289,48 @@ def handler(event, context):
             error_msg = "prompt and sessionId are required"
             logger.error(error_msg)
             raise Exception(error_msg)
+
+        # A session whose conversation holds Analytics or Error Analyzer results
+        # never gets an opt-in agent (Code Intelligence, External MCP), because
+        # memory replays those results into every later turn. A request that opts
+        # in on such a session moves to a new session, which starts with empty
+        # memory. Only a caller that persists the turn here can do that; on the
+        # resolver path the resolver moves the turn before storing the user
+        # message, and anything that still arrives here just runs without them.
+        holds = _session_holds_data_results(session_id, owner_sub)
+        # Quick Start runs its own agent alone, with no opt-in agent to move for.
+        if method != "quick_start" and needs_new_session(
+            holds_data_results=holds, opt_ins=opt_ins
+        ):
+            if persist_user_message:
+                previous_session_id = session_id
+                session_id = str(uuid.uuid4())
+                _enforce_session_owner(event, session_id, owner_sub, caller_sub)
+                # So an error reported below goes to the session the turn is in.
+                event = {**event, "sessionId": session_id}
+                holds = False
+                logger.info(
+                    f"Session {previous_session_id} holds data-agent results; "
+                    f"this turn opts in to {sorted(opt_ins)} and runs in new "
+                    f"session {session_id}"
+                )
+                _emit_session_event(
+                    session_id,
+                    SESSION_REPLACED_EVENT,
+                    json.dumps(
+                        {
+                            "sessionId": session_id,
+                            "previousSessionId": previous_session_id,
+                        }
+                    ),
+                )
+            else:
+                logger.info(
+                    f"Session {session_id} holds data-agent results; opt-in agents "
+                    "are left out of this turn"
+                )
+        if holds:
+            _emit_session_event(session_id, SESSION_DATA_RESULTS_EVENT)
         
         # Get analytics configuration (used by agents)
         config = get_analytics_config()
@@ -1218,16 +1349,32 @@ def handler(event, context):
         if method == "quick_start" and not use_direct_quick_start:
             logger.warning(
                 "Quick Start mode requested but Quick-Start-Agent not registered; "
-                "falling back to full agent list"
+                "falling back to the chat agent list"
             )
-        elif method != "quick_start":
-            if QUICK_START_AGENT_ID in agent_ids:
-                agent_ids.remove(QUICK_START_AGENT_ID)
-            # Filter out Code Intelligence Agent if not enabled by user
-            CODE_INTELLIGENCE_AGENT_ID = "Code-Intelligence-Agent"
-            if not enable_code_intelligence and CODE_INTELLIGENCE_AGENT_ID in agent_ids:
-                agent_ids.remove(CODE_INTELLIGENCE_AGENT_ID)
-                logger.info("Code Intelligence Agent disabled by user, excluding from orchestrator")
+        if not use_direct_quick_start:
+            # Opt-in agents only when the request opts in to their kind, and
+            # never in a session holding data-agent results.
+            agent_ids = select_orchestrator_agent_ids(
+                all_agents, opt_ins=opt_ins, holds_data_results=holds
+            )
+        # Shared by the orchestrator's tools for this turn: the first data-agent
+        # result flags the session and closes the opt-in agents for the rest of
+        # the turn too.
+        session_gate = SessionAgentGate(
+            holds_data_results=holds,
+            opt_in_agent_ids=[
+                agent["agent_id"] for agent in all_agents if opt_in_of(agent)
+            ],
+            record=_data_results_recorder(session_id, owner_sub),
+            # Another turn on this session may record a data result after the
+            # read above; the gate reads the flag again before an opt-in agent
+            # runs.
+            recheck=(
+                (lambda: _session_holds_data_results(session_id, owner_sub))
+                if owner_sub
+                else None
+            ),
+        )
 
         if use_direct_quick_start:
             logger.info("Quick Start mode: running Quick-Start-Agent directly with memory")
@@ -1236,6 +1383,7 @@ def handler(event, context):
                 session_id=session_id,
                 config=config,
                 session=session,
+                user_id=owner_sub,
             )
             logger.info(f"Conversational Quick Start agent created for session {session_id}")
         else:
@@ -1245,7 +1393,9 @@ def handler(event, context):
                 agent_ids=agent_ids,
                 session_id=session_id,
                 config=config,
-                session=session
+                session=session,
+                user_id=owner_sub,
+                session_gate=session_gate,
             )
             logger.info(f"Conversational orchestrator created for session {session_id}")
         

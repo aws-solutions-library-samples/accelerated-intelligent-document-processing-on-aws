@@ -6,14 +6,15 @@
 ``resolve_config_assignment`` is a pure function with three injected callables —
 ``active_profile``, ``published_revision`` and ``profile_exists``. It is
 deterministic, so two callers asking about the same object can only disagree if
-their *inputs* differ, and the inputs that differ are the seams. Four artifacts
-call it, and three of them answer a question the fourth will answer again a moment
+their *inputs* differ, and the inputs that differ are the seams. Five artifacts
+call it, and four of them answer a question ingest will answer again a moment
 later about the same S3 object:
 
 * ``upload_resolver`` decides whether to mint a presigned POST,
 * the configuration resolver's dry run tells the UI what will happen,
 * ``queue_sender`` does it for real at ingest,
-* the reprocess resolver does it for a re-run.
+* the reprocess resolver does it for a re-run,
+* the MCP ``process`` tool decides whether a scoped caller's document is written.
 
 **The resolver's own suite cannot see any of this**, by construction: it tests the
 function given its arguments, and the defect is in which arguments get passed. That
@@ -72,6 +73,10 @@ CALL_SITES = {
     ),
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": (
         "re-resolves on a re-run"
+    ),
+    "src/lambda/agentcore_mcp_handler/tools/batch_run.py": (
+        "the MCP process tool's check, for a caller with a configuration scope, of "
+        "the object ingest will then resolve"
     ),
 }
 
@@ -135,7 +140,7 @@ def test_every_call_site_injects_every_seam(rel):
 
 #: Whether each call site hands the resolver a caller scope, and why.
 #:
-#: `allowed_profiles` is deliberately NOT in SEAMS: two of the four must omit it.
+#: `allowed_profiles` is deliberately NOT in SEAMS: two of the five must omit it.
 #: But omission and provision are both decisions, and an unrecorded flip either way
 #: is an authorization change -- so the shape is asserted rather than assumed.
 SCOPE_BEARING = {
@@ -157,6 +162,11 @@ SCOPE_BEARING = {
     "nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py": (
         True,
         "a mapping must not move a scoped caller's document out of their scope",
+    ),
+    "src/lambda/agentcore_mcp_handler/tools/batch_run.py": (
+        True,
+        "the MCP caller exists and this decides whether their document is written "
+        "to the Input bucket at all; it runs only for a caller with a scope",
     ),
 }
 

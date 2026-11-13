@@ -250,6 +250,31 @@ class TestFailuresAreDistinguishableFromCleanRuns:
         assert cov_all.main() == 0
         assert "tests failed" not in capsys.readouterr().out
 
+    def test_an_empty_tree_fails_when_this_run_is_the_gate(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """Under ``--fail-on-empty`` a tree that collects nothing is a named failure.
+
+        In CI this script is the only run of most of these suites, so a tree whose
+        collection silently empties (a renamed directory, a marker that stops matching)
+        would otherwise pass with a report that measured nothing.
+        """
+        tree = _fake_tree(tmp_path, "alpha")
+        _install(monkeypatch, tmp_path, [tree], _Recorder(returncode=5))
+        monkeypatch.setattr(sys, "argv", ["coverage_all.py", "--fail-on-empty"])
+        assert cov_all.main() == 1
+        assert "tests failed in: alpha" in capsys.readouterr().out
+
+    def test_the_ci_target_is_the_gate(self):
+        """``make coverage-all-cicd`` is the CI producer, so it must pass the flag."""
+        makefile = (REPO_ROOT / "Makefile").read_text(encoding="utf-8")
+        recipe = makefile.split("\ncoverage-all-cicd:", 1)[1].split("\n\n", 1)[0]
+        assert "scripts/coverage_all.py" in recipe
+        assert "--fail-on-empty" in recipe, (
+            "coverage-all-cicd no longer passes --fail-on-empty, so a suite that "
+            "collects nothing passes the only CI run it has"
+        )
+
     def test_a_real_test_failure_exits_one_and_names_the_tree(
         self, monkeypatch, tmp_path, capsys
     ):
@@ -1690,3 +1715,81 @@ class TestTheRunIsPinnedToThisCheckout:
         path = captured.get("PYTHONPATH", "")
         assert path.endswith(":/somewhere/else"), path
         assert path.startswith(cov_all.first_party_pythonpath()), path
+
+
+def _active_core(env: dict[str, str], tmp_path: Path, *extra: str) -> str:
+    """The core coverage reports it measured with, under ``env``, for a trivial script.
+
+    Read from ``--debug=sys`` rather than from coverage's private collector, because
+    that is coverage's own published statement of which core it chose — including when
+    it was asked for one it cannot use and fell back.
+    """
+    probe = tmp_path / "probe.py"
+    probe.write_text("x = 1\n")
+    env = {**env, "COVERAGE_FILE": str(tmp_path / ".coverage")}
+    result = subprocess.run(
+        [sys.executable, "-m", "coverage", "run", "--debug=sys", *extra, str(probe)],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        check=True,
+    )
+    # The debug block goes to stderr; read both so a change of stream cannot empty it.
+    out = result.stdout + result.stderr
+    cores = [
+        line.split(":", 1)[1].strip()
+        for line in out.splitlines()
+        if line.strip().startswith("core:")
+    ]
+    assert cores, f"coverage --debug=sys printed no `core:` line:\n{out}"
+    return cores[0]
+
+
+@pytest.mark.unit
+def test_the_configured_core_is_the_one_coverage_uses(tmp_path: Path) -> None:
+    """The environment every measured run gets really selects ``sys.monitoring``.
+
+    An unsupported core is not an error: coverage warns and uses the C tracer, and an
+    older coverage ignores the variable outright. Either way every run would be green
+    and simply three times slower, which nothing else would notice. Asserting the
+    variable's spelling would pass in exactly those cases, so this asks coverage.
+    """
+    # An empty base environment, so a deliberate `COVERAGE_CORE=ctrace` comparison run
+    # of this suite measures the default this asserts rather than its own override.
+    env = cov_all.subprocess_coverage_env(tmp_path, tmp_path, env={})
+    assert env["COVERAGE_CORE"] == cov_all.COVERAGE_CORE
+    assert _active_core(env, tmp_path) == "SysMonitor"
+
+
+@pytest.mark.unit
+def test_the_probe_can_tell_the_cores_apart(tmp_path: Path) -> None:
+    """Without this, the assertion above would pass if the probe misread every core.
+
+    Branch measurement is the case coverage itself refuses under ``sysmon`` before
+    Python 3.14, so on the interpreter CI runs it must report the C tracer.
+    """
+    env = cov_all.subprocess_coverage_env(
+        tmp_path, tmp_path, env={"COVERAGE_CORE": "ctrace"}
+    )
+    assert env["COVERAGE_CORE"] == "ctrace", "a caller's own core must be kept"
+    # PyTracer is what a coverage build without its C extension reports; either way
+    # the probe has told the cores apart, which is the property under test.
+    assert _active_core(env, tmp_path) in {"CTracer", "PyTracer"}
+    if sys.version_info < (3, 14):
+        sysmon = cov_all.subprocess_coverage_env(tmp_path, tmp_path, env={})
+        assert _active_core(sysmon, tmp_path, "--branch") in {"CTracer", "PyTracer"}
+
+
+@pytest.mark.unit
+def test_the_idp_common_suite_uses_the_same_core() -> None:
+    """``make test-cicd -C lib/idp_common_pkg`` is the other coverage producer.
+
+    It is not started by this script, so it names the core itself. Pinned to the same
+    constant so the two producers cannot drift onto different cores.
+    """
+    makefile = (REPO_ROOT / "lib" / "idp_common_pkg" / "Makefile").read_text()
+    assert f"export COVERAGE_CORE ?= {cov_all.COVERAGE_CORE}\n" in makefile, (
+        "lib/idp_common_pkg/Makefile no longer exports the coverage core this "
+        "script uses, so the idp_common suite is measured by the slower C tracer"
+    )

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal, Optional, Union
+from typing import Any, Dict, Literal, Mapping, Optional, Tuple, Union
 
 
 class ReviewStatus(str, Enum):
@@ -66,6 +66,25 @@ SKIP_ALL_REASONS = (
     "Other (see note)",
 )
 
+
+#: Why a finished production document is sent to a review queue by hand (Send to
+#: review). Recorded with the item; the web UI offers the same list
+#: (``SEND_TO_REVIEW_REASONS`` in ``src/ui/src/components/common/review-status.ts``).
+SEND_TO_REVIEW_REASONS = (
+    "Spot check",
+    "Suspected extraction error",
+    "Customer or downstream query",
+    "Other (see note)",
+)
+
+#: Queue dispositions that finish a document with its machine results (no draft is
+#: applied): an Admin's Remove from queue, and Skip All Reviews on a queue item.
+MACHINE_RESULT_DISPOSITIONS = frozenset({"removed", "skipped"})
+
+#: The refusal, in the ``CODE: message`` shape the UI reads (``reviewErrorCode``).
+QUEUE_MANAGED_MESSAGE = (
+    "QUEUE_MANAGED: this document is in a review queue; work it from Review Queues"
+)
 
 #: Legacy statuses meaning "a review is still owed".
 LEGACY_PENDING = frozenset(
@@ -186,3 +205,108 @@ def review_status_for_state(
 ) -> Optional[ReviewStatus]:
     """Consumer-facing status for a queue item state (``None`` = withdrawn)."""
     return _STATE_TO_STATUS[QueueItemState(state)]
+
+
+#: Legacy HITL statuses that make a document part of a Reviewer's working set.
+#: ``Review Pending`` is what ``releaseReview`` writes: a released review goes back
+#: to the queue for another Reviewer to claim. Matched exactly by both document-list
+#: resolvers, so the two lists agree row for row.
+REVIEWER_ACTIVE_STATUSES = (
+    LegacyHitlStatus.PENDING_REVIEW.value,
+    LegacyHitlStatus.REVIEW_PENDING.value,
+    LegacyHitlStatus.IN_PROGRESS.value,
+    LegacyHitlStatus.REVIEW_IN_PROGRESS.value,
+)
+
+
+def is_review_finished(hitl_status: Any) -> bool:
+    """Whether a stored ``HITLStatus`` says the document's review has finished.
+
+    A legacy review completed or skipped, or a queue review that ended complete or
+    rejected. ``COMPLETED`` is the one finished spelling a real writer stored that
+    the exact-match normaliser does not know (the earlier SageMaker A2I flow);
+    retained rows may still carry it. The web UI's ``isHitlReviewFinished`` is the
+    same rule.
+    """
+    return (
+        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
+        or hitl_status == "COMPLETED"
+    )
+
+
+#: Every stored ``HITLStatus`` value :func:`is_review_finished` accepts, derived
+#: from the declared vocabularies through the rule so a condition or filter
+#: expression can test it. Exact values: the normaliser also accepts surrounding
+#: whitespace, which no writer stores.
+FINISHED_HITL_STATUSES: Tuple[str, ...] = tuple(
+    sorted(
+        value
+        for value in {
+            *(s.value for s in ReviewStatus),
+            *(s.value for s in LegacyHitlStatus),
+            "COMPLETED",
+        }
+        if is_review_finished(value)
+    )
+)
+
+
+def is_review_raised(row: Mapping[str, Any]) -> bool:
+    """Whether a review was raised on a tracking row, finished or not.
+
+    The web UI's ``hitlTriggered`` (``map-document-attributes.ts``): ``HITLTriggered``
+    is true, or ``HITLStatus`` is a non-empty string other than ``N/A``.
+    """
+    status = row.get("HITLStatus")
+    return row.get("HITLTriggered") is True or (
+        isinstance(status, str) and status not in ("", "N/A")
+    )
+
+
+def is_legacy_review_pending(row: Mapping[str, Any]) -> bool:
+    """Whether a tracking row holds a legacy (non-queue) review still owed.
+
+    Raised, not finished, not ``HITLCompleted``, and not a review-queue status.
+    """
+    status = row.get("HITLStatus")
+    return (
+        is_review_raised(row)
+        and not is_review_finished(status)
+        and row.get("HITLCompleted") is not True
+        and not normalize_hitl_status(status).queue_managed
+    )
+
+
+def pending_filter_expression(
+    profile_placeholder: str = ":pf_profile",
+) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    """``(filter, names, values)`` selecting a profile's raised, unfinished reviews.
+
+    The DynamoDB form of :func:`is_review_raised` and not :func:`is_review_finished`
+    and not ``HITLCompleted``, for a document-index query. Queue-managed rows
+    (``in_review``) are included: whether a queue item can be acted on is decided
+    per document from the item itself. The caller supplies the profile value under
+    ``profile_placeholder``; every other placeholder starts with ``:pf_``.
+    """
+    finished = {f":pf_fin{i}": value for i, value in enumerate(FINISHED_HITL_STATUSES)}
+    expression = (
+        f"#pf_cv = {profile_placeholder} AND "
+        "(#pf_trig = :pf_true OR (attribute_type(#pf_st, :pf_type) "
+        "AND #pf_st <> :pf_empty AND #pf_st <> :pf_na)) AND "
+        "NOT (#pf_done = :pf_true) AND "
+        f"NOT (#pf_st IN ({', '.join(finished)}))"
+    )
+    names = {
+        "#pf_cv": "ConfigVersion",
+        "#pf_trig": "HITLTriggered",
+        "#pf_st": "HITLStatus",
+        "#pf_done": "HITLCompleted",
+    }
+    values: Dict[str, Any] = {
+        ":pf_true": True,
+        ":pf_type": "S",
+        ":pf_empty": "",
+        ":pf_na": "N/A",
+        **finished,
+    }
+    return expression, names, values

@@ -8,6 +8,11 @@
  * without ground truth are added unlabeled rather than skipped; the dialog names
  * them before anything is submitted, and warns when they would turn a labeled
  * set unlabeled.
+ *
+ * The Document List's "Add to test set" action opens the same dialog the other
+ * way round: the documents are already chosen (`preselected`) and the set is not,
+ * so a test-set picker replaces the fixed target and nothing is listed from the
+ * API. Both entry points share the warnings and the one mutation.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -15,17 +20,20 @@ import {
   Alert,
   Box,
   Button,
+  FormField,
   Header,
   Modal,
   Pagination,
   SpaceBetween,
+  Select,
   StatusIndicator,
   Table,
   TextFilter,
 } from '@cloudscape-design/components';
-import type { TableProps } from '@cloudscape-design/components';
+import type { SelectProps, TableProps } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 import { generateClient } from '../../api/client-shim';
 import { addDocumentsToTestSetByKey, getTestSets, listDocuments } from '../../graphql/generated';
@@ -41,6 +49,89 @@ const PAGE_SIZE = 10;
 /** Unlabeled documents named in full before the list collapses to a count. */
 const MAX_LISTED = 10;
 
+const messages = defineMessages<{
+  pickerHeader: NoMessageValues;
+  pickerIntro: NoMessageValues;
+  testSetLabel: NoMessageValues;
+  testSetDescription: NoMessageValues;
+  testSetPlaceholder: NoMessageValues;
+  testSetsLoading: NoMessageValues;
+  testSetsEmpty: NoMessageValues;
+  testSetsLoadError: { readonly error: string };
+  testSetDocumentCount: { readonly count: number };
+  testSetUnavailable: { readonly status: string };
+  selectedHeader: NoMessageValues;
+  notCompletedHeader: { readonly count: number };
+  notCompletedBody: NoMessageValues;
+}>({
+  pickerHeader: {
+    id: 'testStudio.addProcessedDocuments.pickerHeader',
+    defaultMessage: 'Add documents to a test set',
+    description: 'Header of the add-to-test-set dialog opened from the Document List, before a test set is chosen.',
+  },
+  pickerIntro: {
+    id: 'testStudio.addProcessedDocuments.pickerIntro',
+    defaultMessage:
+      'Each selected document is copied into the test set together with any ground truth already saved for it. One without ground truth is added unlabeled, so it can be draft-labeled in Test Studio afterwards. Documents already in the set are skipped, so labels reviewed there are kept.',
+    description: 'Introduction of the add-to-test-set dialog opened from the Document List, where the documents are already chosen.',
+  },
+  testSetLabel: {
+    id: 'testStudio.addProcessedDocuments.testSetLabel',
+    defaultMessage: 'Test set',
+    description: 'Label of the field that chooses which test set the selected documents are added to.',
+  },
+  testSetDescription: {
+    id: 'testStudio.addProcessedDocuments.testSetDescription',
+    defaultMessage: 'The documents are added to an existing test set. To start a new set, create it in Test Studio first.',
+    description: 'Help text under the test set field in the add-to-test-set dialog.',
+  },
+  testSetPlaceholder: {
+    id: 'testStudio.addProcessedDocuments.testSetPlaceholder',
+    defaultMessage: 'Choose a test set',
+    description: 'Placeholder of the test set field before one is chosen.',
+  },
+  testSetsLoading: {
+    id: 'testStudio.addProcessedDocuments.testSetsLoading',
+    defaultMessage: 'Loading test sets',
+    description: 'Shown in the test set field while the list of test sets loads.',
+  },
+  testSetsEmpty: {
+    id: 'testStudio.addProcessedDocuments.testSetsEmpty',
+    defaultMessage: 'There are no test sets yet. Create one in Test Studio first.',
+    description: 'Shown in the test set field when no test set exists.',
+  },
+  testSetsLoadError: {
+    id: 'testStudio.addProcessedDocuments.testSetsLoadError',
+    defaultMessage: 'Could not load test sets: {error}',
+    description: 'Error shown when the list of test sets fails to load. {error} is the error message from the server.',
+  },
+  testSetDocumentCount: {
+    id: 'testStudio.addProcessedDocuments.testSetDocumentCount',
+    defaultMessage: '{count, plural, one {# document} other {# documents}}',
+    description: 'Description of a test set option: how many documents the set already holds.',
+  },
+  testSetUnavailable: {
+    id: 'testStudio.addProcessedDocuments.testSetUnavailable',
+    defaultMessage: 'Unavailable while its status is {status}',
+    description: 'Why a test set option cannot be chosen. {status} is the test set status, such as UPDATING.',
+  },
+  selectedHeader: {
+    id: 'testStudio.addProcessedDocuments.selectedHeader',
+    defaultMessage: 'Selected documents',
+    description: 'Header of the table listing the documents chosen on the Document List.',
+  },
+  notCompletedHeader: {
+    id: 'testStudio.addProcessedDocuments.notCompletedHeader',
+    defaultMessage: '{count, plural, one {# selected document is not included} other {# selected documents are not included}}',
+    description: 'Header of a notice listing selected documents that are left out because they have not finished processing.',
+  },
+  notCompletedBody: {
+    id: 'testStudio.addProcessedDocuments.notCompletedBody',
+    defaultMessage: 'Only documents that finished processing can be added to a test set.',
+    description: 'Body of the notice about selected documents that are left out.',
+  },
+});
+
 const LABEL_STATE_TEXT: Record<string, string> = {
   labeled: 'labeled',
   draft: 'draft-labeled',
@@ -53,20 +144,43 @@ export interface ProcessedDocument {
   configVersion: string;
 }
 
-interface TargetState {
+/** A document chosen before the dialog opened, with the status that decides whether it can be added. */
+export interface PreselectedDocument extends ProcessedDocument {
+  objectStatus: string;
+}
+
+interface TestSetOption {
+  id: string;
   name: string;
   fileCount: number;
   labelState: string;
+  status: string;
 }
 
 interface AddProcessedDocumentsModalProps {
   visible: boolean;
+  /** The set to add to. Null together with `preselected` shows a test-set picker instead. */
   testSet: AddDocumentsTarget | null;
+  /**
+   * Documents already chosen elsewhere (the Document List's selection). When set,
+   * nothing is listed from the API: these are offered, all selected, and any that
+   * have not finished processing are left out and counted.
+   */
+  preselected?: readonly PreselectedDocument[];
   onDismiss: () => void;
   onSubmitted: (result: AddDocumentsResult) => void;
 }
 
 const plural = (count: number, one: string, many: string): string => (count === 1 ? one : many);
+
+/**
+ * Only a finished document can be added: the resolver refuses the whole selection
+ * if any key is unfinished, so both entry points filter with this before submitting.
+ */
+export const isAddableStatus = (status: string | null | undefined): boolean => status === 'COMPLETED';
+
+/** The append guard in the resolver accepts a COMPLETED set only. */
+const canTakeDocuments = (set: TestSetOption): boolean => set.status === 'COMPLETED';
 
 export const hasGroundTruth = (doc: ProcessedDocument): boolean => isBaselineAvailable(doc);
 
@@ -91,12 +205,28 @@ const COLUMNS: TableProps.ColumnDefinition<ProcessedDocument>[] = [
   { id: 'submitted', header: 'Submitted', cell: (d) => formatSubmitted(d.submitted), sortingField: 'submitted' },
 ];
 
-const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }: AddProcessedDocumentsModalProps): React.JSX.Element => {
-  const [documents, setDocuments] = useState<ProcessedDocument[]>([]);
+const AddProcessedDocumentsModal = ({
+  visible,
+  testSet,
+  preselected,
+  onDismiss,
+  onSubmitted,
+}: AddProcessedDocumentsModalProps): React.JSX.Element => {
+  const intl = useIntl();
+  // Computed once: the dialog is mounted when it opens, so the selection it was
+  // opened with is the one it works on.
+  const [initialDocuments] = useState<ProcessedDocument[]>(() =>
+    (preselected ?? [])
+      .filter((d) => isAddableStatus(d.objectStatus))
+      .map(({ objectKey, submitted, evaluationStatus, configVersion }) => ({ objectKey, submitted, evaluationStatus, configVersion })),
+  );
+  const [documents, setDocuments] = useState<ProcessedDocument[]>(initialDocuments);
   const [nextToken, setNextToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState('');
-  const [target, setTarget] = useState<TargetState | null>(null);
+  const [testSets, setTestSets] = useState<TestSetOption[] | null>(null);
+  const [testSetsError, setTestSetsError] = useState('');
+  const [pickedId, setPickedId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -109,7 +239,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
       const response = await client.graphql({ query: listDocuments, variables });
       const page = response.data?.listDocuments;
       const rows = (page?.Documents ?? [])
-        .filter((d): d is NonNullable<typeof d> => d != null && !!d.ObjectKey && d.ObjectStatus === 'COMPLETED')
+        .filter((d): d is NonNullable<typeof d> => d != null && !!d.ObjectKey && isAddableStatus(d.ObjectStatus))
         .map((d) => ({
           objectKey: d.ObjectKey as string,
           submitted: d.InitialEventTime ?? '',
@@ -129,24 +259,38 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
     }
   }, []);
 
-  const testSetId = testSet?.id;
+  const isPicking = !testSet && preselected !== undefined;
+  const fixedTestSetId = testSet?.id;
+  const targetId = fixedTestSetId ?? pickedId;
 
   useEffect(() => {
-    if (!visible || !testSetId) return;
+    if (!visible || (!fixedTestSetId && !isPicking)) return;
     let cancelled = false;
-    void fetchPage(null);
+    if (preselected === undefined) void fetchPage(null);
     client
       .graphql({ query: getTestSets })
       .then((result) => {
         if (cancelled) return;
-        const match = (result.data.getTestSets || []).find((t) => t?.id === testSetId);
-        if (match) setTarget({ name: match.name, fileCount: match.fileCount ?? 0, labelState: match.labelState ?? 'unlabeled' });
+        setTestSets(
+          (result.data.getTestSets || [])
+            .filter((t): t is NonNullable<typeof t> => t != null && !!t.id)
+            .map((t) => ({
+              id: t.id,
+              name: t.name,
+              fileCount: t.fileCount ?? 0,
+              labelState: t.labelState ?? 'unlabeled',
+              status: t.status ?? '',
+            })),
+        );
       })
-      .catch((err) => logger.warn('Could not read the test set label state', err));
+      .catch((err) => {
+        logger.warn('Could not read the test sets', err);
+        if (!cancelled) setTestSetsError(getErrorMessage(err));
+      });
     return () => {
       cancelled = true;
     };
-  }, [visible, testSetId, fetchPage]);
+  }, [visible, fixedTestSetId, isPicking, fetchPage]);
 
   const { items, collectionProps, filterProps, paginationProps, filteredItemsCount } = useCollection(documents, {
     filtering: {
@@ -155,8 +299,17 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
     },
     pagination: { pageSize: PAGE_SIZE },
     sorting: { defaultState: { sortingColumn: COLUMNS[3], isDescending: true } },
-    selection: { keepSelection: true, trackBy: 'objectKey' },
+    selection: { keepSelection: true, trackBy: 'objectKey', defaultSelectedItems: initialDocuments },
   });
+
+  const target = useMemo(() => testSets?.find((t) => t.id === targetId) ?? null, [testSets, targetId]);
+  const notCompletedCount = (preselected ?? []).length - initialDocuments.length;
+  const testSetOptions: SelectProps.Option[] = (testSets ?? []).map((t) =>
+    canTakeDocuments(t)
+      ? { value: t.id, label: t.name, description: intl.formatMessage(messages.testSetDocumentCount, { count: t.fileCount }) }
+      : { value: t.id, label: t.name, disabled: true, description: intl.formatMessage(messages.testSetUnavailable, { status: t.status }) },
+  );
+  const pickedOption = testSetOptions.find((o) => o.value === pickedId) ?? null;
 
   const selected = collectionProps.selectedItems ?? [];
   const selectedCount = selected.length;
@@ -169,13 +322,13 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
   const noun = plural(selectedCount, 'document', 'documents');
 
   const handleSubmit = async () => {
-    if (!testSet || selectedCount === 0) return;
+    if (!targetId || selectedCount === 0) return;
     setSubmitting(true);
     setError('');
     try {
       const response = await client.graphql({
         query: addDocumentsToTestSetByKey,
-        variables: { testSetId: testSet.id, objectKeys: selected.map((d) => d.objectKey) },
+        variables: { testSetId: targetId, objectKeys: selected.map((d) => d.objectKey) },
       });
       const updated = response.data?.addDocumentsToTestSetByKey;
       const unlabeledNote =
@@ -186,7 +339,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
         kind: 'documents',
         message: `Adding ${selectedCount} ${noun} to test set "${targetName}".${unlabeledNote}`,
         testSet: {
-          id: testSet.id,
+          id: targetId,
           status: 'UPDATING',
           ...(updated?.fileCount != null ? { fileCount: updated.fileCount } : {}),
         },
@@ -204,14 +357,14 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
       visible={visible}
       onDismiss={onDismiss}
       size="large"
-      header={`Add processed documents to "${targetName}"`}
+      header={isPicking ? intl.formatMessage(messages.pickerHeader) : `Add processed documents to "${targetName}"`}
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
             <Button variant="link" onClick={onDismiss} disabled={submitting}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={handleSubmit} loading={submitting} disabled={selectedCount === 0 || submitting}>
+            <Button variant="primary" onClick={handleSubmit} loading={submitting} disabled={selectedCount === 0 || !targetId || submitting}>
               {selectedCount === 0 ? 'Add documents' : `Add ${selectedCount} ${noun}`}
             </Button>
           </SpaceBetween>
@@ -224,11 +377,35 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
             {error}
           </Alert>
         ) : null}
-        <Box>
-          Pick documents that have finished processing. Each one is copied into the set together with any ground truth already saved for it;
-          one without ground truth is added unlabeled so it can be draft-labeled here afterwards. Documents already in this set are skipped,
-          so labels reviewed here are kept.
-        </Box>
+        {isPicking ? (
+          <Box>{intl.formatMessage(messages.pickerIntro)}</Box>
+        ) : (
+          <Box>
+            Pick documents that have finished processing. Each one is copied into the set together with any ground truth already saved for
+            it; one without ground truth is added unlabeled so it can be draft-labeled here afterwards. Documents already in this set are
+            skipped, so labels reviewed here are kept.
+          </Box>
+        )}
+        {isPicking ? (
+          <FormField label={intl.formatMessage(messages.testSetLabel)} description={intl.formatMessage(messages.testSetDescription)}>
+            <Select
+              selectedOption={pickedOption}
+              onChange={({ detail }) => setPickedId(detail.selectedOption.value ?? null)}
+              options={testSetOptions}
+              placeholder={intl.formatMessage(messages.testSetPlaceholder)}
+              statusType={testSetsError ? 'error' : testSets === null ? 'loading' : 'finished'}
+              loadingText={intl.formatMessage(messages.testSetsLoading)}
+              errorText={testSetsError ? intl.formatMessage(messages.testSetsLoadError, { error: testSetsError }) : undefined}
+              empty={intl.formatMessage(messages.testSetsEmpty)}
+              disabled={submitting}
+            />
+          </FormField>
+        ) : null}
+        {notCompletedCount > 0 ? (
+          <Alert type="info" header={intl.formatMessage(messages.notCompletedHeader, { count: notCompletedCount })}>
+            {intl.formatMessage(messages.notCompletedBody)}
+          </Alert>
+        ) : null}
         {loadError ? <Alert type="error">Could not load documents: {loadError}</Alert> : null}
         <Table
           {...collectionProps}
@@ -255,7 +432,7 @@ const AddProcessedDocumentsModal = ({ visible, testSet, onDismiss, onSubmitted }
                 ) : undefined
               }
             >
-              Completed documents
+              {preselected !== undefined ? intl.formatMessage(messages.selectedHeader) : 'Completed documents'}
             </Header>
           }
           filter={

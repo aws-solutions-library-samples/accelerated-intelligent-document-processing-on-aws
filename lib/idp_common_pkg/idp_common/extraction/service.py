@@ -211,6 +211,17 @@ class ExtractionResult(BaseModel):
     ``extraction_multi_instance_suspected``."""
 
 
+_ESCALATION_FAILED_PREFIX = "escalation call failed: "
+
+ESCALATION_METERING_CONTEXT = "ExtractionEscalation"
+"""Metering context of every validation-escalation model call, in both extraction
+modes, so a cost report shows escalation on one row. Simple mode used
+``Extraction-Escalation`` before this constant existed, so reporting rows stored
+by earlier releases carry that spelling. A reader that has to group escalation
+must accept both; the shipped readers match the ``Extraction`` prefix instead.
+"""
+
+
 def _escalation_failure_reason(exc: BaseException) -> str:
     """One bounded line for ``escalation_decision`` when the escalation call raised.
 
@@ -223,7 +234,7 @@ def _escalation_failure_reason(exc: BaseException) -> str:
     """
     lines = (str(exc) or "").strip().splitlines()
     text = lines[0] if lines else ""
-    return f"escalation call failed: {type(exc).__name__}: {text[:160]}"
+    return f"{_ESCALATION_FAILED_PREFIX}{type(exc).__name__}: {text[:160]}"
 
 
 class ExtractionService:
@@ -4963,6 +4974,20 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "values are stored as extracted and the document's status is "
                     "unchanged."
                 )
+            elif escalated and str(
+                validation.get("escalation_decision") or ""
+            ).startswith(_ESCALATION_FAILED_PREFIX):
+                # Escalation raised: in the model call (an escalation model the
+                # agentic path cannot call, say), or while reading its response.
+                # Either way no escalated value was kept. Saying it "did not
+                # resolve it" reported that as a model whose answer was judged,
+                # with the reason only in section metadata.
+                consequence = (
+                    f" Escalation to "
+                    f"{validation.get('escalation_model') or 'the escalation model'}"
+                    f" failed ({validation.get('escalation_decision')}), so"
+                    " nothing from it was kept; the values are stored as extracted."
+                )
             elif escalated:
                 consequence = (
                     " Re-extraction with the escalation model did not resolve it;"
@@ -4991,6 +5016,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                         "error_count": error_count,
                         "fail_action": fail_action,
                         "escalated": escalated,
+                        "escalation_decision": validation.get("escalation_decision"),
                         # The first few concrete messages, so the issue is
                         # actionable without opening the section result JSON.
                         "errors": (validation.get("errors") or [])[:5],
@@ -5885,6 +5911,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         )
         retry_content = [*content, {"text": corrective}]
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a call that was made: a response that then fails to parse was still
+        # billed.
+        metering: dict[str, Any] = {}
         try:
             response = bedrock.invoke_model(
                 model_id=escalation_model,
@@ -5894,10 +5924,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 top_k=self.config.extraction.top_k,
                 top_p=self.config.extraction.top_p,
                 max_tokens=None,
-                context="Extraction-Escalation",
+                context=ESCALATION_METERING_CONTEXT,
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
+            metering = response.get("metering", {}) or {}
             text = bedrock.extract_text_from_response(dict(response))
             corrected = json.loads(extract_json_from_text(text))
             corrected, ok, _count, _rec = self._normalize_list_result(
@@ -5911,7 +5942,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5931,7 +5962,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     "escalation response unusable",
                 )
@@ -5967,7 +5998,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return (
                     extracted_fields,
                     report,
-                    response.get("metering", {}),
+                    metering,
                     False,
                     decision,
                 )
@@ -5980,10 +6011,16 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 len(report.errors),
                 len(new_report.errors),
             )
-            return merged, new_report, response.get("metering", {}), True, decision
+            return merged, new_report, metering, True, decision
         except Exception as e:  # noqa: BLE001 - escalation is best-effort
             logger.warning("Simple-mode escalation failed: %s", e)
-            return extracted_fields, report, {}, False, _escalation_failure_reason(e)
+            return (
+                extracted_fields,
+                report,
+                metering,
+                False,
+                _escalation_failure_reason(e),
+            )
 
     def _validate_and_maybe_escalate(
         self,
@@ -6147,6 +6184,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             + full_report.agent_feedback()
         )
 
+        # Bound before the call so the failure handler below can return the usage
+        # of a re-extraction that completed before a later step raised.
+        metering: dict[str, Any] = {}
         try:
             if scope == "field-subset":
                 # Nullable leaves for the same reason as the primary transport model
@@ -6187,7 +6227,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
@@ -6213,7 +6253,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
@@ -6295,11 +6335,15 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extra={"error": str(e)},
                 exc_info=True,
             )
+            # A re-extraction that raised carries the usage of the agent turns it
+            # completed on the exception (#1923). Empty when the raise came after
+            # ``structured_output`` returned, whose metering is already bound above.
+            metering = utils.merge_metering_data(metering, utils.failure_metering(e))
             return (
                 extracted_fields,
                 structured_data,
                 full_report,
-                {},
+                metering,
                 scope,
                 False,
                 _escalation_failure_reason(e),
@@ -6443,8 +6487,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         if use_agentic and is_openai_responses_model(model_id):
             raise ValueError(
                 f"OpenAI Responses model '{model_id}' is not compatible with agentic "
-                "extraction (extraction.agentic.enabled=true). Set agentic.enabled=false "
-                "or choose a non-OpenAI model. (This is also enforced by "
+                "extraction (extraction.mode: advanced). Set extraction.mode to "
+                "'simple' or choose a model outside the OpenAI GPT-5.x Responses "
+                "family; OpenAI GPT-6 Astra is served through Converse and supports "
+                "agentic extraction. (This is also enforced by "
                 "'idp-cli config-validate'.)"
             )
 
@@ -8338,6 +8384,14 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # cause stays the sentence a reader can act on.
             raise
         except Exception as e:
+            # Usage of the model calls the section made before it failed, carried on
+            # the exception because a raise returns nothing (#1923). Merged before
+            # any branch below re-raises under another class.
+            failed_run_metering = utils.failure_metering(e)
+            if failed_run_metering:
+                document.metering = utils.merge_metering_data(
+                    document.metering, failed_run_metering
+                )
             from idp_common.utils.bedrock_utils import (
                 is_image_request_rejection,
                 is_input_token_overflow,

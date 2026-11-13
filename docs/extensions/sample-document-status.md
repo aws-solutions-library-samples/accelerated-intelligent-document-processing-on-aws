@@ -1,6 +1,10 @@
 ---
 title: "Sample: Document Status (feature add-on)"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Sample: Document Status (feature add-on)
 
 **Sample: Document Status** is the minimal *feature add-on* sample for the

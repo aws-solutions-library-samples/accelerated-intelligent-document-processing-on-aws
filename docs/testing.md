@@ -54,15 +54,16 @@ cd lib/idp_common_pkg && make test-unit     # one root, isolated
 make test-integration-all                   # only the integration-marked tests (needs AWS)
 ```
 
-**`make test` itself runs in neither CI.** CI runs the same suites through two other
-targets — `make test-cicd -C lib/idp_common_pkg` and `make test-packages-cicd` — and
-the second of those is a hand-enumerated recipe, so a suite that `make test`
+**`make test` itself runs in neither CI.** CI runs the same suites through three other
+targets — `make test-cicd -C lib/idp_common_pkg`, `make coverage-all-cicd`, which runs
+every suite a coverage tree measures, and `make test-packages-cicd` for the rest — and
+the last of those is a hand-enumerated recipe, so a suite that `make test`
 discovers but nobody adds to it runs locally and on no pull request. 22 registered
 roots holding 506 tests were in exactly that state, including the resolver suites
 covering the download allow-list and the discovery upload target.
 `scripts/tests/test_src_lambda_tests_in_ci.py` now closes that by deriving both
 sides — every directory holding a tracked `test_*.py`, against the paths the two
-recipes actually run pytest against — so a root that is in neither is a test failure
+recipes run pytest against plus the directories the coverage trees measure — so a root that is in neither is a test failure
 rather than a gap somebody finds by hand months later. A suite that genuinely cannot
 run in the shared gate goes in the excluded registry [below](#suites-make-test-does-not-run)
 with a reason.
@@ -280,8 +281,10 @@ hand-written scanners for classes of defect that have each shipped at least once
 | `make typecheck` | `basedpyright` over every tracked `.py` file — this is what both CIs run. `make typecheck-pr` narrows it to the files a branch changes, for local latency, and is a gate in neither |
 | `make api-test-static` | an API operation added without authorization, and drift between the dispatcher's generated required-groups manifest and `scripts/api_rbac_expectations.yaml` — see [layer 6](#6-live-stack-tiers-manual-plus-the-weekly-probe-schedule) for the live half |
 | `python3 scripts/check_first_party_deps.py` | a first-party package in the **current environment** that came from a package index rather than from `lib/`, which on public PyPI is [somebody else's code](./dependency-confusion.md) |
-| `scripts/tests/test_doc_install_commands.py` (part of `make test-packages-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |
+| `scripts/tests/test_doc_install_commands.py` (part of `make coverage-all-cicd`) | a `pip install` **documented** in a fenced code block that could resolve a first-party name from an index — a bare name, or a path install missing a sibling the package requires by name. The environment checker above cannot see an instruction nobody has run yet |
 | `python3 scripts/sdlc/validate_service_role_permissions.py` | the CloudFormation service role missing a permission the templates need |
+| `scripts/tests/test_agent_capabilities.py` (part of `make test-packages-cicd`) | an agent, tool, MCP tool or `claude -p` harness with no entry in `scripts/tests/agent_capabilities.yaml`, an entry whose surface is gone, and an entry that takes document-derived or external text and reads private data with an external output that no named control limits and no recorded finding lists. Surfaces are derived from source by AST. It checks the manifest's declarations, not whether they are true; the [`agent-capability-review`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/agent-capability-review.md) skill is the audit that re-reads them. `scripts/tests/test_analytics_role_grants.py` bounds the IAM grants of the roles those entries name |
+| `scripts/tests/test_threat_model_evidence.py` (part of `make test-packages-cicd`) | an entry under `security/threat-modeling/` (every one the export builder reads) whose mitigations neither cite a test, gate or `make` target that resolves nor say `UNVERIFIED`, and a rise in the pinned count of `UNVERIFIED` entries |
 
 Three of these gates guard the **gates themselves**:
 `scripts/tests/test_ci_gate_parity.py` fails if a gate runs in one CI and not the
@@ -377,9 +380,9 @@ forever and block every merge.
 Three details are worth knowing about what it reads. Eleven of the thirteen shared gates
 live in `developer-tests.yml` and the other two — the SRT scan and the dependency
 audit — in `security-checks.yml`; because a context is a *job*, and those two
-workflows hold five and two jobs respectively, the thirteen gates produce seven
+workflows hold six and two jobs respectively, the thirteen gates produce eight
 requireable contexts. ⚠️ **Requiring only the lint context is therefore weaker than
-it looks**: the test suites are their own contexts, so all seven have to be required
+it looks**: the test suites are their own contexts, so all eight have to be required
 for a red test run to block a merge. It reads **both** enforcement mechanisms,
 classic branch protection and
 rulesets, because a branch can be fully governed by a ruleset while the classic
@@ -558,6 +561,7 @@ the rows run only when a person asks.
 | Deploy variants (also on the weekly probe schedule, while it is active) | that each hosting/parameter combination actually creates and serves | `make stacktest-hosting-global` · `make stacktest-waf` · `make stacktest-hosting-private` (VPC) · `make stacktest-jobsapi` (VPC) — list them with `make stacktest-list` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Template transforms | that a **transformed** template deploys and processes a real document — the only tier that can | `make transform-deploy-test-headless` · `make transform-deploy-test-govcloud` · both: `make transform-deploy-test-all` | [`transform-deploy-test`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/transform-deploy-test.md) |
 | Seller Entitlement Service e2e | that the service deploys into a seller account, grants correctly, and **refuses** correctly | `make stacktest-seller` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
+| Analytics interpreter network reach | what a session on the AWS-managed Bedrock AgentCore Code Interpreter the analytics agent runs Python on can reach: public DNS and HTTPS, a raw TCP connection, Amazon S3 in the session's region and in another region, the regional STS endpoint, a PUT to a presigned URL (and whether the object arrives), and whether any AWS credential source is present. Compares each with the posture recorded in `scripts/sdlc/sandbox_network_probe.py` and prints a pass/fail table. Needs no stack; creates and deletes a throwaway bucket | `make stacktest-sandbox-network` | [`run-stack-tests`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/run-stack-tests.md) |
 | Terraform property parity | that a Terraform deployment of the release stores the same configuration as a CloudFormation deployment of it with the same parameters, every resource of the main and nested stacks read back through Cloud Control, beyond the explained differences in `terraform/tools/parity_baseline.json`. Read-only; needs both deployments | `make terraform-parity CFN_STACK=… TF_STACK=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier I) |
 | In-place upgrade (X→Y) | that an existing customer stack survives `update-stack` without rollback **and still works afterwards** | `make stacktest-upgrade` (pointer) | [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade.md) |
 | Migration from `genai-idp-terraform` (also on the weekly Terraform-migration schedule, while it is active) | that a deployment of the separate [`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform) implementation, at a pinned tag and seeded with documents, users, a configuration edit, a baseline and a test set, moves onto this repository's module with every phase of `idp-cli terraform migrate-from-genai-idp-terraform`, keeping every object and item, and that afterwards both users sign in to the new deployment with their old passwords and keep their scope, a new document is processed by the new deployment only, and destroying the old deployment leaves the adopted resources standing. Deploys and destroys both deployments: measured end to end at 166 minutes, 76 of them waiting on DynamoDB's two time-to-live intervals and 33 the adoption apply and writes `result.json` and `summary.txt` in its work directory | `make stacktest-terraform-migration OLD_NAME=… NEW_NAME=… TERRAFORM_MODULE_URL=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier J) |

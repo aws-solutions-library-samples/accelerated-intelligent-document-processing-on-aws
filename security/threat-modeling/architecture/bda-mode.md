@@ -73,6 +73,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | BDA Invoke Lambda, BDA service |
 | **Mitigations** | BDA output validation, comparison with Pipeline mode results for critical documents, evaluation framework, CloudWatch metrics monitoring |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### BDA.T02: BDA Output Format Mapping Errors
 
@@ -87,6 +88,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | BDA Process Results Lambda |
 | **Mitigations** | Strict output schema validation after mapping, defensive parsing, error handling with fallback to error state |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### BDA.T03: BDA Project Configuration Tampering
 
@@ -101,6 +103,7 @@ flowchart TD
 | **Severity** | High |
 | **Affected Components** | Amazon BDA project, BDA Invoke Lambda |
 | **Mitigations** | IAM policies restricting BDA project modification, RBAC (Admin only), CloudTrail logging of BDA API calls, BDA project versioning. **Per-stack project isolation (v0.6.1)**: the BDA-as-OCR project is now a stack-owned `Custom::BDAOCRProject` resource named `<stackname>_OCR_StdOutput`, created and deleted with the stack, so tampering is confined to the stack whose IAM boundary the actor already holds — cross-stack interference via a shared account-global project is eliminated. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### BDA.T04: BDA Service Availability
 
@@ -115,6 +118,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | BDA Invoke Lambda, Amazon BDA |
 | **Mitigations** | SQS retry with DLQ, CloudWatch alarms on BDA errors, capacity planning, ability to switch to Pipeline mode via configuration |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### BDA.T05: S3 Cross-Access via BDA
 
@@ -129,6 +133,7 @@ flowchart TD
 | **Severity** | Medium |
 | **Affected Components** | S3 Input Bucket, BDA service IAM role |
 | **Mitigations** | Scoped S3 bucket policies, prefix-based access restrictions, IAM policy condition keys limiting BDA access |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. BDA vs. Pipeline Mode Comparison
 

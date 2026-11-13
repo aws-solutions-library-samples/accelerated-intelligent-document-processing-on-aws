@@ -11,23 +11,24 @@ vi.mock('../../aws-exports', () => ({
 
 // SignatureV4 hits WebCrypto via Sha256; stub the signer so the test stays in
 // pure JS (we only care about the SSE parsing, not the signature bytes).
-const { signed, sessionMock } = vi.hoisted(() => ({
-  signed: { headers: [] as Record<string, string>[] },
-  sessionMock: vi.fn(),
-}));
 vi.mock('@smithy/signature-v4', () => ({
   SignatureV4: class {
     async sign(req: { headers: Record<string, string> }) {
-      signed.headers.push({ ...req.headers });
       return { ...req, headers: { ...req.headers, authorization: 'AWS4-HMAC-SHA256 ...' } };
     }
   },
 }));
-vi.mock('../auth-session', () => ({ fetchSharedAuthSession: sessionMock }));
+
+// The caller's ID token comes from the shared Amplify session. Mutable so a case
+// can simulate a signed-out session.
+const authState: { idToken: string | undefined } = { idToken: 'header.payload.signature' };
+vi.mock('../auth-session', () => ({
+  fetchSharedAuthSession: async () => ({
+    tokens: authState.idToken ? { idToken: { toString: () => authState.idToken } } : undefined,
+  }),
+}));
 
 import { ID_TOKEN_HEADER, streamChat, type StreamEvent } from '../stream-client';
-
-const ID_TOKEN = 'header.payload.signature';
 
 // Build a ReadableStream that emits the given UTF-8 string chunks in order.
 const streamFrom = (chunks: string[]): ReadableStream<Uint8Array> => {
@@ -50,9 +51,7 @@ const creds = { accessKeyId: 'AKIA', secretAccessKey: 'secret', sessionToken: 't
 describe('streamChat', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    signed.headers.length = 0;
-    sessionMock.mockReset();
-    sessionMock.mockResolvedValue({ tokens: { idToken: { toString: () => ID_TOKEN } } });
+    authState.idToken = 'header.payload.signature';
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -102,6 +101,41 @@ describe('streamChat', () => {
     expect(events[0].content).toBe('done');
   });
 
+  it('sends the Cognito ID token in its own header, alongside the signature', async () => {
+    const fetchMock = vi.fn(async () => new Response(streamFrom(['data: {"method":"assistant_final"}\n\n']), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await streamChat({
+      path: '/chat/agent',
+      body: { sessionId: 's3', prompt: 'hi' },
+      credentials: creds,
+      onEvent: () => {},
+    });
+
+    expect(ID_TOKEN_HEADER).toBe('x-idp-id-token');
+    const init = (fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1];
+    const headers = init.headers as Record<string, string>;
+    expect(headers[ID_TOKEN_HEADER]).toBe('header.payload.signature');
+    // The signature stays in `authorization`; the token does not replace it.
+    expect(headers.authorization).toMatch(/^AWS4-HMAC-SHA256/);
+  });
+
+  it('refuses to send a request when there is no ID token', async () => {
+    authState.idToken = undefined;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      streamChat({
+        path: '/chat/agent',
+        body: { sessionId: 's4', prompt: 'hi' },
+        credentials: creds,
+        onEvent: () => {},
+      }),
+    ).rejects.toThrow(/no Cognito id token/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('throws on non-OK HTTP status', async () => {
     vi.stubGlobal(
       'fetch',
@@ -116,29 +150,5 @@ describe('streamChat', () => {
         onEvent: () => {},
       }),
     ).rejects.toThrow(/403/);
-  });
-
-  it('sends the Cognito ID token inside the signed headers', async () => {
-    const fetchMock = vi.fn(async () => new Response(streamFrom([]), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-
-    await streamChat({ path: '/chat/agent', body: {}, credentials: creds, onEvent: () => {} });
-
-    expect(ID_TOKEN_HEADER).toBe('x-idp-id-token');
-    expect(signed.headers).toHaveLength(1);
-    expect(signed.headers[0][ID_TOKEN_HEADER]).toBe(ID_TOKEN);
-    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect((init.headers as Record<string, string>)[ID_TOKEN_HEADER]).toBe(ID_TOKEN);
-  });
-
-  it('refuses to send a request it has no ID token for', async () => {
-    sessionMock.mockResolvedValue({ tokens: undefined });
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-
-    await expect(streamChat({ path: '/chat/agent', body: {}, credentials: creds, onEvent: () => {} })).rejects.toThrow(
-      /no Cognito id token/,
-    );
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

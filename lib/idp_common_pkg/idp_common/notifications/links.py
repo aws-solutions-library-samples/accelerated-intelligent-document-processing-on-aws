@@ -63,3 +63,11 @@ def document_edit_link(object_key: str) -> str:
     Byte-identical to the UI's ``documentEditPath``.
     """
     return document_detail_link(object_key) + "/edit"
+
+
+def bulk_job_link(job_id: str) -> str:
+    """Route to a bulk review job's page (Home › Jobs).
+
+    Byte-identical to the UI's ``jobDetailPath``.
+    """
+    return "/my-work/jobs/" + encode_uri_component(job_id)

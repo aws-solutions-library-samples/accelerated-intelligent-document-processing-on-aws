@@ -117,6 +117,7 @@ background children when memory is tight, and a killed deploy leaves a stack up.
 | Dependency audit | `make dep-audit` | nothing at or above HIGH | — |
 | Type check | `make typecheck` | compare **totals** against develop's baseline (4 errors / 51 warnings on 2026-09-11); file placement shifts with the installed deps. Report the delta, not the raw count | `full-test-battery.md` |
 | Build + package | `publish.py … --clean-build` in a **clean env** (`env -i HOME=$HOME PATH=/usr/local/bin:/usr/bin:/bin AWS_PROFILE=default bash -lc '…'`) | template validation + cfn-lint clean on all packaged templates | `full-test-battery.md` |
+| Agent capability audit | follow `agent-capability-review.md` (one subagent per manifest entry; reads code only, writes only under `scratch/`) | every entry in `scripts/tests/agent_capabilities.yaml` re-verified against the code, and the diff against the manifest is empty or each line of it is a manifest edit in this release's validation PR. The release record carries the counts only (entries checked; verified, inferred and unverified; diff lines), never the findings' text | `agent-capability-review.md` |
 | **Test coverage** | `make coverage-all` then `make check-coverage-debt` | every measurable tree measured, and the ratchet green. Record the per-tree table in the release record and diff it against PREV's — a tree that *lost* coverage is a finding even when the ratchet's 1% tolerance absorbs it | `full-test-battery.md` |
 
 The build is needed anyway: the transform tiers publish from source, and the
@@ -281,7 +282,7 @@ paper's sections are computed from; each result set goes under
 
 | Paper section | Suite(s) | What it establishes |
 |---|---|---|
-| §2 configuration matrix | `coresynth` (19 cells × 7 synthetic docs) | the cross-config grid: OCR × mode × assessment, the v0.7 feature arms |
+| §2 configuration matrix | `coresynth` (19 cells × 7 synthetic docs) | the cross-config grid: OCR × mode × assessment, plus the §2b feature-option arms (enforcement, forcing, schema restatement, section splitting) |
 | §2 real-world accuracy | `core` (= `coresynth` + the RealKIE and OCR-benchmark reference corpora) — run `core` *instead of* `coresynth` when budget allows, it is a superset; also `detection-real-corpora` and `forcing-real-corpus` if those studies are cited | labelled-corpus accuracy, not just synthetic exact-GT |
 | §2.1 / §6 standing hazards | `intconf`, `advverify` (`--set extraction_model=sonnet5`) | the two silent list-loss hazards, with repeats — the paper must say whether each is still open |
 | §3 scaling | `scaling` (simple vs advanced across 100→3,200 rows) — expect simple-mode cells above the single-response limit to fail; that *is* the finding | where each mode's completeness cliff sits on this release |

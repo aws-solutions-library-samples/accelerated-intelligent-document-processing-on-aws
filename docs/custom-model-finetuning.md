@@ -2,6 +2,9 @@
 title: "Custom Model Fine-Tuning"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Custom Model Fine-Tuning
 
 This guide explains how to fine-tune Nova models for document classification using the IDP Accelerator.

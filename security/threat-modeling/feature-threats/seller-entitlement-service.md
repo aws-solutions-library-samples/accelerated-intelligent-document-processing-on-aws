@@ -103,6 +103,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `ActivateFunction`, deployment tooling |
 | **Mitigations** | `idp-feature-cli seller-service deploy` runs a **preflight** that refuses to deploy unless the caller's account owns every registered product, verified with `marketplace-catalog:ListEntities`. The check is **ownership-based, not identity-based** — comparing an account id would pass for any seller, including one that does not sell this product. `AccessDenied` on `ListEntities` also **fails** (it nearly always means these are not seller credentials) with `--skip-ownership-check` as a documented, loudly-warned escape hatch. Passing a product *code* where the `prod-…` entity id is required is rejected before any AWS call. 12 unit tests cover the refusal paths; verified live against a real seller account (passes) and a buyer account (refused, exit 1). |
 | **Status** | **Mitigated** by the preflight. Residual: `--skip-ownership-check` bypasses it by design. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T02: Spoofed Buyer Identity in the Request Body
 
@@ -118,6 +119,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `_caller_account_id()`, API Gateway authorizer |
 | **Mitigations** | The account is read **only** from `requestContext.identity`, which API Gateway populates from the **verified SigV4 signature** before invoking the Lambda; the body is never consulted for identity. `AWS_IAM` authorization means an unsigned request is rejected at the edge with 403. A missing verified identity returns 401 and mints nothing, rather than falling back to anything. Guarded by a dedicated unit test that passes a *conflicting* `buyerAccountId` in the body and asserts the verified value wins, a static template test asserting `DefaultAuthorizer: AWS_IAM` and no `Authorization: NONE`, and a live test asserting an unsigned request is refused. |
 | **Status** | **Mitigated.** |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T03: Resource-Policy Over-Exposure (`Principal: '*'`)
 
@@ -133,6 +135,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `ActivationApi` resource policy |
 | **Mitigations** | The policy is pinned to `execute-api:/*/POST/activate`. A static test asserts exactly one statement, that it names `POST/activate`, and that it does **not** end in a wildcard path — so adding a route does not silently publish it. Note `Principal: '*'` here means "any *authenticated* AWS caller may attempt activation", not anonymous access: an unsigned request never reaches the Lambda. |
 | **Status** | **Mitigated** for the current route; **must be re-checked when any route is added** (the static test will fail closed if the policy is widened). |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T04: Cost and Quota Exhaustion by an Arbitrary AWS Account
 
@@ -148,6 +151,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `ActivationApi`, `ActivateFunction`, Marketplace Agreement API quota |
 | **Mitigations** | Stage throttling (25 rps / 50 burst) **and a Lambda concurrency reservation** cap blast radius — the reservation matters independently, because without it a flood would consume the seller account's entire Lambda pool and take unrelated seller-side functions down with it — activation is a once-per-TTL-per-install call, so this is generous for legitimate traffic. Every attempt is attributed to a **verified AWS account** in the access log and roster, so abuse is identifiable and actionable (AWS abuse report / block by account). `NotEntitledActivations` and `ActivationAttempt{Outcome=refused}` metrics make a probing pattern visible. The buyer-side **grace period on the last-known-good token** is the control that keeps paying customers working through an outage. Body size is capped at 4 KB before parsing. |
 | **Status** | **Partially mitigated / accepted.** No per-caller rate limit exists. Recommended if abuse is ever observed, in order: (1) a WAF rate-based rule on the stage; (2) move repeat abusers to an explicit `Deny` principal list in the resource policy; (3) issue usage-plan API keys to known customers at first activation and require them thereafter. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T05: Signing-Key Compromise or Trust Re-Pointing
 
@@ -163,6 +167,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `TokenSigningKey`, `ActivateFunctionRole` |
 | **Mitigations** | **Asymmetric** key (`RSA_2048`, `SIGN_VERIFY`): verifiers hold only the public key, so the ability to *verify* is not the ability to *mint* — this is what makes it safe to embed the public key in public-read extension artifacts. The function's grant is **`kms:Sign` only** on that one key — no `PutKeyPolicy`, no `ScheduleKeyDeletion`, and deliberately not even `GetPublicKey` (the operator fetches that with their own credentials). The key policy grants no wildcard principal. `DeletionPolicy: Retain` + `UpdateReplacePolicy: Retain` so a stack delete cannot silently destroy the root of trust. Tokens carry a **`kid`**, so a compromised key can be rotated by standing up a second key and trusting both during the overlap. Static tests assert the key spec, the sign-only grant, the absence of a wildcard principal, and the retain policies. |
 | **Status** | **Mitigated.** Residual: KMS cannot auto-rotate a `SIGN_VERIFY` key, so rotation is a manual, `kid`-coordinated procedure that has **not been rehearsed**. Recommend documenting and testing it before the listing converts to paid. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T06: Token Misuse — Replay, Sharing, and Verifier Weakness
 
@@ -178,6 +183,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | Token format; buyer-side verification code |
 | **Mitigations** | Claims bind the token to `productId` + `buyerAccountId` and carry `iat`/`exp` with a short TTL, so a shared token is both account-scoped and short-lived. The README's integration contract states explicitly: verify over the **exact base64-decoded bytes**, **pin** `RSASSA_PSS_SHA_256` rather than reading it from the response, and check `buyerAccountId` against the running account and `exp` against the clock. The live test asserts account binding, `kid` presence, a future `exp`, and a real signature verification against the published public key. |
 | **Status** | **Mitigated in the protocol; dependent on the verifier.** No `jti`/nonce, so replay *within the TTL by the same account* is possible — accepted, since that account can obtain its own token anyway. Recommend the extension repo implement verification **once** in a shared client rather than per extension. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T07: Product-Existence Oracle
 
@@ -193,6 +199,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `handler()` product lookup |
 | **Mitigations** | An unknown product returns **the same status and byte-identical body** as "not entitled". The distinction is preserved only in the seller-side log, where it still helps diagnose a legitimate integrator's typo. A unit test compares both responses for equality, and the live test does the same against the deployed stage. |
 | **Status** | **Mitigated.** (Was a distinct `404` in the first implementation; changed during security review.) |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T08: Unavailability of the Activation Service Locks Out Paying Customers
 
@@ -208,6 +215,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `_has_active_agreement()`, buyer-side token cache |
 | **Mitigations** | The fail-closed choice is deliberate and is *paired* with a compensating control on the other side: the buyer-side integration is **required** to cache the last-known-good token and apply a **grace period longer than the TTL**, so a seller-side outage is absorbed rather than fatal. This asymmetry is stated in the README as a table (host = advisory allow, this service = deny, extension = grace period) precisely so the three are not "simplified" into agreement. Roster writes are **fail-open** — bookkeeping never causes a refusal. |
 | **Status** | **Mitigated by design, contingent on the extension implementing the grace period.** This is the highest-value item to verify in the extension repo. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T09: Customer Roster Disclosure
 
@@ -223,6 +231,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `ActivationsTable`, `ActivateFunctionRole` |
 | **Mitigations** | The function holds **`dynamodb:UpdateItem` only** — it cannot read the roster (so a compromised function is not a way to enumerate the customer list) and cannot delete it. Reads happen out-of-band via `idp-feature-cli seller-service activations` using the operator's own credentials. SSE at rest, point-in-time recovery, and `DeletionPolicy: Retain`. Free-text fields from upstream errors are truncated to 512 bytes. Static tests assert the update-only grant, SSE, PITR and Retain. |
 | **Status** | **Mitigated.** Residual: standard seller-account IAM hygiene applies; the roster is only as protected as the account. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ### SELL.T10: Allow-List Bypass Left Enabled in Production
 
@@ -238,6 +247,7 @@ seller account → AWS Marketplace. The buyer is **semi-trusted**: authenticated
 | **Affected Components** | `AllowedAccounts` parameter, `handler()` |
 | **Mitigations** | Documented in the parameter description, the README, and the code comment as "every entry here is an account getting your paid product for free — keep it empty in production". Use of the path logs at INFO with the account id and is recorded in the roster with `lastDetail = "allow-listed account"`, so it is visible in `seller-service activations` output rather than invisible. Default is empty. |
 | **Status** | **Accepted with detective controls.** Recommend a CI/deploy assertion that `AllowedAccounts` is empty for the production stack, and periodic review of roster rows whose detail is `allow-listed account`. |
+| **Evidence** | UNVERIFIED: no listed mitigation cites a test, gate or make target |
 
 ## 4. Security Controls Summary
 

@@ -178,6 +178,7 @@ agents = [
   "strands-agents==1.48.0; python_version>='3.10'",
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",    # Specifically for the code interpreter tool
   "jsonschema>=4.0.0",
+  "PyJWT[crypto]>=2.10.1",     # idp_common.cognito_id_token (the chat streaming endpoint verifies the caller's ID token)
 ]
 
 # Multi-document discovery dependencies (clustering + agent analysis)
@@ -341,6 +342,7 @@ all = [
   "strands-agents==1.48.0; python_version>='3.10'",
   "bedrock-agentcore>=1.6.1,<1.9.0; python_version>='3.10'",  # cap rationale: see the [agents] extra
   "jsonschema>=4.0.0",
+  "PyJWT[crypto]>=2.10.1",  # see the [agents] extra
   # "s3fs==2023.12.2" - - disabled till we fix package dependencies
 ]
 agentic-extraction = [

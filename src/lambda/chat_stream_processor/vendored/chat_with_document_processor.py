@@ -47,6 +47,7 @@ from idp_common.bedrock.client import (
     is_grok_model,
     strips_sampling_params,
 )
+from idp_common.bedrock.guardrail import guardrail_config_from_env
 from idp_common.bedrock.model_utils import parse_model_id
 from idp_common.bedrock.openai_responses import is_openai_responses_model
 from idp_common.config import get_config
@@ -56,6 +57,7 @@ from idp_common.config_scope import (
     scope_allows,
     unscoped_is_denied,
 )
+from idp_common.regional_models import CHAT_MODEL_ID, regional_default
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -218,10 +220,12 @@ def _get_bedrock_runtime():
 
 
 def _default_model_for_region() -> str:
-    region = os.environ.get("AWS_REGION", "us-east-1")
-    if region.startswith("eu-"):
-        return "eu.anthropic.claude-opus-4-8:1m"
-    return "us.anthropic.claude-opus-4-8:1m"
+    """The chat model when neither the chat nor the summarization section names one.
+
+    The US default, through the Region translation the other code fallbacks use, so
+    it is the model the deploy-time swap would have written for this Region.
+    """
+    return regional_default(CHAT_MODEL_ID, os.environ.get("AWS_REGION"))
 
 
 def _s3_object_exists(bucket: str, key: str) -> bool:
@@ -459,12 +463,13 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
       **unrestricted**. It is logged every time, at WARNING: this is the one
       fail-open path in this module and it must never be silent.
 
-      Neither chat route sets it: the REST resolver forwards the claims the
-      dispatcher verified, and the streaming Function URL forwards the claims of
-      the ID token it verified (``_caller_identity`` in
-      ``src/lambda/chat_stream_processor/app.py``), refusing a request without
-      one. What remains is a direct ``lambda:InvokeFunction`` by a principal IAM
-      allows.
+      No web UI path sets it: the REST resolver forwards the claims API
+      Gateway verified, and the streaming Function URL forwards the claims of
+      the Cognito ID token it verifies and refuses a request without one. So
+      this branch is reached only by a direct ``lambda:InvokeFunction``.
+      Enforcing ``allowedConfigVersions`` against a self-asserted identity in
+      the event instead would be no control at all: the caller it would
+      restrict is the caller choosing the value.
     * ``identity`` **is a dict** — verified claims. The scope is resolved from
       them and every failure denies.
     """
@@ -487,7 +492,7 @@ def _allowed_config_versions_for_event(event: dict) -> list[str] | None:
             "Config-version scope NOT enforced for this chat turn (session=%s): "
             "the invoking transport verified no caller identity, so there is no "
             "principal to resolve allowedConfigVersions for. The turn proceeds "
-            "unrestricted. See AUTH.T07.",
+            "unrestricted (a direct IAM invocation).",
             event.get("sessionId") or "unknown",
         )
         return None
@@ -818,6 +823,11 @@ def _invoke_bedrock_stream_and_emit(
         kwargs["additionalModelRequestFields"] = additional_model_fields
     if service_tier_param:
         kwargs["serviceTier"] = service_tier_param
+    # The guardrail in GUARDRAIL_ID_AND_VERSION, when one is configured; parsed
+    # by the same function BedrockClient uses for its converse calls.
+    guardrail_config = guardrail_config_from_env()
+    if guardrail_config:
+        kwargs["guardrailConfig"] = guardrail_config
 
     response = client.converse_stream(**kwargs)
     stream = response.get("stream")

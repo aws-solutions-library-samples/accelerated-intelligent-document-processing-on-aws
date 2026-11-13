@@ -13,7 +13,15 @@ import boto3
 from idp_common import document_scope
 from idp_common.docs_service import create_document_service
 from idp_common.models import Status
-from idp_common.review_queues.statuses import SKIP_ALL_REASONS, LegacyHitlStatus
+from idp_common.review_queues import legacy_skip
+from idp_common.review_queues.statuses import (
+    FINISHED_HITL_STATUSES,
+    QUEUE_MANAGED_MESSAGE,
+    SKIP_ALL_REASONS,
+    LegacyHitlStatus,
+    is_review_finished,
+    is_review_raised,
+)
 from idp_common.review_queues.testset_docs import (
     TestSetDocStore,
     store_assigned_count,
@@ -39,7 +47,7 @@ _user_scope_cache: dict = {}
 
 
 def handler(event, context):
-    """Handle section review completion from AppSync."""
+    """Handle section review completion from the REST dispatcher."""
     logger.info(f"Received event: {json.dumps(sanitize_event_for_logging(event))}")
 
     field_name = event.get("info", {}).get("fieldName", "")
@@ -48,7 +56,7 @@ def handler(event, context):
     section_id = arguments.get("sectionId")
     edited_data = arguments.get("editedData")
 
-    # Extract user identity from AppSync event
+    # Extract user identity from the dispatcher's resolver event
     identity = event.get("identity", {})
     username = identity.get("username", "")
     user_email = identity.get("claims", {}).get("email", "")
@@ -57,12 +65,10 @@ def handler(event, context):
         user_groups = [user_groups]
     is_admin = "Admin" in user_groups
 
-    # Defense-in-depth RBAC: HITL review operations are Admin+Reviewer, plus
-    # Annotator for test-set ground-truth annotation. The schema enforces this via
-    # @aws_cognito_user_pools(cognito_groups), but we also gate it server-side so
-    # a Viewer/Author can never reach these operations even if the schema
-    # directive is missing or misconfigured (e.g. the prior @aws_auth directive,
-    # which AppSync silently ignores on a multi-auth API).
+    # RBAC: HITL review operations are Admin+Reviewer, plus Annotator for test-set
+    # ground-truth annotation. Schema directives carry no enforcement weight on
+    # this API; the dispatcher's manifest and this check are the controls, so a
+    # Viewer/Author can never reach these operations.
     #
     # Annotator group membership only reaches the operation; _assert_annotator_scope
     # then narrows it to documents in the caller's allowedTestSets, and keeps a
@@ -118,9 +124,20 @@ def handler(event, context):
                 "reason is required and must be one of: " + ", ".join(SKIP_ALL_REASONS)
             )
         note = (arguments.get("note") or "").strip()[:MAX_SKIP_NOTE] or None
+        resubmit = arguments.get("resubmit")
+        if resubmit is None:
+            resubmit = True
+        elif not isinstance(resubmit, bool):
+            raise ValueError("resubmit must be a boolean")
         _assert_annotator_scope(event, user_groups, object_key, user_email)
         return skip_all_sections_review(
-            object_key, username, user_email, reason, note, is_admin=is_admin
+            object_key,
+            username,
+            user_email,
+            reason,
+            note,
+            is_admin=is_admin,
+            resubmit=resubmit,
         )
 
     if field_name == "saveSectionReviewEdits":
@@ -318,144 +335,29 @@ def _assert_not_queue_managed(object_key):
     )
     if normalize_hitl_status(doc.get("HITLStatus")).queue_managed:
         logger.warning("Rejecting legacy review operation on a queue-managed document")
-        raise ValueError(
-            "QUEUE_MANAGED: this document is in a review queue; work it from Review Queues"
-        )
+        raise ValueError(QUEUE_MANAGED_MESSAGE)
 
 
-def _review_finished(hitl_status):
-    """Whether a stored ``HITLStatus`` says the document's review has finished.
-
-    The document lists' rule (``list_documents_gsi_resolver._review_finished``) and
-    the web UI's ``isHitlReviewFinished``: a legacy review completed or skipped, or
-    a queue review that ended complete or rejected. ``COMPLETED`` is the one
-    finished spelling a real writer stored that the exact-match normaliser does not
-    know: the earlier A2I flow wrote it, and retained rows may still carry it.
-    """
-    from idp_common.review_queues.statuses import normalize_hitl_status
-
-    return (
-        normalize_hitl_status(hitl_status).kind in ("complete", "rejected", "skipped")
-        or hitl_status == "COMPLETED"
-    )
+#: The shared review vocabulary (``idp_common.review_queues.statuses`` and
+#: ``legacy_skip``), under the names this module and its tests use.
+_review_finished = is_review_finished
+_review_raised = is_review_raised
+_not_finished_condition = legacy_skip.not_finished_condition
+_review_raised_condition = legacy_skip.review_raised_condition
+_review_finished_error = legacy_skip.review_finished_error
+_no_review_pending_error = legacy_skip.no_review_pending_error
+_skip_all_offered = legacy_skip.skip_offered
+_UI_SKIP_HIDDEN_STATUSES = legacy_skip.UI_SKIP_HIDDEN_STATUSES
 
 
 def _finished_hitl_statuses():
-    """Every stored ``HITLStatus`` value :func:`_review_finished` accepts.
-
-    Derived from the declared vocabularies through the rule itself, so a
-    ``ConditionExpression`` can test it. Exact values: the normaliser also accepts
-    surrounding whitespace, which no writer stores, and which the consistent read
-    before each guarded write refuses through the rule.
-    """
-    from idp_common.review_queues.statuses import LegacyHitlStatus, ReviewStatus
-
-    return tuple(
-        sorted(
-            value
-            for value in {
-                *(s.value for s in ReviewStatus),
-                *(s.value for s in LegacyHitlStatus),
-                "COMPLETED",
-            }
-            if _review_finished(value)
-        )
-    )
-
-
-def _not_finished_condition():
-    """``(condition, values)`` refusing a write onto a finished review.
-
-    An absent ``HITLStatus`` makes ``IN`` false, so the condition holds for it.
-    """
-    statuses = _finished_hitl_statuses()
-    values = {f":finished{i}": value for i, value in enumerate(statuses)}
-    return f"NOT (HITLStatus IN ({', '.join(values)}))", values
-
-
-def _review_finished_error(action):
-    return ValueError(
-        f"REVIEW_FINISHED: this review is already finished, so there is nothing "
-        f"to {action}"
-    )
-
-
-#: ``HITLStatus`` values the web UI reads as completed or skipped when it decides
-#: whether to offer Skip All Reviews (``SectionsPanel.tsx``: lower-cased, all
-#: whitespace removed). Looser than :func:`_review_finished`, which matches exactly
-#: after ``strip()``; the server refuses wherever either one reads finished.
-_UI_SKIP_HIDDEN_STATUSES = frozenset(
-    {"completed", "reviewcompleted", "skipped", "reviewskipped"}
-)
-
-
-def _skip_all_offered(doc):
-    """``True`` where the web UI offers Skip All Reviews, else why it does not.
-
-    The rule behind ``showSkipAllButton``: a review was raised (``hitlTriggered`` in
-    ``map-document-attributes.ts``: ``HITLTriggered`` is true, or ``HITLStatus`` is
-    set and not ``N/A``) and it is not completed or skipped. Returns ``"finished"``
-    or ``"not raised"`` otherwise. A queue-managed row never reaches here
-    (``_assert_not_queue_managed``).
-    """
-    status = doc.get("HITLStatus")
-    compact = "".join(str(status or "").lower().split())
-    if _review_finished(status) or compact in _UI_SKIP_HIDDEN_STATUSES:
-        return "finished"
-    if _review_raised(doc):
-        return True
-    return "not raised"
-
-
-def _review_raised(doc):
-    """Whether a review was raised on a tracking row, finished or not.
-
-    The web UI's ``hitlTriggered`` (``map-document-attributes.ts``): ``HITLTriggered``
-    is true, or ``HITLStatus`` is set and not ``N/A``. An ownerless ``Review
-    Pending`` row written by an earlier version counts, by its status. "Set" means a
-    non-empty string, which is what every writer stores, so that
-    :func:`_review_raised_condition` can say the same thing at the write.
-    """
-    status = doc.get("HITLStatus")
-    return doc.get("HITLTriggered") is True or (
-        isinstance(status, str) and status not in ("", "N/A")
-    )
-
-
-def _review_raised_condition():
-    """``(condition, values)`` holding :func:`_review_raised` at the moment of a write.
-
-    ``attribute_type(..., S)`` rather than ``attribute_exists``, so a stored NULL or
-    any other non-string ``HITLStatus`` reads as unset here as it does in the rule.
-    """
-    return (
-        "(HITLTriggered = :raisedFlag OR (attribute_type(HITLStatus, :raisedType) "
-        "AND HITLStatus <> :raisedUnset AND HITLStatus <> :raisedNone))",
-        {
-            ":raisedFlag": True,
-            ":raisedType": "S",
-            ":raisedUnset": "",
-            ":raisedNone": "N/A",
-        },
-    )
-
-
-def _no_review_pending_error(action):
-    return ValueError(
-        f"NO_REVIEW_PENDING: this document has no review waiting, so there is "
-        f"nothing to {action}"
-    )
+    """Every stored ``HITLStatus`` value :func:`_review_finished` accepts."""
+    return FINISHED_HITL_STATUSES
 
 
 def _read_review_row(object_key):
     """The tracking row, read consistently so a review finished a moment ago shows."""
-    table = dynamodb.Table(TRACKING_TABLE_NAME)
-    return (
-        table.get_item(
-            Key={"PK": f"doc#{object_key}", "SK": "none"}, ConsistentRead=True
-        ).get("Item")
-        or {}
-    )
+    return legacy_skip.read_review_row(dynamodb.Table(TRACKING_TABLE_NAME), object_key)
 
 
 def _save_section_edits(document, object_key, section_id, edited_data):
@@ -899,140 +801,60 @@ def trigger_reprocessing(object_key):
 
     except Exception as e:
         logger.error(f"Failed to trigger reprocessing for {object_key}: {str(e)}")
+        _put_resubmit_failure_metric()
+
+
+def _put_resubmit_failure_metric():
+    """Count a failed resubmit (``ReviewResubmitFailures``); never raises."""
+    try:
+        from idp_common.metrics import put_metric
+
+        put_metric("ReviewResubmitFailures", 1)
+    except Exception:  # noqa: BLE001 — a metric must not fail the review
+        logger.debug("ReviewResubmitFailures not published", exc_info=True)
 
 
 def skip_all_sections_review(
-    object_key, username="", user_email="", reason=None, note=None, is_admin=False
+    object_key,
+    username="",
+    user_email="",
+    reason=None,
+    note=None,
+    is_admin=False,
+    resubmit=True,
 ):
     """Skip all pending section reviews and mark the document complete.
 
     ``reason`` and ``note`` say why nobody checked it, and are kept with the skip in
     ``HITLReviewHistory``. A caller who is not an Admin may skip only where the web
-    UI offers Skip All Reviews: a review was raised and has not finished.
+    UI offers Skip All Reviews: a review was raised and has not finished. The skip
+    itself is :func:`idp_common.review_queues.legacy_skip.skip_legacy_review`.
     """
-    logger.info(
-        f"Skipping all sections review for document {object_key} by admin {username}"
-    )
+    logger.info(f"Skipping all sections review for document {object_key} by {username}")
 
-    # Load document using document service to verify it exists
-    document_service = create_document_service(mode="dynamodb")
-    document = document_service.get_document(object_key)
-
-    if not document:
-        raise ValueError(f"Document {object_key} not found")
-
-    completed = set(document.hitl_sections_completed or [])
-
-    # Get skipped from DynamoDB (not in document model). Read consistently, so a
-    # review finished a moment ago is seen by the check below.
-    table = dynamodb.Table(TRACKING_TABLE_NAME)
-    doc = _read_review_row(object_key)
-    existing_skipped = set(doc.get("HITLSectionsSkipped", []) or [])
-
-    # Admins may skip any document. Anyone else only where the web UI offers the
-    # button; the write's condition below holds the finished part of that at the
-    # moment of the write.
-    if not is_admin:
-        offered = _skip_all_offered(doc)
-        if offered is not True:
-            logger.warning(f"Rejecting skip-all on {object_key}: {offered}")
-            if offered == "finished":
-                raise _review_finished_error("skip")
-            raise _no_review_pending_error("skip")
-
-    # Get all section IDs from the document
-    all_section_ids = {
-        section.section_id for section in document.sections if section.section_id
-    }
-
-    # Sections to skip = all sections that are not already completed
-    sections_to_skip = all_section_ids - completed - existing_skipped
-    all_skipped = list(sections_to_skip | existing_skipped)
-
-    # Update review-specific fields directly in DynamoDB
-    review_record = {
-        "sectionId": "ALL_SKIPPED",
-        "reviewedBy": username or "unknown",
-        "reviewedByEmail": user_email or "",
-        "reviewedAt": datetime.now(timezone.utc).isoformat(),
-        "action": "skip_all",
-        "skippedSections": list(sections_to_skip),
-        **({"reason": reason} if reason else {}),
-        **({"note": note} if note else {}),
-    }
-    # Appended by DynamoDB, for the same reason as in complete_section_review
-    # above: a reviewer finishing a section while an admin skips the rest would
-    # otherwise have their entry overwritten by whichever of the two wrote last.
-    #
-    # `HITLSectionsSkipped` in the same statement is still a whole-list write, and
-    # it is **not** safe under the same overlap. Stating the residual precisely,
-    # because the shape invites a wrong reading: `all_skipped` unions
-    # `existing_skipped` in, so nothing another skip-all recorded is dropped, and
-    # two skip-alls that read the same `completed` do compute the same set. What
-    # diverges is `completed` itself. A reviewer finishing a section while this runs
-    # means one of the two callers computed `all_section_ids - completed` from a
-    # `completed` that did not yet name that section, so it lands in
-    # `HITLSectionsSkipped` as well as in `HITLSectionsCompleted` -- and because the
-    # union is monotonic, clicking Skip All again reproduces it rather than clearing
-    # it. Measured, not assumed. What an operator sees is a section recorded both
-    # reviewed and skipped, and a later `complete_section_review` reading
-    # `has_skipped` and reporting `Skipped` for a document whose sections were all
-    # actually reviewed.
-    #
-    # It is left here because the input that diverges is `completed`, which arrives
-    # from the document model rather than from the read above, and every writer of
-    # that attribute goes through `DocumentDynamoDBService.update_document` -- one
-    # unconditional whole-document write shared by the pipeline and several
-    # resolvers. Guarding one caller of it in isolation is the change that looks
-    # like a fix and is not. Reported in #1111 with the other sites on that path.
-    update = {
-        "Key": {"PK": f"doc#{object_key}", "SK": "none"},
-        "UpdateExpression": (
-            "SET HITLStatus = :status, HITLSectionsPending = :pending, "
-            "HITLSectionsSkipped = :skipped, "
-            "HITLReviewHistory = list_append("
-            "if_not_exists(HITLReviewHistory, :empty_history), :new_history), "
-            "HITLCompleted = :hitlCompleted, HITLReviewedBy = :reviewedBy, "
-            "HITLReviewedByEmail = :reviewedByEmail REMOVE HITLPendingReview"
-        ),
-        "ExpressionAttributeValues": {
-            ":status": LegacyHitlStatus.REVIEW_SKIPPED.value,
-            ":pending": [],
-            ":skipped": all_skipped,
-            ":empty_history": [],
-            ":new_history": [review_record],
-            ":hitlCompleted": True,
-            ":reviewedBy": username or "unknown",
-            ":reviewedByEmail": user_email or "",
-        },
-    }
-    if not is_admin:
-        not_finished, finished_values = _not_finished_condition()
-        update["ConditionExpression"] = not_finished
-        update["ExpressionAttributeValues"].update(finished_values)
-    try:
-        table.update_item(**update)
-    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
-        logger.warning(
-            f"Rejecting skip-all of a review finished during it {object_key}"
-        )
-        raise _review_finished_error("skip") from None
-
-    logger.info(
-        f"All sections skipped for document {object_key}. Skipped: {all_skipped}, Completed: {list(completed)}"
+    legacy_skip.skip_legacy_review(
+        dynamodb.Table(TRACKING_TABLE_NAME),
+        lambda key: create_document_service(mode="dynamodb").get_document(key),
+        object_key,
+        username=username,
+        user_email=user_email,
+        reason=reason,
+        note=note,
+        require_offered=not is_admin,
+        source="ui",
+        resubmitted=resubmit,
     )
 
     # Skipping all reviews resolves every pending section, so the document is now
-    # fully reviewed — exactly like completing the final section via
+    # fully reviewed, exactly like completing the final section via
     # complete_section_review (which calls trigger_reprocessing on all_completed).
-    # Trigger the same downstream reprocessing here so the two "finish review"
-    # paths behave identically: it re-runs Summarization/Evaluation with the
-    # existing (unedited) data and, on workflow success, emits the Step Functions
-    # "SUCCEEDED" event that drives the optional post-processing Lambda hook
-    # (PostProcessingLambdaHookFunctionArn). Without this call, skipping reviews
-    # would finalize the document but never run post-processing — an inconsistency
-    # with the section-by-section completion path.
-    trigger_reprocessing(object_key)
+    # With ``resubmit`` (the default) the same downstream reprocessing runs here:
+    # Summarization/Evaluation re-run with the existing (unedited) data and, on
+    # workflow success, the Step Functions "SUCCEEDED" event drives the optional
+    # post-processing Lambda hook. The caller may opt out (Skip All Reviews dialog:
+    # "Resubmit for downstream processing").
+    if resubmit:
+        trigger_reprocessing(object_key)
 
     return build_document_response(object_key)
 

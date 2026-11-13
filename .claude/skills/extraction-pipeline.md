@@ -34,9 +34,9 @@ Controlled by `use_bda` flag in configuration:
 For documents with large tables (100+ rows), bank statements, transaction logs:
 ```yaml
 extraction:
+  mode: advanced                   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true
       max_empty_line_gap: 3          # Standard quality (0-10)
@@ -44,6 +44,9 @@ extraction:
       min_confidence_threshold: 95.0
       min_parse_success_rate: 0.90
 ```
+- `extraction.mode` is authoritative and overwrites `agentic.enabled` whenever it is
+  set, so `agentic.enabled: true` alone stays on the traditional path once the config
+  is merged with a `mode`
 - **Strands agent framework** for tool-based structured output
 - **Deterministic Markdown table parser** for robust tabular data
 - **Intelligent lookahead recovery** for OCR artifacts

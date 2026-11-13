@@ -39,7 +39,7 @@ labels for evaluating OCR, classification, and extraction:
   `baseline/<doc>.pdf/sections/<n>/result.json` (document class + inference
   result), the standard IDP test-set layout Test Studio reads.
 - **Optional image augmentation** — scan/fax-style aging effects for
-  robustness testing (requires `seed-data>=0.0.6`).
+  robustness testing (the image installs `seed-data` with its `augment` extra).
 - **Cost estimate** — the modal shows an estimated cost/time band before you
   start a run.
 
@@ -92,6 +92,21 @@ A self-contained extension stack that plugs into the host contract:
   extension's tracking table.
 - **Job status** is feature-owned (a DynamoDB tracking table), surfaced through
   the FeatureApi.
+
+### What the generator's model can do
+
+The runtime installs one pinned release of `seed-data`, and the extension names
+SEED's `xhtml2pdf` PDF backend rather than taking SEED's default. With that
+backend, no tool SEED gives its models takes a URL, runs a command or calls an
+AWS API; the document generator writes HTML and reads and writes local files,
+then renders the HTML to a PDF. The extension renders that HTML with remote
+resources turned off, so an `http(s)` image, stylesheet or font the HTML
+references is left out of the PDF rather than fetched; inline `data:` resources
+still load, and local files load only from the runtime's working directory. The
+AgentCore runtime is created in `PUBLIC` network mode, and VPC network mode is not
+offered. The per-agent tool inventory,
+and the AWS services the runtime reaches, are in the extension's
+[README](../../feature-platform/idp-data-generator/README.md#what-the-generators-model-can-do).
 
 ## Tuning and troubleshooting
 

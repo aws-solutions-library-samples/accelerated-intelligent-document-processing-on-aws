@@ -114,13 +114,22 @@ def test_list_agents_allows_direct_lambda_invocation(list_agents_index):
 # --- sendAgentChatMessage ---------------------------------------------------
 
 
+def _unused_session_table():
+    """A table double answering for a session id nobody has used yet."""
+    table = MagicMock()
+    table.get_item.return_value = {}
+    table.query.return_value = {"Items": []}
+    return table
+
+
 @pytest.fixture
 def agent_chat_index(monkeypatch):
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "test-messages")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "test-sessions")
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "test-owners")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "")
     with patch("boto3.resource") as mock_resource, patch("boto3.client"):
-        mock_resource.return_value.Table.return_value = MagicMock()
+        mock_resource.return_value.Table.return_value = _unused_session_table()
         module = _load("agent_chat_resolver_index", "agent_chat_resolver/index.py")
         yield module
 
@@ -141,10 +150,7 @@ def test_agent_chat_rejects_reviewer(agent_chat_index):
 def test_agent_chat_allows_permitted_groups(agent_chat_index, group):
     """Admin/Author/Viewer may send Agent Chat messages (no PermissionError)."""
     event = {
-        "identity": {
-            "username": "u@example.com",
-            "claims": {"cognito:groups": [group]},
-        },
+        "identity": {"claims": {"cognito:groups": [group]}, "sub": "sub-1"},
         "arguments": {"prompt": "hi", "sessionId": "s1"},
     }
     result = agent_chat_index.handler(event, None)
@@ -161,30 +167,37 @@ def test_agent_chat_allows_direct_lambda_invocation(agent_chat_index):
 
 
 @pytest.mark.unit
-def test_agent_chat_forwards_only_the_group_claim_to_the_processor(monkeypatch):
-    """The resolver must give the processor the groups, and nothing else.
+def test_agent_chat_forwards_only_the_group_claim_and_sub_to_the_processor(
+    monkeypatch,
+):
+    """The resolver must give the processor the groups and the sub, nothing else.
 
-    The processor needs the caller's groups to apply its own check, and it logs
-    its whole event — so the rest of the identity object (email, source IP,
-    token-derived claims) must not be forwarded.
+    The processor needs the caller's groups to apply its own check and the sub to
+    know whose session and memory the turn is. It logs its whole event — so the
+    rest of the identity object (email, source IP, token-derived claims) must not
+    be forwarded.
     """
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "test-messages")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "test-sessions")
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "test-owners")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "agent-chat-processor")
     with patch("boto3.resource") as mock_resource, patch("boto3.client") as mock_client:
-        mock_resource.return_value.Table.return_value = MagicMock()
+        mock_resource.return_value.Table.return_value = _unused_session_table()
         module = _load("agent_chat_resolver_fwd", "agent_chat_resolver/index.py")
         event = {
             "identity": {
                 "claims": {"cognito:groups": ["Author"], "email": "a@example.com"},
                 "username": "author-user",
+                "sub": "sub-1",
             },
             "arguments": {"prompt": "hi", "sessionId": "s1"},
         }
         module.handler(event, None)
 
     payload = json.loads(mock_client.return_value.invoke.call_args.kwargs["Payload"])
-    assert payload["identity"] == {"claims": {"cognito:groups": ["Author"]}}
+    assert payload["identity"] == {
+        "claims": {"cognito:groups": ["Author"], "sub": "sub-1"}
+    }
     assert "email" not in json.dumps(payload["identity"])
 
 
@@ -301,7 +314,6 @@ def test_processor_allows_permitted_groups(agent_chat_processor, monkeypatch, gr
         "identity": {"claims": {"cognito:groups": [group]}},
         "sessionId": "s1",
         "prompt": "hi",
-        "callerSub": "u@example.com",
     }
     result = agent_chat_processor.handler(event, None)
     assert result["body"] == "reached the agent work"
@@ -321,7 +333,6 @@ def test_processor_accepts_a_single_group_claim_string(
         "identity": {"claims": {"cognito:groups": "Viewer"}},
         "sessionId": "s1",
         "prompt": "hi",
-        "callerSub": "u@example.com",
     }
     result = agent_chat_processor.handler(event, None)
     assert result["body"] == "reached the agent work"
@@ -331,9 +342,9 @@ def test_processor_accepts_a_single_group_claim_string(
 def test_processor_allows_identity_less_invocation(agent_chat_processor, monkeypatch):
     """An invocation carrying no groups at all is gated by IAM, not by group.
 
-    That is the backend `lambda:InvokeFunction` path. Both chat routes forward
-    verified claims, the streaming Function URL from the ID token it verifies, so
-    neither reaches this branch.
+    That is the backend `lambda:InvokeFunction` path. Both web UI paths forward
+    the caller's verified groups (the streaming Function URL from the ID token it
+    verifies), so they are group-checked rather than reaching this branch.
     """
     monkeypatch.setattr(
         agent_chat_processor,
@@ -351,228 +362,6 @@ def test_processor_and_resolver_agree_on_the_group_list(agent_chat_processor):
     assert agent_chat_processor._AGENT_CHAT_GROUPS == resolver._AGENT_CHAT_GROUPS
 
 
-# --- a session another user owns is refused ----------------------------------
-# A conversation's messages and agent memory are keyed by session id alone, so the
-# session record (userId, sessionId) is what says who owns it.
-
-
-def _tables(owned, earlier_messages, memory=False, fail=False):
-    sessions, messages, memories = MagicMock(), MagicMock(), MagicMock()
-    if fail:
-        sessions.get_item.side_effect = RuntimeError("throttled")
-    sessions.get_item.return_value = {"Item": {"sessionId": "s1"}} if owned else {}
-    messages.query.return_value = {"Items": [{"PK": "s1"}] if earlier_messages else []}
-    memories.query.return_value = {
-        "Items": [{"PK": "conversation#s1"}] if memory else []
-    }
-    return {"sessions": sessions, "messages": messages, "memory": memories}
-
-
-_TABLE_NAMES = {
-    "test-sessions": "sessions",
-    "test-messages": "messages",
-    "test-memory": "memory",
-}
-
-
-def _resource_for(tables):
-    resource = MagicMock()
-    resource.Table.side_effect = lambda name: tables[_TABLE_NAMES[name]]
-    return resource
-
-
-@pytest.fixture
-def resolver_with_tables(agent_chat_index, monkeypatch):
-    monkeypatch.setattr(agent_chat_index, "ID_HELPER_CHAT_MEMORY_TABLE", "test-memory")
-
-    def install(**state):
-        tables = _tables(**state)
-        monkeypatch.setattr(agent_chat_index, "dynamodb", _resource_for(tables))
-        return tables
-
-    return install
-
-
-def _send(index, method="chat"):
-    return index.handler(
-        {
-            "identity": {
-                "username": "b@example.com",
-                "claims": {"cognito:groups": ["Admin"]},
-            },
-            "arguments": {
-                "prompt": "what did we discuss?",
-                "sessionId": "s1",
-                "method": method,
-            },
-        },
-        None,
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("method", ["chat", "quick_start", "assistant_final_response"])
-def test_resolver_refuses_a_session_another_user_owns(
-    agent_chat_index, resolver_with_tables, method
-):
-    tables = resolver_with_tables(owned=False, earlier_messages=True)
-    with pytest.raises(PermissionError, match="belongs to another user"):
-        _send(agent_chat_index, method)
-    tables["sessions"].get_item.assert_called_once_with(
-        Key={"userId": "b@example.com", "sessionId": "s1"}
-    )
-    tables["messages"].put_item.assert_not_called()
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("owned", "earlier_messages"), [(True, True), (False, False)], ids=["own", "new"]
-)
-def test_resolver_continues_the_callers_own_session_or_starts_a_new_one(
-    agent_chat_index, resolver_with_tables, owned, earlier_messages
-):
-    resolver_with_tables(owned=owned, earlier_messages=earlier_messages)
-    assert _send(agent_chat_index)["sessionId"] == "s1"
-
-
-@pytest.mark.unit
-def test_resolver_refuses_when_ownership_cannot_be_checked(
-    agent_chat_index, resolver_with_tables
-):
-    resolver_with_tables(owned=False, earlier_messages=False, fail=True)
-    with pytest.raises(PermissionError, match="belongs to another user"):
-        _send(agent_chat_index)
-
-
-@pytest.mark.unit
-def test_resolver_leaves_the_backend_publish_path_alone(
-    agent_chat_index, resolver_with_tables
-):
-    tables = resolver_with_tables(owned=False, earlier_messages=True)
-    event = {
-        "arguments": {"prompt": "x", "sessionId": "s1", "method": "assistant_stream"}
-    }
-    assert agent_chat_index.handler(event, None)["sessionId"] == "s1"
-    tables["sessions"].get_item.assert_not_called()
-
-
-@pytest.fixture
-def processor_with_tables(agent_chat_processor, monkeypatch):
-    monkeypatch.setattr(agent_chat_processor, "_CHAT_SESSIONS_TABLE", "test-sessions")
-    monkeypatch.setattr(agent_chat_processor, "_CHAT_MESSAGES_TABLE", "test-messages")
-    monkeypatch.setattr(
-        agent_chat_processor,
-        "get_cached_boto3_session",
-        MagicMock(side_effect=_ReachedAgentWork("reached the agent work")),
-    )
-
-    monkeypatch.setenv("ID_HELPER_CHAT_MEMORY_TABLE", "test-memory")
-
-    def install(**state):
-        tables = _tables(**state)
-        monkeypatch.setattr(
-            agent_chat_processor.boto3,
-            "resource",
-            MagicMock(return_value=_resource_for(tables)),
-        )
-        return tables
-
-    return install
-
-
-def _turn(processor, caller="b@example.com"):
-    return processor.handler(
-        {
-            "identity": {"claims": {"cognito:groups": ["Author"]}},
-            "sessionId": "s1",
-            "prompt": "what did we discuss?",
-            "callerSub": caller,
-        },
-        None,
-    )
-
-
-@pytest.mark.unit
-def test_processor_refuses_a_session_another_user_owns_before_any_work(
-    agent_chat_processor, processor_with_tables
-):
-    processor_with_tables(owned=False, earlier_messages=True)
-    with pytest.raises(PermissionError, match="belongs to another user"):
-        _turn(agent_chat_processor)
-    assert not agent_chat_processor.get_cached_boto3_session.called
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("owned", "earlier_messages"), [(True, True), (False, False)], ids=["own", "new"]
-)
-def test_processor_continues_the_callers_own_session_or_starts_a_new_one(
-    agent_chat_processor, processor_with_tables, owned, earlier_messages
-):
-    processor_with_tables(owned=owned, earlier_messages=earlier_messages)
-    assert _turn(agent_chat_processor)["body"] == "reached the agent work"
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("caller", [""], ids=["no-caller-key"])
-def test_processor_refuses_a_verified_caller_it_cannot_attribute(
-    agent_chat_processor, processor_with_tables, caller
-):
-    processor_with_tables(owned=True, earlier_messages=True)
-    with pytest.raises(PermissionError, match="belongs to another user"):
-        _turn(agent_chat_processor, caller=caller)
-
-
-@pytest.mark.unit
-def test_processor_and_resolver_query_the_same_ownership_record(agent_chat_processor):
-    """The two copies of the predicate must read the same key and the same table."""
-    resolver = _load("agent_chat_resolver_ownership", "agent_chat_resolver/index.py")
-    for module in (agent_chat_processor, resolver):
-        src = open(module.__file__).read()
-        body = src[src.index("def _session_belongs_to_another_user(") :]
-        body = body[: body.index("\ndef ")]
-        assert 'Key={"userId": user_id, "sessionId": session_id}' in body
-        assert 'Key("PK").eq(session_id)' in body
-        assert "return True" in body
-
-
-@pytest.mark.unit
-def test_resolver_refuses_a_session_whose_messages_are_gone_but_memory_remains(
-    agent_chat_index, resolver_with_tables
-):
-    """Agent memory outlives the messages, so an id with memory is still in use."""
-    tables = resolver_with_tables(owned=False, earlier_messages=False, memory=True)
-    with pytest.raises(PermissionError, match="belongs to another user"):
-        _send(agent_chat_index)
-    tables["memory"].query.assert_called_once()
-    tables["messages"].put_item.assert_not_called()
-
-
-@pytest.mark.unit
-def test_processor_refuses_a_session_whose_messages_are_gone_but_memory_remains(
-    agent_chat_processor, processor_with_tables
-):
-    processor_with_tables(owned=False, earlier_messages=False, memory=True)
-    with pytest.raises(PermissionError, match="belongs to another user"):
-        _turn(agent_chat_processor)
-    assert not agent_chat_processor.get_cached_boto3_session.called
-
-
-@pytest.mark.unit
-def test_the_ownership_check_reads_memory_under_the_providers_key():
-    """Both predicates restate the memory key; it must stay the provider's."""
-    from idp_common.agents.utils import memory_provider
-
-    provider_src = open(memory_provider.__file__).read()
-    assert 'return f"conversation#{self.session_id}"' in provider_src
-    for rel in (
-        "src/lambda/agent_chat_processor/index.py",
-        "nested/api-resolvers/src/lambda/agent_chat_resolver/index.py",
-    ):
-        src = open(os.path.join(_REPO_ROOT, rel)).read()
-        assert 'Key("PK").eq(f"conversation#{session_id}")' in src, rel
-
-
 # --- Quick Start (method=quick_start) is Admin only --------------------------
 # Quick Start creates a configuration profile and activates it, and the
 # configuration API lets only an Admin create a profile.
@@ -582,6 +371,7 @@ def _quick_start_event(group):
     return {
         "identity": {
             "username": "u@example.com",
+            "sub": "sub-1",
             "claims": {"cognito:groups": [group]},
         },
         "arguments": {"prompt": "paystubs", "sessionId": "s1", "method": "quick_start"},

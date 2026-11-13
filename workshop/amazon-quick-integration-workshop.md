@@ -99,7 +99,9 @@ You will receive an email with a temporary password to access the IDP Web UI:
 > **Important**: Note the following values from the CloudFormation **Outputs** tab — you'll need them for the MCP integration setup:
 > - `MCPServerEndpoint` — The AgentCore Gateway URL
 > - `MCPConnectorClientId` — The OAuth client ID for service-to-service (M2M) authentication
-> - `MCPConnectorClientSecret` — The OAuth client secret for service-to-service (M2M) authentication
+> - `MCPConnectorClientSecretArn` — Where that client's secret is. Open it in the Secrets Manager console (**Retrieve secret value**, the `clientSecret` field) or run `aws secretsmanager get-secret-value --secret-id <MCPConnectorClientSecretArn>`
+>
+> Alternatively, sign in to the IDP Web UI as an Admin, open **Configuration › MCP Configuration** and create a credential with the **Author** role and **write tools** on (the workshop calls `process`). Its client ID and secret are shown once, with the token URL, ready to paste into Quick.
 > - `MCPTokenURL` — The Cognito OAuth token endpoint URL
 
 ---
@@ -146,7 +148,7 @@ Configure the following fields:
 | **Authentication Type** | Service-to-service OAuth |
 | **Base URL** | *(Your `MCPServerEndpoint` from CloudFormation Outputs)* |
 | **Client ID** | *(Your `MCPConnectorClientId` from CloudFormation Outputs)* |
-| **Client Secret** | *(Your `MCPConnectorClientSecret` from CloudFormation Outputs)* |
+| **Client Secret** | *(The `clientSecret` stored at `MCPConnectorClientSecretArn`, or your credential's secret)* |
 | **Token URL** | *(Your `MCPTokenURL` from CloudFormation Outputs)* |
 | **VPC Connection** | Public network |
 
@@ -543,7 +545,7 @@ When executing this workflow, provide the following runtime configuration values
 | Issue | Resolution |
 |-------|-----------|
 | Stack deployment fails | Verify you have [Bedrock model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html) enabled for required models |
-| MCP connection fails | Verify the `MCPServerEndpoint`, `MCPConnectorClientId`, `MCPConnectorClientSecret`, and `MCPTokenURL` from CloudFormation Outputs match your integration config |
+| MCP connection fails | Verify the `MCPServerEndpoint`, client ID, client secret (from `MCPConnectorClientSecretArn` or your credential) and `MCPTokenURL` match your integration config. On the MCP Configuration page, check that the credential is active, not expired, and has the Author role with write tools |
 | Agent times out during processing | Large documents may take several minutes — increase the agent timeout or ensure the polling logic has adequate retries |
 | No extracted data returned | Verify the input document is in a [supported format](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/configuration.md) and that classification/extraction configs are properly set up |
 | S3 upload permission denied | Ensure the Amazon Quick S3 connector has write access to the output bucket |

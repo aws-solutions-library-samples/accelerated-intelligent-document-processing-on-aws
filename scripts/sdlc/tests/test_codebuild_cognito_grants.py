@@ -55,6 +55,7 @@ HARNESS_MODULES = (
     REPO_ROOT / "scripts" / "test_api_rbac.py",
     REPO_ROOT / "scripts" / "rbac_common.py",
     REPO_ROOT / "scripts" / "api_security_cases.py",
+    REPO_ROOT / "scripts" / "api_rbac_mcp.py",
 )
 
 # An AWS CLI subcommand of `aws cognito-idp` -> the IAM action it authorizes.

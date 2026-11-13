@@ -249,19 +249,20 @@ def test_the_profile_assumes_the_role_from_the_container():
     assert text.startswith(f"[profile {cbd.TERRAFORM_MIGRATION_PROFILE}]")
 
 
-def test_the_driver_gets_the_role_for_the_new_deployment_too():
+def test_the_driver_is_not_asked_to_assume_the_role_it_runs_as():
     cmd = cbd.terraform_migration_driver_command(
         "idpo1",
         "idp-m1",
         "https://x/m.zip",
-        "arn:r",
         "terraform",
         "/w",
         "us-east-1",
         "123456789012",
         "arn:aws:iam::123456789012:policy/idp-m1-PermissionsBoundary",
     )
-    assert cmd[cmd.index("--terraform-assume-role-arn") + 1] == "arn:r"
+    # The driver already runs as the run's role through the AWS profile; that
+    # role cannot assume itself, so the driver is never asked to.
+    assert "--terraform-assume-role-arn" not in cmd
     assert cmd[cmd.index("--expected-account") + 1] == "123456789012"
     assert cmd[cmd.index("--upstream-iam-path") + 1] == "/idp-m1-upstream/"
     assert cmd[cmd.index("--upstream-permissions-boundary-arn") + 1].endswith(
@@ -418,6 +419,8 @@ def test_a_failed_migration_run_carries_an_ai_analysis_of_its_logs(
     ok, summary = seen["result"]
     assert not ok
     assert "AI FAILURE ANALYSIS" in summary and "• the analysis" in summary
+    # first, so the start of the summary a chat post keeps carries the diagnosis
+    assert summary.index("AI FAILURE ANALYSIS") < summary.index("phase upstream-deploy")
     (prompt,) = seen["prompts"]
     assert "phase upstream-deploy failed" in prompt
     assert "Error: AccessDenied iam:CreateRole" in prompt
@@ -835,3 +838,126 @@ def test_the_migration_run_builds_its_role_with_the_quota_read(monkeypatch, tmp_
     monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda name: [])
     cbd.run_terraform_migration("idp-1111-235959", "https://m.zip", "terraform")
     assert seen.get("terraform_migration") is True
+
+
+def test_the_run_and_the_reaper_never_pass_an_assume_role(monkeypatch, tmp_path):
+    cmd = _run_migration_with_fakes(monkeypatch, tmp_path)["cmd"]
+    assert "--terraform-assume-role-arn" not in cmd
+
+
+class _ReapS3(_S3Listing):
+    """Serves run.json and a mirrored context; records prefix deletion."""
+
+    def __init__(self, context):
+        super().__init__([])
+        self.context, self.deleted = context, []
+
+    def get_object(self, Bucket, Key):  # noqa: N803
+        body = json.dumps(
+            self.context if Key.endswith("context.json") else RECORD
+        ).encode()
+
+        class _B:
+            def read(self):
+                return body
+
+        return {"Body": _B()}
+
+    def get_paginator(self, api):
+        class _P:
+            def paginate(self, Bucket, Prefix):  # noqa: N803
+                yield {"Versions": [{"Key": Prefix + "context.json", "VersionId": "1"}]}
+
+        return _P()
+
+    def delete_object(self, Bucket, Key, VersionId):  # noqa: N803
+        self.deleted.append(Key)
+
+
+def test_a_dead_run_that_created_nothing_is_cleared_without_assuming(monkeypatch):
+    """A run refused before it created anything has no role left to assume; the
+    reaper reads its context with the build's own credentials and removes it."""
+    monkeypatch.setattr(
+        cbd.subprocess, "run", lambda *a, **k: pytest.fail("ran the driver")
+    )
+    cleaned = []
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda n: cleaned.append(n) or [])
+    s3 = _ReapS3({"created": False})
+    keys = [MPREFIX + cbd.TERRAFORM_RUN_RECORD, MPREFIX + "context.json"]
+    outcome = cbd._reap_terraform_migration(DEAD, "b", keys, s3=s3)
+    assert outcome == {"findings": [], "timed_out": False}
+    assert s3.deleted == [MPREFIX + "context.json"] and cleaned == [DEAD]
+
+
+@pytest.mark.parametrize(
+    ("context", "with_key"), [({"created": True}, True), ({}, False)]
+)
+def test_a_dead_run_that_may_have_created_something_is_torn_down(
+    monkeypatch, context, with_key
+):
+    ran = []
+    monkeypatch.setattr(cbd, "ensure_terraform_binary", lambda: "/bin/terraform")
+    monkeypatch.setattr(cbd, "cleanup_iam_resources", lambda n: [])
+
+    class _P:
+        returncode = 0
+
+    monkeypatch.setattr(cbd.subprocess, "run", lambda *a, **k: ran.append(1) or _P())
+    s3 = _ReapS3(context)
+    keys = [MPREFIX + cbd.TERRAFORM_RUN_RECORD] + (
+        [MPREFIX + "context.json"] if with_key else []
+    )
+    cbd._reap_terraform_migration(DEAD, "b", keys, s3=s3)
+    assert ran == [1] and s3.deleted == []
+
+
+def test_the_build_names_the_drivers_context_file():
+    assert cbd.TERRAFORM_MIGRATION_CONTEXT_KEY == tmt.MIRROR_CONTEXT
+
+
+def test_a_terraform_deploy_role_can_list_what_its_policies_are_attached_to():
+    """Cloud Control's managed-policy delete calls iam:ListEntitiesForPolicy; the
+    fifth migration run's new-deployment delete was refused it and left the
+    deployment standing. Scoped to the policies the role may create."""
+    import fnmatch
+
+    statements = [
+        st
+        for p in cbd.terraform_deploy_role_template(SERVICE_ROLE_TEMPLATE.read_text())[
+            "Resources"
+        ]["TerraformDeployRole"]["Properties"]["Policies"]
+        for st in p["PolicyDocument"]["Statement"]
+    ]
+    (grant,) = [
+        st
+        for st in statements
+        if "iam:ListEntitiesForPolicy" in st.get("Action", [])
+        and st["Effect"] == "Allow"
+    ]
+    patterns = [
+        r["Fn::Sub"]
+        .replace("${AWS::Partition}", "aws")
+        .replace("${AWS::AccountId}", "1")
+        .replace("${ManagedStackNamePrefix}", cbd.MANAGED_STACK_NAME_PREFIX)
+        for r in grant["Resource"]
+    ]
+    ours = "arn:aws:iam::1:policy/idp-1-PATTERNSTACK-LambdaECRAccessPolicy-ab"
+    assert any(fnmatch.fnmatchcase(ours, p) for p in patterns)
+    assert not any(
+        fnmatch.fnmatchcase("arn:aws:iam::1:policy/SomeoneElsesPolicy", p)
+        for p in patterns
+    )
+
+
+def test_both_slack_posts_name_the_cloudformation_nightly_the_same_way(config):
+    """Every scheduled post names its run; the CloudFormation nightly is the
+    schedule that is none of the other kinds."""
+    posts = {
+        job: _assignment(config, job, "cloudformation_run")
+        for job in ("integration_tests", "nightly_notification")
+    }
+    assert len(set(posts.values())) == 1, posts
+    (assignment,) = set(posts.values())
+    assert "os.environ.get('CI_PIPELINE_SOURCE', '') == 'schedule'" in assignment
+    for other in ("probe_run", "region_run", "terraform_run", "migration_run"):
+        assert other in assignment

@@ -2,6 +2,9 @@
 title: "External Identity Provider (Federation)"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # External Identity Provider (Federation)
 
 This guide covers how to configure an external SAML or OIDC identity provider to federate authentication through Amazon Cognito for the GenAI IDP solution. Federated users sign in through their organization's identity provider and are automatically mapped to Cognito groups (Admin, Author, Reviewer, Annotator, Viewer) based on group claims from the IdP.

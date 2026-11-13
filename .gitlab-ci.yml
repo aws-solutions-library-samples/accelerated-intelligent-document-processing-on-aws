@@ -129,8 +129,11 @@ stages:
   - uv pip install -c "$LOCK_CONSTRAINTS" 'ruff==0.15.13'
   # Needed by publish.py for test imports
   - uv pip install -c "$LOCK_CONSTRAINTS" typer rich boto3
+  # `agents` for bedrock-agentcore: scripts/sdlc/tests/test_sandbox_network_probe.py
+  # pins the code-interpreter SDK's default, as GitHub's install ([all]) already
+  # provides.
   - uv pip install -c "$LOCK_CONSTRAINTS"
-                   -e "lib/idp_common_pkg[test,evaluation]"
+                   -e "lib/idp_common_pkg[test,evaluation,agents]"
                    -e "lib/idp_sdk[test]"
                    -e "lib/idp_cli_pkg[test]"
                    -e "lib/idp_feature_sdk[test]"
@@ -388,13 +391,15 @@ unit_tests:
       junit: lib/idp_common_pkg/test-reports/test-results.xml
     expire_in: 1 week
 
-# The package / Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
-# idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
-# config_library, and the repo's own gate suites under scripts/).
+# The package / Lambda suites that neither idp_common_pkg's test-cicd nor
+# coverage-all-cicd runs (Terraform, the Lambda and resolver handlers, the samples,
+# benchmarks, the state machine, config_library). The suites a coverage tree measures
+# (idp_cli, idp_sdk, idp_feature_sdk, main-stack-extensions, the gate suites under
+# scripts/) run once, under coverage, in unit_tests.
 #
-# Many separate pytest invocations, of which the nine measured above 20s in CI run
-# `-n auto` — see PYTEST_XDIST in the Makefile for the selection rule and why it is
-# not applied to all of them.
+# Many separate pytest invocations; those measured above 20s in CI run `-n auto` —
+# see PYTEST_XDIST in the Makefile for the selection rule and why it is not applied
+# to all of them.
 package_tests:
   <<: *fast_check_job
   tags:
@@ -419,9 +424,15 @@ package_tests:
 
   before_script:
     - *python_setup
+    # ⚠️ The three toolchains below (Node with basedpyright, pinned cfn-lint, the UI's
+    # npm dependencies) were added for `scripts/tests` and `lib/idp_sdk`. Those suites
+    # no longer run in this job: `test-packages-cicd` leaves out every suite a coverage
+    # tree measures, and `unit_tests` runs them under `coverage-all-cicd` with the same
+    # three toolchains. They are kept here until it is measured that no remaining suite
+    # in this job needs them; the reasons below describe the suites they were added for.
     # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
     # script below and cost this job a red run when they were left out.
-    # `scripts/tests` is one of the suites `test-packages-cicd` runs, and
+    # `scripts/tests` is one of the suites `coverage-all-cicd` runs, and
     # `test_pyright_config.py` RUNS basedpyright — a live 0.5s probe confirming
     # that pyrightconfig.json's five `extraPaths` really resolve the first-party
     # packages, rather than trusting that the config looks right. That is the whole
@@ -1038,6 +1049,14 @@ integration_tests:
       )
       if migration_run:
           status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+      # And the CloudFormation nightly: a schedule that is none of the above, so
+      # every scheduled post in the channel names the run it is.
+      cloudformation_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and not (probe_run or region_run or terraform_run or migration_run)
+      )
+      if cloudformation_run:
+          status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -1261,14 +1280,18 @@ dep_audit:
 # create the schedule in Build -> Pipeline schedules. Read the cost note above
 # first — a daily sweep of 10 MRs is the case that gets expensive.
 #
-# Requires two CI variables:
+# Requires three CI variables:
 #   GITLAB_REVIEW_TOKEN  project access token, `api` scope, MASKED. The review is
 #                        posted as this token's identity. CI_JOB_TOKEN cannot
 #                        create notes, so there is no fallback — without this the
 #                        job prints SKIPPED and exits 0.
-#   AWS credentials      the same ones integration_tests uses, plus
-#                        bedrock:InvokeModel. See the script's --help for how to
-#                        scope this job down to a Bedrock-only role.
+#   AI_REVIEW_GITLAB_ROLE_ARN
+#                        the ARN of idp-sdlc-GitLabReview (the GitLabReviewRole
+#                        output of the credential-vendor stack), MASKED. The
+#                        runner fleet vends the project's integration-test role
+#                        to this job like any other, so the script assumes this
+#                        ARN from that session before anything else and hands the
+#                        model only the review role's credentials.
 ai_mr_review:
   stage: fast_checks
   interruptible: true
@@ -1307,6 +1330,19 @@ ai_mr_review:
     # Full history: the review diffs the MR head against its merge base with
     # develop, which a shallow clone does not have.
     GIT_DEPTH: 0
+    # The Bedrock-only review role, idp-sdlc-GitLabReview in
+    # scripts/sdlc/cfn/credential-vendor.yml. A job-level AWS_CREDS_TARGET_ROLE
+    # cannot select it: the project-level variable of that name outranks a job
+    # variable, so the runner fleet vends the integration-test role here as
+    # everywhere. The script therefore assumes the review role itself
+    # (--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN; the ARN embeds an account id,
+    # which scripts/check_account_ids.py refuses in this public tree, so it is a
+    # masked project variable), replaces the job's credentials in its own
+    # environment, and then asks STS which role it holds and refuses to review on
+    # any other.
+    REVIEW_ROLE_NAME: "idp-sdlc-GitLabReview"
+    REVIEW_HARNESS_DIR: "/tmp/review-harness"
+    REVIEW_HARNESS: "scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
 
   before_script:
     - apt-get update -y
@@ -1337,44 +1373,55 @@ ai_mr_review:
     - claude --version
 
   script:
-    # ⚠️ PIN THE HARNESS TO THE TARGET BRANCH BEFORE RUNNING IT.
+    # ⚠️ STAGE THE HARNESS FROM THE TARGET BRANCH, OUTSIDE THE CHECKOUT, RUN IT
+    # ISOLATED, AND FAIL CLOSED.
     #
-    # This checkout is the MR head, so without this the reviewer is the MR's own
-    # copy of itself: the permission mode, both tool lists, the secret-stripping
-    # list and the prompt are all author-controlled, and the script's internal
-    # pinning of instruction files runs too late to matter because the code doing
-    # the pinning is also the MR's. The blast radius is this job's environment,
-    # which holds an AWS credential and GITLAB_REVIEW_TOKEN.
+    # This checkout is the MR head, so its copy of the reviewer (the permission
+    # mode, both tool lists, the secret-stripping list, the posting check and the
+    # prompt) is author-controlled. So the harness comes from the target branch and
+    # only the DIFF comes from the MR. `git archive` into a fresh directory rather
+    # than `git checkout FETCH_HEAD -- ...` in place, because an in-place checkout
+    # leaves MR-added files beside the pinned ones and Python resolves imports
+    # from the script's own directory first; and `python3 -I`, so neither the
+    # current directory nor PYTHON* variables reach the import path either. The
+    # path list is REVIEW_HARNESS_PATHS in ai_mr_review.py, asserted equal to this
+    # one by test_ai_mr_review.py. The fetch names refs/heads/ so a tag called
+    # like the branch cannot stand in for it.
     #
-    # So the harness comes from the target branch and only the DIFF comes from the
-    # MR. The tradeoff is explicit: an MR that improves the reviewer is not
-    # exercised by its own pipeline — it takes effect once merged. That is the same
-    # trade the instruction-file pinning makes, for the same reason.
-    #
-    # The `||` arm covers the first landing, when the target branch has no copy
-    # yet. It says so loudly rather than proceeding silently, because "no pinned
-    # copy" and "pinned successfully" must not look alike in a log.
+    # An MR that improves the reviewer is not exercised by its own pipeline; it
+    # takes effect once merged. A target branch without the harness REFUSES rather
+    # than running the MR's own copy, the same trade ai_ux_test makes.
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
-      git fetch -q origin "$TARGET"
-      HARNESS="scripts/sdlc/ai_mr_review.py .claude/skills/pr-review.md .claude/skills/pr-review-ci.md CLAUDE.md"
-      if git checkout FETCH_HEAD -- $HARNESS 2>/dev/null; then
-        echo "Harness pinned to origin/$TARGET: $HARNESS"
+      git fetch -q origin "refs/heads/$TARGET"
+      rm -rf "$REVIEW_HARNESS_DIR" && mkdir -p "$REVIEW_HARNESS_DIR"
+      if git archive --format=tar -o /tmp/review-harness.tar FETCH_HEAD -- $REVIEW_HARNESS && tar -xf /tmp/review-harness.tar -C "$REVIEW_HARNESS_DIR" && chmod -R go-w "$REVIEW_HARNESS_DIR"; then
+        echo "Review harness staged from origin/$TARGET in $REVIEW_HARNESS_DIR: $REVIEW_HARNESS"
       else
-        echo "⚠️  Could not pin the harness to origin/$TARGET — it does not carry"
-        echo "    all of: $HARNESS"
-        echo "    Running the MR's own copy. Expected only on the MR that adds this."
+        echo "❌ Could not stage the review harness from origin/$TARGET — it does not"
+        echo "   carry all of: $REVIEW_HARNESS"
+        echo "   REFUSING to run this checkout's own copy: in an MR pipeline that would"
+        echo "   make the reviewer the MR's own copy of the reviewer."
+        exit 1
       fi
+    # A target branch whose reviewer predates --checkout and --require-aws-role
+    # cannot run this way; say so instead of failing on an argument error.
     - |
+      if ! grep -q -- "--require-aws-role" "$REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py"; then
+        echo "❌ The target branch's reviewer predates the staged, role-checked run, so"
+        echo "   it cannot review this MR. Reviews resume once the target carries it."
+        exit 1
+      fi
+      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME --assume-role-from AI_REVIEW_GITLAB_ROLE_ARN"
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
-        python3 scripts/sdlc/ai_mr_review.py --mr "$CI_MERGE_REQUEST_IID"
+        $REVIEW --mr "$CI_MERGE_REQUEST_IID"
       else
         # --max-mrs 3, not the script's default of 10: at --timeout 1200 a batch of
         # ten has a 200-minute worst case against this job's 45m timeout, so the
         # sweep's own bound would never be the one that fires and the job would
         # truncate the batch silently. Three fits. (Unreachable today — no schedule
         # rule exists, so CI always takes the --mr branch above.)
-        python3 scripts/sdlc/ai_mr_review.py --all-open --max-mrs 3
+        $REVIEW --all-open --max-mrs 3
       fi
 
   artifacts:
@@ -1567,7 +1614,7 @@ ai_ux_test:
     # whatever the variables say. A merge request whose .gitlab-ci.yml predates
     # this setup runs this job as it was then, naming the harness in its own script
     # where no variable reaches it and setting neither; ai_ux_test.py runs for it.
-    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
+    UX_HARNESS: "scripts/sdlc/ai_ux_test.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/check_markdown_links.py scripts/ux_flows.yaml .claude/skills/ux-test.md .claude/skills/ux-test-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test.py"
     UX_MODE_ARGS: "--mr $CI_MERGE_REQUEST_IID"
     UX_ARTIFACTS: "ux-tests"
@@ -1609,8 +1656,7 @@ ai_ux_test:
     # runs from $UX_HARNESS_DIR, the toolchain install from inside it, and Python
     # runs it with -B, so no bytecode is written into it for root to read back;
     # nothing runs from the checkout. The MR that adds this job cannot exercise
-    # it, which is the same trade ai_mr_review makes, except that this one
-    # refuses rather than warns.
+    # it, which is the same trade ai_mr_review makes.
     - |
       TARGET="${CI_MERGE_REQUEST_TARGET_BRANCH_NAME:-develop}"
       git fetch -q origin "refs/heads/$TARGET"
@@ -1729,7 +1775,7 @@ ai_ux_test_stories:
     # The MR's story inputs diff against its merge base with develop.
     GIT_DEPTH: 0
     UX_HARNESS_DIR: "/tmp/ux-harness"
-    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
+    UX_HARNESS: &ux_story_harness "scripts/sdlc/ai_ux_test_stories.py scripts/sdlc/ai_mr_review.py scripts/hooks/check_commit_text.py scripts/ux_runner scripts/ux_test_proxy.py scripts/ux_recorder.py scripts/ux_recorder_cdp.py scripts/ux_recorder_render.py scripts/ux_recorder_mcp.py scripts/ux_story_mcp.py scripts/ux_stories.toml scripts/check_markdown_links.py docs-site/setup.sh .claude/skills/ux-test-stories.md .claude/skills/ux-test-stories-ci.md"
     UX_ENTRY: "scripts/sdlc/ai_ux_test_stories.py"
     # Posting is opt-in: this flag is what lets the precheck's one-line replies
     # and the run's reply reach the MR, and no other story job carries it.
@@ -2073,10 +2119,11 @@ nightly_notification:
 
           # Same label as the post in integration_tests: the weekly variant-probe
           # schedule shares the channel, and its result must not read as the nightly's.
-          if (
+          probe_run = (
               os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
               and os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
-          ):
+          )
+          if probe_run:
               status = "🔬 WEEKLY VARIANT PROBES · " + status
           # And a weekly region run names its region, read exactly as the post in
           # integration_tests reads it.
@@ -2103,6 +2150,14 @@ nightly_notification:
           )
           if migration_run:
               status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+          # And the CloudFormation nightly, read exactly as the post in
+          # integration_tests reads it.
+          cloudformation_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and not (probe_run or region_run or terraform_run or migration_run)
+          )
+          if cloudformation_run:
+              status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and

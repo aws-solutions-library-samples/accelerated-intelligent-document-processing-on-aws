@@ -124,10 +124,9 @@ class TestSummarizationService:
     def test_init_missing_model(self):
         """Test initialization with empty config uses default model."""
         service = SummarizationService(region="us-west-2", config={})
-        # Should use default model from SummarizationConfig
-        # Nova Pro: the SummarizationConfig default moved off Nova Premier when
-        # Premier reached end of life (2026-09-14) and stopped being invocable.
-        assert service.bedrock_model == "us.amazon.nova-pro-v1:0"
+        # Should use default model from SummarizationConfig, which is the model
+        # base-summarization.yaml ships (test_system_defaults_value_parity.py).
+        assert service.bedrock_model == "us.anthropic.claude-sonnet-5:1m"
 
     def test_get_summarization_config(self, service):
         """Test getting and validating summarization configuration."""

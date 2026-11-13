@@ -40,10 +40,18 @@ WORKDIR /app
 # SEED is now the published `seed-data` PyPI package (module `seed_data`) — no
 # longer vendored as local source. Installing it pulls the generator plus its
 # bundled schema library/packages and dependencies (strands, weasyprint,
-# augraphy, opencv, reportlab, etc.). Pinned to a known-good minimum; the
-# accelerator's synthesis adapter (idp_common) targets the seed_data Generator
-# API from this version.
-RUN pip install "seed-data>=0.0.5"
+# reportlab, xhtml2pdf, etc.). From 0.0.7 the image-augmentation libraries
+# (augraphy, opencv) are only in SEED's `augment` extra, which the extension's
+# optional scan/fax effects need, so the extra is named here.
+#
+# seed-data is pinned to one release, because the tools SEED gives its models
+# can change between releases and README.md records the tool inventory for this
+# version ("What the generator's model can do"). Re-read that inventory against
+# the new release's source when moving the pin. xhtml2pdf is pinned because the
+# synthesis adapter renders through its ResourceAccessPolicy, which 0.2.17 (the
+# lowest version SEED accepts) does not have; without it the adapter falls back
+# to SEED's renderer.
+RUN pip install "seed-data[augment]==0.0.7" "xhtml2pdf==0.2.28"
 
 # Extra runtime deps not in seed-data (AgentCore HTTP server + SigV4 helpers)
 # plus idp_common[synthesis] for the synthesis adapter glue.
@@ -56,10 +64,17 @@ RUN cd /app && pip install -r /tmp/runtime-requirements.txt
 # AgentCore runtime entrypoint (the /invocations + /ping HTTP server).
 COPY agent-source/runtime/*.py /app/
 
-RUN useradd --create-home --uid 10001 appuser \
-    && chown -R appuser:appuser /app
+# /app stays owned by root, so the runtime user can read the code it runs but
+# not write to it. The process starts in the user's home directory instead,
+# because augraphy (scan/fax effects) creates an `augraphy_cache` directory in
+# the current working directory on every call; job output goes under
+# tempfile.mkdtemp(). PYTHONSAFEPATH keeps the script's directory off sys.path;
+# handler.py imports no sibling module, so nothing needs it there.
+ENV PYTHONSAFEPATH=1
+RUN useradd --create-home --uid 10001 appuser
 USER appuser
+WORKDIR /home/appuser
 
 EXPOSE 8080
 
-CMD ["python", "handler.py"]
+CMD ["python", "/app/handler.py"]

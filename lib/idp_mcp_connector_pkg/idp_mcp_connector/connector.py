@@ -10,7 +10,7 @@ and forwards all tool calls with automatic Cognito authentication.
 
 import json
 import logging
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 import mcp.types as types
@@ -20,6 +20,54 @@ from mcp.server.stdio import stdio_server
 from .auth import CognitoAuth
 
 logger = logging.getLogger(__name__)
+
+
+def _decoded(value: Any) -> Any:
+    """``value`` parsed when it is a JSON string, else as given."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def provenance_of(result: Any) -> Optional[dict]:
+    """The ``provenance`` envelope the IDP MCP server put on a tool result, or None.
+
+    The gateway returns the tool's Lambda response as text inside a JSON-RPC result:
+    ``result.content[].text`` holds ``{"statusCode", "body"}`` and ``body`` holds the
+    tool's own JSON. Every layer is parsed in turn, and anything else is ignored, so
+    an unexpected shape yields no notice rather than an error.
+    """
+    if not isinstance(result, dict):
+        return None
+    inner = result.get("result")
+    content = inner.get("content") if isinstance(inner, dict) else None
+    if not isinstance(content, list):
+        return None
+    for item in content:
+        payload = _decoded(item.get("text") if isinstance(item, dict) else None)
+        if isinstance(payload, dict) and "body" in payload:
+            payload = _decoded(payload["body"])
+        if isinstance(payload, dict) and isinstance(payload.get("provenance"), dict):
+            return payload["provenance"]
+    return None
+
+
+def notice_text(provenance: dict) -> Optional[str]:
+    """The note to show ahead of a result, or ``None`` when the envelope is not the
+    shape the server sends (a list of field names and a notice)."""
+    fields = provenance.get("documentDerived")
+    notice = provenance.get("notice")
+    if not (isinstance(fields, list) and fields and isinstance(notice, str) and notice):
+        return None
+    if not all(isinstance(f, str) for f in fields):
+        return None
+    return (
+        f"Note from the IDP MCP server about the result below ({', '.join(fields)}): "
+        f"{notice}"
+    )
 
 
 class IDPMCPConnector:
@@ -151,7 +199,13 @@ class IDPMCPConnector:
         else:
             result_text = str(result)
 
-        return [types.TextContent(type="text", text=result_text)]
+        content = [types.TextContent(type="text", text=result_text)]
+        provenance = provenance_of(result)
+        note = notice_text(provenance) if provenance else None
+        if note:
+            # Ahead of the result, so the client's model reads it first.
+            content.insert(0, types.TextContent(type="text", text=note))
+        return content
 
     def create_mcp_server(self) -> Server:
         """

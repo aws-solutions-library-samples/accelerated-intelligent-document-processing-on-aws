@@ -11,12 +11,29 @@ import json
 import logging
 import os
 import time
+import uuid
 from datetime import datetime
 
 import boto3
-from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+from chat_session_owner import (
+    claim_chat_session,
+    has_stored_messages,
+    holds_data_results,
+    holds_session_row,
+)
 from log_sanitizer import sanitize_event_for_logging
+
+
+class ResourceAccessDenied(PermissionError):
+    """A refusal by a per-object control rather than by the caller's group.
+
+    Declared locally because this Lambda's package does not carry ``idp_common``;
+    the canonical class is ``idp_common.api_adapter.ResourceAccessDenied``, and the
+    dispatcher recognises it by class name. Still a ``PermissionError``, so the
+    caller sees 403 ``Unauthorized``.
+    """
+
 
 # Configure logging
 logger = logging.getLogger()
@@ -29,7 +46,8 @@ lambda_client = boto3.client("lambda")
 # Get environment variables
 CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE")
 CHAT_SESSIONS_TABLE = os.environ.get("CHAT_SESSIONS_TABLE")
-ID_HELPER_CHAT_MEMORY_TABLE = os.environ.get("ID_HELPER_CHAT_MEMORY_TABLE")
+# Who each session id belongs to (keyed by sessionId). See chat_session_owner.py.
+CHAT_SESSION_OWNERS_TABLE = os.environ.get("CHAT_SESSION_OWNERS_TABLE")
 AGENT_CHAT_PROCESSOR_FUNCTION = os.environ.get("AGENT_CHAT_PROCESSOR_FUNCTION")
 DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 
@@ -88,47 +106,71 @@ def _forwarded_identity(event):
     groups = (identity.get("claims") or {}).get("cognito:groups") or []
     if isinstance(groups, str):
         groups = [groups]
-    return {"claims": {"cognito:groups": list(groups)}}
+    # The sub is what the session and its conversation memory belong to.
+    return {"claims": {"cognito:groups": list(groups), "sub": _caller_sub(event)}}
 
 
-def _session_belongs_to_another_user(session_id, user_id):
-    """True when ``session_id`` is in use but ``user_id`` holds no session for it.
+def _caller_sub(event):
+    """The caller's Cognito ``sub``, from the verified identity; ``""`` if none."""
+    identity = event.get("identity") or {}
+    return str(identity.get("sub") or (identity.get("claims") or {}).get("sub") or "")
 
-    The same predicate as ``_session_belongs_to_another_user`` in
-    src/lambda/agent_chat_processor, restated because this function ships without
-    the ``idp_common`` layer. A conversation's messages and agent memory are keyed
-    by session id alone, so the session record is the one statement of who owns
-    it; an id with messages or memory is in use. Any failure to tell reads as
-    another user's.
+
+def _session_holds_data_results(session_id):
+    """Whether the session already holds Analytics or Error Analyzer results.
+
+    Read from the session's owner row (``chat_session_owner.holds_data_results``),
+    which the chat processor flags the first time one of those agents returns a
+    result. A read that fails answers True, which only moves an opt-in turn to a
+    new session.
     """
-    if not CHAT_MESSAGES_TABLE or not CHAT_SESSIONS_TABLE:
-        return False
     try:
-        owned = (
-            dynamodb.Table(CHAT_SESSIONS_TABLE)
-            .get_item(Key={"userId": user_id, "sessionId": session_id})
-            .get("Item")
+        return holds_data_results(dynamodb.Table(CHAT_SESSION_OWNERS_TABLE), session_id)
+    except ClientError as e:
+        logger.warning(
+            "Could not read the data-results flag for session %s; treating it as "
+            "set: %s",
+            session_id,
+            e,
         )
-        if owned:
-            return False
-        earlier = dynamodb.Table(CHAT_MESSAGES_TABLE).query(
-            KeyConditionExpression=Key("PK").eq(session_id),
-            ProjectionExpression="PK",
-            Limit=1,
-        )
-        if earlier.get("Items"):
-            return True
-        if not ID_HELPER_CHAT_MEMORY_TABLE:
-            return False
-        memory = dynamodb.Table(ID_HELPER_CHAT_MEMORY_TABLE).query(
-            KeyConditionExpression=Key("PK").eq(f"conversation#{session_id}"),
-            ProjectionExpression="PK",
-            Limit=1,
-        )
-        return bool(memory.get("Items"))
-    except Exception as e:
-        logger.error(f"Could not verify ownership of chat session {session_id}: {e}")
         return True
+
+
+def _require_session_owner(event, session_id, user_id, expires_after):
+    """Refuse a message to a session id another user owns, before storing it.
+
+    Registers the id to the caller when nobody owns it and nothing is stored
+    under it yet. Without this, sending one message under someone else's
+    session id created the caller's own session row for it, and that row was
+    what the history read accepted as ownership.
+    """
+    owner_sub = _caller_sub(event)
+    if not (CHAT_SESSION_OWNERS_TABLE and CHAT_MESSAGES_TABLE and CHAT_SESSIONS_TABLE):
+        logger.error("Chat session owner tables are not configured; refusing")
+        raise ResourceAccessDenied(
+            "Unauthorized: chat session ownership cannot be verified."
+        )
+    messages_table = dynamodb.Table(CHAT_MESSAGES_TABLE)
+    sessions_table = dynamodb.Table(CHAT_SESSIONS_TABLE)
+    owned = claim_chat_session(
+        dynamodb.Table(CHAT_SESSION_OWNERS_TABLE),
+        session_id,
+        owner_sub,
+        expires_after=expires_after,
+        allow_new=True,
+        has_stored_messages=lambda: has_stored_messages(messages_table, session_id),
+        holds_earlier_record=lambda: holds_session_row(
+            sessions_table, user_id, session_id
+        ),
+    )
+    if not owned:
+        logger.warning(
+            "Rejecting sendAgentChatMessage: session %s belongs to another user",
+            session_id,
+        )
+        raise ResourceAccessDenied(
+            "Unauthorized: this chat session belongs to another user."
+        )
 
 
 def handler(event, context):
@@ -186,17 +228,6 @@ def handler(event, context):
     ):
         logger.warning("Rejecting Quick Start: caller is not an Admin")
         raise PermissionError("Unauthorized: Quick Start requires the Admin group")
-    identity = event.get("identity")
-    session_id = (event.get("arguments") or {}).get("sessionId") or ""
-    if identity is not None and session_id:
-        user_id = identity.get("username") or identity.get("sub") or ""
-        if not user_id or _session_belongs_to_another_user(session_id, user_id):
-            logger.warning(
-                "Rejecting agent chat: session %s is not the caller's", session_id
-            )
-            raise PermissionError(
-                "Unauthorized: this chat session belongs to another user"
-            )
 
     try:
         # Extract arguments from the event
@@ -210,6 +241,9 @@ def handler(event, context):
         # the HTTP path, but direct (IAM) invocations are not validated, and
         # bool("false") is True.
         enable_code_intelligence = arguments.get("enableCodeIntelligence") is True
+        # Default off for the same reason, and with the same literal-True rule:
+        # External MCP agents send their query to a server outside the deployment.
+        enable_external_mcp_agents = arguments.get("enableExternalMcpAgents") is True
         tool_metadata = arguments.get("toolMetadata")
 
         # Validate required parameters
@@ -281,6 +315,44 @@ def handler(event, context):
             ]
         )
 
+        # Assistant messages are written by the chat processor through the
+        # identity-less backend path. A signed-in caller only ever sends a user
+        # message; anything else from one is refused before it is stored.
+        if is_assistant_response and event.get("identity") is not None:
+            logger.warning("Rejecting sendAgentChatMessage: method %s", method)
+            raise PermissionError(
+                "Unauthorized: only the chat processor writes assistant messages"
+            )
+
+        # Every message from a signed-in caller writes under this session id, and a
+        # user message starts a turn that loads its memory, so the id must be
+        # theirs first. Identity-less invocations are the IAM-gated backend path.
+        if event.get("identity") is not None:
+            identity = event.get("identity") or {}
+            session_user_id = identity.get("username") or identity.get("sub") or ""
+            _require_session_owner(event, session_id, session_user_id, expires_after)
+            # A session holding Analytics or Error Analyzer results never gets an
+            # opt-in agent, because its memory replays those results into every
+            # later turn. A message that opts in on one starts a new session with
+            # empty memory instead; the response carries the new session id, and
+            # the processor applies the same rule again where the turn runs.
+            if (
+                not is_assistant_response
+                and (enable_code_intelligence or enable_external_mcp_agents)
+                and _session_holds_data_results(session_id)
+            ):
+                previous_session_id = session_id
+                session_id = str(uuid.uuid4())
+                _require_session_owner(
+                    event, session_id, session_user_id, expires_after
+                )
+                logger.info(
+                    "Session %s holds data-agent results; this opt-in message "
+                    "starts new session %s",
+                    previous_session_id,
+                    session_id,
+                )
+
         if is_final_response:
             # Store message in DynamoDB with session-based keys
             table = dynamodb.Table(CHAT_MESSAGES_TABLE)
@@ -334,6 +406,7 @@ def handler(event, context):
                         "method": method,
                         "timestamp": timestamp,
                         "enableCodeIntelligence": enable_code_intelligence,
+                        "enableExternalMcpAgents": enable_external_mcp_agents,
                         "callerSub": caller_sub,
                         # Group membership the caller was authorized under, so the
                         # processor can apply the same group gate at the point the

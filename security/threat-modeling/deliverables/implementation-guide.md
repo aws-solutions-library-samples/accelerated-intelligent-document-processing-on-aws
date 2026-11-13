@@ -22,9 +22,9 @@ and mapped to the specific threats they address.
 > uniform hook failure containment (**#919**) and the converged log-redaction
 > denylist (**#921**) have merged and are described below as controls; the
 > deployment service role's permissions boundary (**#927**) has merged while its
-> own `iam:*` is unchanged. The chat streaming transport verifies the caller's
-> Cognito ID token and applies its group checks to it, and every agent chat send
-> path refuses a session another user owns (§3.1a).
+> own `iam:*` is unchanged; and **#920** closed without giving the chat streaming
+> transport a verified per-user subject, so its group and ownership checks remain
+> absent (§3.1a).
 
 ## 2. Authentication & Identity (AUTH)
 
@@ -105,18 +105,17 @@ and mapped to the specific threats they address.
 
 ### 3.1a Chat Streaming Function URL
 
-**Threats mitigated**: CHAT.T03 (authentication, group and session checks), CHAT.T06, AUTH.T14
+**Threats mitigated**: CHAT.T03, CHAT.T06
 
 | Control | Implementation |
 |---------|---------------|
-| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole`. The browser also sends its Cognito User Pool **ID token** in the signed `x-idp-id-token` header, and the handler verifies it before either route opens a stream (`src/lambda/chat_stream_processor/id_token.py`: RS256 against the pool's JWKS, `iss` from `COGNITO_ISSUER`, `aud` from `COGNITO_APP_CLIENT_ID`, `token_use` of `id`, unexpired); a missing or invalid token is refused with HTTP 403 |
-| **CORS** | `AllowCredentials: false`, SigV4 and the ID token in headers, no cookies; `x-idp-id-token` is an allowed header |
-| **Group authorization** | **Enforced in the handler, from the verified token.** The Identity Pool role (`CognitoAuthorizedRole`) is shared by all five groups (`Admin`, `Author`, `Reviewer`, `Annotator`, `Viewer`), so the IAM gate cannot distinguish them; `/chat/agent` applies the Admin/Author/Viewer predicate (and tenant isolation's Admin-only rule) and `/chat/document` the `ANY_GROUP` floor to the token's groups, both as a 403 before the stream opens (AUTH.T14) |
-| **Configuration-profile scope** | The document route forwards the verified claims as `identity`, and the processor resolves the caller's `allowedConfigVersions` from them, denying a turn whose scope it cannot evaluate |
-| **Session ownership** | **Enforced on `/chat/agent` before the stream opens** (`_refuse_foreign_session_or_403`): a session that already holds messages or agent memory is refused with 403 unless the verified caller holds a `(userId, sessionId)` record in `ChatSessionsTable`, and a failed lookup refuses. Memory is checked because it carries no expiry and outlives the messages. The agent processor applies the same check, and so does the REST resolver behind `sendAgentChatMessage` before it stores anything. A session id with neither is a new conversation (CHAT.T03). The document route keeps no server-side history on this transport |
-| **Caller identity** | Taken from the verified ID token: a turn is attributed to `email`, else `cognito:username`, else `sub`, as on the REST path, and a body `callerSub` that differs is refused with 403 (CHAT.T06). The SigV4 principal is not used, because its assumed-role session name is the **same for every user** of the deployment |
+| **Authentication** | `AuthType=AWS_IAM`; browser signs with SigV4 using Cognito Identity Pool credentials; `lambda:InvokeFunctionUrl` and `lambda:InvokeFunction` on the chat function granted to `CognitoAuthorizedRole`. The browser also sends its Cognito ID token in `x-idp-id-token`, which the endpoint verifies (`idp_common.cognito_id_token`) before anything else; no valid token is a 401 |
+| **CORS** | `AllowCredentials: false`, SigV4 in headers, no cookies |
+| **Group authorization** | Enforced from the verified token's `cognito:groups` before the stream opens: Admin/Author/Viewer on `/chat/agent`, any assigned group on `/chat/document` |
+| **Session ownership** | Enforced: each session id is registered to its first user's `sub` in `ChatSessionOwnersTable`, and a request under another user's id is a 403; agent memory is keyed on the user and the session |
+| **Caller identity** | Taken only from the verified ID token (`sub`, `email`, `cognito:groups`); a `callerSub` in the request body is ignored (CHAT.T06) |
 | **Rate limiting** | Lambda concurrency only — **not** covered by API Gateway throttling or the WAF WebACL |
-| **Automated testing** | **Static and unit only** — `make api-test-static` checks the routes (S6–S9) and the endpoint's unit suites cover the token, group and attribution checks; `make api-test` drives `POST /op/{field}` only |
+| **Automated testing** | Unit tests drive both routes with real token verification (`src/lambda/chat_stream_processor/tests/test_route_identity.py`); the static scan covers the routes (S6–S9); `make api-test` cells exist and have not yet been run against a deployment |
 
 ### 3.2 CloudFront Distribution
 
@@ -232,7 +231,7 @@ bound to it.
 |-----------|---------------|
 | **Single-tenant** | One CloudFormation stack per environment or tenant |
 | **Shared stack (v0.6.14)** | Tenant declarations (prefixes plus a profile pattern) enforced when mappings, tenants and scopes are written; `TenantIsolationMode=Strict` denies unscoped non-Admins, refuses cross-tenant documents at ingest, closes the agent, Knowledge Base, MCP and chat-stream surfaces, and delegates the Input and Output buckets to per-tenant S3 Access Points; `TenantGrantSource` selects who grants tenants. Enforced by the application, not by IAM; Admins are cross-tenant. See [`tenant-isolation.md`](../feature-threats/tenant-isolation.md) |
-| **User-scoped queries** | `ChatSessionsTable` is keyed `PK=userId`; `ChatMessagesTable` and the agent memory are keyed by session id and rely on **explicit ownership checks**, not the key alone — `_verify_session_ownership` / `ownerSub` on read and delete, and on every agent chat send path a refusal of a session that holds messages or agent memory the caller has no session record for (CHAT.T03) |
+| **User-scoped queries** | `ChatSessionsTable` is keyed `PK=userId`; `ChatMessagesTable` is keyed `PK=sessionId` and relies on **explicit resolver ownership checks** (`_verify_session_ownership` / `ownerSub`), not the key alone |
 | **Session isolation** | UUID-based conversation session IDs |
 | **Stack isolation** | Separate Cognito pools, S3 buckets, DynamoDB tables per stack |
 
@@ -268,7 +267,7 @@ bound to it.
 | Control | Implementation |
 |---------|---------------|
 | **Athena read-only** | IAM role with SELECT-only permissions on Glue catalog |
-| **AgentCore sandbox** | AWS-managed isolation (no network, no credentials, no persistent storage) |
+| **AgentCore sandbox** | AWS-managed isolation (no credentials, no persistent storage; no public internet access; reaches Amazon S3 in the session's region and the instance metadata service, which lists no role) |
 | **Tool-level auth** | Each agent tool validates caller permissions |
 | **Audit logging** | All tool invocations logged with parameters and results |
 
@@ -414,7 +413,7 @@ For deployments requiring network-level isolation:
 ### Ongoing Operations
 
 - [ ] Periodic API authorization audit (`make api-test` against a live stack; review the op×role matrix report)
-- [ ] Review the chat streaming Function URL path separately — it is **outside** the live authorization harness and outside the WAF WebACL (CHAT.T03, CHAT.T06)
+- [ ] Review the chat streaming Function URL path separately — it is outside the WAF WebACL, and its `make api-test` cells (CHAT.T03, CHAT.T06) need a live run
 - [ ] Re-review the threat model each release cycle — `make check-threat-model-currency` fails the build when `security/threat-modeling/README.md`'s `Last reviewed against version` field falls more than one release behind `VERSION`
 - [ ] Review CloudWatch alarm history for security events
 - [ ] Monitor Athena query patterns for anomalies

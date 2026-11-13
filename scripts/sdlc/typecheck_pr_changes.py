@@ -78,6 +78,22 @@ from pathlib import Path
 #: else 0`` turned every one of those into a pass.
 INTERPRETABLE_EXIT_CODES = (0, 1)
 
+#: What :func:`run_type_check` returns when ``basedpyright`` is not on ``PATH``. It is
+#: distinct from 1 (the files had type errors) so that :func:`main` can say the tool
+#: is missing instead of "please fix the errors above" over a run that printed none.
+#: 127 is the shell's own status for a command it could not find.
+TOOL_MISSING_EXIT = 127
+
+TOOL_MISSING_MESSAGE = (
+    "❌ basedpyright is not on PATH, so no type checking was performed.\n"
+    "   It is an npm devDependency of the root package.json and is not\n"
+    "   installed by 'make setup' or 'make setup-venv'. Install it with:\n"
+    "       npm install -g basedpyright\n"
+    "   (this is what both CI systems do). If you used 'make setup-venv',\n"
+    "   also run 'source .venv/bin/activate' so the other gate tools\n"
+    "   resolve."
+)
+
 
 def _git_lines(args: list[str]) -> list[str] | None:
     """Run a git command and return its stdout lines, or None if it failed."""
@@ -410,18 +426,12 @@ def run_type_check(files: list[str]) -> int:
     # by `make setup` or `make setup-venv`. Without this guard the subprocess call
     # below raises FileNotFoundError and the gate reports a traceback instead of
     # the one-line remedy, which reads like a bug in this script.
+    # The message goes to stdout, the stream every other line of this script uses:
+    # on stderr it was lost whenever only stdout was read, and the run then showed
+    # nothing but main()'s "fix the errors above" and make's exit status 2.
     if shutil.which("basedpyright") is None:
-        print(
-            "❌ basedpyright is not on PATH, so no type checking was performed.\n"
-            "   It is an npm devDependency of the root package.json and is not\n"
-            "   installed by 'make setup' or 'make setup-venv'. Install it with:\n"
-            "       npm install -g basedpyright\n"
-            "   (this is what both CI systems do). If you used 'make setup-venv',\n"
-            "   also run 'source .venv/bin/activate' so the other gate tools\n"
-            "   resolve.",
-            file=sys.stderr,
-        )
-        return 1
+        print(TOOL_MISSING_MESSAGE)
+        return TOOL_MISSING_EXIT
 
     result = subprocess.run(
         ["basedpyright", "--outputjson", *files],
@@ -470,6 +480,8 @@ def main() -> int:
     if exit_code == 0:
         print("\n✅ Type checking passed for the changed files.")
         print("   `make typecheck` is the gate: run it before you push.")
+    elif exit_code == TOOL_MISSING_EXIT:
+        print("\n❌ No type check ran: basedpyright is not installed (see above).")
     else:
         print("\n❌ Type checking failed - please fix the errors above")
 

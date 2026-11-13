@@ -74,6 +74,9 @@ def _create_or_update(props):
             "containerConfiguration": {"containerUri": container_uri}
         },
         roleArn=role_arn,
+        # PUBLIC gives the runtime outbound internet access. README.md ("What the
+        # generator's model can do") records which of the model's tools can reach
+        # the network and why VPC mode is not offered.
         networkConfiguration={"networkMode": "PUBLIC"},
         protocolConfiguration={"serverProtocol": "HTTP"},
         environmentVariables={k: str(v) for k, v in env.items()},

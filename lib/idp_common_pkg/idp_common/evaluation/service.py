@@ -9,6 +9,7 @@ the Stickler library for structured object comparison.
 """
 
 import concurrent.futures
+import contextvars
 import logging
 import os
 import time
@@ -20,7 +21,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 if TYPE_CHECKING:
     from idp_common.evaluation.stickler_backend import StructuredModel
 
-from idp_common import s3
+from idp_common import s3, utils
 from idp_common.config.models import IDPConfig
 from idp_common.evaluation.contract import (
     STICKLER_RESULT_VERSION,
@@ -36,6 +37,7 @@ from idp_common.evaluation.stickler_backend import (
     DocSplitClassificationMetrics,
     SticklerConfigMapper,
     attach_page_confidence,
+    collect_evaluation_metering,
     compute_boundary_and_label_accuracy,
     compute_graded_packet_metrics,
     get_stickler_model,
@@ -1801,6 +1803,11 @@ class EvaluationService:
         """
         Evaluate extraction results for an entire document using Stickler.
 
+        The Bedrock usage of the evaluation's LLM comparisons is added to
+        ``actual_document.metering`` under the ``Evaluation`` context, on every
+        exit including a failed evaluation, because those calls were billed
+        either way.
+
         This method maintains the same API as the legacy implementation but uses
         Stickler for comparison logic.
 
@@ -1812,6 +1819,23 @@ class EvaluationService:
         Returns:
             Updated actual document with evaluation results
         """
+        with collect_evaluation_metering() as collector:
+            try:
+                return self._evaluate_document(
+                    actual_document, expected_document, store_results
+                )
+            finally:
+                actual_document.metering = utils.merge_metering_data(
+                    actual_document.metering or {}, collector.snapshot()
+                )
+
+    def _evaluate_document(
+        self,
+        actual_document: Document,
+        expected_document: Document,
+        store_results: bool,
+    ) -> Document:
+        """Body of :meth:`evaluate_document`, run inside its metering scope."""
         try:
             # Start timing
             start_time = time.time()
@@ -2005,8 +2029,12 @@ class EvaluationService:
             # Process sections in parallel using ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
                 # Submit all section evaluations to the executor
+                # Each worker runs in a copy of this context so the comparisons
+                # it makes reach this document's metering collector (a
+                # ContextVar does not cross into a pool thread on its own).
                 future_to_section = {
                     executor.submit(
+                        contextvars.copy_context().run,
                         self._process_section,
                         actual_section,
                         expected_section,

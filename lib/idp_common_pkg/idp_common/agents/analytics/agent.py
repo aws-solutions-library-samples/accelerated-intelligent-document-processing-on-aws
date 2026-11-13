@@ -83,8 +83,8 @@ def create_analytics_agent(
        - No invalid functions: Replace `CONTAINS()` with `LIKE`, `ILIKE` with `LOWER() + LIKE`
        - Only valid Trino functions used
        - Proper date formatting and casting
-    7. Execute your validated query using the run_athena_query tool. If you receive an error message, correct your Athena query and try again a maximum of 5 times, then STOP. Do not ever make up fake data. For exploratory queries you can return the athena results directly. For larger or final queries, the results should need to be returned because downstream tools will download them separately.
-    8. Use the write_query_results_to_code_sandbox to convert the athena response into a file called "query_results.csv" in the same environment future python scripts will be executed.
+    7. Execute your validated query using the run_athena_query tool. Each call runs exactly one read-only statement (SELECT, WITH ... SELECT, SHOW or DESCRIBE). If you receive an error message, correct your Athena query and try again a maximum of 5 times, then STOP. Do not ever make up fake data. For exploratory queries you can return the athena results directly. For larger or final queries, the results should need to be returned because downstream tools will download them separately.
+    8. Use the write_query_results_to_code_sandbox tool (it takes no arguments) to write the results of your most recent successful query into a file called "query_results.csv" in the same environment future python scripts will be executed. Run the final query again first if a later query replaced it.
     9. If the query is best answered with a plot or a table, write python code to analyze the query results to create a plot or table. If the final response to the user's question is answerable with a human readable string, return it as described in the result format description section below.
     10. To execute your plot generation code, use the execute_python tool and directly return its output without doing any more analysis.
 
@@ -127,15 +127,21 @@ def create_analytics_agent(
     where raw `metering` scans millions.
 
     - **< 2 hours** — raw `metering`, filter on `date` AND `hour` to partition-prune.
-    - **2–24 hours** — cost → `metering_hourly`; docs / pages → `metering_docs_hourly`.
+    - **2–24 hours** — cost → `metering_hourly`; docs / pages / runs → `metering_docs_hourly`.
       For the CURRENT partial hour, live-tail from raw `metering` (see `get_table_info(['metering_hourly'])`).
-    - **> 24 hours** — cost → `metering_daily`; docs / pages → `metering_docs_daily`.
+    - **> 24 hours** — cost → `metering_daily`; docs / pages / runs → `metering_docs_daily`.
       Live-tail the current day from `metering_hourly` / `metering_docs_hourly`.
 
     Split rules:
     - Cost aggregates (`sum_cost` USD) AND per-unit quantities (`sum_value` — tokens/pages/seconds, check `unit`) live on `metering_hourly` / `metering_daily`.
-    - Volume aggregates (`n_docs`, `sum_pages`) live on `metering_docs_hourly` / `metering_docs_daily`.
+    - Volume aggregates (`n_docs`, `sum_pages`, `n_runs`) live on `metering_docs_hourly` / `metering_docs_daily`.
+    - `n_docs` counts DOCUMENTS and `n_runs` counts RUNS — one run is one
+      `(document_id, timestamp)` pair, so a reprocessed document raises `n_runs`
+      without raising `n_docs`. `SUM(n_runs)` is exact over any set of rows; `SUM(n_docs)`
+      is an upper bound on distinct documents, since a document spanning several
+      hours, versions or classes is counted once per cell.
     - **NEVER** `SELECT sum_pages FROM metering_hourly` — column doesn't exist there.
+    - **NEVER** `SELECT n_runs FROM metering_hourly` — column doesn't exist there.
     - **NEVER** `SELECT sum_cost FROM metering_docs_hourly` — column doesn't exist there.
     - **NEVER** `GROUP BY service_api` on `metering_docs_*` — column doesn't exist.
     - `sum_value` is a **quantity** (tokens / pages / seconds — check `unit`), NOT USD. Use `sum_cost` for dollars.
@@ -271,13 +277,15 @@ def create_analytics_agent(
     GROUP BY "service_api"
     ORDER BY total_cost DESC
 
-    -- Doc-hours and page-hours this month — volume rollup (NOT metering_daily).
+    -- Doc-hours, page-hours and runs this month — volume rollup (NOT metering_daily).
     -- ⚠ On metering_docs_daily, n_docs is a doc-HOURS count (SUM of hourly
     -- n_docs). For a strict unique-doc count across days, query raw metering
-    -- with COUNT(DISTINCT document_id) and accept the wider scan.
+    -- with COUNT(DISTINCT document_id) and accept the wider scan. n_runs has no
+    -- such caveat — a run falls in one hour, so SUM(n_runs) is exact.
     SELECT "config_version",
            SUM("n_docs") AS doc_hours,
-           SUM("sum_pages") AS page_hours
+           SUM("sum_pages") AS page_hours,
+           SUM("n_runs") AS runs
     FROM metering_docs_daily
     WHERE "date" >= date_format(current_date - interval '30' day, '%Y-%m-%d')
     GROUP BY "config_version"
@@ -316,7 +324,7 @@ def create_analytics_agent(
     - The python code should read the query results from "query_results.csv" file provided, for example with a line like `df = pd.read_csv("query_results.csv")`
     - Make sure the python code will output json representing either "table" or "plotData" responseType as described in the above description of the result format.
     - Any time you generate a plot, make sure to label the x and y axes clearly.
-    - Use built in python libraries, optionally with pandas or matplotlib.
+    - Use built in python libraries, optionally with pandas or matplotlib. Import only data, charting and standard-library computation modules (not os, sys, subprocess or networking modules), and read only "query_results.csv". The code is checked before it runs, and code that imports other modules or reads or writes other paths is returned with an error instead of being run.
     - Always use the execute_python tool to execute your python code, and be sure to include the reset_state=True flag each time you call this tool.
     
     # Here are some python code examples to guide you:
@@ -337,6 +345,15 @@ def create_analytics_agent(
     Your final response should be directly parsable as json with no additional text before or after. The json should conform to the result format description shown above, with top level key "responseType" being one of "plotData", "table", or "text". You may have to clean up the output of the python code if, for example, it contains extra strings from logging or otherwise. Return only directly parsable json in your final response.
     """  # nosec B608 - Athena prompt template for the LLM, never executed as SQL
 
+    # Initialize code interpreter tools
+    # Get region from session or environment variable
+    region = session.region_name or os.environ.get("AWS_REGION", "us-west-2")
+    logger.info(f"Initializing CodeInterpreterTools with region: {region}")
+    code_interpreter_tools = CodeInterpreterTools(session, region=region)
+
+    # Register for cleanup
+    register_code_interpreter_tools(code_interpreter_tools)
+
     # Create a new tool function that directly calls run_athena_query with the config
     @strands.tool
     def run_athena_query_with_config(
@@ -344,6 +361,11 @@ def create_analytics_agent(
     ) -> Dict[str, Any]:
         """
         Execute a SQL query on Amazon Athena.
+
+        The query must be exactly one read-only statement: a SELECT (optionally
+        starting with WITH), SHOW or DESCRIBE. Anything else is refused without
+        being run. A successful query's results become the ones
+        write_query_results_to_code_sandbox writes.
 
         Args:
             query: SQL query string to execute (all column names should be enclosed in quotes)
@@ -355,16 +377,16 @@ def create_analytics_agent(
         Returns:
             Dict containing either query results or error information
         """
-        return run_athena_query(query, config, return_full_query_results)
-
-    # Initialize code interpreter tools
-    # Get region from session or environment variable
-    region = session.region_name or os.environ.get("AWS_REGION", "us-west-2")
-    logger.info(f"Initializing CodeInterpreterTools with region: {region}")
-    code_interpreter_tools = CodeInterpreterTools(session, region=region)
-
-    # Register for cleanup
-    register_code_interpreter_tools(code_interpreter_tools)
+        # The sandbox tool reads only the result of the query that ran last, so the
+        # previous result is dropped before this one runs and replaced only if it
+        # succeeds.
+        code_interpreter_tools.record_query_result(None)
+        result = run_athena_query(query, config, return_full_query_results)
+        if isinstance(result, dict) and result.get("success"):
+            code_interpreter_tools.record_query_result(
+                result.get("result_csv_s3_uri"), result.get("query")
+            )
+        return result
 
     # Create the agent with tools and system prompt
     tools = [

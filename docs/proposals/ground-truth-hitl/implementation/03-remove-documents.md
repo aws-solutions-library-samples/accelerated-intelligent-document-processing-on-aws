@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Implementation: Remove Documents from a Test Set
 
 Membership editing (remove). Additive; complements the existing add-documents paths.

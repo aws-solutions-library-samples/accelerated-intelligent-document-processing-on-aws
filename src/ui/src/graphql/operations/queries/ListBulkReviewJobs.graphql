@@ -1,0 +1,31 @@
+query ListBulkReviewJobs($limit: Int, $nextToken: String) {
+  listBulkReviewJobs(limit: $limit, nextToken: $nextToken) {
+    jobs {
+      jobId
+      jobType
+      kind
+      status
+      mode
+      profile
+      submittedFrom
+      submittedTo
+      reason
+      note
+      resubmit
+      requestedBy
+      total
+      processed
+      counts {
+        outcome
+        count
+      }
+      limitReached
+      stalled
+      error
+      createdAt
+      startedAt
+      finishedAt
+    }
+    nextToken
+  }
+}

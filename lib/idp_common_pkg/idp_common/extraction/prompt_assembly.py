@@ -30,7 +30,7 @@ from OCR value-matching. This is why the default prompts stay lean.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 # Modes in which the model is asked to emit bounding boxes.
 _LLM_BOX_MODES = ("llm", "llm_grounded")
@@ -38,6 +38,28 @@ _LLM_BOX_MODES = ("llm", "llm_grounded")
 # Marker used to splice the bbox block before the trailing document/cache-point
 # sections so the static instruction block stays cache-friendly.
 _SPLICE_MARKERS = ("<<CACHEPOINT>>", "<document-image>", "{DOCUMENT_IMAGE}")
+
+
+DOCUMENT_IMAGE_PLACEHOLDER = "{DOCUMENT_IMAGE}"
+
+
+def document_image_placeholder_error(prompt: str) -> Optional[str]:
+    """Why the separate confidence pass refuses ``prompt``, or None if it does not.
+
+    The rule ``AssessmentService`` applies when the prompt it sends carries
+    ``{DOCUMENT_IMAGE}``: the page images go in at the placeholder, so it must
+    appear exactly once. A prompt without it is sent text-only and never reaches
+    this rule. ``validate_config`` applies it to the same composed prompt, so a
+    configuration the pass would refuse on every document is refused up front.
+    """
+    count = prompt.count(DOCUMENT_IMAGE_PLACEHOLDER)
+    if count == 1:
+        return None
+    return (
+        f"Invalid DOCUMENT_IMAGE placeholder usage: found {count} occurrences, "
+        "but exactly 1 is required. The DOCUMENT_IMAGE placeholder must appear "
+        "exactly once in the template."
+    )
 
 
 def geometry_requires_llm_boxes(geometry_mode: str) -> bool:

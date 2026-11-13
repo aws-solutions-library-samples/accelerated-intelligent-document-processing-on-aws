@@ -68,6 +68,12 @@ from idp_common.timeout_budget import (
     CONFIDENCE_READ_TIMEOUT_SECONDS,
 )
 
+from .guardrail import (  # noqa: F401 - re-exported for existing importers
+    GUARDRAIL_ENV_VAR,
+    guardrail_config_from_env,
+    guardrail_id_and_version_from_env,
+    guardrail_invoke_model_params,
+)
 from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     REGION_PREFIXES,
@@ -256,9 +262,9 @@ _CLAUDE_EFFORT_BASE_NAMES = {
     # here defaults to. That one is read off the Bedrock model card ("effort level
     # configurable - low, medium, high, xhigh, max; default: medium"), NOT measured:
     # a default cannot be observed from a response, since Converse reports no effort
-    # back. Treat it accordingly - it is the stated reason the opus55value benchmark
-    # pair measures the switch rather than the model, so if that matters to a
-    # decision, set effort explicitly rather than relying on this.
+    # back. Treat it accordingly: it applies only when no effort is sent, which the
+    # shipped extraction default ("low") and every benchmark cell avoid, so if the
+    # default matters to a decision, set effort explicitly rather than relying on it.
     #
     # This entry is also redundant-by-prefix and kept anyway: the lookup is
     # `base.startswith(name)`, so "anthropic.claude-opus-5-5" already matched via
@@ -2398,27 +2404,7 @@ class BedrockClient:
         Returns:
             Optional guardrail configuration dict with id and version
         """
-        guardrail_env = os.environ.get("GUARDRAIL_ID_AND_VERSION", "")
-        if not guardrail_env:
-            return None
-
-        try:
-            guardrail_id, guardrail_version = guardrail_env.split(":")
-            if guardrail_id and guardrail_version:
-                logger.debug(
-                    f"Using Bedrock Guardrail ID: {guardrail_id}, Version: {guardrail_version}"
-                )
-                return {
-                    "guardrailIdentifier": guardrail_id,
-                    "guardrailVersion": guardrail_version,
-                    "trace": "enabled",  # Enable tracing for guardrail violations
-                }
-        except ValueError:
-            logger.warning(
-                f"Invalid GUARDRAIL_ID_AND_VERSION format: {guardrail_env}. Expected format: 'id:version'"
-            )
-
-        return None
+        return guardrail_config_from_env()
 
     def generate_embedding(
         self,

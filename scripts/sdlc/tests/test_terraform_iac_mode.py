@@ -406,7 +406,11 @@ def test_the_terraform_command_parses_as_a_terraform_deploy(cbd, faked_deploy, r
     assert faked_deploy["staged"] == [
         (
             TF_ROLE_ARN,
-            [f"PermissionsBoundaryArn={BOUNDARY_ARN}", "MalwareScanning=CREATE_PLAN"],
+            [
+                f"PermissionsBoundaryArn={BOUNDARY_ARN}",
+                "MalwareScanning=CREATE_PLAN",
+                "EnableMCP=true",
+            ],
         )
     ]
 
@@ -1779,3 +1783,19 @@ def test_the_options_write_is_fatal_on_a_terraform_schedule(itd, monkeypatch, tm
     with pytest.raises(SystemExit) as excinfo:
         itd.main()
     assert excinfo.value.code == 1
+
+
+def test_retained_iam_roles_of_the_run_are_swept_and_no_others(cbd):
+    retained = {
+        "other": [
+            {
+                "type": "aws_iam_role",
+                "physical_id": "idp-1113-051052-DOCUMENTKB-StartIngestionJob-891d5ee",
+            },
+            {"type": "aws_iam_role", "physical_id": "idp-9999-000000-SomeoneElse"},
+            {"type": "aws_kms_alias", "physical_id": "idp-1113-051052-alias"},
+        ]
+    }
+    assert cbd.retained_iam_roles("idp-1113-051052", retained) == [
+        "idp-1113-051052-DOCUMENTKB-StartIngestionJob-891d5ee"
+    ]

@@ -6,7 +6,10 @@
 import logging
 import os
 from typing import Any, Dict, Optional
-from .base import IDPTool
+
+from idp_common import mcp_access
+
+from .base import NO_CALLER, IDPTool, config_version_lookup
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,7 @@ class BatchStatusTool(IDPTool):
     def execute(
         self,
         batch_id: str,
+        caller: Any = None,
         options: Optional[Dict[str, Any]] = None,
         region: Optional[str] = None,
         **kwargs
@@ -42,6 +46,8 @@ class BatchStatusTool(IDPTool):
         logger.info(f"=== Batch Status Tool ===")
         logger.info(f"Version: {TOOL_VERSION}")
         logger.info(f"Updated: {TOOL_UPDATED}")
+        if caller is None:
+            return dict(NO_CALLER)
         logger.info(f"Parameters: batch_id={batch_id}, region={region}")
         
         from idp_sdk.client import IDPClient
@@ -54,26 +60,60 @@ class BatchStatusTool(IDPTool):
 
             # Call SDK batch.get_status() method
             status = client.batch.get_status(batch_id=batch_id)
+            documents = list(getattr(status, "documents", None) or [])
+            counts = {
+                "total": status.total,
+                "completed": status.completed,
+                "in_progress": status.in_progress,
+                "failed": status.failed,
+                "queued": status.queued,
+            }
+            all_complete = status.all_complete
+
+            if caller is not None and caller.scope is not None:
+                # Count and list only the documents in the caller's scope. A batch
+                # with none in scope is answered exactly as one that does not
+                # exist, so the answer does not say whether it does.
+                allowed = set(
+                    mcp_access.document_keys_in_scope(
+                        caller,
+                        [doc.document_id for doc in documents],
+                        config_version_of=config_version_lookup(),
+                    )
+                )
+                documents = [d for d in documents if d.document_id in allowed]
+                if not documents:
+                    from idp_sdk.exceptions import IDPResourceNotFoundError
+
+                    raise IDPResourceNotFoundError(f"Batch not found: {batch_id}")
+                buckets = [getattr(d.bucket, "value", d.bucket) for d in documents]
+                counts = {
+                    "total": len(documents),
+                    "completed": buckets.count("completed"),
+                    "in_progress": buckets.count("running"),
+                    "failed": buckets.count("failed"),
+                    "queued": buckets.count("queued"),
+                }
+                all_complete = counts["completed"] + counts["failed"] == counts["total"]
 
             # Format response
             response = {
                 "success": True,
                 "batch_id": batch_id,
-                "status": {
-                    "total": status.total,
-                    "completed": status.completed,
-                    "in_progress": status.in_progress,
-                    "failed": status.failed,
-                    "queued": status.queued
-                },
+                "status": counts,
                 "progress": {
-                    "percentage": round((status.completed / status.total * 100) if status.total > 0 else 0, 2)
+                    "percentage": round(
+                        (counts["completed"] / counts["total"] * 100)
+                        if counts["total"] > 0
+                        else 0,
+                        2,
+                    )
                 },
-                "all_complete": status.all_complete
+                "all_complete": all_complete,
             }
 
             # Add detailed info if requested
-            if options.get("detailed") and hasattr(status, 'documents'):
+            if options.get("detailed"):
                 response["documents"] = [
                     {
                         "document_id": doc.document_id,
@@ -82,7 +122,7 @@ class BatchStatusTool(IDPTool):
                         # in_review / complete / rejected (review queues), or None
                         "review_status": getattr(doc.review_status, "value", doc.review_status),
                     }
-                    for doc in status.documents
+                    for doc in documents
                 ]
 
             return response

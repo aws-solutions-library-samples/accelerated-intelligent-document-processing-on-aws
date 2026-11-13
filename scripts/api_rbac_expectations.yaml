@@ -60,6 +60,32 @@
 #                  SCOPE_ITEM_PREDICATES in scan_api_rbac.py). scope_enforced_in
 #                  does not change where that search starts: it starts at the
 #                  op's own dispatch.
+#   document_scope_checked: true -> op names a document, key or prefix AND a
+#                  profile, and checks the object against the caller's profile
+#                  scope through the profile the object is recorded or mapped
+#                  under. S10 requires a DOCUMENT_SCOPE_PATTERNS entry point in
+#                  the code the op reaches.
+#   testset_checked: true -> op names a test-set document (objectKey) and confines
+#                  the caller with the test-set scope (allowedTestSets) rather than
+#                  the profile scope. Static scan (S10) requires the code this op
+#                  reaches to call assert_can_access_test_set (or the resolver's
+#                  _assert_set_access wrapper over it).
+#
+#                  S10 is the other direction of S4: an op whose arguments
+#                  (schema.graphql, input types included, plus `args:` below) name
+#                  a configuration profile, a stored object or a session — decided
+#                  by the words of the argument's name (SCOPE_KEYED_WORDS in
+#                  scan_api_rbac.py), not a list of spellings — must declare how
+#                  that object is scoped:
+#                  scope_checked/scope_filtered for a profile; those,
+#                  document_scope_checked, testset_checked or ownership for a
+#                  document; ownership or scope_checked for a
+#                  session. On an op naming both a profile and a document,
+#                  scope_checked answers for the profile only. An op callable only
+#                  by Admin or IAM needs none, since neither carries a profile scope.
+#                  Otherwise the op needs a known_gap, or a per-op entry in
+#                  SCOPE_KEYED_ARGUMENT_EXEMPT (scan_api_rbac.py), registered in
+#                  scripts/tests/gate_exemptions.json.
 #   scope_enforced_in: OPTIONAL function name, for a scope_checked/scope_filtered
 #                  op whose module has no dispatch S4 can find on the op's name.
 #                  S4 reads only the code THIS op can reach — its dispatch branch
@@ -73,7 +99,7 @@
 #                  (chat sessions, agent jobs).
 #   schema_groups: set only when the code INTENTIONALLY enforces different
 #                  groups than the schema.graphql directive (documented drift).
-#   conditional:   circuit_breaker | feature_platform — op is only routable
+#   conditional:   circuit_breaker | feature_platform | mcp — op is only routable
 #                  when that stack feature is enabled; dynamic test skips on
 #                  404-for-admin instead of failing.
 #   args:          safe arguments for the dynamic test. Mutations use
@@ -126,6 +152,7 @@ anchors:
   config_resolver: &cfg nested/api-resolvers/src/lambda/configuration_resolver/index.py
   inbox_resolver: &inbox nested/api-resolvers/src/lambda/notifications_resolver/index.py
   review_queues_resolver: &rq nested/api-resolvers/src/lambda/review_queues_resolver/index.py
+  bulk_review_resolver: &brv nested/api-resolvers/src/lambda/bulk_review_resolver/index.py
 
 operations:
   # ==========================================================================
@@ -406,6 +433,7 @@ operations:
   reprocessDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/reprocess_document_resolver/index.py
     args: { objectKeys: ["__nope__"] }
@@ -425,6 +453,7 @@ operations:
   uploadDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_document
@@ -449,6 +478,7 @@ operations:
   uploadSampleDocument:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
     scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/upload_resolver/index.py
     scope_enforced_in: _handle_upload_sample_document
@@ -699,11 +729,14 @@ operations:
   uploadDiscoveryDocument:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: handle_upload_discovery_document
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { fileName: "x.pdf", contentType: "application/pdf" }
   autoDetectSections:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     # EMPTY rather than "__nope__", and the difference decides which control the
     # matrix measures. This op now calls s3_targets.assert_bucket_allowed, which
@@ -720,11 +753,14 @@ operations:
   startMultiDocDiscovery:
     groups: [Admin, Author]
     kind: mutation
+    document_scope_checked: true
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { configVersion: "__nope__" }
   uploadMultiDocDiscoveryZip:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/discovery_upload_resolver/index.py
     args: { fileName: "x.zip", fileSize: 1, configVersion: "__nope__" }
 
@@ -806,11 +842,13 @@ operations:
     # enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: read
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   getAnnotationQueue:
     groups: [Admin, Author, Annotator]
     kind: read
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   assignTestSetDocuments:
@@ -830,6 +868,7 @@ operations:
   skipTestSetDocument:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", reason: "Other (see note)" }
     note: >-
@@ -838,6 +877,7 @@ operations:
   claimTestSetDocument:
     groups: [Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__" }
     note: >-
@@ -845,6 +885,7 @@ operations:
   saveTestSetDocumentSection:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1" }
     note: >-
@@ -852,6 +893,7 @@ operations:
   saveTestSetDocumentSectionDraft:
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set", objectKey: "__x__", sectionId: "1", data: "{}" }
     note: >-
@@ -898,11 +940,13 @@ operations:
     # resolver additionally enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: read
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { testSetId: "nonexistent-test-set" }
   generateDraftLabels:
     groups: [Admin, Author]
     kind: mutation
+    scope_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     # schema: generateDraftLabels(input: GenerateDraftLabelsInput!)
     args: { input: {} }
@@ -932,6 +976,7 @@ operations:
     # history are preserved.
     groups: [Admin, Author, Annotator]
     kind: mutation
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__", sections: [] } }
 
@@ -940,6 +985,8 @@ operations:
     # additionally enforces allowedTestSets per set.
     groups: [Admin, Author, Annotator]
     kind: mutation
+    scope_checked: true
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/test_set_resolver/index.py
     args: { input: { testSetId: "nonexistent-test-set", objectKey: "__x__" } }
   resetTestSetLabels:
@@ -1043,6 +1090,9 @@ operations:
     # regenerates extraction data. Refused while the document is in flight.
     groups: [Admin, Reviewer, Annotator]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: update_document_sections
+    testset_checked: true
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__nonexistent__.pdf", sections: [] }
     object_scoped_roles: [Annotator]
@@ -1070,6 +1120,8 @@ operations:
   processChanges:
     groups: [Admin, Reviewer]
     kind: mutation
+    scope_checked: true
+    scope_enforced_in: _assert_caller_may_process
     enforced_in: nested/api-resolvers/src/lambda/process_changes_resolver/index.py
     args: { objectKey: "__x__", modifiedSections: [] }
   completeSectionReview:
@@ -1148,12 +1200,82 @@ operations:
     enforced_in: src/lambda/complete_section_review/index.py
     args: { objectKey: "__x__", reason: "Other (see note)" }
     note: >-
-      HITL review op. The handler gates on {Admin,Reviewer} both at the global
-      gate (index.py:51) and the per-field check (index.py:72), matching the
-      schema directive. Authorization is checked BEFORE objectKey is used, so an
+      HITL review op. The handler gates on {Admin,Reviewer,Annotator} at its
+      global group check and on {Admin,Reviewer} in the skipAllSectionsReview
+      branch, matching the schema directive. Authorization is checked BEFORE objectKey is used, so an
       allowed role passing a bogus objectKey gets a benign 400 (doc-not-found),
       never a masked auth failure; a disallowed role (Viewer/Author) is rejected
       with Unauthorized regardless of the objectKey.
+  bulkSkipAllReviews:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    enforced_in: *brv
+    scope_checked: true
+    scope_enforced_in: _enforce_scope
+    args:
+      input: { mode: "SELECTED", objectKeys: ["__x__"], reason: "Other (see note)", dryRun: true }
+    note: >-
+      Bulk Skip All Reviews finishes reviews without anyone checking them, so it is
+      limited to the roles that may skip one review (skipAllSectionsReview). A
+      by-profile request is refused unless the profile is in the caller's
+      allowedConfigVersions, before any document is read (_enforce_scope); a
+      selected-documents request reports an out-of-scope or unknown key as the
+      in-band outcome NOT_PERMITTED (review_skip.classify, scope_allows). The matrix
+      args are a dry run of a nonexistent key, which writes nothing.
+  sendToReview:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    enforced_in: *brv
+    scope_checked: true
+    scope_enforced_in: _caller_context
+    args: { objectKeys: ["__x__"], reason: "Spot check" }
+    note: >-
+      Send to review puts finished production documents into the Default review
+      queue, the work Reviewers do, so it is limited to Admin and Reviewer. Each
+      document is checked against the caller's allowedConfigVersions by its own
+      profile; an out-of-scope or unknown key is the in-band outcome NOT_PERMITTED,
+      so the matrix's nonexistent key writes nothing.
+  getBulkReviewJob:
+    groups: [Admin, Reviewer]
+    kind: read
+    ownership: true
+    enforced_in: *brv
+    args: { jobId: "__nope__" }
+    note: >-
+      A bulk Skip All Reviews job's progress and per-document results (object
+      keys), which only the roles that can start one need. A Reviewer reads only
+      jobs they requested (RequesterKey from verified claims); another user's job
+      reads as not found.
+  listBulkReviewJobs:
+    groups: [Admin, Reviewer]
+    kind: read
+    ownership: true
+    enforced_in: *brv
+    args: { limit: 1 }
+    note: >-
+      Home > Jobs. A Reviewer lists only the jobs they requested (their own index
+      partition, keyed by the verified caller); an Admin lists every job.
+  cancelBulkReviewJob:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    ownership: true
+    enforced_in: *brv
+    args: { jobId: "__nope__" }
+    note: >-
+      Stops a queued or running bulk Skip All Reviews job before its next page, so
+      only the roles that can start one need it. A Reviewer cancels only jobs they
+      requested (RequesterKey from verified claims); another user's job reads as
+      not found, so the matrix's nonexistent id changes nothing.
+  deleteBulkReviewJob:
+    groups: [Admin, Reviewer]
+    kind: mutation
+    ownership: true
+    enforced_in: *brv
+    args: { jobId: "__nope__" }
+    note: >-
+      Deletes a finished bulk Skip All Reviews job from Home > Jobs. A Reviewer
+      deletes only jobs they requested (RequesterKey from verified claims); another
+      user's job reads as not found, and an active job is refused.
   saveSectionReviewEdits:
     groups: [Admin, Reviewer]
     kind: mutation
@@ -1246,17 +1368,17 @@ operations:
     # allowed role gets a clean 400.
     args: { sessionId: "" }
     note: >-
-      ANY_GROUP, and of every operation tightened for #1033 this is the one with the
-      least to argue about, because it is the only one whose existing control fails
-      OPEN. The message read itself is `PK = sessionId` with no caller term; what
-      bounds it to the caller is _verify_session_ownership, which `return`s **True**
-      when CHAT_SESSIONS_TABLE is unset — "allowing access ... to preserve
-      functionality", in its own words — and which an operator can switch off
-      wholesale with ENFORCE_CHAT_SESSION_OWNERSHIP=false. On either branch a
-      session id is the whole credential, and the resolver's own comment says the
-      messages can hold "user queries, document content quoted by the LLM". So the
-      group floor is not redundant with the ownership check; it is the layer that
-      holds when that check does not. Its cost is provably nil: neither operation
+      ANY_GROUP. The message read itself is `PK = sessionId` with no caller term;
+      what bounds it to the caller is _verify_session_ownership, which accepts only
+      the owner ChatSessionOwnersTable records for the id (the caller's own
+      ChatSessionsTable row counts only for an id with no recorded owner, i.e. a
+      session written before that table existed) and denies when either table is
+      unconfigured. An operator can still switch it off wholesale with
+      ENFORCE_CHAT_SESSION_OWNERSHIP=false, and on that branch a session id is the
+      whole credential; the resolver's own comment says the messages can hold
+      "user queries, document content quoted by the LLM". So the group floor is
+      not redundant with the ownership check; it is the layer that holds when that
+      check is switched off. Its cost is provably nil: neither operation
       that creates a session admits a groupless caller (sendAgentChatMessage is
       Admin/Author/Viewer, sendChatDocumentMessage is ANY_GROUP), so no reachable
       record is lost. The ownership verification stays — it is what stops one
@@ -1290,10 +1412,7 @@ operations:
       (Reviewer excluded, closes former GAP-03); allowed-role call skipped
       (would start a live agent session). A message with method quick_start is
       Admin only (_QUICK_START_GROUPS), because Quick Start creates a
-      configuration profile, which only an Admin may create. Ownership - a
-      message for a session id that already holds messages or agent memory is
-      refused unless the caller holds the (userId, sessionId) record for it,
-      before anything is stored, for every method.
+      configuration profile, which only an Admin may create.
   sendChatDocumentMessage:
     groups: ANY_GROUP
     kind: mutation
@@ -1311,9 +1430,11 @@ operations:
       suite (src/lambda/chat_with_document_processor/tests/), including a check
       that the index it queries is one template.yaml declares.
       ANY_GROUP: a mutation that sends document content to a model and bills
-      inference to the deployment. On the REST route the dispatcher applies
-      this floor; the streaming Lambda Function URL (POST /chat/document below)
-      applies the same floor itself, from the groups in the ID token it verifies.
+      inference to the deployment. On the REST route the dispatcher applies this
+      floor; the streaming Lambda Function URL (POST /chat/document below)
+      applies the same floor from the verified ID token it requires. The session
+      id is registered to, or checked against, its owner in
+      ChatSessionOwnersTable before the processor is invoked.
   queryKnowledgeBase:
     groups: ANY_GROUP
     kind: read
@@ -1902,6 +2023,68 @@ operations:
 #
 # Routes needing no per-user authorization (health checks) are allowlisted in
 # FUNCTION_URL_OPEN_ROUTES in the scanner, not here.
+  # ==========================================================================
+  # MCP service credentials (McpCredentialManagerFunction). Admin only. Not
+  # routable when EnableMCP is false: the field map entry is then empty.
+  # ==========================================================================
+  listMcpCredentials:
+    groups: [Admin]
+    kind: read
+    conditional: mcp
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    args: {}
+    note: >-
+      Lists every credential's id, name, role, scope and lifecycle fields; never a
+      secret, which is not stored on the row.
+  createMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    # An unknown role is refused by validation before anything is created, so an
+    # allowed caller is refused benignly.
+    args: { name: "rbac-probe", role: "__not_a_role__" }
+    note: >-
+      A scoped Admin may grant only profiles inside their own allowedConfigVersions
+      and cannot create an unscoped credential; the scope must sit inside one
+      tenant (scope_rejection_reason, as createUser).
+  updateMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  rotateMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  revokeMcpCredential:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    args: { clientId: "__nonexistent__" }
+  setMcpCredentialTenant:
+    groups: [Admin]
+    kind: mutation
+    conditional: mcp
+    scope_checked: true
+    enforced_in: src/lambda/mcp_credential_manager/index.py
+    scope_enforced_in: _dispatch
+    # Only when TenantGrantSource is Api; elsewhere an allowed caller is refused by
+    # the mode check, and the probe id names no credential, so nothing is written.
+    args: { clientId: "__nonexistent__" }
+
 function_url_endpoints:
   ChatStreamProcessorUrl:
     auth_type: AWS_IAM
@@ -1913,29 +2096,129 @@ function_url_endpoints:
         equivalent_op: sendChatDocumentMessage
         enforced_in: src/lambda/chat_with_document_processor/index.py
         note: >
-          Formerly GAP-07. The route verifies the caller's Cognito ID token
-          (_caller_identity in chat_stream_processor/app.py, id_token.py) before
-          the stream opens and refuses a request without one. It then applies the
-          ANY_GROUP floor its REST operation carries (_enforce_any_group_or_403,
-          held equal to the dispatcher manifest's by a unit test) and forwards the
-          verified claims as `identity`, from which the processor resolves the
-          caller's allowedConfigVersions exactly as on the REST path, denying a
-          turn whose scope cannot be evaluated.
+          the route verifies the caller's Cognito ID token (x-idp-id-token,
+          _verified_caller in app.py) and answers 401 without a valid one. The
+          ANY_GROUP floor is applied in the route (_require_a_group_or_403), the
+          session id is registered to or checked against its owner in
+          ChatSessionOwnersTable before the stream opens (_claim_session_or_403,
+          403 for another user's session), and the processor's
+          allowedConfigVersions scope check reads the verified email and sub it
+          forwards. Nothing identity-like is read from the request body.
       POST /chat/agent:
         groups: [Admin, Author, Viewer]
         ownership: true
         equivalent_op: sendAgentChatMessage
         enforced_in: src/lambda/agent_chat_processor/index.py
         note: >
-          Formerly GAP-07. The route verifies the caller's Cognito ID token before
-          the stream opens and refuses a request without one, then applies the
-          processor's own Admin/Author/Viewer predicate to the verified groups
-          (_enforce_groups_or_403), so a denial is a real 403. A Quick Start turn
-          (method quick_start) is Admin only, by the same predicate. The turn is
-          filed under the verified identity, derived as the REST path derives it,
-          and a body callerSub that differs is refused. A turn for a session
-          another user owns is refused before the stream opens
-          (_refuse_foreign_session_or_403, the processor's own predicate).
+          the same verified ID token as /chat/document. The processor's
+          Admin/Author/Viewer check (and the Admin-only rule under tenant
+          isolation) is applied in the route before the stream opens
+          (_enforce_groups_or_403) and again in the processor, which also
+          keeps a Quick Start turn (method quick_start) to Admins. The
+          session is checked against its owner the same way, and the processor keys
+          conversation memory on the verified sub, so a turn under another
+          user's session id is refused before any memory loads. A body
+          callerSub is ignored.
+
+# ============================================================================
+# MCP tools — the AgentCore Gateway target (src/lambda/agentcore_mcp_handler)
+# ============================================================================
+# The MCP server is a third way in, beside the REST dispatcher and the Function
+# URL routes: an AgentCore Gateway whose JWT authorizer admits the clients listed
+# under mcp_clients, and whose one Lambda target serves the tools below. The
+# gateway forwards only tool arguments, so a request interceptor
+# (src/lambda/mcp_identity_interceptor) resolves the caller, refuses a tool the
+# caller may not use, and passes a signed `_caller` block to the handler, which
+# verifies it and applies the caller's configuration scope.
+#
+# Entry schema
+# ------------
+#   groups:         the roles admitted. The handler and the interceptor both read
+#                   the same table, idp_common.mcp_access.MCP_TOOL_POLICY, and the
+#                   static scan (checks M1-M5) fails when this file and that table
+#                   differ, in either direction.
+#   write:          true -> the tool starts processing; a service credential must
+#                   also have write tools enabled.
+#   unscoped_only:  true -> the tool reads across every Configuration Profile with
+#                   nothing to filter its output on, so a caller with a
+#                   configuration scope is refused (Admin-only under Strict).
+#   scope_checked:  true -> refuses a request naming a document or a destination
+#                   profile outside the caller's scope.
+#   scope_filtered: true -> returns only documents inside the caller's scope.
+#   equivalent_op:  the REST operation the tool corresponds to. Its groups must
+#                   admit every role this entry admits, so MCP is never the more
+#                   permissive way to do the same thing.
+#   enforced_in:    the tool module; it must call the shared scope helper.
+mcp_clients:
+  # Every Cognito client the gateway authorizer admits through the template, and
+  # how the interceptor resolves a token from it: `user` (a signed-in user, named
+  # in the interceptor's MCP_USER_CLIENT_IDS) or `registry` (a row in the MCP
+  # credential registry, which McpDefaultCredential writes for the stack-created
+  # client). The scan fails if the template admits a client this list does not
+  # declare, or wires one in a way its kind does not match. Clients an Admin
+  # creates are added to the gateway at run time and are registry rows by
+  # construction.
+  ExternalAppClient: user
+  MCPConnectorClient: registry
+
+mcp_tools:
+  search:
+    groups: [Admin, Author, Viewer]
+    write: false
+    unscoped_only: true
+    equivalent_op: sendAgentChatMessage
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/search.py
+    note: >-
+      Runs the analytics agent over the reporting tables, which hold rows for
+      every document and cannot be filtered per row, so it is refused to any
+      scoped caller. Under TenantIsolationMode=Strict every non-admin is scoped,
+      which makes it Admin-only there, as Agent Chat is.
+  status:
+    groups: [Admin, Author, Reviewer, Viewer]
+    write: false
+    unscoped_only: false
+    scope_filtered: true
+    equivalent_op: getDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_status.py
+    note: >-
+      Counts and lists only the batch's documents inside the caller's scope. A
+      batch with none in scope is answered exactly as a batch that does not exist.
+      The four document roles, not ANY_GROUP: Annotator reaches documents only
+      through test-set labelling, whose per-object control MCP does not have.
+  get_results:
+    groups: [Admin, Author, Reviewer, Viewer]
+    write: false
+    unscoped_only: false
+    scope_checked: true
+    scope_filtered: true
+    equivalent_op: getDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_results.py
+    note: >-
+      Single-document mode refuses a document outside the caller's scope; batch
+      mode pages over the in-scope documents only.
+  process:
+    groups: [Admin, Author]
+    write: true
+    unscoped_only: false
+    scope_checked: true
+    equivalent_op: uploadDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_run.py
+    note: >-
+      Resolves the Configuration Profile the uploaded document will process
+      under exactly as uploadDocument does (prefix mappings, the requested
+      profile, the active profile) and refuses one outside the caller's scope.
+      Processing from an S3 location reads with the handler's own role, which
+      can read every profile's documents, so it is limited to unscoped callers.
+  reprocess:
+    groups: [Admin, Author]
+    write: true
+    unscoped_only: false
+    scope_checked: true
+    equivalent_op: reprocessDocument
+    enforced_in: src/lambda/agentcore_mcp_handler/tools/batch_reprocess.py
+    note: >-
+      Every named document, or every document of the named batch, must be in the
+      caller's scope; one outside it refuses the whole request.
 
 # ============================================================================
 # Known gaps register — tracked deviations between the ideal authorization
@@ -1945,8 +2228,8 @@ function_url_endpoints:
 # CORRECTION: this header previously claimed every id here "is mirrored in
 # security/threat-modeling/feature-threats/rbac-authentication.md
 # (AUTH.T07/T08)". That is not true and never was — `grep -rn GAP-02
-# security/threat-modeling/` returns nothing. What IS true: the retired GAP-07
-# is recorded under AUTH.T14 in that document, and the retired GAP-06 under
+# security/threat-modeling/` returns nothing. What IS true: GAP-07 is recorded
+# under AUTH.T14 in that document, and the retired GAP-06 is referenced under
 # AUTH.T08. GAP-02 (queryKnowledgeBase) is recorded only here and in the
 # published scan snapshots under security/test-results/. Giving it a threat-model
 # entry is a documentation follow-up, deliberately not done on this branch
@@ -2028,9 +2311,8 @@ known_gaps:
 #   GAP-06 the three feature-platform ops now declare
 #          @aws_cognito_user_pools(cognito_groups:["Admin"]) instead of the
 #          silently-ignored @aws_auth / group-less directive.
-#   GAP-07 the chat streaming Function URL now verifies the caller's Cognito ID
-#          token, so both routes apply their REST operations' group floors, the
-#          allowedConfigVersions scope applies to streamed document chat, and a
-#          turn is filed under the verified identity.
-# Their ids are retired; the ops' and routes' entries above carry a
-# "Formerly GAP-0x" note.
+#   GAP-07 the chat Function URL now verifies the caller's Cognito ID token
+#          (x-idp-id-token header) on both routes, so the group checks, the
+#          Chat-with-Document config-version scope and the session owner all
+#          read verified claims; a request without a valid token is a 401.
+# Their ids are retired; the ops' entries above carry a "Formerly GAP-0x" note.

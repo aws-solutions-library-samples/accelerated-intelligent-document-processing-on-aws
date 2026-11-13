@@ -28,7 +28,7 @@ its `make` target and the skill that documents how to run it.
 | Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
 | In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |
 | Full offline test battery (no AWS) | `make test` | `.claude/skills/full-test-battery.md` |
-| Package/Lambda offline suites (idp_cli, idp_sdk, idp_feature_sdk, feature-platform, seller-entitlement-service) | `make test-packages-cicd` | — *(runs per commit in the GitHub `developer-tests` workflow)* |
+| Package/Lambda offline suites (idp_cli, idp_sdk, idp_feature_sdk, feature-platform, seller-entitlement-service) | `make coverage-all-cicd` for every suite a coverage tree measures; `make test-packages-cicd` for the rest | — *(runs per commit in the GitHub `developer-tests` workflow)* |
 | Seller-service ownership preflight (read-only) | `make seller-entitlement-service-preflight PRODUCT_REGISTRY='{…}'` | `feature-platform/seller-entitlement-service/README.md` |
 | Seller-service **e2e** (deploy → live probe → teardown) | `make stacktest-seller` | `.claude/skills/run-stack-tests.md` |
 | Seller-service live activation + payload probe | `python feature-platform/seller-entitlement-service/tests/dynamic_activation_test.py --endpoint … --product-id …` | `feature-platform/seller-entitlement-service/README.md` |
@@ -82,8 +82,8 @@ assertions, a payload-robustness fuzz corpus, and a live activation probe — be
 it deploys into an AWS Marketplace *seller* account rather than a customer's, and its
 protected assets belong to the seller. Threats `SELL.T01–T10`.
 
-The first two run **offline per commit** via `make test-packages-cicd` (called by the
-GitHub `developer-tests` workflow); the live probe is manual, because issuing a real
+The first two run **offline per commit** via `make coverage-all-cicd`, as the
+`seller_entitlement` coverage tree (called by the GitHub `developer-tests` workflow); the live probe is manual, because issuing a real
 token needs product ownership *and* a subscribed buyer account, neither of which a
 build account has. They are **not** in the curated `test-results/` snapshot.
 
@@ -724,9 +724,9 @@ gate).
 
 GitHub can only require job-level contexts — never individual steps — so the
 mapping from gates to contexts is decided by how the jobs are arranged.
-Eleven of the thirteen shared gates live in `developer-tests.yml` (five jobs) and the other two in
+Eleven of the thirteen shared gates live in `developer-tests.yml` (six jobs) and the other two in
 `security-checks.yml` (two jobs), which is how thirteen gates produce
-seven requireable contexts.
+eight requireable contexts.
 
 Splitting `developer-tests.yml` into parallel jobs **improved** this. It used
 to be one job holding most of the shared gates, which collapsed them
@@ -736,15 +736,16 @@ mark names the part of the work that broke.
 
 ⚠️ **One consequence to act on if branch protection is ever enabled:** requiring
 only the lint context is now strictly weaker than requiring the old single job was,
-because the test suites are no longer inside it. All six contexts below have to be
+because the test suites are no longer inside it. All eight contexts below have to be
 required. `scripts/tests/test_check_branch_protection.py`'s `MUST_BE_REQUIRED`
-names all six for that reason.
+names all eight for that reason.
 
 | Check context | Workflow / job | Covers |
 |---|---|---|
 | `Lint, Type Check, and Static Scans` | `developer-tests.yml` / `developer_tests` | `lint-cicd`, `typecheck`, `api-test-static`, first-party dep check, service-role permissions |
-| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `coverage-all-cicd`, `check-coverage-debt-cicd` |
+| `Unit Tests (idp_common)` | `developer-tests.yml` / `unit_tests` | `test-cicd -C lib/idp_common_pkg`, `coverage-all-cicd` for every tree but `scripts`, `check-coverage-debt-cicd` with `--measured-elsewhere scripts` |
 | `Package and Lambda Test Suites` | `developer-tests.yml` / `package_tests` | `test-packages-cicd` |
+| `Scripts Coverage (gate suites)` | `developer-tests.yml` / `scripts_coverage` | `coverage-all-cicd --only scripts`, then `check-coverage-debt --require-tree scripts` |
 | `UI Unit Tests` | `developer-tests.yml` / `ui_tests` | `npx vitest run` |
 | `SRT Security Review` | `security-checks.yml` / `srt_security_review` | `srt-setup`, `srt-scan` |
 | `Dependency Audit (SCA)` | `security-checks.yml` / `dep_audit` | `scripts/security/dep_audit.py` |
@@ -907,7 +908,7 @@ Three differences are worth reading before relying on either side:
 
 | | GitLab | GitHub |
 |---|---|---|
-| AWS credential | the integration-test role `idp-sdlc-GitLab`, assumed by the runner fleet's `gitlab-runners-prod` role and gated on `GitLab:Group`/`GitLab:Project` session tags (`scripts/sdlc/cfn/credential-vendor.yml`) | a **Bedrock-only** role assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
+| AWS credential | a **Bedrock-only** role, `idp-sdlc-GitLabReview` (`GitLabReviewRole` in `scripts/sdlc/cfn/credential-vendor.yml`), which the job assumes itself from the integration-test session the runner fleet vends it (`--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN`, a masked project variable), before anything else uses AWS; the model process inherits only the review role's credentials | a **Bedrock-only** role, `idp-sdlc-GitHubReview`, assumed via GitHub OIDC (`scripts/sdlc/cfn/github-oidc-review-role.yml`); ARN in the `AI_REVIEW_ROLE_ARN` repository variable |
 | Posting token | `GITLAB_REVIEW_TOKEN`, a project access token that has to be provisioned — `CI_JOB_TOKEN` cannot create notes | the built-in `GITHUB_TOKEN` with `pull-requests: write`; nothing to provision |
 | Fork contributions | not reviewed — masked variables are absent from a fork pipeline | reviewed by the **hourly `schedule`**, which is triggered by the repository rather than by the contribution and so holds the credentials regardless of origin |
 
@@ -938,7 +939,51 @@ Pinned by `test_the_automatic_trigger_keeps_its_cost_bounds` and
 `test_the_github_trigger_keeps_its_cost_bounds`.
 
 Automatic also means no human is in the loop before a model reads
-author-controlled text, which is why the sandbox note below matters.
+author-controlled text, which is why the notes below matter.
+
+**Both jobs confirm their role before reviewing.** Each passes
+`--require-aws-role`, and the script asks STS which role the job's credentials
+belong to and exits 1 on any other.
+
+**On GitLab the job switches to the review role itself.** The project-level
+`AWS_CREDS_TARGET_ROLE` (the integration-test role) outranks any job-level
+variable of that name, so every job, this one included, starts on
+`idp-sdlc-GitLab`. The script's first AWS step is therefore to ask STS who it is
+and, when that is not the review role, to call `AssumeRole` on the ARN in
+`AI_REVIEW_GITLAB_ROLE_ARN` with those credentials, which `GitLabReviewRole`'s
+trust policy allows for the stack's `GitLabRole`. It then replaces the three
+credential variables in its own environment and removes every other source an
+SDK could fall back on (a profile, the shared files, container and web-identity
+credentials, instance metadata), so the model process inherits only the review
+role's session. An assume that fails, or an unset variable, exits 1 before any
+review runs. The first role's credential values stay registered with the posting
+check. The UX test jobs keep the integration-test role and its own Bedrock grant.
+GitHub's OIDC session already is the review role and takes no assume step.
+
+**Neither job runs the checkout's copy of the reviewer.** Each extracts
+`REVIEW_HARNESS_PATHS` (in `ai_mr_review.py`) from the target branch with
+`git archive` into a directory outside the checkout, refuses to run if that fails,
+and runs it as `python3 -I`, so nothing the MR adds beside those files can be
+imported. A change to the reviewer takes effect once merged.
+
+**The session reads only the worktree and loads none of the worktree's agent
+configuration.** The argv carries `--restricted` and `--safe-mode`;
+`scripts/tests/test_ai_mr_review_session_scope.py` measures both properties on the
+pinned CLI against a scripted model on loopback (no Bedrock call), and skips where
+no CLI at the pinned version is installed, which includes both CIs. The measured
+cases, with and without the flags, are in the script's docstring. The worktree also
+has its `.claude/` directory (apart from the pinned skills), `CLAUDE.local.md`,
+`AGENTS.md` and `.mcp.json` removed, from the one list `AGENT_CONFIG_LOCATIONS`.
+
+**A review is checked before it is posted.** `posting_refusals` withholds a review
+whose text contains a value of one of the job's credential variables, a credential
+shape the redactor in `scripts/ux_runner/redact.py` knows, a GitHub token, an AWS
+secret-key shape, an internal hostname or identifier as
+`scripts/hooks/check_commit_text.py` defines them (apart from the forge's own
+host), or image and embedded-resource markup. A withheld review is replaced by a
+short notice naming the kinds, which carries the usual marker so the head is not
+reviewed again; the artifact holds the same notice. An accepted review still goes
+through the redactor, which scrubs an account id or an address.
 
 ⚠️ **The tool sandbox is enforced by `--permission-mode manual` in the argv, not
 by a settings file.** `--allowedTools` is *additive*, so a machine whose
@@ -1030,8 +1075,7 @@ treats that file as diagnostics only.
   directory rather than checked out in place, because an in-place checkout leaves
   MR-added files beside the pinned ones and Python resolves imports from the
   script's own directory first. It fails closed, so the MR that adds the UX test
-  cannot exercise it: the trade `ai_mr_review` makes, except that this job refuses
-  where that one warns. The fetch names `refs/heads/<target>`, so a tag called like
+  cannot exercise it: the same trade `ai_mr_review` makes. The fetch names `refs/heads/<target>`, so a tag called like
   the branch cannot stand in for it.
 - Modes are set, never inherited. A GitLab Docker executor runs a job at umask
   0000 by default, and Chrome runs as `uxbrowser` with `--no-sandbox`, so a renderer
@@ -2862,8 +2906,8 @@ additions.
       strips only the outer pair. The probe therefore asserts the response carries
       a CSP, that `'self'` survived quoted among the `script-src` sources, that
       the header does not still begin with a leftover static-value quote (which
-      would make the first directive invalid and, with no `default-src`, void the
-      policy), and that `script-src` has not regained a blanket `https:`. Both
+      would make the first directive invalid, so `script-src` would fall back to
+      `default-src 'self'` and block the Monaco loader), and that `script-src` has not regained a blanket `https:`. Both
       mis-parse shapes return HTTP 200 with a header present, so the earlier
       status-code-only assertion could not see them. The template-side companion
       is `scripts/tests/test_csp_policies_in_sync.py`, which keeps this mode's

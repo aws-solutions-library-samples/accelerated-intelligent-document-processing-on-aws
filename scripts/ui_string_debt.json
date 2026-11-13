@@ -23,20 +23,21 @@
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
     "files": 259,
-    "findings": 6450
+    "findings": 6449
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
     "upstream develop 98c63087b..a4ad2e90b (merged 2026-11-05, before this PR): the Review Studio and Test Studio work (feature/review-studio merges, GitLab develop syncs) added strings to 9 existing files and 2 new ones; code written before the gate existed, converted with its screens in PRs 5c/5d and the Test Studio phase (#1770)",
     "2026-11-06: upstream 3eb9b3a6e (PR #1803, develop merged into this branch) added src/ui/src/components/common/ResizableModal.tsx with 3 hardcoded strings (a resize-handle aria-label and its description, plus a '[role=\"dialog\"]' selector the counter cannot tell from text). Recorded rather than converted here: the foundation PR converts no screens; this component belongs to the configuration editor (follow-up PR 10) and is converted with the first conversion PR that touches components/common.",
     "2026-11-07: a fix to the counting configuration, not new strings. Two WORDS entries ('utf-?8|UTF-?8' and 'en(-[A-Z]{2})?|fr(-[A-Z]{2})?') carried a top-level '|', which under the plugin's ^...$ anchoring reads as 'starts with a OR ends with b' and excused every string starting with lowercase 'en' or 'utf-8', or ending with 'fr'/'UTF-8'. Grouped as (?:...), the two strings that had slipped past are counted: components/step-function-flow/StepDetails.tsx ('enabled: false') and components/user-management/UserManagementLayout.tsx ('entitlement push'); 6,447 -> 6,449. eslint-i18n-config.test.ts now fails on any top-level '|' in WORDS.",
-    "2026-11-12: develop's Quick Start tour fix, merged while this PR was open, added one hardcoded string to src/ui/src/contexts/guidedTour.tsx (42 -> 43). Recorded at merge time rather than converted: the foundation PR converts no screens; the tour is converted with the app-shell conversion PR (#1770)."
+    "2026-11-12: develop's Quick Start tour fix, merged while this PR was open, added one hardcoded string to src/ui/src/contexts/guidedTour.tsx (42 -> 43). Recorded at merge time rather than converted: the foundation PR converts no screens; the tour is converted with the app-shell conversion PR (#1770).",
+    "Bringing develop into backlog/staging-ab: the MCP Configuration page (McpConfigurationLayout.tsx), its navigation entry (navigation.tsx, 2 strings) and one Agent Chat string (AgentChatLayout.tsx) were written on the staging branch before the string-debt ratchet reached it, so they predate the gate on that branch. Converting them to react-intl messages is follow-up work, not part of a merge."
   ],
   "stringDebt": {
     "src/ui/src/api/presign-batch.ts": 1,
     "src/ui/src/api/rest-client.ts": 1,
     "src/ui/src/components/agent-chat/AgentChatHistoryDropdown.tsx": 8,
-    "src/ui/src/components/agent-chat/AgentChatLayout.tsx": 53,
+    "src/ui/src/components/agent-chat/AgentChatLayout.tsx": 52,
     "src/ui/src/components/agent-chat/AgentToolComponent.tsx": 25,
     "src/ui/src/components/agent-chat/BedrockErrorMessage.tsx": 15,
     "src/ui/src/components/agent-chat/QuickStartWidget.tsx": 7,

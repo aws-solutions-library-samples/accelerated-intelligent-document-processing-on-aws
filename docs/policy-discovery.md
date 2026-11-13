@@ -311,7 +311,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 
 ### API Integration
 
-**GraphQL Mutation:**
+**API operation** (`POST /op/uploadDiscoveryDocument`; the shape below is the contract in `schema.graphql`):
 ```graphql
 mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String) {
   uploadDiscoveryDocument(
@@ -449,7 +449,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 **Job completes but no new class appears in Policy Schema:**
 - Check the job's `discoveryType` field — must be `"rules"`, not `"classes"`. A misrouted mutation saves to the wrong place.
-- Confirm the `Config#<profile>` record in DynamoDB exists — `_save_rules_to_config` targets the active profile; if the UI created a new profile after the job started, the rules may have landed in the previously active one.
+- Confirm the `Config#<profile>` record in DynamoDB exists for the profile the job names — rules are saved only into the profile chosen when the job was submitted, never into the active one. A job submitted without a profile is refused, and `RulesDiscovery` refuses to save without `version=`.
 
 **Job fails with "Failed to extract data from document":**
 - If you have set `max_tokens`, clear it so the model's maximum output is requested. At the default it already is, so split a long manual (100+ rules) instead.
@@ -483,5 +483,5 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
   - **Traditional:** the model's stop reason is checked directly. A truncated response is retried, and if every attempt truncates the job fails rather than saving what was recovered.
   - **Agentic:** Strands fails hard on a truncated response (`MaxTokensReachedException`) before any result is returned, so there is no partial ruleset to save. That error is translated into the same actionable message as the traditional path.
 
-  If a job fails with a truncation message, split the document by chapter, or clear `discovery.rules.max_tokens` if you set a lower cap.
+  If a job fails with a truncation message, split the document by chapter, or set `discovery.rules.model` to a model with a larger output limit. `discovery.rules.max_tokens` ships empty, which already requests the model's full output limit, so it helps only if you set a lower cap, in which case clear it. The message says which case applies.
 - **Validation-question phrasing depends on prompt.** Rule descriptions are only as good as the `task_prompt`'s instruction to phrase them as yes/no questions. Customize the prompt if the default phrasing doesn't match your validator's expectations.
