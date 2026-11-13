@@ -186,11 +186,13 @@ jobs:
       - name: Set up Git safe directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
-      # ⚠️ Node and the pinned cfn-lint are load-bearing here, and neither is visible
-      # from any `run:` line below. This job used to need neither; the coverage
-      # producer two steps down is the one CI run of the `scripts` and `idp_sdk` suites
-      # (it measures them; `test-packages-cicd` leaves out every suite a coverage tree
-      # runs), which drags their toolchain requirements into this job wholesale —
+      # ⚠️ The `scripts` tree no longer runs in this job (package_tests measures it),
+      # so the node and ui-deps reasons below now apply to package_tests; this job
+      # keeps them until it is measured that no remaining tree here needs them. The
+      # pinned cfn-lint is still load-bearing here, for the idp_sdk tree.
+      # The reasons, as written for the suites they were added for: the coverage
+      # producer two steps down was the one CI run of the `scripts` and `idp_sdk`
+      # suites, which drags their toolchain requirements into this job wholesale —
       # `scripts/tests/test_ux_recorder.py` runs the recorder's cursor-overlay
       # JavaScript under node and FAILS rather than skipping without it, and
       # `scripts/tests/test_pyright_config.py` runs basedpyright live. cfn-lint is
