@@ -1497,6 +1497,33 @@ def test_the_new_deployment_gets_the_runs_boundary(tmp_path, monkeypatch, bounda
         assert "--parameters" not in args
 
 
+def test_the_reason_for_a_failure_survives_the_chat_posts_cut():
+    """The GitLab job keeps the first 2000 characters for Slack; a run that
+    failed late fills that with its phase table unless the findings come first."""
+    phases = [
+        {"phase": f"phase-{i}", "status": "PASS", "seconds": 60.0, "detail": "x" * 180}
+        for i in range(14)
+    ] + [
+        {
+            "phase": "migrate-apply",
+            "status": "FAIL",
+            "seconds": 1.0,
+            "detail": "exited 1",
+        }
+    ]
+    text = tmt.summarise(
+        {
+            "status": "FAIL",
+            "phases": phases,
+            "findings": ["migrate-apply: `migrate apply` exited 1"],
+            "leftovers": [],
+        }
+    )
+    head = text[:2000]
+    assert "Findings:" in head and "migrate-apply: `migrate apply` exited 1" in head
+    assert text.index("Findings:") < text.index("Phases:")
+
+
 # -- the forced old destroy after a failed adoption --------------------------------
 
 _ITEM_STATE = {
