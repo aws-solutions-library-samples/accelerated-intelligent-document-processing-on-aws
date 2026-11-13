@@ -15,9 +15,13 @@ SPDX-License-Identifier: MIT-0
     * Enter the bucket name created in the last step (e.g. `genaiic-sdlc-source-code-YOUR_AWS_ACCOUNT-YOUR_REGION`)
     * The stack creates two roles: `idp-sdlc-GitLab` for the integration tests and
       the UX test jobs, and the Bedrock-only `idp-sdlc-GitLabReview` for the
-      `ai_mr_review` job. Set the masked project CI variable
+      `ai_mr_review` job. The review job starts on `idp-sdlc-GitLab`, like every
+      job, and assumes `idp-sdlc-GitLabReview` from it, which the review role's
+      trust policy allows. Set the masked project CI variable
       `AI_REVIEW_GITLAB_ROLE_ARN` to the stack's `GitLabReviewRoleArn` output; the
-      job refuses to review until it holds that role.
+      job refuses to review until it holds that role. Do not set
+      `AWS_CREDS_TARGET_ROLE` on the job: the project-level variable of that name
+      outranks it.
 * Customize the environment variables in your CodePipeline/CodeBuild configuration.
 * The deployment will use the new `scripts/sdlc/codebuild_deployment.py` script automatically.
     * This will ensure that an archive is there to install, when 
