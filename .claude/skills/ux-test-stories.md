@@ -509,7 +509,7 @@ readable digest counted as not compared, the tally carries a warning instead, as
 `⚠️ 13 of 13 passed, not compared for 4 nights`, because in such a run no regression can
 be flagged. A tally that includes permission checks says how many, as
 `✅ 15 of 15 passed, 2 of them permission checks`. The summary lists every flow by its
-catalogue title and persona, one icon per outcome (✅ done, 🔒 a permission check that
+catalogue title and persona, one icon per outcome (✅ done, or a permission check that
 held as the docs say, ❌ missed the docs' expectation, ⚠️ did not finish, 🛠️ harness
 error, ⏭️ not run): confirmed regressions first, then the other flows that did not pass,
 each saying why in a few words, then the passes with their steps, then the permission

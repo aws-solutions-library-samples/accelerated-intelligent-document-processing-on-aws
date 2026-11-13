@@ -1436,7 +1436,7 @@ def test_a_clean_night_says_every_story_passed_and_lists_each_by_its_title() -> 
                 "(team lead), 7 of 40 steps",
                 "✅ Make one input folder use one configuration (platform admin), "
                 "17 of 40",
-                "🔒 Make one input folder use one configuration (new analyst): "
+                "✅ Make one input folder use one configuration (new analyst): "
                 "correctly not offered to an Author (permission: Manage prefix "
                 "mappings)",
                 "",
@@ -1579,7 +1579,7 @@ def test_a_failure_that_is_no_confirmed_regression_is_a_partial_pass_saying_why(
         "stuck, found no way to do it (unconfirmed)",
         "⏭️ Tell production documents from test runs (new analyst): not run, the "
         "night ran out of time",
-        "🔒 Make one input folder use one configuration (new analyst): correctly "
+        "✅ Make one input folder use one configuration (new analyst): correctly "
         "not offered to an Author (permission: Manage prefix mappings)",
         "",
         "Compared with 13 earlier nights: 1 possible regression whose re-run did "
@@ -1885,7 +1885,7 @@ def test_a_permission_check_says_whom_it_kept_the_task_from_and_which_row(
     payload = story_digest.slack_payload(digest, job_url="", facts=facts)
     persona = key.partition("@")[2].replace("-", " ")
     assert _summary_lines(payload)[3] == (
-        f"🔒 Make one input folder use one configuration ({persona}): {said}"
+        f"✅ Make one input folder use one configuration ({persona}): {said}"
     )
     assert payload["status"] == "✅ 1 of 1 passed, 1 of them a permission check"
 
@@ -1940,7 +1940,7 @@ def test_without_results_or_titles_each_flow_is_still_named_and_nothing_is_guess
         assert lines[3:6] == [
             "✅ Find extraction model (team lead)",
             "✅ Route folder to profile (platform admin)",
-            "🔒 Route folder to profile (new analyst): correctly kept from this "
+            "✅ Route folder to profile (new analyst): correctly kept from this "
             "role, as the docs say",
         ]
         assert not [line for line in lines if line.startswith("Friction:")]

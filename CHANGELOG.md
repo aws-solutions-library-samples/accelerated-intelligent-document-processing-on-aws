@@ -28,7 +28,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
-- **The nightly story digest says when a pass is a permission check.** A story whose persona the [permission matrix](docs/rbac.md#permission-matrix) keeps from its task passes when the app does not offer the task, or refuses it, and the Slack post used to list that pass as "refused, as the docs say" under a no-entry sign, which read as a failure. It is now listed under a lock with the group and the matrix row, as "correctly not offered to a Viewer (permission: Upload documents)", and the status says how many passes were permission checks, as `✅ 15 of 15 passed, 2 of them permission checks`.
+- **The nightly story digest says when a pass is a permission check.** A story whose persona the [permission matrix](docs/rbac.md#permission-matrix) keeps from its task passes when the app does not offer the task, or refuses it, and the Slack post used to list that pass as "refused, as the docs say" under a no-entry sign, which read as a failure. It now carries the same ✅ as every other pass and names the group and the matrix row, as "correctly not offered to a Viewer (permission: Upload documents)", and the status says how many passes were permission checks, as `✅ 15 of 15 passed, 2 of them permission checks`.
 - **Inbox: the messages table fits the page.** Received is wider and Title has a fixed width, so a long title no longer makes the table scroll sideways.
 
 - **Configuration page: the Configuration tab is now Processing Settings, and Prompt Preview is a Preview prompts button.** The button, beside Refresh, opens the prompt preview in a dialog; a link to the former tab opens the dialog. See [Prompt Preview](docs/web-ui.md#prompt-preview).

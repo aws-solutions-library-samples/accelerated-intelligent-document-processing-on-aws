@@ -28,12 +28,12 @@ SLACK_INTRO = (
     "Each story is a first-time user doing one task from the docs alone, "
     "in a real browser."
 )
-#: Each verdict's icon on its Slack line: passed, a permission check that held as the
-#: docs say, missed the docs' expectation, did not finish, the harness failed, never
-#: started.
+#: Each verdict's icon on its Slack line: passed (a permission check that held as the
+#: docs say is a pass too, and its words say which kind it is), missed the docs'
+#: expectation, did not finish, the harness failed, never started.
 SLACK_ICONS: dict[str, str] = {
     "done": "✅",
-    "refused_as_expected": "🔒",
+    "refused_as_expected": "✅",
     "not_refused": "❌",
     "stuck": "❌",
     "offered": "❌",
