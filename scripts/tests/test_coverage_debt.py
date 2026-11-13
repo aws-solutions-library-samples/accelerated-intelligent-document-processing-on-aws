@@ -619,7 +619,7 @@ HANDLER_DIRECTORIES_EXEMPT_FROM_THE_COVERAGE_BASELINE: frozenset[str] = frozense
 #: It was 45 until ``nested/api-resolvers/src/lambda/test_results_resolver`` gained a
 #: suite, which is the direction this number is meant to move, and 44 until
 #: ``src/lambda/agentcore_gateway_manager`` gained one (#1731).
-EXEMPT_HANDLER_DIRECTORY_COUNT = 43
+EXEMPT_HANDLER_DIRECTORY_COUNT = 42
 
 #: Source files inside a MEASURED handler directory that have no coverage floor,
 #: because coverage.py's file discovery cannot reach them. Keyed by path, with the reason.
