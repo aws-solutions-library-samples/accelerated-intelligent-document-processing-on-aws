@@ -947,3 +947,17 @@ def test_a_terraform_deploy_role_can_list_what_its_policies_are_attached_to():
         fnmatch.fnmatchcase("arn:aws:iam::1:policy/SomeoneElsesPolicy", p)
         for p in patterns
     )
+
+
+def test_both_slack_posts_name_the_cloudformation_nightly_the_same_way(config):
+    """Every scheduled post names its run; the CloudFormation nightly is the
+    schedule that is none of the other kinds."""
+    posts = {
+        job: _assignment(config, job, "cloudformation_run")
+        for job in ("integration_tests", "nightly_notification")
+    }
+    assert len(set(posts.values())) == 1, posts
+    (assignment,) = set(posts.values())
+    assert "os.environ.get('CI_PIPELINE_SOURCE', '') == 'schedule'" in assignment
+    for other in ("probe_run", "region_run", "terraform_run", "migration_run"):
+        assert other in assignment
