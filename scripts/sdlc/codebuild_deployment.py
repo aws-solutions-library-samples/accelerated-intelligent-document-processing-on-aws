@@ -11866,7 +11866,8 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
         analysis = generate_migration_failure_summary(
             summary, migration_failure_evidence(work_dir)
         )
-        summary += f"\n\n{analysis}"
+        # First: chat posts keep only the start of the summary.
+        summary = f"{analysis}\n\n{summary}"
     return success, summary
 
 

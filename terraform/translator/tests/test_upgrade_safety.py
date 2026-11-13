@@ -804,6 +804,8 @@ GENERATED_NAME_KEPT = {
     "aws_dynamodb_table": {"name"},
     "aws_iam_role": {"name", "name_prefix"},
     "aws_s3_bucket": {"bucket_prefix"},
+    # translate.GENERATED_NAMES: an unnamed AWS::IAM::ManagedPolicy.
+    "awscc_iam_managed_policy": {"managed_policy_name"},
 }
 
 
