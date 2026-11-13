@@ -977,30 +977,44 @@ def test_every_scope_checked_discovery_operation_is_probed_live_or_named():
 
 
 @pytest.mark.parametrize(
-    ("documents", "expected"),
+    ("pages", "expected"),
     [
         (
             [
-                {"ObjectKey": "failed.pdf", "ObjectStatus": "FAILED"},
-                {"ObjectKey": "done.pdf", "ObjectStatus": "COMPLETED"},
+                [
+                    {"ObjectKey": "failed.pdf", "ObjectStatus": "FAILED"},
+                    {"ObjectKey": "done.pdf", "ObjectStatus": "COMPLETED"},
+                ]
             ],
             "done.pdf",
         ),
-        ([{"ObjectKey": "only.pdf", "ObjectStatus": "FAILED"}], "only.pdf"),
-        ([], None),
+        # every document on the first page failed: the next page is read
+        (
+            [
+                [{"ObjectKey": "cpm-1.pdf", "ObjectStatus": "FAILED"}],
+                [{"ObjectKey": "done.pdf", "ObjectStatus": "COMPLETED"}],
+            ],
+            "done.pdf",
+        ),
+        # no completed document anywhere: None, so the arm SKIPs, never a failed one
+        ([[{"ObjectKey": "only.pdf", "ObjectStatus": "FAILED"}]], None),
+        ([[]], None),
     ],
-    ids=["completed-first", "fallback-to-any", "none"],
+    ids=["completed-first", "next-page", "none-completed", "empty"],
 )
-def test_the_document_the_mcp_arms_use_is_a_completed_one(
-    monkeypatch, documents, expected
-):
+def test_the_document_the_mcp_arms_use_is_a_completed_one(monkeypatch, pages, expected):
     """The Admin arm asserts get_results serves the document; a document that
-    failed processing has nothing to serve, so a COMPLETED one is chosen first."""
+    failed processing has nothing to serve, so only a COMPLETED one is used, and
+    the search pages past failed ones."""
     h = _load_harness()
-    monkeypatch.setattr(
-        h,
-        "call_body",
-        lambda base, op, args, token: (200, json.dumps({"Documents": documents})),
-    )
-    ctx = {"api_base": "https://x"}
-    assert h.resolve_document_object_key(ctx, {"Admin": "t"}) == expected
+    seen = []
+
+    def call_body(base, op, args, token):
+        index = len(seen)
+        seen.append(dict(args))
+        nxt = f"t{index + 1}" if index + 1 < len(pages) else None
+        return 200, json.dumps({"Documents": pages[index], "nextToken": nxt})
+
+    monkeypatch.setattr(h, "call_body", call_body)
+    assert h.resolve_document_object_key({"api_base": "https://x"}, {"Admin": "t"}) == expected
+    assert all(a.get("limit") == h.DOCUMENT_PAGE_LIMIT for a in seen)

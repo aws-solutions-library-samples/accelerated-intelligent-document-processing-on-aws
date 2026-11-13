@@ -2020,6 +2020,12 @@ def _input_bucket(ctx):
     return ctx["input_bucket"]
 
 
+#: listDocuments' own maximum page size, and how many pages the search for a
+#: COMPLETED document reads before giving up.
+DOCUMENT_PAGE_LIMIT = 200
+DOCUMENT_PAGES_MAX = 10
+
+
 def resolve_document_object_key(ctx, tokens):
     """The ``ObjectKey`` of any processed document in this stack, or None.
 
@@ -2034,26 +2040,34 @@ def resolve_document_object_key(ctx, tokens):
     user's ``allowedConfigVersions``. A real profile name here would make the arm
     depend on which documents happen to be in the stack.
     """
-    st, body = call_body(ctx["api_base"], "listDocuments", {}, tokens["Admin"])
-    if st != 200:
-        return None
-    try:
-        documents = (json.loads(body) or {}).get("Documents") or []
-    except Exception:  # noqa: BLE001 - an unreadable list is "no key", not a crash
-        return None
-    keyed = [
-        summary
-        for summary in documents
-        if isinstance(summary, dict) and summary.get("ObjectKey")
-    ]
-    # A COMPLETED document first: the Admin arm asserts the document is SERVED,
-    # and one that failed processing (Step 15 leaves such documents behind) has
-    # no results to serve, so picking it failed an authorization check for a
-    # reason that has nothing to do with authorization.
-    for summary in keyed:
-        if str(summary.get("ObjectStatus") or "").upper() == "COMPLETED":
-            return str(summary["ObjectKey"])
-    return str(keyed[0]["ObjectKey"]) if keyed else None
+    # A COMPLETED document, or none at all. The Admin arm asserts the document is
+    # SERVED, and one that failed processing has no results to serve, so any
+    # other document fails an authorization check for a reason unrelated to
+    # authorization. On a shared stack the newest documents can all be failed
+    # ones (Step 15 leaves OCR-failed documents behind), so page past them
+    # rather than reading the first page only; no completed document anywhere
+    # makes the arm SKIP, which is the truth about what it could test.
+    args = {"limit": DOCUMENT_PAGE_LIMIT}
+    for _ in range(DOCUMENT_PAGES_MAX):
+        st, body = call_body(ctx["api_base"], "listDocuments", args, tokens["Admin"])
+        if st != 200:
+            return None
+        try:
+            page = json.loads(body) or {}
+        except Exception:  # noqa: BLE001 - an unreadable list is "no key", not a crash
+            return None
+        for summary in page.get("Documents") or []:
+            if (
+                isinstance(summary, dict)
+                and summary.get("ObjectKey")
+                and str(summary.get("ObjectStatus") or "").upper() == "COMPLETED"
+            ):
+                return str(summary["ObjectKey"])
+        token = page.get("nextToken")
+        if not token:
+            return None
+        args = {"limit": DOCUMENT_PAGE_LIMIT, "nextToken": token}
+    return None
 
 
 def apply_dynamic_args(ops, ctx, tokens):
