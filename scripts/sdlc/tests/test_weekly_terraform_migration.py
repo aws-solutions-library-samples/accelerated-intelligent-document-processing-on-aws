@@ -419,6 +419,8 @@ def test_a_failed_migration_run_carries_an_ai_analysis_of_its_logs(
     ok, summary = seen["result"]
     assert not ok
     assert "AI FAILURE ANALYSIS" in summary and "• the analysis" in summary
+    # first, so the start of the summary a chat post keeps carries the diagnosis
+    assert summary.index("AI FAILURE ANALYSIS") < summary.index("phase upstream-deploy")
     (prompt,) = seen["prompts"]
     assert "phase upstream-deploy failed" in prompt
     assert "Error: AccessDenied iam:CreateRole" in prompt

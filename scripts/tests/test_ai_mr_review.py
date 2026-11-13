@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -3507,3 +3508,176 @@ def test_an_older_target_reviewer_is_refused_with_a_message(
     assert found, "the check is not one plain `if ! grep ...; then` condition"
     assert re.search(r"^\s*exit 1\s*$", found.group("body"), re.M)
     assert found.start() < script.index("REVIEW=")
+
+
+# --- switching to the review role on GitLab ------------------------------------
+
+_OLD = {
+    "AWS_ACCESS_KEY_ID": "ASIA" + "OLDKEY" * 2 + "EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "old-secret-" + "s" * 20,
+    "AWS_SESSION_TOKEN": "old-token-" + "t" * 30,
+}
+_NEW = {
+    "AWS_ACCESS_KEY_ID": "ASIA" + "NEWKEY" * 2 + "EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "new-secret-" + "n" * 20,
+    "AWS_SESSION_TOKEN": "new-token-" + "u" * 30,
+}
+_SOURCES = {
+    "AWS_PROFILE": "other",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://127.0.0.1:1/c",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/c",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "/tmp/t",
+    "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/x",
+}
+_ROLE_ARN = "arn:aws:iam::111122223333:role/idp-sdlc-GitLabReview"
+
+
+def _scripted_sts(mod, monkeypatch, caller: str, assume_fails: bool = False):
+    """Answer GetCallerIdentity with ``caller`` until AssumeRole has run, and
+    record every action, so a test can see whether AssumeRole was called."""
+    calls: list[str] = []
+
+    def answer(body: str, environ) -> str:
+        action = body.split("&", 1)[0].removeprefix("Action=")
+        calls.append(action)
+        if action == "AssumeRole":
+            assert "RoleArn=" + urllib.parse.quote(_ROLE_ARN, safe="") in body
+            if assume_fails:
+                raise mod.Failure("STS AssumeRole failed (403): not authorized")
+            return (
+                f"<AccessKeyId>{_NEW['AWS_ACCESS_KEY_ID']}</AccessKeyId>"
+                f"<SecretAccessKey>{_NEW['AWS_SECRET_ACCESS_KEY']}</SecretAccessKey>"
+                f"<SessionToken>{_NEW['AWS_SESSION_TOKEN']}</SessionToken>"
+            )
+        role = (
+            "idp-sdlc-GitLabReview"
+            if environ.get("AWS_ACCESS_KEY_ID") == _NEW["AWS_ACCESS_KEY_ID"]
+            else caller
+        )
+        return f"<Arn>arn:aws:sts::111122223333:assumed-role/{role}/s</Arn>"
+
+    monkeypatch.setattr(mod, "_sts", answer)
+    monkeypatch.setattr(mod, "_RETIRED_CREDENTIALS", [])
+    return calls
+
+
+@pytest.mark.unit
+def test_a_different_identity_assumes_the_review_role(mod, monkeypatch) -> None:
+    calls = _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    environ = {**_OLD, **_SOURCES, "AWS_REGION": "us-east-1"}
+    assert mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    assert calls == ["GetCallerIdentity", "AssumeRole"]
+    for key, value in _NEW.items():
+        assert environ[key] == value
+    for key in _SOURCES:
+        assert key not in environ, key
+    assert environ["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+    assert environ["AWS_CONFIG_FILE"] == "/dev/null"
+    assert environ["AWS_EC2_METADATA_DISABLED"] == "true"
+    mod.require_role("idp-sdlc-GitLabReview", environ)
+
+
+@pytest.mark.unit
+def test_the_review_role_already_held_is_not_assumed_again(mod, monkeypatch) -> None:
+    calls = _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLabReview")
+    environ = {**_OLD, "AWS_PROFILE": "kept"}
+    assert not mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    assert calls == ["GetCallerIdentity"]
+    assert environ == {**_OLD, "AWS_PROFILE": "kept"}
+
+
+@pytest.mark.unit
+def test_the_child_inherits_only_the_review_role_s_credentials(
+    mod, monkeypatch
+) -> None:
+    _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    for key, value in {**_OLD, **_SOURCES}.items():
+        monkeypatch.setenv(key, value)
+    assert mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN)
+    child = mod.child_env(mod.DEFAULT_MODEL)
+    for key, value in _NEW.items():
+        assert child[key] == value
+    values = set(child.values())
+    assert not values & set(_OLD.values()), "a first-role credential reached the child"
+    assert not set(child) & set(_SOURCES), "another credential source reached the child"
+
+
+@pytest.mark.unit
+def test_the_first_role_s_credentials_are_still_withheld_from_a_comment(
+    mod, monkeypatch
+) -> None:
+    _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    environ = dict(_OLD)
+    mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    quoted = f"{_PLAIN}the job held {_OLD['AWS_SECRET_ACCESS_KEY']}"
+    assert "a credential or token" in mod.posting_refusals(quoted, environ=environ)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("arn", [_ROLE_ARN, ""], ids=["assume-refused", "no-arn"])
+def test_a_failed_switch_refuses_the_run(
+    mod, monkeypatch, capsys, tmp_path, arn: str
+) -> None:
+    _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab", assume_fails=True)
+    for key, value in _OLD.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("REVIEW_ROLE_ARN_UNDER_TEST", arn)
+    read = []
+    monkeypatch.setattr(mod.Gitlab, "merge_request", lambda self, iid: read.append(iid))
+    code = mod.main(
+        [
+            "--mr",
+            "1",
+            "--project",
+            "p",
+            "--require-aws-role",
+            "idp-sdlc-GitLabReview",
+            "--assume-role-from",
+            "REVIEW_ROLE_ARN_UNDER_TEST",
+            "--artifact-dir",
+            str(tmp_path),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 1 and read == []
+    assert "FAILED:" in out
+    assert os.environ["AWS_ACCESS_KEY_ID"] == _OLD["AWS_ACCESS_KEY_ID"]
+
+
+@pytest.mark.unit
+def test_main_switches_before_it_checks_the_role(mod, monkeypatch, tmp_path) -> None:
+    order: list[str] = []
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("REVIEW_ROLE_ARN_UNDER_TEST", _ROLE_ARN)
+    monkeypatch.setattr(
+        mod, "assume_review_role", lambda *a, **k: order.append("assume") or True
+    )
+    monkeypatch.setattr(mod, "require_role", lambda *a, **k: order.append("check"))
+    monkeypatch.setattr(
+        mod.Gitlab,
+        "merge_request",
+        lambda self, iid: (_ for _ in ()).throw(mod.Skip("x")),
+    )
+    mod.main(
+        [
+            "--mr",
+            "1",
+            "--project",
+            "p",
+            "--require-aws-role",
+            "idp-sdlc-GitLabReview",
+            "--assume-role-from",
+            "REVIEW_ROLE_ARN_UNDER_TEST",
+            "--artifact-dir",
+            str(tmp_path),
+        ]
+    )
+    assert order == ["assume", "check"]
+
+
+@pytest.mark.unit
+def test_github_does_not_assume_a_role(gh_job: dict) -> None:
+    """GitHub's OIDC session already is the review role."""
+    script = "\n".join(str(step.get("run", "")) for step in gh_job["steps"])
+    assert "--assume-role-from" not in script
