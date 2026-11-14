@@ -1064,7 +1064,8 @@ use the EFFICIENT two-tool workflow instead of generating JSON row-by-row:
 
 PREFERRED WORKFLOW (fast — use for tables with 50+ rows):
 1. Extract non-table scalar fields first (e.g. account_number, statement_period)
-2. Call parse_table with the full document text — parses ALL tables instantly
+2. Call parse_table with NO table_text — it already holds the document text and
+   parses ALL its tables instantly. Do not copy the document into the call.
 3. Review the columns and row_count returned
 4. Call map_table_to_schema with:
    - column_mapping: maps each table column to the corresponding schema field
@@ -2082,6 +2083,7 @@ async def _run_shard_agent(
     base_custom_instruction: str | None = None,
     emit_field_assessment: bool = False,
     schema_validator: Callable[[dict[str, Any]], tuple[bool, str]] | None = None,
+    table_source_text: str | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """Run one extraction agent over a single shard.
 
@@ -2118,6 +2120,7 @@ async def _run_shard_agent(
         schema_validator=schema_validator,
         # Shards exist only on the extraction path.
         strands_throttle_retries=False,
+        table_source_text=table_source_text,
     )
 
 
@@ -2166,6 +2169,9 @@ async def default_shard_runner(
         # service when extraction.confidence.mode == "integrated").
         emit_field_assessment=bool(payload.get("emit_field_assessment")),
         schema_validator=schema_validator,
+        # The shard's own page text, built by the service with its markers and
+        # the page-1 header block a later shard carries (_build_shard_payloads).
+        table_source_text=payload.get("assess_document_text"),
     )
 
 
@@ -2292,6 +2298,7 @@ async def structured_output_async(
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
     strands_throttle_retries: bool = True,
+    table_source_text: str | None = None,
 ) -> tuple[TargetModel, BedrockInvokeModelResponse]:
     """
     Extract structured data using Strands agents with tool-based validation.
@@ -2485,6 +2492,11 @@ async def structured_output_async(
             confidence_data_by_page=_active_confidence_data_var.get(),
             max_empty_line_gap=table_parsing_config.max_empty_line_gap,
             auto_merge_adjacent_tables=table_parsing_config.auto_merge_adjacent_tables,
+            # The section text the caller built the prompt from, so the tool
+            # parses the OCR itself rather than a copy the model retypes. Passed
+            # explicitly, not through a ContextVar: structured_output can run this
+            # on a fresh thread, which starts with an empty context.
+            source_text=table_source_text,
         )
         tools.append(parse_table_tool)
 
@@ -2781,6 +2793,7 @@ def structured_output(
     emit_field_assessment: bool = False,
     attach_page_images: bool = True,
     strands_throttle_retries: bool = True,
+    table_source_text: str | None = None,
 ) -> tuple[BaseModel, BedrockInvokeModelResponse]:
     """
     Synchronous version of structured_output_async.
@@ -2873,6 +2886,7 @@ def structured_output(
                         emit_field_assessment=emit_field_assessment,
                         attach_page_images=attach_page_images,
                         strands_throttle_retries=strands_throttle_retries,
+                        table_source_text=table_source_text,
                     )
                 )
             except Exception as e:
@@ -2911,6 +2925,7 @@ def structured_output(
                 emit_field_assessment=emit_field_assessment,
                 attach_page_images=attach_page_images,
                 strands_throttle_retries=strands_throttle_retries,
+                table_source_text=table_source_text,
             )
         )
 

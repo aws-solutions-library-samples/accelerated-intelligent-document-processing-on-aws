@@ -804,14 +804,14 @@ class ExtractionService:
     # block itself is written for an agent holding the whole section, and two of
     # its sentences read wrong from inside a shard:
     #
-    #  * "extract ONLY text between markers for your pages" — a shard's text is
-    #    ALREADY only its pages, and every shard after the first is prefixed with
-    #    a `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
+    #  * "extract ONLY your pages' values" — a shard's text is ALREADY only its
+    #    pages, and every shard after the first is prefixed with a
+    #    `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
     #    OUTSIDE the `--- PAGE N ---` markers on purpose (`_build_shard_payloads`)
-    #    because it carries the table's column-header row. An agent obeying that
-    #    sentence literally drops the header, the deterministic parse then fails
-    #    on text that starts mid-table, and the agent falls back to emitting rows
-    #    itself — a COMPLETENESS risk, not only a cost one.
+    #    because it carries the table's column-header row. parse_table parses
+    #    the shard's text as built, header block included (`default_shard_runner`
+    #    hands it to the tool), so the note says so rather than leaving the agent
+    #    to wonder whether that block is in scope.
     #  * the table/row totals are section-wide (`_preflight_table_parse` parses
     #    the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system
     #    prompt tells the agent to verify row_count against the document and
@@ -822,12 +822,10 @@ class ExtractionService:
     #    it with the totals unaided.
     _SHARD_SCOPE_NOTE = (
         "YOUR SCOPE (sharded run — this overrides the marker rule above): the "
-        "text you were given ALREADY contains only your assigned pages, so pass "
-        "ALL of it to parse_table, including any leading "
-        "'--- DOCUMENT HEADER (page 1, for context only) ---' block. That header "
-        "carries the table's column headers and deliberately sits outside the "
-        "'--- PAGE N ---' markers; dropping it makes parse_table fail on text "
-        "that starts mid-table.\n"
+        "text you were given ALREADY contains only your assigned pages, and "
+        "parse_table parses exactly that text, including any leading "
+        "'--- DOCUMENT HEADER (page 1, for context only) ---' block that "
+        "carries the table's column headers. Call it with no table_text.\n"
         "The table and row totals above are for the WHOLE section, not for your "
         "pages: parse_table on your pages will legitimately return fewer rows, "
         "and that is complete for your scope."
@@ -892,14 +890,14 @@ class ExtractionService:
             f"Table columns: {columns}\n\n"
             f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
             f"markers between pages. When you are assigned a page range, "
-            f"extract ONLY text between markers for your pages before "
-            f"calling parse_table.\n\n"
+            f"extract ONLY your pages' values.\n\n"
             # Empty unless a caller passes scope_note, so the single-agent
             # path's text is unchanged (pinned byte-for-byte by a unit test).
             f"{scope_paragraph}"
             f"EFFICIENT EXTRACTION WORKFLOW:\n"
             f"1. Extract scalar fields from your pages' text\n"
-            f"2. Call parse_table with your pages' text\n"
+            f"2. Call parse_table with no table_text: it parses the document "
+            f"text you were given itself\n"
             f"3. Call map_table_to_schema with column_mapping + static_fields\n"
             f"   (merged rows are auto-split — no manual handling needed)\n"
             f"4. Call finalize_table_extraction with table_array_field + "
@@ -6231,6 +6229,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
                 metering = esc_response.get("metering", {}) or {}
                 metering.pop("_table_parsing_stats", None)
@@ -6257,6 +6258,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
                 metering = esc_response.get("metering", {}) or {}
                 metering.pop("_table_parsing_stats", None)
@@ -6811,6 +6815,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     custom_instruction=custom_instruction,
                     schema_validator=schema_validator,
                     emit_field_assessment=self._integrated_assessment_enabled(),
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
 
             extracted_fields = structured_data.model_dump(mode="json")

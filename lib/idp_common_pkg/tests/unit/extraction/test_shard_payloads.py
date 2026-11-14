@@ -309,11 +309,12 @@ class TestPreflightTableGuidanceBlock:
     """`_append_preflight_table_guidance` is the ONE home of the PRE-PARSED TABLE
     DATA block, shared by the single-pass and sharded agentic paths (#900).
 
-    The literal below is the block exactly as the single-pass path emitted it
-    before the refactor. Asserting equality against it is what makes the sharded
-    fix attributable: if the shared helper had also reworded the single-pass
-    instruction, an A/B against the study's numbers would be measuring two
-    changes at once.
+    The literal below pins the block's exact wording, so a change to the
+    instruction every table-parsing agent reads is a deliberate edit here rather
+    than a side effect of a refactor: an A/B against the advanced-extraction
+    study's numbers has to know which instruction it is measuring. It tells the
+    agent to call parse_table with no table_text, because the tool parses the
+    section text it was built with (create_parse_table_tool's source_text).
     """
 
     EXPECTED = (
@@ -322,11 +323,11 @@ class TestPreflightTableGuidanceBlock:
         "Table columns: ['Date', 'Amount']\n\n"
         "PAGE MARKERS: The document text contains '--- PAGE N ---' "
         "markers between pages. When you are assigned a page range, "
-        "extract ONLY text between markers for your pages before "
-        "calling parse_table.\n\n"
+        "extract ONLY your pages' values.\n\n"
         "EFFICIENT EXTRACTION WORKFLOW:\n"
         "1. Extract scalar fields from your pages' text\n"
-        "2. Call parse_table with your pages' text\n"
+        "2. Call parse_table with no table_text: it parses the document "
+        "text you were given itself\n"
         "3. Call map_table_to_schema with column_mapping + static_fields\n"
         "   (merged rows are auto-split — no manual handling needed)\n"
         "4. Call finalize_table_extraction with table_array_field + "
@@ -341,7 +342,7 @@ class TestPreflightTableGuidanceBlock:
         "columns": ["Date", "Amount"],
     }
 
-    def test_block_is_byte_identical_to_the_pre_refactor_text(self):
+    def test_block_is_byte_identical_to_the_pinned_text(self):
         out = ExtractionService._append_preflight_table_guidance(None, self.PREFLIGHT)
         assert out == self.EXPECTED
 
@@ -441,11 +442,12 @@ class TestShardPlanPreflightGuidance:
         ci = self._instruction()
         assert ci is not None
         assert "YOUR SCOPE" in ci
-        # (1) The marker rule says "extract ONLY text between markers for your
-        # pages" — but a shard's text is already only its pages, and dropping the
-        # header block would strip the table's column headers.
+        # (1) A shard's text is already only its pages, and parse_table parses
+        # exactly that text -- header block included -- so the note tells the
+        # agent not to supply any text of its own.
         assert "ALREADY contains only your assigned pages" in ci
-        assert "pass ALL of it to parse_table" in ci
+        assert "parse_table parses exactly that text" in ci
+        assert "Call it with no table_text" in ci
         # (2) The row/table totals are section-wide, not the shard's target.
         assert "for the WHOLE section" in ci
         assert "legitimately return fewer rows" in ci

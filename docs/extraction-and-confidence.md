@@ -471,6 +471,15 @@ counted as extra items. Four bounds:
 > [issue #900](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/900)
 > its agents were the only ones not receiving the block.
 
+> **`parse_table` reads the OCR itself.** The agent calls `parse_table` without
+> passing any text: the tool parses the section's own OCR text (each shard's own
+> pages, on the sharded path). So the table is parsed from exactly what OCR
+> produced, rather than from a copy the model writes out, which would cost as many
+> output tokens as the section holds and need not match the OCR. A copy whose
+> repeated page headers differ can turn off the recovery of a blank OCR header row
+> and count the header as rows. See the
+> [extraction module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/extraction/README.md#table-parsing-tool).
+
 > **Requires Markdown tables in the OCR output.** Table parsing only engages when
 > OCR emits Markdown pipe-tables — i.e. **Amazon Textract with the `TABLES`
 > feature enabled** (keep `LAYOUT` + `TABLES` in `ocr.features`), or another OCR
