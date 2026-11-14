@@ -3,6 +3,12 @@ SPDX-License-Identifier: MIT-0
 
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **Agentic table extraction no longer counts a table's header rows as data on some runs.** `parse_table` now parses the section's own OCR text instead of a copy the agent writes into the call, so a multi-page table whose OCR puts its column labels below a blank header row is parsed the same way on every run (the copy could differ from the OCR and turn the header recovery off), and the agent no longer spends output tokens reproducing the document. See [Extraction & Confidence](docs/extraction-and-confidence.md).
+
 ## [0.6.15]
 
 ### Added
@@ -51,7 +57,7 @@ SPDX-License-Identifier: MIT-0
 
 - **Configuration page: the Configuration tab is now Processing Settings, and Prompt Preview is a Preview prompts button** that opens in a dialog. See [Prompt Preview](docs/web-ui.md#prompt-preview).
 
-- **Multi-instance Section Detection can be set in Advanced extraction mode** from the Web UI, and its descriptions say it applies there (except to sharded sections). See [Extraction and confidence](docs/extraction-and-confidence.md).
+- **Multi-instance Section Detection can be set in Advanced extraction mode** from the Web UI, and its descriptions say it applies there (except to sharded sections). See [Extraction & Confidence](docs/extraction-and-confidence.md).
 
 - **The Test Set Generator extension (`idp-data-generator`, 0.1.7) renders documents from local resources only** and pins `seed-data` 0.0.7, which also restores scan/fax effects in newly built images. Update the extension to pick it up. See [What the generator's model can do](docs/extensions/idp-data-generator.md#what-the-generators-model-can-do).
 
@@ -271,7 +277,7 @@ SPDX-License-Identifier: MIT-0
 
 - **Malformed, null or non-finite confidences in BDA results no longer abandon the rest of the document.** A null, NaN, infinite or missing field or blueprint confidence, or a malformed segment result, raised an error that was swallowed, so that segment and every later one lost their confidence alerts, class confidence and HITL metadata. Every segment is now processed, and an unusable score is treated as 0.0 or unscored, so it goes to review. A NaN or positive-infinite score in Pipeline mode now alerts too. **Action:** none ([#1581](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1581)).
 
-- **1S-TopK confidence no longer reports a missing probability as the model's score.** A missing or non-numeric probability was stored as 0.0 and a NaN one as 1.0; both now store 0.0 with a `confidence_reason` saying it is a stand-in, so the field still alerts. See [Extraction and confidence](docs/extraction-and-confidence.md).
+- **1S-TopK confidence no longer reports a missing probability as the model's score.** A missing or non-numeric probability was stored as 0.0 and a NaN one as 1.0; both now store 0.0 with a `confidence_reason` saying it is a stand-in, so the field still alerts. See [Extraction & Confidence](docs/extraction-and-confidence.md).
 
 - **Confidence list batches are sized by what a call actually emits.** Rows with nested groups or lists were sized as far narrower than their output, so batches could exceed the model's output cap and rely on truncation recovery. Rows are now counted leaf by leaf and the section's other fields are reserved for. See [the assessment README](lib/idp_common_pkg/idp_common/assessment/README.md#self-healing-token-aware-sizing--model-escalation).
 

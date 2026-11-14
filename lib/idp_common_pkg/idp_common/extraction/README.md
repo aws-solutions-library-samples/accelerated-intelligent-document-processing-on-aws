@@ -1610,8 +1610,23 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
      same labels): they become the header rather than data, and a
      warning says how many rows were taken. A one-page table is left as it was,
      because one page cannot tell a short all-text data row from a label row. The
-     check runs over the text `parse_table` is given, so on the sharded path a
+     check runs over the text `parse_table` parses, so on the sharded path a
      shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
+
+**What it parses.** The tool parses the section's own OCR text, `--- PAGE N ---`
+markers included: the extraction service passes the text it built the prompt from
+(`structured_output(table_source_text=...)`, and each shard's own text on the
+sharded path), and `create_parse_table_tool(source_text=...)` holds it. The agent
+calls `parse_table()` with no `table_text`, and a `table_text` it sends anyway is
+ignored (`ignored_table_text: true` in the result). Asking the model to pass the
+document would make the tool's input model output: as many output tokens as the
+section holds, and a copy that need not match the OCR. The blank-header recovery
+above compares the label rows that open each page, so a copy whose repeated label
+rows drift turns it off and the header rows come back as data (on
+`samples/Nuveen.pdf`, 534 rows for a 532-row table). A tool built without
+`source_text` -- a direct caller outside the extraction agent -- parses the
+`table_text` it is given, as before. `text_source` in the result says which one
+was parsed.
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)
@@ -1627,7 +1642,7 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
 
 ```
 1. Agent analyzes document and identifies Markdown tables
-2. Agent calls parse_table(table_text, expected_columns)
+2. Agent calls parse_table(expected_columns) — the tool parses the section's OCR text itself
 3. Tool returns:
    - Structured rows as list of dicts
    - Quality metrics (parse_success_rate, avg_confidence)
@@ -1723,15 +1738,14 @@ reads them, so both sharded call sites pass
 inserts a correcting paragraph directly after the page-marker rule (the
 single-agent path passes nothing, keeping its text byte-identical):
 
-- "extract ONLY text between markers for your pages" — a shard's text already
-  contains only its pages, and every shard after the first is prefixed with a
+- "extract ONLY your pages' values" — a shard's text already contains only its
+  pages, and every shard after the first is prefixed with a
   `--- DOCUMENT HEADER (page 1, for context only) ---` block that
   `_build_shard_payloads` deliberately places **outside** the `--- PAGE N ---`
-  markers because it carries the table's column-header row. An agent obeying the
-  rule literally discards that header, the deterministic parse then fails on text
-  starting mid-table, and the agent falls back to emitting rows itself — a
-  completeness risk, not only a cost one. The note tells the shard to pass **all**
-  of its text to `parse_table`, header block included.
+  markers because it carries the table's column-header row (and none of page 1's
+  data rows, so parsing it in every shard duplicates nothing). `parse_table`
+  parses the shard's text as built, header block included, and the note tells the
+  shard so and to call it with no `table_text`.
 - the table and row totals are **section-wide** (`_preflight_table_parse` parses
   the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system prompt
   tells the agent to verify `row_count` against the document and never stop until
@@ -2263,7 +2277,7 @@ classes:
 
 **Extraction flow**:
 1. Agent identifies transaction table in OCR text
-2. Calls `parse_table(table_text)` → Returns 1020 rows with quality metrics
+2. Calls `parse_table()` → Returns 1020 rows with quality metrics
 3. Tool warnings: "ℹ️ Successfully recovered 3 gaps in table data"
 4. Calls `map_table_to_schema(column_mapping={"Date": "date", "Description": "description", ...}, value_transforms={"amount": "strip_currency"})` → All 1020 rows transformed instantly
 5. Calls `finalize_table_extraction(table_array_field="transactions", scalar_fields={"account_number": "12345678", "statement_period": "January 2024"})` → Validated against Pydantic model

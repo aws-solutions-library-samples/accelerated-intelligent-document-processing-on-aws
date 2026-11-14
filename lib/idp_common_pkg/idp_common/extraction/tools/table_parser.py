@@ -939,9 +939,21 @@ def create_parse_table_tool(
     confidence_data_by_page: dict[str, str] | None = None,
     max_empty_line_gap: int = 3,
     auto_merge_adjacent_tables: bool = True,
+    source_text: str | None = None,
 ):
     """
     Create a parse_table tool with optional pre-loaded confidence data.
+
+    When ``source_text`` is given, the tool parses THAT text -- the section's own
+    OCR text, exactly as the extraction service built it -- and any
+    ``table_text`` the agent passes is not used. The agent would otherwise have
+    to reproduce the whole section as a tool argument, and that copy is model
+    output: it costs as many output tokens as the section holds, and it is not
+    guaranteed to match the OCR. The parser's blank-header recovery decides by
+    comparing the label rows that open each page's fragment, so a copy whose
+    repeated header rows drift even slightly turns that recovery off, and the
+    table's header rows come back as data (seen on Nuveen.pdf: 534 rows for a
+    532-row table, with the same OCR parsed to 532 when given directly).
 
     The tool also records usage statistics in the agent's state under the key
     ``table_parsing_stats`` so that the extraction service can include them in
@@ -953,6 +965,9 @@ def create_parse_table_tool(
             Typically available when OCR backend is Textract; None for Bedrock OCR.
         max_empty_line_gap: Maximum consecutive empty lines to allow within a table (default: 3)
         auto_merge_adjacent_tables: Whether to merge adjacent tables with identical columns (default: True)
+        source_text: The section's OCR text (with its ``--- PAGE N ---`` markers).
+            When set, every call parses it and ignores the agent's ``table_text``.
+            None keeps the older behaviour of parsing whatever the agent passes.
 
     Returns:
         A Strands @tool function that the extraction agent can use
@@ -964,16 +979,21 @@ def create_parse_table_tool(
 
     @tool
     def parse_table(
-        table_text: str,
+        table_text: str = "",
         expected_columns: list[str] | None = None,
         table_index: int | None = None,
         agent: Any = None,
     ) -> dict[str, Any]:
         """
-        Parse a Markdown table from OCR text into structured rows and columns.
+        Parse the Markdown tables in the document text into structured rows and columns.
 
-        Use this tool when you identify a well-formatted table in the document text.
-        It parses the table deterministically (no LLM inference needed) and returns
+        Call this with NO table_text: the tool already holds the document text you
+        were given and parses all of it, every page, exactly as OCR produced it.
+        Do not copy the document into table_text -- that is slow, and any
+        difference between your copy and the OCR can change the result. Use
+        table_index to pick one table when several are found.
+
+        It parses deterministically (no LLM inference needed) and returns
         structured rows as a list of dictionaries, plus quality metrics.
 
         After receiving results, YOU must:
@@ -985,9 +1005,9 @@ def create_parse_table_tool(
            extraction for those specific rows/cells instead
 
         Args:
-            table_text: The text containing Markdown table(s) to parse.
-                Can be the full document text or a specific table section.
-                The tool will automatically detect table boundaries.
+            table_text: Leave empty. Only read when the tool was created without
+                the document text (direct callers outside the extraction agent);
+                otherwise the document text is parsed and this is ignored.
             expected_columns: Optional list of column names you expect in the table.
                 Used for validation - the tool reports matched/missing/extra columns.
             table_index: Optional index to select a specific table when multiple
@@ -1009,12 +1029,38 @@ def create_parse_table_tool(
             - warnings: list of any parsing issues encountered
             - tables: list of all parsed tables (when multiple found)
         """
+        if source_text:
+            text, text_source = source_text, "document_text"
+        elif table_text and table_text.strip():
+            text, text_source = table_text, "table_text"
+        else:
+            return {
+                "status": "error",
+                "parser_status": "error",
+                "content": [
+                    {
+                        "text": (
+                            "parse_table has no document text to parse and was "
+                            "given no table_text. Pass the table's Markdown as "
+                            "table_text."
+                        )
+                    }
+                ],
+                "text_source": None,
+                "warnings": ["no text to parse"],
+            }
         result = parse_markdown_tables(
-            text=table_text,
+            text=text,
             expected_columns=expected_columns,
             confidence_data=merged_confidence,
             max_empty_line_gap=max_empty_line_gap,
             auto_merge_adjacent_tables=auto_merge_adjacent_tables,
+        )
+        # Which text was parsed, so a reviewer of a run can tell a document parse
+        # from an agent-supplied one, and whether the agent sent a copy anyway.
+        result["text_source"] = text_source
+        result["ignored_table_text"] = bool(
+            source_text and table_text and table_text.strip()
         )
 
         # Add intelligent warnings for potential data completeness issues
@@ -1083,6 +1129,8 @@ def create_parse_table_tool(
             "parse_table tool invoked",
             extra={
                 "status": result.get("status"),
+                "text_source": text_source,
+                "ignored_table_text": result["ignored_table_text"],
                 "table_count": result.get("table_count", 0),
                 "row_count": result.get("row_count", 0),
                 "quality": result.get("quality", {}),
