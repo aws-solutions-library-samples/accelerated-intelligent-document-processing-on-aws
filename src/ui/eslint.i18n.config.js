@@ -16,7 +16,9 @@
 // below sets aside — JSX text, user-facing attributes (`label`, `header`,
 // `placeholder`, `ariaLabel`, Cloudscape `i18nStrings` members, ...), object
 // properties (column headers, option labels, notification text) and plain `.ts`
-// strings (labels, breadcrumbs, notifications).
+// strings (labels, breadcrumbs, notifications). `*.export.ts` modules (CSV and
+// markdown text that is English by design) are set aside by a files-scoped
+// rule-off at the end of this file.
 //
 // The lists run in EXCLUDE mode only. Measured on this tree when this configuration was
 // written: the plugin skips a scope when ANY ancestor was skipped, so an `include` list
@@ -476,5 +478,14 @@ export default tseslint.config(
         },
       ],
     },
+  },
+  // Export modules. CSV column headers and generated report headings are English by
+  // design (src/ui/src/i18n/README.md, "The string-debt gate"), so a builder moved into
+  // a sibling `<name>.export.ts` module is not counted. The module holds only the export
+  // text and the function assembling it; `.ts` cannot hold JSX, so a screen cannot be
+  // renamed into the pattern. The pattern matched no existing file when it was added.
+  {
+    files: ['src/**/*.export.ts'],
+    rules: { 'i18next/no-literal-string': 'off' },
   },
 );
