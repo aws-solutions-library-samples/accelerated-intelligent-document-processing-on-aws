@@ -27,6 +27,7 @@ every tier has a row in the record — including any that could not run, with th
 | H | Library integration tests | `idp_common` against real AWS rather than `moto` |
 | I | Terraform property parity | a Terraform deployment of the release stores what a CloudFormation deployment of it stores |
 | J | Migration from `genai-idp-terraform` | a deployment of the separate upstream Terraform implementation moves onto this release's module in place, keeping its data, users and passwords |
+| K | In-place Terraform upgrade `PREV → VERSION` | the Terraform customer's upgrade path: pointing an existing deployment at this release's module replaces no bucket, table, user pool or key, and loses no data |
 
 > **What "validated" means here.** `docs/release-validation/README.md` defines the
 > tier list and the record format; `docs/release-validation/v0.6.6.md` is the worked
@@ -239,9 +240,10 @@ cannot prove otherwise once the bucket is gone.
 
 Skill: `test-upgrade.md` (including rollback-deadlock recovery).
 
-Tier J below is the same question for a Terraform customer coming from the separate
-`awslabs/genai-idp-terraform` implementation, and unlike this tier it is scripted end
-to end.
+Tiers K and J below ask this question of a Terraform customer, and unlike this tier
+both are scripted end to end: K is the same upgrade (an existing deployment of the
+module pointed at this release's), and J is the move from the separate
+`awslabs/genai-idp-terraform` implementation onto the module.
 
 ### F. Benchmarks — the release A/B **and** the full documentation refresh
 
@@ -447,6 +449,50 @@ counts from the `migrate-apply` row, and any finding. Check the IAM role count a
 the quota first: the two deployments hold several hundred roles between them for the
 length of the run. On GitLab it also runs on the weekly Terraform-migration schedule,
 while that schedule is active; see `scripts/sdlc/docs/CI_TEST_COVERAGE.md`.
+
+### K. In-place Terraform upgrade `PREV → VERSION` (one deployment, two modules)
+
+The Terraform counterpart of tier E, and the tier a Terraform customer feels at every
+release: they already run `PREV` and they point the module at `VERSION`. Tier I
+compares two fresh deployments and says nothing about that path.
+
+```bash
+make stacktest-terraform-upgrade STACK_NAME=tfupN ADMIN_EMAIL=<you>@example.com \
+    FROM_MODULE_URL=<PREV module zip url> TO_MODULE_URL=<VERSION module zip url> \
+    REGION=<region> WORK_DIR=<a directory outside /tmp> TERRAFORM_BIN=<terraform 1.7+>
+```
+
+Both URLs are the versioned `idp-terraform-<version>.zip` objects each release
+publishes beside its templates; the previous release's is the one its
+`idp-terraform-latest.json` pointer named before this release moved it. The driver
+(`scripts/sdlc/terraform_upgrade_test.py`) deploys `FROM_MODULE_URL` with `idp-cli
+deploy --terraform`, seeds it the way tier J seeds upstream (two sample documents
+processed, an Admin and a scoped Author with random passwords and `@example.com`
+emails, one configuration edit through the API, a baseline and a test set), snapshots
+every bucket and table once the deployment has stopped writing, then runs `idp-cli
+deploy --terraform` again against `TO_MODULE_URL` — with neither `--parameters` nor
+`--admin-email`, so the remembered parameters are exercised, and **never** with
+`--terraform-allow-replace-stateful`, so a plan the deploy guard refuses fails the run
+and names the addresses. It then destroys the deployment and sweeps what it retained.
+A failed phase still tears down (`KEEP=1` or `STOP_AFTER=<phase>` keep it; `RESUME=1`
+continues from `WORK_DIR`).
+
+**Pass:** exit 0 and `result.json` status `PASS`, which means the upgrade applied, every
+bucket, table, user pool and key still has the physical identity it had before (matched
+by name, so a resource a `moved` block relocated passes and a replaced one does not),
+the snapshot compare found no lost or changed object or item beyond the configuration
+rows every deploy rewrites and the attributes the index backfill adds, both users signed
+in with their old passwords and kept their scope, the configuration edit survived, the
+label stack's description names `VERSION`, and a document uploaded after the upgrade
+reached `COMPLETED` on the deployment's own state machine. Record the per-phase table
+from `summary.txt`, the upgrade plan's add / change / destroy counts, and any finding.
+
+⚠️ **A refusal is a release finding, not a test defect.** The guard refuses a plan that
+would delete or replace a data-holding or retained resource, and that is exactly what a
+customer upgrading would hit, so report the addresses and what the release did to them
+rather than re-running with the override. One measured shape: turning a feature's
+parameter back off deletes the resources that feature created, which CloudFormation
+would also do — the finding is then the parameter, not the module.
 
 ## Operating a multi-hour run — what actually goes wrong
 
