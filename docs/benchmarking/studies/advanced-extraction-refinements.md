@@ -506,8 +506,8 @@ that is observability only, with no effect on what the model sees.
 > pass its pages' text to `parse_table`. The block has since changed: `parse_table`
 > parses the section's own OCR text, and the block tells the agent to call it with no
 > `table_text` (a unit test pins the current wording). These numbers remain valid as
-> the baseline from before that change, not as a measurement of the current text. **The token saving on the sharded path is
-> unmeasured**: confirming it needs the `advscale` arm re-run before and after on a
+> the baseline from before that change, not as a measurement of the current text.
+> **The token saving on the sharded path is unmeasured**: confirming it needs the `advscale` arm re-run before and after on a
 > live stack. The expected direction (fewer Extraction output tokens, recall
 > unchanged at 1.000) is inferred from the 1,512,506 → 681,222 output-token drop
 > measured below for the analogous single-pass fix, not observed for this change.

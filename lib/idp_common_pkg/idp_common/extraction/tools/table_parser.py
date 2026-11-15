@@ -945,8 +945,9 @@ _HOLDS_TEXT = {
         "        were given and parses all of it, every page, exactly as OCR produced it.\n"
         "        Do not copy the document into table_text -- that is slow, and any\n"
         "        difference between your copy and the OCR can change the result. Use\n"
-        "        table_index to pick one table when several are found; the selection\n"
-        "        is what map_table_to_schema then maps."
+        "        table_index to pick one of several genuinely different tables; the\n"
+        "        selection is what map_table_to_schema then maps (fragments of one\n"
+        "        table, with identical columns, are always all mapped)."
     ),
     "table_text": (
         "Leave empty. The tool parses the document text it holds and\n"
@@ -957,8 +958,9 @@ _NEEDS_TEXT = {
     "lead": (
         "Pass the table's Markdown as table_text (the whole document text, or one\n"
         "        table section of it); the tool detects table boundaries itself. Use\n"
-        "        table_index to pick one table when several are found; the selection\n"
-        "        is what map_table_to_schema then maps."
+        "        table_index to pick one of several genuinely different tables; the\n"
+        "        selection is what map_table_to_schema then maps (fragments of one\n"
+        "        table, with identical columns, are always all mapped)."
     ),
     "table_text": (
         "The text containing Markdown table(s) to parse: the full\n"
@@ -1175,18 +1177,38 @@ def create_parse_table_tool(
         # maps the rows of every entry in ``tables``, so a table_index selection is
         # stored as the only table: with the document text fixed, table_index is
         # how the agent scopes the rows it maps to one table of several.
+        #
+        # Not among fragments: when the selected table has the same columns as
+        # another, they are pieces of one table that OCR split and the merge did
+        # not join (the fragmentation warning above), and mapping only one would
+        # drop the others' rows silently. Every table is then kept, and a warning
+        # says the selection did not narrow the mapping.
+        stored = result
+        if (
+            table_index is not None
+            and result.get("tables")
+            and 0 <= table_index < len(result["tables"])
+        ):
+            selected = result["tables"][table_index]
+            fragments = [
+                i
+                for i, t in enumerate(result["tables"])
+                if i != table_index and t.get("columns") == selected.get("columns")
+            ]
+            if fragments:
+                result.setdefault("warnings", []).append(
+                    f"table_index={table_index} did not narrow what map_table_to_schema "
+                    f"maps: table(s) {fragments} have the same columns, so they are "
+                    "fragments of one table and all are kept."
+                )
+            else:
+                stored = {**result, "tables": [selected], "table_count": 1}
+        if result.get("ignored_table_text"):
+            result.setdefault("warnings", []).append(
+                "table_text was not used: this tool parses the document text it "
+                "holds. Call parse_table with no table_text."
+            )
         if agent is not None:
-            stored = result
-            if (
-                table_index is not None
-                and result.get("tables")
-                and 0 <= table_index < len(result["tables"])
-            ):
-                stored = {
-                    **result,
-                    "tables": [result["tables"][table_index]],
-                    "table_count": 1,
-                }
             agent.state.set("last_parse_table_result", stored)
 
         # Record usage stats in agent state for observability
@@ -1246,15 +1268,22 @@ def create_parse_table_tool(
         # "success"/"error". The parser's richer statuses ("no_tables_found")
         # must be folded to "success"/"error" for the RETURN.
         #
-        # But ``result`` is the SAME object already stored in agent state
+        # But ``result`` is usually the SAME object already stored in agent state
         # (``last_parse_table_result``, above), so we must NOT clobber its
         # semantic status in place. Preserve the parser status under
         # ``parser_status`` first, then set the Bedrock-facing ``status``. State
-        # (and the documented contract) thus retains the original meaning.
+        # (and the documented contract) thus retains the original meaning. A
+        # table_index selection stores a narrowed copy instead, which is given the
+        # same fields below.
         parser_status = result.get("status")
         result.setdefault("parser_status", parser_status)
         result["content"] = _compact_content(summary)
         result["status"] = "error" if parser_status == "error" else "success"
+        if stored is not result:
+            # A table_index selection stored a narrowed copy rather than ``result``
+            # itself; give it the same status fields so state keeps the contract.
+            for key in ("parser_status", "content", "status"):
+                stored[key] = result[key]
         return result
 
     parse_table.__doc__ = _PARSE_TABLE_DESCRIPTION.format(

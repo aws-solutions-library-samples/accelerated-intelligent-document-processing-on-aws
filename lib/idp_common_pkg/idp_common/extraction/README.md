@@ -1611,7 +1611,18 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
      warning says how many rows were taken. A one-page table is left as it was,
      because one page cannot tell a short all-text data row from a label row. The
      check runs over the text `parse_table` parses, so on the sharded path a
-     shard holding a single page of the table is not recovered; the whole-section pre-flight parse sees every page
+     shard holding a single page of the table is not recovered; the whole-section
+     pre-flight parse sees every page
+3. **Provides quality metrics and warnings**:
+   - `parse_success_rate`: Ratio of cleanly parsed rows
+   - `avg_confidence`: OCR confidence scores (when available from Textract)
+   - `low_confidence_cells`: Specific cells needing LLM verification
+   - **⚠️ Warnings**: Alert agent to table fragmentation or quality issues
+   - **ℹ️ Info**: Confirm successful gap recovery
+4. **Enables hybrid extraction workflow**:
+   - Agent uses `parse_table` for well-structured tabular data
+   - Falls back to LLM extraction for complex layouts or poor quality
+   - Cross-validates low-confidence cells using multimodal reasoning
 
 **What it parses.** The tool parses the section's own OCR text, `--- PAGE N ---`
 markers included: the extraction service passes the text it built the prompt from
@@ -1624,22 +1635,13 @@ section holds, and a copy that need not match the OCR. The blank-header recovery
 above compares the label rows that open each page, so a copy whose repeated label
 rows drift turns it off and the header rows come back as data (on
 `samples/Nuveen.pdf`, 534 rows for a 532-row table). A tool built without
-`source_text` -- any `structured_output` caller that passes no
-`table_source_text`, such as agentic rules discovery -- parses the `table_text` it
-is given, as before, and then both the tool description and the system prompt tell
-the model to pass the table's Markdown. `text_source` in the result says which
-text was parsed. `table_index` scopes what `map_table_to_schema` maps: the selected
-table is stored as the only one.
-3. **Provides quality metrics and warnings**:
-   - `parse_success_rate`: Ratio of cleanly parsed rows
-   - `avg_confidence`: OCR confidence scores (when available from Textract)
-   - `low_confidence_cells`: Specific cells needing LLM verification
-   - **⚠️ Warnings**: Alert agent to table fragmentation or quality issues
-   - **ℹ️ Info**: Confirm successful gap recovery
-4. **Enables hybrid extraction workflow**:
-   - Agent uses `parse_table` for well-structured tabular data
-   - Falls back to LLM extraction for complex layouts or poor quality
-   - Cross-validates low-confidence cells using multimodal reasoning
+`source_text` -- any `structured_output` caller that passes no `table_source_text`,
+such as agentic rules discovery -- parses the `table_text` it is given, as before,
+and then both the tool description and the system prompt tell the model to pass the
+table's Markdown. `text_source` in the result says which text was parsed.
+`table_index` scopes what `map_table_to_schema` maps: the selected table is stored
+as the only one, unless other tables share its columns: those are fragments of one
+table, and all of them are mapped.
 
 ### How It Works
 
