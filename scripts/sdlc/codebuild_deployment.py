@@ -8558,11 +8558,11 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
     describe_stacks: the main stack deletes through the CFServiceRole the `-iam`
     stack holds, and deleting both in one pass stranded the main stack
     DELETE_FAILED with no role to retry through. Until then the `-iam` stack is
-    deferred to a later run. One held by a main stack that waiting will not
-    resolve (DELETE_FAILED before the retry, or any state other than
-    DELETE_IN_PROGRESS), or whose existence could not be established, is reported
-    with a warning and a count; neither is a sweep finding, since every stack was
-    considered.
+    deferred to a later run. A main stack in any *_IN_PROGRESS state is
+    waited for quietly. One that waiting will not resolve (a terminal state, or
+    DELETE_FAILED before this run's retry), or whose existence could not be
+    established, is reported with a warning and a count; neither is a sweep
+    finding, since every stack was considered.
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
     by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and each
@@ -8802,12 +8802,15 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
         # deleted only once its main stack no longer exists; until then the
         # role stays and the -iam stack is reaped on a later run.
         #
-        # Waiting converges for a main stack that is still deleting. It does not
-        # for one that already failed to delete (DELETE_FAILED in this run's
-        # listing, before tonight's retry): the role is still kept, so the retry
-        # can work, but the pair is reported as a finding, since a main stack
-        # that keeps failing would otherwise pin its roles with no signal.
+        # Waiting converges for a main stack in any *_IN_PROGRESS state (still
+        # deleting, or a deploy still in flight). It does not for a terminal
+        # state: the role is still kept, so a retry can work, and the pair is
+        # printed as a warning with a count -- not returned as a sweep finding,
+        # since the sweep did consider every stack. A main stack that was
+        # DELETE_FAILED in this run's listing was just retried with its role
+        # kept, and gets its own line.
         deferred_iam, stuck_mains, unestablished_mains = [], {}, {}
+        retried_mains = []
         for name in iam_stacks:
             main = name[: -len("-iam")]
             state, detail = _main_stack_state(cf, main)
@@ -8819,14 +8822,14 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
                 continue
             else:
                 deferred_iam.append(name)
-                if detail != "DELETE_IN_PROGRESS":
-                    stuck_mains[main] = detail  # wedged; waiting alone won't do it
-                elif listed_status.get(main) == "DELETE_FAILED":
-                    stuck_mains[main] = "DELETE_FAILED before this retry"
+                if listed_status.get(main) == "DELETE_FAILED":
+                    retried_mains.append(main)
+                elif not str(detail).endswith("_IN_PROGRESS"):
+                    stuck_mains[main] = detail  # terminal; waiting won't do it
                 else:
                     print(
-                        f"[{name}] deferred: its main stack {main} is still "
-                        "deleting, through this stack's service role"
+                        f"[{name}] deferred: its main stack {main} is "
+                        f"{detail}, and may need this stack's service role"
                     )
                 continue
             try:
@@ -8862,14 +8865,21 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
                 "waiting will not resolve; its roles stay until that stack is "
                 "deleted (read its events)"
             )
+        for main in sorted(retried_mains):
+            print(
+                f"  ⚠️ {main}-iam kept: its main stack {main} was DELETE_FAILED "
+                "and has been retried this run with its service role kept; if it "
+                "fails again its roles stay until it is deleted (read its events)"
+            )
         for main, why in sorted(unestablished_mains.items()):
             print(
                 f"  ⚠️ {main}-iam kept: could not establish whether {main} still "
                 f"exists ({why}); keeping the service role, re-checked next run"
             )
-        if stuck_mains or unestablished_mains:
+        if stuck_mains or retried_mains or unestablished_mains:
             print(
                 f"  ({len(stuck_mains)} -iam stack(s) held by a wedged main stack, "
+                f"{len(retried_mains)} by a retried failed delete, "
                 f"{len(unestablished_mains)} by an unanswered existence check)"
             )
         findings = []

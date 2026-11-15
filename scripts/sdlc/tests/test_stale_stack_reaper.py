@@ -600,6 +600,28 @@ def test_a_main_stack_that_already_failed_to_delete_is_warned_not_failed(
     out = capsys.readouterr().out
     assert "idp-0709-211927-iam kept" in out
     assert "DELETE_FAILED" in out
+    assert "retried this run" in out
+    assert "waiting will not resolve" not in out
+
+
+def test_a_main_stack_still_being_deployed_is_waited_for_quietly(
+    cbd, monkeypatch, capsys
+):
+    """A -iam pre-stack is created before its main stack, so it can pass the age
+    gate while the main stack is still CREATE_IN_PROGRESS (which the listing
+    omits). That run is healthy: the role is kept and nothing is warned."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927-iam", old)],
+        statuses={"idp-0709-211927": "CREATE_IN_PROGRESS"},
+    )
+    assert cbd.cleanup_stale_idp_stacks() == []
+    assert fake.deleted == []
+    out = capsys.readouterr().out
+    assert "⚠️" not in out
+    assert "deferred: its main stack idp-0709-211927 is CREATE_IN_PROGRESS" in out
 
 
 def test_a_wedged_main_stack_the_listing_omits_is_warned(cbd, monkeypatch, capsys):
