@@ -1286,6 +1286,9 @@ def create_parse_table_tool(
             result["columns"] = picked[0]["columns"] if picked else []
             result["rows"] = [r for t in picked for r in t.get("rows", [])]
             result["row_count"] = sum(t.get("row_count", 0) for t in picked)
+            # An empty selection keeps the parser's own quality rather than {}: it
+            # still says how well the section parsed, which is what an agent
+            # recovering from a selection that missed needs to know.
             if picked:
                 result["quality"] = _combined_quality(picked)
         elif table_index is not None:
