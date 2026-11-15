@@ -731,7 +731,10 @@ class ExtractionService:
                         "page_start": shard.start,
                         "page_end": shard.end,
                         "total_pages": num_pages,
-                        # Raw (un-rendered) shard text + images, kept so an
+                        # Raw (un-rendered) shard text + images. The text is also what the
+                        # shard's parse_table parses (default_shard_runner passes it as
+                        # table_source_text), so changing it changes the tool's input.
+                        # The images and text are kept so an
                         # in-shard assessment pass (integrated-assessment feature)
                         # can reuse AssessmentService.assess_results over the SAME
                         # pages without re-reading S3. Always page images here (not

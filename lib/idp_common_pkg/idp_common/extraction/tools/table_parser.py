@@ -945,9 +945,9 @@ _HOLDS_TEXT = {
         "        were given and parses all of it, every page, exactly as OCR produced it.\n"
         "        Do not copy the document into table_text -- that is slow, and any\n"
         "        difference between your copy and the OCR can change the result. Use\n"
-        "        table_index to pick one of several genuinely different tables; the\n"
-        "        selection is what map_table_to_schema then maps (fragments of one\n"
-        "        table, with identical columns, are always all mapped)."
+        "        table_index to pick one of several different tables, or table_indices\n"
+        "        to name exactly the tables to map; the selection is what\n"
+        "        map_table_to_schema then maps."
     ),
     "table_text": (
         "Leave empty. The tool parses the document text it holds and\n"
@@ -958,9 +958,9 @@ _NEEDS_TEXT = {
     "lead": (
         "Pass the table's Markdown as table_text (the whole document text, or one\n"
         "        table section of it); the tool detects table boundaries itself. Use\n"
-        "        table_index to pick one of several genuinely different tables; the\n"
-        "        selection is what map_table_to_schema then maps (fragments of one\n"
-        "        table, with identical columns, are always all mapped)."
+        "        table_index to pick one of several different tables, or table_indices\n"
+        "        to name exactly the tables to map; the selection is what\n"
+        "        map_table_to_schema then maps."
     ),
     "table_text": (
         "The text containing Markdown table(s) to parse: the full\n"
@@ -989,7 +989,11 @@ _PARSE_TABLE_DESCRIPTION = """
                 Used for validation - the tool reports matched/missing/extra columns.
             table_index: Optional index to select a specific table when multiple
                 tables are found (0-based). If None, returns the first table at
-                top level with all tables in 'tables' list.
+                top level with all tables in 'tables' list. If other tables have
+                the same columns they may be fragments of one table, so all of
+                them stay mapped; use table_indices to choose exactly.
+            table_indices: Optional list of 0-based table indexes to map, honoured
+                exactly: map_table_to_schema maps those tables and no others.
 
         Returns:
             Dict with parsed data and quality metrics:
@@ -1056,6 +1060,7 @@ def create_parse_table_tool(
         table_text: str = "",
         expected_columns: list[str] | None = None,
         table_index: int | None = None,
+        table_indices: list[int] | None = None,
         agent: Any = None,
     ) -> dict[str, Any]:
         # The docstring is the tool description the model reads, and it depends on
@@ -1070,6 +1075,7 @@ def create_parse_table_tool(
                 "parse_table has no document text to parse and was given no "
                 "table_text. Pass the table's Markdown as table_text."
             )
+            logger.warning("parse_table called with no text to parse")
             return {
                 "status": "error",
                 "parser_status": "error",
@@ -1168,19 +1174,6 @@ def create_parse_table_tool(
             result["row_count"] = selected["row_count"]
             result["quality"] = selected["quality"]
 
-        logger.info(
-            "parse_table tool invoked",
-            extra={
-                "status": result.get("status"),
-                "text_source": text_source,
-                "ignored_table_text": result["ignored_table_text"],
-                "table_count": result.get("table_count", 0),
-                "row_count": result.get("row_count", 0),
-                "quality": result.get("quality", {}),
-                "warnings": result.get("warnings", []),
-            },
-        )
-
         # Store parsed result in agent state for map_table_to_schema tool. That tool
         # maps the rows of every entry in ``tables``, so a table_index selection is
         # stored as the only table: with the document text fixed, table_index is
@@ -1191,8 +1184,27 @@ def create_parse_table_tool(
         # not join (the fragmentation warning above), and mapping only one would
         # drop the others' rows silently. Every table is then kept, and a warning
         # says the selection did not narrow the mapping.
+        #
+        # table_indices is the explicit form, and is honoured exactly: the agent
+        # names every table it wants mapped, so two unrelated tables that happen to
+        # share columns ("Transactions" and "Pending transactions") can be told
+        # apart, and fragments the agent means to keep together can be listed.
         stored = result
-        if selected_index is not None:
+        if table_indices:
+            chosen = [i for i in table_indices if 0 <= i < len(tables_found)]
+            missed = [i for i in table_indices if i not in chosen]
+            if missed:
+                result.setdefault("warnings", []).append(
+                    f"table_indices {missed} select nothing: {len(tables_found)} "
+                    "table(s) were found."
+                )
+            if chosen:
+                stored = {
+                    **result,
+                    "tables": [tables_found[i] for i in chosen],
+                    "table_count": len(chosen),
+                }
+        elif selected_index is not None:
             selected = tables_found[selected_index]
             fragments = [
                 i
@@ -1201,9 +1213,12 @@ def create_parse_table_tool(
             ]
             if fragments:
                 result.setdefault("warnings", []).append(
-                    f"table_index={selected_index} did not narrow what map_table_to_schema "
-                    f"maps: table(s) {fragments} have the same columns, so they are "
-                    "fragments of one table and all are kept."
+                    f"table_index={selected_index} did not narrow what "
+                    f"map_table_to_schema maps: table(s) {fragments} have the same "
+                    "columns, so they may be fragments of one table, and all are "
+                    "kept. If they are different tables, pass table_indices=["
+                    f"{selected_index}] to map only that one (or list every table to "
+                    "map)."
                 )
             else:
                 stored = {**result, "tables": [selected], "table_count": 1}
@@ -1214,6 +1229,22 @@ def create_parse_table_tool(
             )
         if agent is not None:
             agent.state.set("last_parse_table_result", stored)
+
+        # After every warning above, so the log carries the ones this call added.
+        logger.info(
+            "parse_table tool invoked",
+            extra={
+                "status": result.get("status"),
+                "text_source": text_source,
+                "ignored_table_text": result["ignored_table_text"],
+                "table_count": result.get("table_count", 0),
+                "row_count": result.get("row_count", 0),
+                "mapped_table_count": len(stored.get("tables") or []),
+                "quality": result.get("quality", {}),
+                # A copy: the record must say what was true when it was emitted.
+                "warnings": list(result.get("warnings", [])),
+            },
+        )
 
         # Record usage stats in agent state for observability
         if agent is not None:

@@ -499,3 +499,59 @@ def test_the_agent_is_told_in_conversation_that_its_copy_was_not_used():
     result = create_parse_table_tool(source_text=_DOCUMENT)(table_text=_DRIFTED)
     summary = result["content"][0]["json"]
     assert any("table_text was not used" in w for w in summary["warnings"])
+
+
+# -- table_indices: the explicit choice, honoured exactly ---------------------------
+
+
+def test_table_indices_maps_only_the_tables_named_even_with_identical_columns():
+    """Two unrelated tables can share columns ("Transactions" and "Pending
+    transactions"); table_index cannot tell them from fragments, table_indices can."""
+    from idp_common.extraction.tools.table_parser import (
+        create_map_table_to_schema_tool,
+    )
+
+    agent = _Agent()
+    create_parse_table_tool(source_text=_FRAGMENTS, auto_merge_adjacent_tables=False)(
+        table_indices=[1], agent=agent
+    )
+    mapped = create_map_table_to_schema_tool()(
+        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
+    )
+    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["CCCCX"]
+
+
+def test_the_fragment_warning_names_the_way_to_choose_exactly():
+    result = create_parse_table_tool(
+        source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
+    )(table_index=0)
+    warning = next(w for w in result["warnings"] if "did not narrow" in w)
+    assert "table_indices=[0]" in warning
+
+
+def test_table_indices_that_select_nothing_say_so():
+    agent = _Agent()
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_indices=[0, 9], agent=agent
+    )
+    assert any("[9] select nothing" in w for w in result["warnings"])
+    assert len(agent.state.get("last_parse_table_result")["tables"]) == 1
+
+
+# -- observability --------------------------------------------------------------------
+
+
+def test_the_invocation_log_carries_the_warnings_this_call_added(caplog):
+    with caplog.at_level("INFO", logger="idp_common.extraction.tools.table_parser"):
+        create_parse_table_tool(source_text=_DOCUMENT)(table_text=_DRIFTED)
+    record = next(
+        r for r in caplog.records if r.getMessage() == "parse_table tool invoked"
+    )
+    assert record.ignored_table_text is True
+    assert any("table_text was not used" in w for w in record.warnings)
+
+
+def test_a_call_with_nothing_to_parse_is_logged(caplog):
+    with caplog.at_level("WARNING", logger="idp_common.extraction.tools.table_parser"):
+        create_parse_table_tool()()
+    assert any("no text to parse" in r.getMessage() for r in caplog.records)
