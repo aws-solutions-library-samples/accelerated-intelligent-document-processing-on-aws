@@ -401,7 +401,7 @@ class _Agent:
 # Two tables that share column names: the funds this document reports on, and a list
 # of funds closed during the year. map_table_to_schema already drops rows whose
 # mapped columns are all empty, so only an unrelated table sharing column names can
-# leak rows into the array -- the case table_index exists for.
+# leak rows into the array -- the case table_indices exists for.
 _TWO_TABLES = (
     "--- PAGE 1 ---\n"
     "| Fund | Ticker |\n|---|---|\n| A | AAAAX |\n| B | BBBBX |\n\n"
@@ -411,7 +411,9 @@ _TWO_TABLES = (
 
 
 def test_without_a_table_index_every_table_is_mapped():
-    """Non-vacuity for the test above: the fixture really has two tables' rows."""
+    """Non-vacuity for the table_indices tests below: with no selection, the
+    fixture's two tables both map, so a narrowed result there is the selection's
+    doing."""
     from idp_common.extraction.tools.table_parser import (
         create_map_table_to_schema_tool,
     )
@@ -488,8 +490,9 @@ def test_table_indices_maps_only_the_tables_named():
 
 
 def test_table_indices_tells_same_column_tables_apart():
-    """Two unrelated tables can share columns ("Transactions" and "Pending
-    transactions"); the agent names the one it wants."""
+    """With two same-column tables -- unrelated ones ("Transactions" and "Pending
+    transactions") or fragments the merge did not join; this fixture is the
+    latter -- the agent names the one it wants and is warned about the other."""
     agent = _Agent()
     result = create_parse_table_tool(
         source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
@@ -500,8 +503,8 @@ def test_table_indices_tells_same_column_tables_apart():
 
 
 def test_a_repeated_index_maps_that_table_once():
-    """A model emitting [1, 0, 0] must not double table 0's rows -- the over-count
-    this change exists to remove."""
+    """A model emitting [1, 0, 0] must not map table 0's rows twice: each
+    selected table is mapped once."""
     agent = _Agent()
     create_parse_table_tool(source_text=_FRAGMENTS, auto_merge_adjacent_tables=False)(
         table_indices=[1, 0, 0], agent=agent
@@ -564,3 +567,53 @@ def test_a_narrowed_selection_keeps_the_status_contract_in_state():
     assert len(stored["tables"]) == 1
     for key in ("parser_status", "status", "content"):
         assert stored[key] == returned[key], key
+
+
+def test_a_multi_table_selection_reports_the_quality_of_what_it_selected():
+    """The agent compares parse_success_rate with min_parse_success_rate to decide
+    whether to fall back to row-by-row extraction, so the top level must not carry
+    an unselected table's quality."""
+    from idp_common.extraction.tools.table_parser import _combined_quality
+
+    clean = {
+        "row_count": 3,
+        "quality": {
+            "parse_success_rate": 1.0,
+            "total_cells": 6,
+            "empty_cell_count": 0,
+            "consistent_column_count": True,
+        },
+    }
+    rough = {
+        "row_count": 1,
+        "quality": {
+            "parse_success_rate": 0.0,
+            "total_cells": 2,
+            "empty_cell_count": 2,
+            "consistent_column_count": False,
+        },
+    }
+    combined = _combined_quality([clean, rough])
+    assert combined["parse_success_rate"] == pytest.approx(0.75)  # row-weighted
+    assert combined["total_cells"] == 8 and combined["empty_cell_count"] == 2
+    assert combined["empty_cell_ratio"] == pytest.approx(0.25)
+    assert combined["consistent_column_count"] is False
+
+
+def test_the_top_level_quality_is_the_selections_not_table_0s():
+    """Wired through the tool: selecting tables 0 and 1 of the fragments fixture
+    reports a quality computed over both rather than table 0's alone."""
+    result = create_parse_table_tool(
+        source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
+    )(table_indices=[0, 1])
+    t0, t1 = result["tables"][0]["quality"], result["tables"][1]["quality"]
+    assert result["quality"]["total_cells"] == t0["total_cells"] + t1["total_cells"]
+
+
+def test_a_call_with_nothing_to_parse_clears_an_earlier_parse_from_state():
+    """Otherwise map_table_to_schema maps the previous call's rows after this one."""
+    agent = _Agent()
+    tool_fn = create_parse_table_tool()
+    tool_fn(table_text=_TWO_TABLES, agent=agent)
+    tool_fn(agent=agent)
+    assert _tickers(_map(agent)) == []
