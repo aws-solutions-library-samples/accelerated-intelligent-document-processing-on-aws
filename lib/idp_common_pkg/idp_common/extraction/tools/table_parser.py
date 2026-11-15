@@ -935,6 +935,46 @@ def parse_markdown_tables(
         }
 
 
+def _combined_quality(tables: list[dict[str, Any]]) -> dict[str, Any]:
+    """One quality view over several tables, for a table_indices selection.
+
+    Rates are weighted by each table's rows, counts are summed and the empty-cell
+    ratio is recomputed from them, flags hold only if they hold for every table,
+    and lists are concatenated. Any other key keeps the first table's value.
+    """
+    if not tables:
+        return {}
+    if len(tables) == 1:
+        return dict(tables[0].get("quality") or {})
+    weights = [max(t.get("row_count", 0), 0) for t in tables]
+    total = sum(weights) or len(tables)
+    if not sum(weights):
+        weights = [1] * len(tables)
+    qualities = [t.get("quality") or {} for t in tables]
+    combined: dict[str, Any] = {}
+    for key in dict.fromkeys(k for q in qualities for k in q):
+        values = [(q[key], w) for q, w in zip(qualities, weights) if key in q]
+        first = values[0][0]
+        if key in ("empty_cell_count", "total_cells"):
+            combined[key] = sum(v for v, _ in values)
+        elif isinstance(first, bool):
+            combined[key] = all(v for v, _ in values)
+        elif isinstance(first, (int, float)):
+            present = [(v, w) for v, w in values if v is not None]
+            weight = sum(w for _, w in present) or total
+            combined[key] = sum(v * w for v, w in present) / weight
+        elif isinstance(first, list):
+            combined[key] = [item for v, _ in values for item in v]
+        else:
+            combined[key] = first
+    if "total_cells" in combined:
+        cells = combined["total_cells"]
+        combined["empty_cell_ratio"] = (
+            combined.get("empty_cell_count", 0) / cells if cells else 0.0
+        )
+    return combined
+
+
 #: The parse_table tool description (its docstring, which Strands sends as the tool
 #: spec). Two variants, because the instruction depends on whether the tool holds the
 #: section text: telling a model to pass nothing to a tool that holds nothing costs a
@@ -1066,8 +1106,8 @@ def create_parse_table_tool(
         agent: Any = None,
     ) -> dict[str, Any]:
         # The docstring is the tool description the model reads, and it depends on
-        # whether this tool holds the document text; it is set below, before
-        # @tool reads it.
+        # whether this tool holds the document text; it is set below, before the
+        # tool(parse_table) call reads it.
         if source_text:
             text, text_source = source_text, "document_text"
         elif table_text and table_text.strip():
@@ -1078,7 +1118,7 @@ def create_parse_table_tool(
                 "table_text. Pass the table's Markdown as table_text."
             )
             logger.warning("parse_table called with no text to parse")
-            return {
+            error_result = {
                 "status": "error",
                 "parser_status": "error",
                 "content": [{"text": message}],
@@ -1092,6 +1132,11 @@ def create_parse_table_tool(
                 "text_source": None,
                 "ignored_table_text": False,
             }
+            # Overwrite any earlier parse, as every other call does, so
+            # map_table_to_schema cannot map a previous call's rows after this one.
+            if agent is not None:
+                agent.state.set("last_parse_table_result", error_result)
+            return error_result
         result = parse_markdown_tables(
             text=text,
             expected_columns=expected_columns,
@@ -1198,10 +1243,7 @@ def create_parse_table_tool(
             result["columns"] = picked[0]["columns"] if picked else []
             result["rows"] = [r for t in picked for r in t.get("rows", [])]
             result["row_count"] = sum(t.get("row_count", 0) for t in picked)
-            if len(picked) == 1:
-                result["quality"] = picked[0]["quality"]
-            elif not picked:
-                result["quality"] = {}
+            result["quality"] = _combined_quality(picked)
         elif table_index is not None:
             # Promotes one table to the top level for the agent to read; it does
             # not change what map_table_to_schema maps (every table, as before).
@@ -1315,14 +1357,14 @@ def create_parse_table_tool(
         # semantic status in place. Preserve the parser status under
         # ``parser_status`` first, then set the Bedrock-facing ``status``. State
         # (and the documented contract) thus retains the original meaning. A
-        # table_index selection stores a narrowed copy instead, which is given the
-        # same fields below.
+        # table_indices selection stores a narrowed copy instead, which is given
+        # the same fields below.
         parser_status = result.get("status")
         result.setdefault("parser_status", parser_status)
         result["content"] = _compact_content(summary)
         result["status"] = "error" if parser_status == "error" else "success"
         if stored is not result:
-            # A table_index selection stored a narrowed copy rather than ``result``
+            # A table_indices selection stored a narrowed copy rather than ``result``
             # itself; give it the same status fields so state keeps the contract.
             for key in ("parser_status", "content", "status"):
                 stored[key] = result[key]
