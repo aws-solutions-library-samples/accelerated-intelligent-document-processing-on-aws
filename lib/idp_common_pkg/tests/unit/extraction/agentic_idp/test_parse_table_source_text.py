@@ -426,3 +426,53 @@ def test_the_error_result_has_the_documented_shape():
     for key in ("columns", "rows", "row_count", "table_count", "quality", "warnings"):
         assert key in result, key
     assert result["ignored_table_text"] is False
+
+
+# Two fragments of one table that the merge did not join (merging switched off
+# here; in the wild, fragments too far apart), so parse_table reports two tables
+# with identical columns -- the case its fragmentation warning is about.
+_FRAGMENTS = (
+    "--- PAGE 1 ---\n| Fund | Ticker |\n|---|---|\n| A | AAAAX |\n| B | BBBBX |\n\n"
+    "--- PAGE 2 ---\n| Fund | Ticker |\n|---|---|\n| C | CCCCX |\n"
+)
+
+
+def test_a_table_index_on_a_fragment_maps_every_fragment():
+    """Following "pick one table" on a split table must not drop the other
+    fragments' rows; the selection is not applied, and the result says so."""
+    from idp_common.extraction.tools.table_parser import (
+        create_map_table_to_schema_tool,
+    )
+
+    agent = _Agent()
+    parsed = create_parse_table_tool(
+        source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
+    )(table_index=0, agent=agent)
+    assert parsed["table_count"] == 2
+    assert any("did not narrow" in w for w in parsed["warnings"])
+    mapped = create_map_table_to_schema_tool()(
+        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
+    )
+    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["AAAAX", "BBBBX", "CCCCX"]
+
+
+def test_a_narrowed_selection_keeps_the_status_contract_in_state():
+    """State's parser_status/status/content match the returned result, as they do
+    when nothing was narrowed (test_tool_writeback pins that path)."""
+    agent = _Agent()
+    returned = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_index=0, agent=agent
+    )
+    stored = agent.state.get("last_parse_table_result")
+    assert stored is not returned  # the narrowed copy, not the result itself
+    assert len(stored["tables"]) == 1
+    for key in ("parser_status", "status", "content"):
+        assert stored[key] == returned[key], key
+
+
+def test_the_agent_is_told_in_conversation_that_its_copy_was_not_used():
+    """Without this, an agent that sends the text anyway gets no signal and can keep
+    paying output tokens to retype the section on later turns."""
+    result = create_parse_table_tool(source_text=_DOCUMENT)(table_text=_DRIFTED)
+    summary = result["content"][0]["json"]
+    assert any("table_text was not used" in w for w in summary["warnings"])

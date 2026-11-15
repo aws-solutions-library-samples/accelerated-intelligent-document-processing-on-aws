@@ -523,6 +523,11 @@ entries:
     surfaces:
       - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::Agent
       - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::BedrockModel
+      # parse_table is built as tool(parse_table), not @tool, because its description
+      # depends on whether it holds the section text; the census derives that
+      # call as this construct: surface. (@tool(description=...) would derive both
+      # a tool: and a construct: surface for the one tool.)
+      - construct:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool::tool
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.apply_json_patches
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_tool
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_with_confidence_tool
@@ -539,7 +544,6 @@ entries:
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_existing_extraction
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::write_buffer_date
       - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_map_table_to_schema_tool.map_table_to_schema
-      - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool.parse_table
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::create_todo_list
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::update_todo
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::view_todo_list
