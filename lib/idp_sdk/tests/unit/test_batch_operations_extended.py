@@ -2114,3 +2114,49 @@ class TestGetStatusAwaitingReview:
         held = [d for d in status.documents if d.document_id == "b/held.pdf"]
         assert len(held) == 1
         assert held[0].bucket is DocumentBucket.AWAITING_REVIEW
+
+
+@pytest.mark.unit
+@pytest.mark.batch
+class TestSingleDocumentStatusForAHeldDocument:
+    """Results and confidence listings name a held document's status (#2022).
+
+    Both used `if/elif` chains over four bucket names with an UNKNOWN fallthrough,
+    so a document in the awaiting-review bucket read as UNKNOWN.
+    """
+
+    def test_the_status_table_covers_every_bucket(self):
+        from idp_sdk.operations.batch import _SINGLE_DOCUMENT_STATUS_BY_BUCKET
+
+        buckets = [bucket for bucket, _ in _SINGLE_DOCUMENT_STATUS_BY_BUCKET]
+        assert sorted(buckets) == sorted(DocumentBucket)
+        assert len(buckets) == len(set(buckets))
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_get_results_reports_a_held_document_as_held(self, monitor_cls, client, s3):
+        _store_batch(s3, "b", ["b/a.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {"awaiting_review": ["b/a.pdf"]}
+        monitor_cls.return_value = monitor
+
+        document = client.batch.get_results("b")["documents"][0]
+
+        assert document["status"] == "HITL_IN_PROGRESS"
+        assert document["fields"] is None
+
+    @patch("idp_sdk._core.assessment_analyzer.AssessmentAnalyzer")
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_get_confidence_reports_a_held_document_as_held(
+        self, monitor_cls, analyzer_cls, client, s3
+    ):
+        _store_batch(s3, "b", ["b/a.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {"awaiting_review": ["b/a.pdf"]}
+        monitor_cls.return_value = monitor
+        analyzer = Mock()
+        analyzer.get_confidence.return_value = {"attributes": {}}
+        analyzer_cls.return_value = analyzer
+
+        page = client.batch.get_confidence("b")
+
+        assert page["documents"][0]["status"] == "HITL_IN_PROGRESS"

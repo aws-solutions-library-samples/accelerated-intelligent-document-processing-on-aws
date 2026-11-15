@@ -1059,6 +1059,11 @@ really did not reach the pipeline — check the input bucket's EventBridge
 notifications and the queue sender's logs. Set `IDP_NOT_FOUND_GRACE_SECONDS` to
 widen or narrow the window.
 
+⚠️ **This does not apply to [`status`](#status) for a single document**, which
+answers immediately: a document id that is not in the table is reported missing
+straight away rather than after a minute, so a typo or a document whose data
+retention has elapsed does not look like a slow query.
+
 **A document waiting for human review ends the monitor.**
 
 With review queues on (`hitl.enabled: true`), a document that raises a
@@ -1070,11 +1075,6 @@ documents are awaiting review, lists them, and says where to work them: the
 web UI's review queues (**Home > Queues**, or **Review Studio > Review
 Management** for an Admin). Completing or rejecting a review continues the
 document; run `idp-cli status --batch-id <id>` afterwards to see the outcome.
-
-⚠️ **This does not apply to [`status`](#status) for a single document**, which
-answers immediately: a document id that is not in the table is reported missing
-straight away rather than after a minute, so a typo or a document whose data
-retention has elapsed does not look like a slow query.
 
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:

@@ -69,7 +69,7 @@ def test_the_enum_is_not_empty_so_the_parametrised_tests_below_are_not_vacuous()
 class TestThePartition:
     """The bucket sets divide `DocumentState` with no gap and no overlap."""
 
-    def test_the_four_buckets_partition_the_enum(self):
+    def test_the_buckets_partition_the_enum(self):
         """Union equals the enum, and nothing is in two buckets.
 
         This is the assertion a new `DocumentState` member fails on: it lands in no
@@ -86,7 +86,7 @@ class TestThePartition:
         for bucket, members in _DOCUMENT_STATE_BUCKETS.items():
             assert members, f"{bucket} holds no states"
 
-    def test_all_four_bucket_names_are_covered(self):
+    def test_every_bucket_name_is_covered(self):
         """Each `DocumentBucket` has a set, so no bucket is unreachable."""
         assert set(_DOCUMENT_STATE_BUCKETS) == set(DocumentBucket)
 

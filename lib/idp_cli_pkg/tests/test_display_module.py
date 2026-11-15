@@ -1115,7 +1115,9 @@ def test_both_exit_code_paths_agree_on_the_ordinary_single_document_states(
     """
     status_data = _status_data(total=1)
     status_data[bucket] = [_doc(status=status)]
-    stats = _stats(total=1, all_complete=bucket in ("completed", "failed"))
+    stats = _stats(
+        total=1, all_complete=bucket in ("completed", "failed", "awaiting_review")
+    )
 
     from_json, from_summary = _both_codes(status_data, stats)
 
