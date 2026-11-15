@@ -572,7 +572,11 @@ class BatchOperation:
         stats = monitor.calculate_statistics(status_data)
 
         documents = []
-        for category in ["completed", "running", "queued", "failed"]:
+        # Every bucket the monitor fills, derived from the enum so a bucket added
+        # there cannot be dropped here: `awaiting_review` was the one a hand-typed
+        # list would have lost, taking its documents out of `documents` while the
+        # counts still included them.
+        for category in [bucket.value for bucket in DocumentBucket]:
             for doc in status_data.get(category, []):
                 start_time = doc.get("start_time") or None
                 end_time = doc.get("end_time") or None
@@ -612,6 +616,7 @@ class BatchOperation:
             failed=stats.get("failed", 0),
             in_progress=stats.get("running", 0),
             queued=stats.get("queued", 0),
+            awaiting_review=stats.get("awaiting_review", 0),
             success_rate=stats.get("success_rate", 0.0) / 100.0,
             all_complete=stats.get("all_complete", False),
         )

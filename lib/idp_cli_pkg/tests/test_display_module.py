@@ -103,13 +103,16 @@ def _doc(**overrides) -> dict:
     return doc
 
 
-def _status_data(total=0, completed=(), running=(), queued=(), failed=()) -> dict:
+def _status_data(
+    total=0, completed=(), running=(), queued=(), failed=(), awaiting_review=()
+) -> dict:
     return {
         "total": total,
         "completed": list(completed),
         "running": list(running),
         "queued": list(queued),
         "failed": list(failed),
+        "awaiting_review": list(awaiting_review),
     }
 
 
@@ -123,6 +126,7 @@ def _stats(
     success_rate=0.0,
     avg_duration_seconds=0.0,
     all_complete=False,
+    awaiting_review=0,
 ) -> dict:
     return {
         "total": total,
@@ -130,6 +134,7 @@ def _stats(
         "failed": failed,
         "running": running,
         "queued": queued,
+        "awaiting_review": awaiting_review,
         "completion_percentage": completion_percentage,
         "success_rate": success_rate,
         "avg_duration_seconds": avg_duration_seconds,
@@ -203,9 +208,10 @@ def test_status_table_percentages_are_shares_of_the_total():
         "⟳ Running",
         "⏸ Queued",
         "✗ Failed",
+        "◐ Awaiting Review",
     ]
-    assert _cells(table, 1) == ["4", "2", "1", "1"]
-    assert _cells(table, 2) == ["50.0%", "25.0%", "12.5%", "12.5%"]
+    assert _cells(table, 1) == ["4", "2", "1", "1", "0"]
+    assert _cells(table, 2) == ["50.0%", "25.0%", "12.5%", "12.5%", "0.0%"]
 
 
 @pytest.mark.unit
@@ -900,6 +906,7 @@ def test_json_batch_that_finished_cleanly_exits_zero():
         "failed": 0,
         "running": 0,
         "queued": 0,
+        "awaiting_review": 0,
         "completion_percentage": 100.0,
         "success_rate": 100.0,
         "avg_duration_seconds": 11.0,
@@ -1095,7 +1102,7 @@ def _both_codes(status_data, stats) -> tuple[int, int]:
         ("completed", "COMPLETED", 0),
         ("failed", "FAILED", 1),
         ("running", "RUNNING", 2),
-        ("running", "HITL_IN_PROGRESS", 2),
+        ("awaiting_review", "HITL_IN_PROGRESS", 2),
         ("queued", "QUEUED", 2),
     ],
 )
@@ -1312,7 +1319,7 @@ def test_the_status_and_bucket_universes_are_not_empty():
     moved or the enums were renamed.
     """
     assert len(_document_states()) >= 20, _document_states()
-    assert len(_bucket_names()) == 4, _bucket_names()
+    assert len(_bucket_names()) == 5, _bucket_names()
     # The statuses whose bucket is not a function of the string, named so that a
     # rename of any of them fails here rather than quietly leaving the sweep
     # below covering a smaller universe than it claims.
@@ -1331,9 +1338,14 @@ def test_the_display_bucket_order_names_exactly_the_sdk_buckets():
     the agreement is asserted instead.
     """
     assert set(display._BUCKETS_IN_PRECEDENCE_ORDER) == set(_bucket_names())
-    assert len(display._BUCKETS_IN_PRECEDENCE_ORDER) == 4
-    # Precedence, not just membership: a completed document outranks a failed one.
-    assert display._BUCKETS_IN_PRECEDENCE_ORDER[:2] == ("completed", "failed")
+    assert len(display._BUCKETS_IN_PRECEDENCE_ORDER) == 5
+    # Precedence, not just membership: a completed document outranks a failed one,
+    # and an outcome outranks a document still waiting for a reviewer.
+    assert display._BUCKETS_IN_PRECEDENCE_ORDER[:3] == (
+        "completed",
+        "failed",
+        "awaiting_review",
+    )
 
 
 @pytest.mark.unit
@@ -1528,3 +1540,82 @@ def test_failures_table_title_names_rejections():
     )
 
     assert "Rejected / Failed Documents" in _render(table)
+
+
+# ---------------------------------------------------------------------------
+# Documents awaiting human review (#2022)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("failed", "awaiting", "expected"),
+    [
+        (0, 0, 0),
+        (0, 2, 2),
+        (1, 2, 1),
+        (1, 0, 1),
+    ],
+)
+def test_a_settled_batch_with_documents_in_review_does_not_exit_zero(
+    failed, awaiting, expected
+):
+    """0 means every document completed, which a document in review has not.
+
+    A failure is an established outcome whatever the reviewers decide, so it
+    still answers 1; otherwise review pending answers 2, "not established".
+    """
+    total = 4
+    stats = _stats(
+        total=total,
+        completed=total - failed - awaiting,
+        failed=failed,
+        awaiting_review=awaiting,
+        all_complete=True,
+    )
+    status_data = _status_data(total=total)
+
+    assert display.derive_exit_code(status_data, stats) == expected
+    assert _both_codes(status_data, stats) == (expected, expected)
+
+
+@pytest.mark.unit
+def test_the_final_status_line_names_documents_awaiting_review(
+    pinned_display_console,
+):
+    stats = _stats(total=3, completed=1, awaiting_review=2, all_complete=True)
+
+    with pinned_display_console.capture() as capture:
+        display.show_final_status_summary(_status_data(total=3), stats)
+
+    assert "AWAITING REVIEW (2 awaiting review)" in capture.get()
+
+
+@pytest.mark.unit
+def test_the_batch_json_reports_the_awaiting_review_count():
+    stats = _stats(total=3, completed=1, awaiting_review=2, all_complete=True)
+
+    payload = json.loads(display.format_status_json(_status_data(total=3), stats))
+
+    assert payload["awaiting_review"] == 2
+    assert payload["exit_code"] == 2
+
+
+@pytest.mark.unit
+def test_the_status_table_lists_documents_awaiting_review_and_where_to_work_them(
+    pinned_display_console,
+):
+    status_data = _status_data(
+        total=2,
+        completed=[_doc(document_id="a.pdf")],
+        awaiting_review=[_doc(document_id="held.pdf", status="HITL_IN_PROGRESS")],
+    )
+
+    with pinned_display_console.capture() as capture:
+        display.display_status_table(status_data)
+    out = capture.get()
+
+    assert "◐ Awaiting Review" in out
+    assert "1 document(s) awaiting human review" in out
+    assert "held.pdf" in out
+    assert "review queues" in out

@@ -2065,3 +2065,52 @@ class TestBatchListResultSequenceProtocol:
     def test_an_out_of_range_index_still_raises(self):
         with pytest.raises(IndexError):
             self._result()[5]
+
+
+@pytest.mark.unit
+@pytest.mark.batch
+class TestGetStatusAwaitingReview:
+    """A document held for human review is reported, counted and settles the batch.
+
+    `get_status` used to copy four hand-named buckets into `documents`, so a
+    bucket the monitor filled under any other name would vanish from the list
+    while still being in `total` (#2022).
+    """
+
+    @patch("idp_sdk._core.progress_monitor.ProgressMonitor")
+    def test_a_held_document_is_listed_counted_and_bucketed(
+        self, monitor_cls, client, s3
+    ):
+        _store_batch(s3, "b", ["b/a.pdf", "b/held.pdf"])
+        monitor = Mock()
+        monitor.get_batch_status.return_value = {
+            "completed": [{"document_id": "b/a.pdf", "status": "COMPLETED"}],
+            "running": [],
+            "queued": [],
+            "failed": [],
+            "awaiting_review": [
+                {"document_id": "b/held.pdf", "status": "HITL_IN_PROGRESS"}
+            ],
+            "all_complete": True,
+            "total": 2,
+        }
+        monitor.calculate_statistics.return_value = {
+            "total": 2,
+            "completed": 1,
+            "failed": 0,
+            "running": 0,
+            "queued": 0,
+            "awaiting_review": 1,
+            "success_rate": 100.0,
+            "all_complete": True,
+        }
+        monitor_cls.return_value = monitor
+
+        status = client.batch.get_status("b")
+
+        assert status.awaiting_review == 1
+        assert status.all_complete is True
+        assert status.in_progress == 0
+        held = [d for d in status.documents if d.document_id == "b/held.pdf"]
+        assert len(held) == 1
+        assert held[0].bucket is DocumentBucket.AWAITING_REVIEW

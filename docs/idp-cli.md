@@ -1059,6 +1059,18 @@ really did not reach the pipeline — check the input bucket's EventBridge
 notifications and the queue sender's logs. Set `IDP_NOT_FOUND_GRACE_SECONDS` to
 widen or narrow the window.
 
+**A document waiting for human review ends the monitor.**
+
+With review queues on (`hitl.enabled: true`), a document that raises a
+confidence alert ends its first processing run as `HITL_IN_PROGRESS` and waits
+for a reviewer. Nothing more happens to it until someone works it, so
+`--monitor` counts it under **Awaiting Review** rather than **Running**, and
+stops once no document is queued or running. The final summary says how many
+documents are awaiting review, lists them, and says where to work them: the
+web UI's review queues (**Home > Queues**, or **Review Studio > Review
+Management** for an Admin). Completing or rejecting a review continues the
+document; run `idp-cli status --batch-id <id>` afterwards to see the outcome.
+
 ⚠️ **This does not apply to [`status`](#status) for a single document**, which
 answers immediately: a document id that is not in the table is reported missing
 straight away rather than after a minute, so a typo or a document whose data
@@ -1353,7 +1365,13 @@ Processing Time (WorkflowStartTime → CompletionTime):
 The command returns exit codes for scripting:
 - `0` - Document(s) completed successfully
 - `1` - Document(s) failed
-- `2` - Document(s) still processing, or the outcome could not be established
+- `2` - Document(s) still processing, waiting for human review, or the outcome could not be established
+
+`--wait` returns once no document is queued or running, so a batch that is only
+waiting on reviewers ends the wait. It exits `2` rather than `0` in that case,
+because "every document completed" is not yet true; a batch with a failure still
+exits `1`. `--format json` reports the count as `awaiting_review`, and the table
+output's final line reads `AWAITING REVIEW (<n> awaiting review)`.
 
 ⚠️ **`--wait`, the polled table form and `--format json` all derive their code from the
 same place.** A
@@ -1970,9 +1988,11 @@ Monitoring Batch: initial-run
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  Status Summary
  ─────────────────────────────────────
- ✓ Completed      3     100%
- ⏸ Queued         0       0%
- ✗ Failed         0       0%
+ ✓ Completed         3     100%
+ ⟳ Running           0       0%
+ ⏸ Queued            0       0%
+ ✗ Failed            0       0%
+ ◐ Awaiting Review   0       0%
 ```
 
 ---

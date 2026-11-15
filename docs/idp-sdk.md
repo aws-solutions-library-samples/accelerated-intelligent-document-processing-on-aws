@@ -496,10 +496,11 @@ Get processing status for all documents in a batch.
 - `batch_id` (str, required): Batch identifier
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `success_rate`, and `all_complete`
+**Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `awaiting_review`, `success_rate`, and `all_complete`
 
 ⚠️ **`all_complete` is the only correct thing to poll on.** It is
-`completed + failed == total`, and it is what accounts for a document that has
+`completed + failed + awaiting_review == total` — true once no document is
+queued or running — and it is what accounts for a document that has
 been accepted but has no tracking row yet — the row is written asynchronously by
 the queue sender, so for the first 60 seconds of a batch such a document is
 reported under `queued` rather than `failed`. Re-deriving completeness from the
@@ -510,12 +511,23 @@ fixed. Past that window a document with no row is reported as failed with
 `Document not found in tracking table`; `IDP_NOT_FOUND_GRACE_SECONDS` sets the
 window.
 
+**A document waiting for human review settles the batch without completing it.**
+With review queues on, a document that raises a confidence alert ends its first
+processing run as `HITL_IN_PROGRESS` and stays there until a reviewer completes
+or rejects it in the web UI's review queues. `get_status` counts it in
+`awaiting_review` (bucket `awaiting_review`), not in `in_progress`, and
+`all_complete` treats it as settled, so a polling loop ends rather than waiting
+on a person. `all_complete` is therefore not "every document has an outcome":
+check `awaiting_review` before treating the batch's results as final, and poll
+again after the reviews to see each document's outcome. `success_rate` is over
+completed and failed documents only.
+
 ⚠️ **Read a document's progress bucket from `doc.bucket`, not from
 `doc.status`.** `NOT_FOUND` is the one status whose bucket is not a function of
 the status: inside the window it means "queued", past it "failed", and the
 status string is the same either way, so code that derives a bucket from the
 status counts an in-flight document as a failure. `bucket` is one of `queued`,
-`running`, `completed` or `failed`, and `get_status` sets it on every document
+`running`, `completed`, `failed` or `awaiting_review`, and `get_status` sets it on every document
 it returns. It is `Optional`, because `DocumentStatus` has other producers that
 record no bucket; fall back to `idp_sdk.classify_document_state(doc.status)`
 when it is `None`.
