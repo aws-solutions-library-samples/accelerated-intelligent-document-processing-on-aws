@@ -1097,6 +1097,12 @@ def create_parse_table_tool(
     table's header rows come back as data (seen on Nuveen.pdf: 534 rows for a
     532-row table, with the same OCR parsed to 532 when given directly).
 
+    This deliberately removes one route: with the text held, the agent cannot have
+    the parser read Markdown it rebuilt itself (say from view_image, for a page whose
+    OCR table is malformed). Honouring an agent-supplied table on request would
+    reopen the drift above for every call that uses it, so those rows go through
+    extraction_tool / apply_json_patches instead, scoped to the affected rows.
+
     The tool also records usage statistics in the agent's state under the key
     ``table_parsing_stats`` so that the extraction service can include them in
     the result metadata for observability, for every call that parsed text (a call
@@ -1263,6 +1269,13 @@ def create_parse_table_tool(
                     "and are not mapped; if they are fragments of it, add them to "
                     "table_indices."
                 )
+            if len({tuple(p.get("columns", [])) for p in picked}) > 1:
+                result.setdefault("warnings", []).append(
+                    "the selected tables have different columns; columns and "
+                    "map_table_to_schema use the first selected table's, so a "
+                    "column only another one has cannot be mapped. Map them in "
+                    "separate calls."
+                )
             if table_index is not None:
                 result.setdefault("warnings", []).append(
                     "table_index was ignored because table_indices was given."
@@ -1273,7 +1286,8 @@ def create_parse_table_tool(
             result["columns"] = picked[0]["columns"] if picked else []
             result["rows"] = [r for t in picked for r in t.get("rows", [])]
             result["row_count"] = sum(t.get("row_count", 0) for t in picked)
-            result["quality"] = _combined_quality(picked)
+            if picked:
+                result["quality"] = _combined_quality(picked)
         elif table_index is not None:
             # Promotes one table to the top level for the agent to read; it does
             # not change what map_table_to_schema maps (every table, as before).

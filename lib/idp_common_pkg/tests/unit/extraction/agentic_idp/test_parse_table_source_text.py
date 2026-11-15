@@ -679,3 +679,46 @@ def test_a_confidence_one_table_lacks_does_not_hide_the_others():
 def test_the_system_prompt_names_table_indices():
     assert "table_indices" in agentic_idp.PARSE_TABLE_STEP_HOLDS_TEXT
     assert "table_indices" in agentic_idp.PARSE_TABLE_STEP_NEEDS_TEXT
+
+
+def test_the_preflight_block_names_table_indices_only_for_several_tables():
+    """It is the instruction that drives the table workflow; one table needs no
+    choice, so its wording (pinned in test_shard_payloads) stays as it was."""
+    from idp_common.extraction.service import ExtractionService
+
+    def block(count) -> str:
+        out = ExtractionService._append_preflight_table_guidance(
+            None,
+            {
+                "status": "success",
+                "table_count": count,
+                "tables": [{"row_count": 5}] * count,
+                "columns": ["Fund"],
+            },
+        )
+        assert out is not None
+        return out
+
+    assert "table_indices" in block(2)
+    assert "table_indices" not in block(1)
+
+
+@pytest.mark.parametrize("strength", ["MANDATORY", "STRONGLY_RECOMMENDED"])
+def test_the_large_table_guidance_names_table_indices(strength):
+    svc = _service(table_parsing={"enabled": True})
+    text = svc._build_table_parsing_guidance(
+        {"recommendation_strength": strength},
+        {"recommendation_strength": strength, "estimated_row_count": 532},
+    )
+    assert "table_indices" in text
+
+
+def test_selecting_tables_with_different_columns_warns():
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[0, 1])
+    assert any("different columns" in w for w in result["warnings"])
+
+
+def test_an_empty_selection_keeps_the_parsers_quality():
+    unselected = create_parse_table_tool(source_text=_TWO_TABLES)()["quality"]
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[])
+    assert result["quality"] == unselected
