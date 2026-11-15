@@ -1297,6 +1297,12 @@ def create_parse_table_tool(
                 result["rows"] = selected["rows"]
                 result["row_count"] = selected["row_count"]
                 result["quality"] = selected["quality"]
+                if len(tables_found) > 1:
+                    result.setdefault("warnings", []).append(
+                        f"table_index={table_index} only chooses the table shown "
+                        f"here; all {len(tables_found)} tables will be mapped. Pass "
+                        f"table_indices=[{table_index}] to map just this one."
+                    )
             else:
                 result.setdefault("warnings", []).append(
                     f"table_index={table_index} selects nothing: "
