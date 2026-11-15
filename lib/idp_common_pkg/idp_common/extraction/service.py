@@ -805,7 +805,7 @@ class ExtractionService:
 
     # Scope note for SHARDED agents ONLY (passed via `scope_note=` below). The
     # block itself is written for an agent holding the whole section, and two of
-    # its sentences read wrong from inside a shard:
+    # its sentences read differently from inside a shard:
     #
     #  * "extract ONLY your pages' values" — a shard's text is ALREADY only its
     #    pages, and every shard after the first is prefixed with a
@@ -898,8 +898,9 @@ class ExtractionService:
             f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
             f"markers between pages. When you are assigned a page range, "
             f"extract ONLY your pages' values.\n\n"
-            # Empty unless a caller passes scope_note, so the single-agent
-            # path's text is unchanged (pinned byte-for-byte by a unit test).
+            # Empty unless a caller passes scope_note, so the single-agent path
+            # gets the block unqualified; the wording is pinned byte-for-byte by
+            # a unit test.
             f"{scope_paragraph}"
             f"EFFICIENT EXTRACTION WORKFLOW:\n"
             f"1. Extract scalar fields from your pages' text\n"

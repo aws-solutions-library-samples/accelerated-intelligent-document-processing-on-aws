@@ -1640,8 +1640,11 @@ such as agentic rules discovery -- parses the `table_text` it is given, as befor
 and then both the tool description and the system prompt tell the model to pass the
 table's Markdown. `text_source` in the result says which text was parsed.
 `table_index` scopes what `map_table_to_schema` maps: the selected table is stored
-as the only one, unless other tables share its columns: those are fragments of one
-table, and all of them are mapped.
+as the only one, unless other tables share its columns: those may be fragments of one
+table, and all of them are mapped. `table_indices` names exactly the tables to map
+(each once, in document order; a list that selects nothing maps nothing) and takes
+precedence over `table_index`, so two unrelated tables that share columns can be told
+apart.
 
 ### How It Works
 

@@ -993,7 +993,9 @@ _PARSE_TABLE_DESCRIPTION = """
                 the same columns they may be fragments of one table, so all of
                 them stay mapped; use table_indices to choose exactly.
             table_indices: Optional list of 0-based table indexes to map, honoured
-                exactly: map_table_to_schema maps those tables and no others.
+                exactly: map_table_to_schema maps those tables and no others (a list
+                that selects nothing maps nothing). Takes precedence over
+                table_index.
 
         Returns:
             Dict with parsed data and quality metrics:
@@ -1010,6 +1012,7 @@ _PARSE_TABLE_DESCRIPTION = """
             - warnings: list of any parsing issues encountered
             - tables: list of all parsed tables (when multiple found)
             - text_source: "document_text" or "table_text", whichever was parsed
+              (null when there was nothing to parse)
             - ignored_table_text: true when table_text was sent and not used
         """
 
@@ -1036,7 +1039,8 @@ def create_parse_table_tool(
 
     The tool also records usage statistics in the agent's state under the key
     ``table_parsing_stats`` so that the extraction service can include them in
-    the result metadata for observability.
+    the result metadata for observability, for every call that parsed text (a call
+    with nothing to parse returns an error and is logged instead).
 
     Args:
         confidence_data_by_page: Optional dict mapping page IDs to confidence data strings.
@@ -1162,7 +1166,14 @@ def create_parse_table_tool(
             if table_index is not None and 0 <= table_index < len(tables_found)
             else None
         )
-        if table_index is not None and selected_index is None:
+        if table_indices and table_index is not None:
+            # table_indices decides what is mapped, so the top level must not
+            # describe a table chosen some other way.
+            result.setdefault("warnings", []).append(
+                "table_index was ignored because table_indices was given."
+            )
+            selected_index = None
+        elif table_index is not None and selected_index is None:
             result.setdefault("warnings", []).append(
                 f"table_index={table_index} selects nothing: {len(tables_found)} "
                 "table(s) were found, so nothing was narrowed."
@@ -1191,19 +1202,22 @@ def create_parse_table_tool(
         # apart, and fragments the agent means to keep together can be listed.
         stored = result
         if table_indices:
-            chosen = [i for i in table_indices if 0 <= i < len(tables_found)]
-            missed = [i for i in table_indices if i not in chosen]
+            # Each table once, in document order: map_table_to_schema maps every
+            # entry, so a repeated index would map that table's rows twice.
+            chosen = sorted({i for i in table_indices if 0 <= i < len(tables_found)})
+            missed = sorted({i for i in table_indices if i not in chosen})
             if missed:
                 result.setdefault("warnings", []).append(
                     f"table_indices {missed} select nothing: {len(tables_found)} "
                     "table(s) were found."
                 )
-            if chosen:
-                stored = {
-                    **result,
-                    "tables": [tables_found[i] for i in chosen],
-                    "table_count": len(chosen),
-                }
+            # Honoured exactly, so a list that selects nothing maps nothing rather
+            # than falling back to every table.
+            stored = {
+                **result,
+                "tables": [tables_found[i] for i in chosen],
+                "table_count": len(chosen),
+            }
         elif selected_index is not None:
             selected = tables_found[selected_index]
             fragments = [
