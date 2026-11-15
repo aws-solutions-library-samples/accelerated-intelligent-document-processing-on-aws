@@ -7,11 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Fixed
 
-- **Agentic table extraction no longer counts a table's header rows as data on some runs.** `parse_table` now parses the section's own OCR text instead of a copy the agent writes into the call, so a multi-page table whose OCR puts its column labels below a blank header row is parsed the same way on every run (the copy could differ from the OCR and turn the header recovery off), and the agent no longer spends output tokens reproducing the document. See [Extraction & Confidence](docs/extraction-and-confidence.md).
-
-### Changed
-
-- **`parse_table`'s `table_index` now scopes what `map_table_to_schema` maps.** Previously every table `parse_table` found was mapped whatever `table_index` said; now only the selected table is, unless other tables have the same columns (they may be fragments of one table, so all are kept, with a warning). A new `table_indices` argument names exactly the tables to map. An agentic extraction that passed `table_index` on a section with several tables can return fewer rows than before. See the [extraction module README](lib/idp_common_pkg/idp_common/extraction/README.md#table-parsing-tool).
+- **Agentic table extraction no longer counts a table's header rows as data on some runs.** `parse_table` now parses the section's own OCR text instead of a copy the agent writes into the call, so a multi-page table whose OCR puts its column labels below a blank header row is parsed the same way on every run (the copy could differ from the OCR and turn the header recovery off), and the agent no longer spends output tokens reproducing the document. Since the agent can no longer scope the parse by passing a slice of the text, a new `table_indices` argument names exactly which tables are mapped. See [Extraction & Confidence](docs/extraction-and-confidence.md).
 
 ## [0.6.15]
 

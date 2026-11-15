@@ -1639,12 +1639,16 @@ rows drift turns it off and the header rows come back as data (on
 such as agentic rules discovery -- parses the `table_text` it is given, as before,
 and then both the tool description and the system prompt tell the model to pass the
 table's Markdown. `text_source` in the result says which text was parsed.
-`table_index` scopes what `map_table_to_schema` maps: the selected table is stored
-as the only one, unless other tables share its columns: those may be fragments of one
-table, and all of them are mapped. `table_indices` names exactly the tables to map
-(each once, in document order; a list that selects nothing maps nothing) and takes
-precedence over `table_index`, so two unrelated tables that share columns can be told
-apart.
+Because the agent can no longer scope the parse by passing a slice of the text,
+`table_indices` names exactly the tables `map_table_to_schema` maps (each once, in
+document order; a list that selects nothing maps nothing), and the result's top
+level and summary then describe just those tables. Same-column tables left out of
+the selection are named in a warning, since they may be fragments of a selected
+one. `table_index` only chooses which table the top level shows, as before; it
+does not change what is mapped. To have the parser read Markdown the agent
+reconstructed itself (after `view_image` on a page whose OCR table is malformed),
+use `parse_table` without `table_text` for the rest and enter those rows with
+`extraction_tool` or `apply_json_patches`.
 
 ### How It Works
 

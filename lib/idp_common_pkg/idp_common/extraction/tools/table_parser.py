@@ -945,9 +945,8 @@ _HOLDS_TEXT = {
         "        were given and parses all of it, every page, exactly as OCR produced it.\n"
         "        Do not copy the document into table_text -- that is slow, and any\n"
         "        difference between your copy and the OCR can change the result. Use\n"
-        "        table_index to pick one of several different tables, or table_indices\n"
-        "        to name exactly the tables to map; the selection is what\n"
-        "        map_table_to_schema then maps."
+        "        table_indices to name exactly the tables map_table_to_schema maps\n"
+        "        when several are found (the result then describes just those)."
     ),
     "table_text": (
         "Leave empty. The tool parses the document text it holds and\n"
@@ -958,9 +957,8 @@ _NEEDS_TEXT = {
     "lead": (
         "Pass the table's Markdown as table_text (the whole document text, or one\n"
         "        table section of it); the tool detects table boundaries itself. Use\n"
-        "        table_index to pick one of several different tables, or table_indices\n"
-        "        to name exactly the tables to map; the selection is what\n"
-        "        map_table_to_schema then maps."
+        "        table_indices to name exactly the tables map_table_to_schema maps\n"
+        "        when several are found (the result then describes just those)."
     ),
     "table_text": (
         "The text containing Markdown table(s) to parse: the full\n"
@@ -987,15 +985,13 @@ _PARSE_TABLE_DESCRIPTION = """
             table_text: {table_text}
             expected_columns: Optional list of column names you expect in the table.
                 Used for validation - the tool reports matched/missing/extra columns.
-            table_index: Optional index to select a specific table when multiple
-                tables are found (0-based). If None, returns the first table at
-                top level with all tables in 'tables' list. If other tables have
-                the same columns they may be fragments of one table, so all of
-                them stay mapped; use table_indices to choose exactly.
+            table_index: Optional index of a table to show at the top level when
+                multiple tables are found (0-based). It does not change what
+                map_table_to_schema maps; use table_indices for that.
             table_indices: Optional list of 0-based table indexes to map, honoured
-                exactly: map_table_to_schema maps those tables and no others (a list
-                that selects nothing maps nothing). Takes precedence over
-                table_index.
+                exactly: map_table_to_schema maps those tables and no others, and
+                the result's top level describes them (a list that selects nothing
+                maps nothing). Takes precedence over table_index.
 
         Returns:
             Dict with parsed data and quality metrics:
@@ -1011,6 +1007,8 @@ _PARSE_TABLE_DESCRIPTION = """
             - quality: dict with parse_success_rate, avg_confidence (if available), etc.
             - warnings: list of any parsing issues encountered
             - tables: list of all parsed tables (when multiple found)
+            - mapped_table_indices: the tables map_table_to_schema will map, when
+              table_indices was given
             - text_source: "document_text" or "table_text", whichever was parsed
               (null when there was nothing to parse)
             - ignored_table_text: true when table_text was sent and not used
@@ -1158,52 +1156,18 @@ def create_parse_table_tool(
             # Update warnings in result
             result["warnings"] = warnings
 
-        # If a specific table was requested, promote it to top level
         tables_found = result.get("tables") or []
-        # The requested index when it selects a table, else None.
-        selected_index: int | None = (
-            table_index
-            if table_index is not None and 0 <= table_index < len(tables_found)
-            else None
-        )
-        if table_indices and table_index is not None:
-            # table_indices decides what is mapped, so the top level must not
-            # describe a table chosen some other way.
-            result.setdefault("warnings", []).append(
-                "table_index was ignored because table_indices was given."
-            )
-            selected_index = None
-        elif table_index is not None and selected_index is None:
-            result.setdefault("warnings", []).append(
-                f"table_index={table_index} selects nothing: {len(tables_found)} "
-                "table(s) were found, so nothing was narrowed."
-            )
-        if selected_index is not None:
-            selected = tables_found[selected_index]
-            result["columns"] = selected["columns"]
-            result["rows"] = selected["rows"]
-            result["row_count"] = selected["row_count"]
-            result["quality"] = selected["quality"]
 
-        # Store parsed result in agent state for map_table_to_schema tool. That tool
-        # maps the rows of every entry in ``tables``, so a table_index selection is
-        # stored as the only table: with the document text fixed, table_index is
-        # how the agent scopes the rows it maps to one table of several.
-        #
-        # Not among fragments: when the selected table has the same columns as
-        # another, they are pieces of one table that OCR split and the merge did
-        # not join (the fragmentation warning above), and mapping only one would
-        # drop the others' rows silently. Every table is then kept, and a warning
-        # says the selection did not narrow the mapping.
-        #
-        # table_indices is the explicit form, and is honoured exactly: the agent
-        # names every table it wants mapped, so two unrelated tables that happen to
-        # share columns ("Transactions" and "Pending transactions") can be told
-        # apart, and fragments the agent means to keep together can be listed.
-        stored = result
-        if table_indices:
-            # Each table once, in document order: map_table_to_schema maps every
-            # entry, so a repeated index would map that table's rows twice.
+        # table_indices scopes what map_table_to_schema maps, and is honoured
+        # exactly. It is the only way to do so now that the agent cannot scope the
+        # parse by passing a slice of the text: the tool parses the document text
+        # it holds. Each table counts once, in document order (map_table_to_schema
+        # maps every entry, so a repeated index would map its rows twice), and a
+        # selection of nothing maps nothing. The result's top level and the summary
+        # the agent reads describe the selection, so it builds its column mapping
+        # and checks its row count against the tables that will be mapped.
+        chosen: list[int] | None = None
+        if table_indices is not None:
             chosen = sorted({i for i in table_indices if 0 <= i < len(tables_found)})
             missed = sorted({i for i in table_indices if i not in chosen})
             if missed:
@@ -1211,31 +1175,58 @@ def create_parse_table_tool(
                     f"table_indices {missed} select nothing: {len(tables_found)} "
                     "table(s) were found."
                 )
-            # Honoured exactly, so a list that selects nothing maps nothing rather
-            # than falling back to every table.
+            picked = [tables_found[i] for i in chosen]
+            # Tables left out that have the same columns as a picked one may be
+            # fragments of it that the merge did not join.
+            left_out = [
+                i
+                for i, t in enumerate(tables_found)
+                if i not in chosen
+                and any(t.get("columns") == p.get("columns") for p in picked)
+            ]
+            if left_out:
+                result.setdefault("warnings", []).append(
+                    f"table(s) {left_out} have the same columns as a selected table "
+                    "and are not mapped; if they are fragments of it, add them to "
+                    "table_indices."
+                )
+            if table_index is not None:
+                result.setdefault("warnings", []).append(
+                    "table_index was ignored because table_indices was given."
+                )
+            result["mapped_table_indices"] = chosen
+            result["columns"] = picked[0]["columns"] if picked else []
+            result["rows"] = [r for t in picked for r in t.get("rows", [])]
+            result["row_count"] = sum(t.get("row_count", 0) for t in picked)
+            if len(picked) == 1:
+                result["quality"] = picked[0]["quality"]
+            elif not picked:
+                result["quality"] = {}
+        elif table_index is not None:
+            # Promotes one table to the top level for the agent to read; it does
+            # not change what map_table_to_schema maps (every table, as before).
+            if 0 <= table_index < len(tables_found):
+                selected = tables_found[table_index]
+                result["columns"] = selected["columns"]
+                result["rows"] = selected["rows"]
+                result["row_count"] = selected["row_count"]
+                result["quality"] = selected["quality"]
+            else:
+                result.setdefault("warnings", []).append(
+                    f"table_index={table_index} selects nothing: "
+                    f"{len(tables_found)} table(s) were found."
+                )
+
+        # Store parsed result in agent state for map_table_to_schema, which maps
+        # the rows of every entry in ``tables``: a table_indices selection is stored
+        # as a copy holding only the chosen tables.
+        stored = result
+        if chosen is not None:
             stored = {
                 **result,
                 "tables": [tables_found[i] for i in chosen],
                 "table_count": len(chosen),
             }
-        elif selected_index is not None:
-            selected = tables_found[selected_index]
-            fragments = [
-                i
-                for i, t in enumerate(result["tables"])
-                if i != selected_index and t.get("columns") == selected.get("columns")
-            ]
-            if fragments:
-                result.setdefault("warnings", []).append(
-                    f"table_index={selected_index} did not narrow what "
-                    f"map_table_to_schema maps: table(s) {fragments} have the same "
-                    "columns, so they may be fragments of one table, and all are "
-                    "kept. If they are different tables, pass table_indices=["
-                    f"{selected_index}] to map only that one (or list every table to "
-                    "map)."
-                )
-            else:
-                stored = {**result, "tables": [selected], "table_count": 1}
         if result.get("ignored_table_text"):
             result.setdefault("warnings", []).append(
                 "table_text was not used: this tool parses the document text it "
@@ -1253,7 +1244,7 @@ def create_parse_table_tool(
                 "ignored_table_text": result["ignored_table_text"],
                 "table_count": result.get("table_count", 0),
                 "row_count": result.get("row_count", 0),
-                "mapped_table_count": len(stored.get("tables") or []),
+                "mapped_table_indices": result.get("mapped_table_indices"),
                 "quality": result.get("quality", {}),
                 # A copy: the record must say what was true when it was emitted.
                 "warnings": list(result.get("warnings", [])),
@@ -1304,6 +1295,8 @@ def create_parse_table_tool(
             "warnings": result.get("warnings", []),
             **visible_rows,
         }
+        if "mapped_table_indices" in result:
+            summary["mapped_table_indices"] = result["mapped_table_indices"]
 
         # Return dict carries BOTH the compact ``content`` (what Strands re-sends
         # to the model every turn) AND the full top-level keys (rows/tables/...)
