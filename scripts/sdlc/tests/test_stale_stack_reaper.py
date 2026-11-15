@@ -33,7 +33,8 @@ class _FakeCfn:
     them: a stack whose delete was just issued is still DELETE_IN_PROGRESS (a
     delete_stack call only starts the delete), a listed stack exists, and any
     other name does not. ``in_progress`` adds stacks that exist but are left out
-    of the reaper's listing, as DELETE_IN_PROGRESS ones are."""
+    of the reaper's listing, as DELETE_IN_PROGRESS ones are; ``statuses`` answers
+    a name with a given status ahead of all of that."""
 
     def __init__(self, summaries, in_progress=(), statuses=None):
         self._summaries = summaries
@@ -634,11 +635,38 @@ def test_a_wedged_main_stack_the_listing_omits_is_warned(cbd, monkeypatch, capsy
         [_summary("idp-0709-211927-iam", old)],
         statuses={"idp-0709-211927": "UPDATE_ROLLBACK_FAILED"},
     )
-    assert cbd.cleanup_stale_idp_stacks() == []
+    abandoned = []
+    assert cbd.cleanup_stale_idp_stacks(abandoned=abandoned) == []
     assert fake.deleted == []
     out = capsys.readouterr().out
     assert "idp-0709-211927-iam kept" in out
     assert "UPDATE_ROLLBACK_FAILED" in out
+    # Said again in the run's summary, since nobody reads every ⚠️ in a log.
+    assert len(abandoned) == 1 and "UPDATE_ROLLBACK_FAILED" in abandoned[0]
+
+
+def test_a_failed_main_stack_not_retried_is_not_called_retried(
+    cbd, monkeypatch, capsys
+):
+    """ "Retried this run" must mean a delete was issued: a DELETE_FAILED main
+    stack still inside the age gate is not deleted, so its -iam stack (created
+    first, and stale) is held by a stack waiting will not resolve."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    young = _summary("idp-0709-211927", cbd.IDP_STACK_STALE_AGE_SECONDS - 60)
+    young["StackStatus"] = "DELETE_FAILED"
+    fake = _install(
+        cbd,
+        monkeypatch,
+        [young, _summary("idp-0709-211927-iam", old)],
+        statuses={"idp-0709-211927": "DELETE_FAILED"},
+    )
+    abandoned = []
+    assert cbd.cleanup_stale_idp_stacks(abandoned=abandoned) == []
+    assert fake.deleted == []
+    out = capsys.readouterr().out
+    assert "retried this run" not in out
+    assert "DELETE_FAILED, which waiting will not resolve" in out
+    assert len(abandoned) == 1
 
 
 def test_a_main_stack_still_deleting_is_not_a_finding(cbd, monkeypatch):

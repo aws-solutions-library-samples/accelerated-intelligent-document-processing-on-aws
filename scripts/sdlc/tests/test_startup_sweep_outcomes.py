@@ -200,10 +200,10 @@ class _FakeAws:
     def describe_stacks(self, StackName):  # noqa: N803 - boto3 casing
         """CloudFormation's answer BY NAME, recorded for the cases that expect none.
 
-        A stack this run issued delete_stack for answers DELETE_IN_PROGRESS,
-        since a delete_stack call only starts the delete. Any other name answers
-        with its entry in `stacks`, and a name with none (or DELETE_COMPLETE) is
-        not described: CloudFormation raises the error a stack that never
+        A name with an entry in `stacks` answers with it, first. Otherwise a
+        stack this run issued delete_stack for answers DELETE_IN_PROGRESS, since
+        a delete_stack call only starts the delete. A name with neither (or
+        whose entry is DELETE_COMPLETE) is not described: CloudFormation raises the error a stack that never
         existed raises.
         """
         self._check("describe_stacks")
@@ -3074,7 +3074,7 @@ def test_no_run_prefix_only_sweep_reaps_a_long_lived_name_with_no_run_live(
     findings = _run(cbd, sweep)
 
     assert findings == [], findings
-    assert sorted(aws.deleted) == sorted(_reaped_of(sweep, DEAD_RUN)), (
+    assert sorted(aws.deleted) == sorted(dead), (
         f"{sweep} deleted {aws.deleted}; expected exactly the dead run's {dead}"
     )
     assert aws.described == [], aws.described
@@ -3112,7 +3112,7 @@ def test_a_long_lived_name_never_reaches_a_run_prefix_only_sweeps_age_gate(
     findings = _run(cbd, sweep)
 
     assert findings == [], findings
-    assert sorted(aws.deleted) == sorted(_reaped_of(sweep, DEAD_RUN)), aws.deleted
+    assert sorted(aws.deleted) == sorted(dead), aws.deleted
     out = capsys.readouterr().out
     assert "age not establishable" not in out, (
         f"{sweep} asked its age gate about a long-lived stack's names: {out}"
