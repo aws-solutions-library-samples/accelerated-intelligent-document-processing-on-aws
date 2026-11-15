@@ -8531,6 +8531,20 @@ def _main_stack_state(cf, name: str):
     return ("exists", live[0]) if live else ("gone", None)
 
 
+def _main_stack_converges(status: str) -> bool:
+    """Whether a main stack in ``status`` resolves without a person.
+
+    A *_IN_PROGRESS stack is still deploying or deleting. A *_COMPLETE one (a
+    run inside the age gate, or one whose age could not be established) is in
+    the listing and is deleted by a later run's age gate. Neither warrants a
+    warning. REVIEW_IN_PROGRESS (a change set nobody executes) and every
+    *_FAILED state stay where they are, so those are reported.
+    """
+    if status == "REVIEW_IN_PROGRESS" or status.endswith("_FAILED"):
+        return False
+    return status.endswith("_IN_PROGRESS") or status.endswith("_COMPLETE")
+
+
 def cleanup_stale_idp_stacks(terraform_runs=None, abandoned: list | None = None):
     """Reap OLD leftover idp- test stacks so their IAM roles don't leak (defense in depth).
 
@@ -8825,13 +8839,13 @@ def cleanup_stale_idp_stacks(terraform_runs=None, abandoned: list | None = None)
                     unestablished_mains[main] = detail
                 elif main in issued and listed_status.get(main) == "DELETE_FAILED":
                     retried_mains.append(main)
-                elif not str(detail).endswith("_IN_PROGRESS"):
-                    stuck_mains[main] = detail  # terminal; waiting won't do it
-                else:
+                elif _main_stack_converges(str(detail)):
                     print(
                         f"[{name}] deferred: its main stack {main} is "
                         f"{detail}, and may need this stack's service role"
                     )
+                else:
+                    stuck_mains[main] = detail  # waiting won't do it
                 continue
             try:
                 print(f"[{name}] reaping stale idp- stack...")
@@ -8890,6 +8904,12 @@ def cleanup_stale_idp_stacks(terraform_runs=None, abandoned: list | None = None)
                 f"{main}-iam kept: its main stack {main} is {status} "
                 "(delete it, then the -iam stack goes on a later run)"
                 for main, status in sorted(stuck_mains.items())
+            )
+            abandoned.extend(
+                f"{main}-iam kept: its main stack {main} was DELETE_FAILED and a "
+                "delete was retried this run; if this note recurs, the retry is "
+                "failing too (read its events)"
+                for main in sorted(retried_mains)
             )
             abandoned.extend(
                 f"{main}-iam kept: could not establish whether {main} exists ({why})"
@@ -9208,8 +9228,9 @@ def cleanup_stale_idp_policies():
     evidence for it.
 
     Convergent rather than immediate: the stack reaper above only *issues* its
-    deletes, so a run reaped this minute still has stacks and is skipped here
-    until the next run. Never raises.
+    deletes, and keeps a run's `-iam` stack until its main stack is gone, so a
+    run reaped this minute still has stacks and is skipped here for a further
+    run after that. Never raises.
 
     TWO enumerations — `_live_idp_run_prefixes` (ListStacks) and `list_policies`
     — and the first runs before the second because without the protected-prefix

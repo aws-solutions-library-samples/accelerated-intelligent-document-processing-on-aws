@@ -203,12 +203,13 @@ class _FakeAws:
         A name with an entry in `stacks` answers with it, first. Otherwise a
         stack this run issued delete_stack for answers DELETE_IN_PROGRESS, since
         a delete_stack call only starts the delete. A name with neither (or
-        whose entry is DELETE_COMPLETE) is not described: CloudFormation raises the error a stack that never
-        existed raises.
+        whose entry is DELETE_COMPLETE) is not described: CloudFormation
+        raises the error a stack that never existed raises.
         """
         self._check("describe_stacks")
         self.described.append(StackName)
-        if StackName in self.deleted and not (self.stacks and StackName in self.stacks):
+        listed_here = bool(self.stacks) and StackName in self.stacks
+        if StackName in self.deleted and not listed_here:
             status = "DELETE_IN_PROGRESS"
         else:
             status = (self.stacks or {}).get(StackName, "DELETE_COMPLETE")
@@ -3399,7 +3400,7 @@ def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
 
     All of them are top-level and older than the age gate. The long-lived stack
     and `idp-ux-nightly-iam` are counted as set aside for it, and the throwaway is
-    reaped with the old run (its pre-stack on a later run), so a sweep that spared every `idp-ux-nightly-<x>`
+    reaped with the old run, so a sweep that spared every `idp-ux-nightly-<x>`
     fails here, and so does one that stopped sparing either of the two names it
     keeps.
     """

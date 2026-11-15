@@ -596,13 +596,16 @@ def test_a_main_stack_that_already_failed_to_delete_is_warned_not_failed(
     failed = _summary("idp-0709-211927", old)
     failed["StackStatus"] = "DELETE_FAILED"
     fake = _install(cbd, monkeypatch, [failed, _summary("idp-0709-211927-iam", old)])
-    assert cbd.cleanup_stale_idp_stacks() == []
+    abandoned = []
+    assert cbd.cleanup_stale_idp_stacks(abandoned=abandoned) == []
     assert fake.deleted == ["idp-0709-211927"]  # retried; the role is kept for it
     out = capsys.readouterr().out
     assert "idp-0709-211927-iam kept" in out
     assert "DELETE_FAILED" in out
     assert "retried this run" in out
     assert "waiting will not resolve" not in out
+    # A retry that keeps failing recurs every night; the summary names it.
+    assert len(abandoned) == 1 and "retried this run" in abandoned[0]
 
 
 def test_a_main_stack_still_being_deployed_is_waited_for_quietly(
@@ -623,6 +626,39 @@ def test_a_main_stack_still_being_deployed_is_waited_for_quietly(
     out = capsys.readouterr().out
     assert "⚠️" not in out
     assert "deferred: its main stack idp-0709-211927 is CREATE_IN_PROGRESS" in out
+
+
+def test_a_complete_main_stack_inside_the_age_gate_is_not_called_wedged(
+    cbd, monkeypatch, capsys
+):
+    """The -iam pre-stack is created first, so it can clear the age gate while
+    its main stack, CREATE_COMPLETE and listed, has not. A later run's age gate
+    deletes that stack; nobody is asked to."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    young = _summary("idp-0709-211927", cbd.IDP_STACK_STALE_AGE_SECONDS - 60)
+    fake = _install(cbd, monkeypatch, [young, _summary("idp-0709-211927-iam", old)])
+    abandoned = []
+    assert cbd.cleanup_stale_idp_stacks(abandoned=abandoned) == []
+    assert fake.deleted == []
+    assert abandoned == []
+    assert "⚠️" not in capsys.readouterr().out
+
+
+def test_a_main_stack_in_review_in_progress_is_warned(cbd, monkeypatch, capsys):
+    """REVIEW_IN_PROGRESS is the one *_IN_PROGRESS state that never moves."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    _install(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927-iam", old)],
+        statuses={"idp-0709-211927": "REVIEW_IN_PROGRESS"},
+    )
+    abandoned = []
+    cbd.cleanup_stale_idp_stacks(abandoned=abandoned)
+    assert "REVIEW_IN_PROGRESS, which waiting will not resolve" in (
+        capsys.readouterr().out
+    )
+    assert len(abandoned) == 1
 
 
 def test_a_wedged_main_stack_the_listing_omits_is_warned(cbd, monkeypatch, capsys):

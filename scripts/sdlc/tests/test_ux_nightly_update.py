@@ -273,15 +273,7 @@ class _FakeStackListing:
         elif StackName in {x["StackName"] for x in self.summaries}:
             status = "CREATE_COMPLETE"
         else:
-            raise ClientError(
-                {
-                    "Error": {
-                        "Code": "ValidationError",
-                        "Message": f"Stack with id {StackName} does not exist",
-                    }
-                },
-                "DescribeStacks",
-            )
+            raise _gone(StackName)
         return {"Stacks": [{"StackName": StackName, "StackStatus": status}]}
 
 
