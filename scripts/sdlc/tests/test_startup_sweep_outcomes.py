@@ -205,7 +205,21 @@ class _FakeAws:
         """
         self._check("describe_stacks")
         self.described.append(StackName)
-        status = (self.stacks or {}).get(StackName, "DELETE_COMPLETE")
+        if self.stacks is not None and StackName in self.stacks:
+            status = self.stacks[StackName]
+        else:
+            # The account as `contents` lists it: a listed stack exists, and one
+            # whose delete this run issued is still DELETE_IN_PROGRESS (a
+            # delete_stack call only starts the delete).
+            listed = {
+                summary.get("StackName"): summary.get("StackStatus", "CREATE_COMPLETE")
+                for page in self.contents.get("list_stacks", [])
+                for summary in page.get("StackSummaries", [])
+            }
+            if StackName in self.deleted:
+                status = "DELETE_IN_PROGRESS"
+            else:
+                status = listed.get(StackName, "DELETE_COMPLETE")
         if status == "DELETE_COMPLETE":
             raise _client_error(
                 STACK_GONE[0],
@@ -2171,7 +2185,9 @@ def _resources_of(sweep, owner):
     and the BDA-as-OCR one, named `<stack>_OCR_StdOutput`.
     """
     if sweep == "cleanup_stale_idp_stacks":
-        return [owner, f"{owner}-iam"]
+        # The -iam pre-stack follows on a later run, once the main stack's delete
+        # (which runs through the pre-stack's service role) has finished.
+        return [owner]
     if sweep == "cleanup_stale_idp_buckets":
         return [_bucket_of(owner)]
     if sweep == "cleanup_stale_idp_roles":
@@ -3378,7 +3394,8 @@ def test_the_stack_sweep_does_not_count_the_long_lived_stacks_nested_stacks(
 def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
     cbd, monkeypatch, capsys
 ):
-    """`idp-ux-nightly-test` and its pre-stack go; the long-lived pair stands.
+    """`idp-ux-nightly-test` goes (its pre-stack on a later run); the long-lived
+    pair stands.
 
     All of them are top-level and older than the age gate. The long-lived stack
     and `idp-ux-nightly-iam` are counted as set aside for it, and the throwaway pair
@@ -3401,7 +3418,8 @@ def test_a_top_level_stack_named_after_the_long_lived_one_is_still_reaped(
     findings = cbd.cleanup_stale_idp_stacks()
 
     assert findings == [], findings
-    reaped = [*_resources_of(sweep, OLD_RUN_STACK), *throwaway]
+    # The throwaway's -iam pre-stack waits for its main stack's delete to finish.
+    reaped = [*_resources_of(sweep, OLD_RUN_STACK), throwaway[0]]
     assert sorted(aws.deleted) == sorted(reaped), (
         f"the stack sweep deleted {aws.deleted}; expected exactly {reaped}. "
         f"{throwaway[0]} is a top-level stack of its own, and anything of "

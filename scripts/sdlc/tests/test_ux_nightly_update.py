@@ -381,7 +381,8 @@ def test_every_stack_the_update_reaches_is_one_the_stack_sweep_spares(cbd, monke
         f"{sorted(reached)} beside an old run's {old_run}, each top-level and "
         "older than IDP_STACK_STALE_AGE_SECONDS. A stack the update reaches that "
         "the sweep deletes is gone before the next nightly update, and an old run "
-        "it leaves standing is a sweep that stopped reaping"
+        "whose main stack it leaves standing is a sweep that stopped reaping (its "
+        "-iam stack follows on a later run, once the main stack is gone)"
     )
 
 

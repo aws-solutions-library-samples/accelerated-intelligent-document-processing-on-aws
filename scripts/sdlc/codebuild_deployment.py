@@ -8548,7 +8548,13 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
     of whether any individual run finished its own cleanup.
 
     Targets top-level idp- stacks (main deploy stacks, their `-iam` stacks, and
-    the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks).
+    the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks). A
+    `-iam` stack is deleted only once its main stack no longer exists, asked with
+    describe_stacks: the main stack deletes through the CFServiceRole the `-iam`
+    stack holds, and deleting both in one pass stranded the main stack
+    DELETE_FAILED with no role to retry through. Until then the `-iam` stack is
+    deferred to a later run; one whose main stack was already DELETE_FAILED when
+    listed is reported as a finding, since waiting cannot fix that.
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
     by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and each
@@ -8645,6 +8651,10 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
             )
             for summary in page.get("StackSummaries", [])
         ]
+        listed_status = {
+            summary.get("StackName", ""): summary.get("StackStatus", "")
+            for summary in summaries
+        }
         # Terraform label stacks, by the marker in their description. Listed
         # first so a run's `-iam` pre-stack can be kept with its label.
         labels = {
@@ -8754,9 +8764,8 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
                     _drop_retention_marker(bucket, name)
             return []
 
-        # Delete non-iam stacks first (they reference their -iam CFServiceRole /
-        # boundary), then the -iam stacks — mirrors cleanup_stack ordering so a
-        # main stack isn't stranded when its service role is deleted first.
+        # Main and probe stacks are deleted here; each -iam stack only once its
+        # main stack is gone (see below).
         non_iam = [n for n in stale if not n.endswith("-iam")]
         iam_stacks = [n for n in stale if n.endswith("-iam")]
         # A Terraform label stack with no state behind it: sweep what its
@@ -8784,11 +8793,19 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
         # assumed"), leaving it DELETE_FAILED for good. So a -iam stack is
         # deleted only once its main stack no longer exists; until then the
         # role stays and the -iam stack is reaped on a later run.
-        deferred_iam = []
+        #
+        # Waiting converges for a main stack that is still deleting. It does not
+        # for one that already failed to delete (DELETE_FAILED in this run's
+        # listing, before tonight's retry): the role is still kept, so the retry
+        # can work, but the pair is reported as a finding, since a main stack
+        # that keeps failing would otherwise pin its roles with no signal.
+        deferred_iam, stuck_mains = [], []
         for name in iam_stacks:
             main = name[: -len("-iam")]
             if _stack_still_exists(cf, main):
                 deferred_iam.append(name)
+                if listed_status.get(main) == "DELETE_FAILED":
+                    stuck_mains.append(main)
                 print(
                     f"[{name}] deferred: its main stack {main} still exists, and "
                     "deletes through this stack's service role"
@@ -8818,13 +8835,22 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
         if bucket:
             for name in expired:
                 _drop_retention_marker(bucket, name)
+        findings = []
+        if stuck_mains:
+            findings += _sweep_finding(
+                f"{len(stuck_mains)} run(s) whose main stack was already "
+                "DELETE_FAILED before this retry, so their -iam stacks and roles "
+                "are kept (the retry needs the role) and will stay until the main "
+                "delete succeeds; read each stack's events: "
+                + ", ".join(sorted(stuck_mains))
+            )
         if left_behind:
-            return _sweep_finding(
+            findings += _sweep_finding(
                 "deleted Terraform label stack(s) with no state left, and their "
                 "resource directories named resources this sweep cannot delete, "
                 "which now have no record: " + " | ".join(left_behind)
             )
-        return []
+        return findings
     except Exception as e:  # noqa: BLE001
         # Not a per-stack delete failure — those are caught in the loop above.
         # This is the reaping pass itself giving out, leaving the stacks after
