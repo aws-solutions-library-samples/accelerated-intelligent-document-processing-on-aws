@@ -1873,8 +1873,9 @@ class DocumentScan:
             )
         if self.in_review:
             out.append(
-                f"{len(self.in_review)} document(s) are waiting for human review "
-                "(HITL_IN_PROGRESS). Whether the new deployment can complete a "
+                f"{len(self.in_review)} document(s) are waiting for human review ("
+                + ", ".join(sorted({d["status"] for d in self.in_review}))
+                + "). Whether the new deployment can complete a "
                 "review the old one started has not been verified; finish or reject "
                 "the reviews in the old web UI first, or name each document with "
                 "--ignore-document"

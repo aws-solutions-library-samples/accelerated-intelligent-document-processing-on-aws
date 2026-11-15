@@ -198,13 +198,6 @@ AWAITING_REVIEW_DOCUMENT_STATES = frozenset(
 #: polling it. Derived, so it cannot drift from the two sets it is the union of.
 TERMINAL_DOCUMENT_STATES = SUCCESS_DOCUMENT_STATES | FAILED_DOCUMENT_STATES
 
-#: Nothing more happens to a document in one of these without a person acting,
-#: so a batch whose documents are all here has finished processing. A superset of
-#: `TERMINAL_DOCUMENT_STATES`: an awaiting-review document still changes once it
-#: is reviewed, so a monitor counts it as settled but must keep reading it rather
-#: than caching it as final.
-SETTLED_DOCUMENT_STATES = TERMINAL_DOCUMENT_STATES | AWAITING_REVIEW_DOCUMENT_STATES
-
 _DOCUMENT_STATE_BUCKETS: "dict[DocumentBucket, frozenset[DocumentState]]" = {
     DocumentBucket.COMPLETED: SUCCESS_DOCUMENT_STATES,
     DocumentBucket.FAILED: FAILED_DOCUMENT_STATES,

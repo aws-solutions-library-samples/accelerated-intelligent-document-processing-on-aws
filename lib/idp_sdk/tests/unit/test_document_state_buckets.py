@@ -41,7 +41,6 @@ from idp_sdk.models.base import (
     FAILED_DOCUMENT_STATES,
     IN_FLIGHT_DOCUMENT_STATES,
     NOT_STARTED_DOCUMENT_STATES,
-    SETTLED_DOCUMENT_STATES,
     SUCCESS_DOCUMENT_STATES,
     TERMINAL_DOCUMENT_STATES,
     DocumentBucket,
@@ -250,13 +249,14 @@ class TestAwaitingReview:
         assert DocumentState.HITL_IN_PROGRESS not in IN_FLIGHT_DOCUMENT_STATES
         assert DocumentState.HITL_IN_PROGRESS not in TERMINAL_DOCUMENT_STATES
 
-    def test_settled_is_terminal_plus_awaiting_review(self):
-        assert (
-            SETTLED_DOCUMENT_STATES
-            == TERMINAL_DOCUMENT_STATES | AWAITING_REVIEW_DOCUMENT_STATES
+    def test_awaiting_review_overlaps_no_other_bucket(self):
+        others = (
+            TERMINAL_DOCUMENT_STATES
+            | IN_FLIGHT_DOCUMENT_STATES
+            | NOT_STARTED_DOCUMENT_STATES
         )
-        assert not SETTLED_DOCUMENT_STATES & IN_FLIGHT_DOCUMENT_STATES
-        assert not SETTLED_DOCUMENT_STATES & NOT_STARTED_DOCUMENT_STATES
+        assert AWAITING_REVIEW_DOCUMENT_STATES
+        assert not AWAITING_REVIEW_DOCUMENT_STATES & others
 
     def test_the_migration_reads_review_states_from_the_same_set(self):
         """The Terraform freeze check and the batch monitor share one definition."""

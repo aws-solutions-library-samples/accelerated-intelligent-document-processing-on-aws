@@ -42,9 +42,9 @@ from rich.console import Console, RenderableType
 
 from idp_cli import display
 
-# Nine statuses the SDK buckets as running. `format_status_json` consults no status
+# Eight statuses the SDK buckets as running. `format_status_json` consults no status
 # list -- `current_step` follows the `running` bucket, whose membership is
-# `idp_sdk.models.base.IN_FLIGHT_DOCUMENT_STATES` and is wider than these nine -- so
+# `idp_sdk.models.base.IN_FLIGHT_DOCUMENT_STATES` and is wider than these eight -- so
 # this tuple is a sample of that bucket for the per-status assertions below, not a
 # definition of anything. The capability tests at the end of the file are what cover
 # the bucket as a whole, from the enum.
@@ -56,7 +56,6 @@ IN_PROGRESS_STATUSES = (
     "RULE_VALIDATION",
     "RULE_VALIDATION_ORCHESTRATOR",
     "SUMMARIZING",
-    "HITL_IN_PROGRESS",
     "EVALUATING",
 )
 
