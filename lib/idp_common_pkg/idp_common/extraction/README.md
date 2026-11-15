@@ -1737,11 +1737,13 @@ assigned a page range"). The concrete assignment is appended per shard by
 `agentic_idp._run_shard_agent`, which adds `You are processing shard i of N,
 covering pages A-B of T` immediately after the block.
 
-Two sentences of that block are, however, actively **wrong** when a shard agent
-reads them, so both sharded call sites pass
+Two sentences of that block read differently from inside a shard, so both
+sharded call sites pass
 `_append_preflight_table_guidance(..., scope_note=_SHARD_SCOPE_NOTE)`, which
-inserts a correcting paragraph directly after the page-marker rule (the
-single-agent path passes nothing, keeping its text byte-identical):
+inserts a scope paragraph directly after the page-marker rule; the single-agent
+path passes no scope note. On every path the block tells the agent to call
+`parse_table` with no `table_text`, because the tool holds the text the agent
+was given:
 
 - "extract ONLY your pages' values" — a shard's text already contains only its
   pages, and every shard after the first is prefixed with a

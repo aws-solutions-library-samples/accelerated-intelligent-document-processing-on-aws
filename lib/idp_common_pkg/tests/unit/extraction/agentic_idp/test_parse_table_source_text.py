@@ -342,18 +342,41 @@ def test_the_addendum_carries_the_line_that_is_swapped():
     )
 
 
-@pytest.mark.parametrize("strength", ["MANDATORY", "STRONGLY_RECOMMENDED"])
-def test_the_large_table_guidance_does_not_ask_for_a_copy(strength):
+@pytest.mark.parametrize(
+    "strength,names_the_convention",
+    [("MANDATORY", True), ("STRONGLY_RECOMMENDED", True), ("RECOMMENDED", False)],
+)
+def test_the_large_table_guidance_does_not_ask_for_a_copy(
+    strength, names_the_convention
+):
     """This block precedes the pre-parsed table guidance in the same instruction, on
-    exactly the large tables this change is about."""
+    exactly the large tables this change is about. RECOMMENDED says only "call
+    parse_table", which never asked for a copy; OPTIONAL emits nothing."""
     svc = _service(table_parsing={"enabled": True})
     text = svc._build_table_parsing_guidance(
         {"recommendation_strength": strength},
         {"recommendation_strength": strength, "estimated_row_count": 532},
     )
-    assert "parse_table with NO table_text" in text
+    assert "parse_table" in text
+    assert ("parse_table with NO table_text" in text) is names_the_convention
     assert "full document text" not in text
     assert "document text containing the table" not in text
+
+
+def test_the_map_tool_description_agrees_on_the_calling_convention():
+    """The model reads both tool descriptions in the same agent."""
+    from idp_common.extraction.tools.table_parser import (
+        create_map_table_to_schema_tool,
+    )
+
+    description = create_map_table_to_schema_tool().tool_spec["description"]
+    assert "parse_table on the document text" not in description
+
+
+def test_an_index_that_selects_nothing_says_so():
+    """Every other way the agent's call can miss leaves a warning; so does this."""
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_index=7)
+    assert any("selects nothing" in w for w in result["warnings"])
 
 
 # -- table_index scopes what map_table_to_schema maps -------------------------------

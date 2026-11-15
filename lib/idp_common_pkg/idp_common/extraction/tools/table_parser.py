@@ -1149,12 +1149,15 @@ def create_parse_table_tool(
             result["warnings"] = warnings
 
         # If a specific table was requested, promote it to top level
-        if (
-            table_index is not None
-            and result.get("tables")
-            and 0 <= table_index < len(result["tables"])
-        ):
-            selected = result["tables"][table_index]
+        tables_found = result.get("tables") or []
+        index_selects = table_index is not None and 0 <= table_index < len(tables_found)
+        if table_index is not None and not index_selects:
+            result.setdefault("warnings", []).append(
+                f"table_index={table_index} selects nothing: {len(tables_found)} "
+                "table(s) were found, so nothing was narrowed."
+            )
+        if index_selects:
+            selected = tables_found[table_index]
             result["columns"] = selected["columns"]
             result["rows"] = selected["rows"]
             result["row_count"] = selected["row_count"]
@@ -1184,12 +1187,8 @@ def create_parse_table_tool(
         # drop the others' rows silently. Every table is then kept, and a warning
         # says the selection did not narrow the mapping.
         stored = result
-        if (
-            table_index is not None
-            and result.get("tables")
-            and 0 <= table_index < len(result["tables"])
-        ):
-            selected = result["tables"][table_index]
+        if index_selects:
+            selected = tables_found[table_index]
             fragments = [
                 i
                 for i, t in enumerate(result["tables"])
@@ -1322,7 +1321,7 @@ def create_map_table_to_schema_tool():
         by parse_table).
 
         Workflow:
-        1. Call parse_table on the document text (parses all tables instantly)
+        1. Call parse_table (it parses the document text it was given, all tables)
         2. Review the columns returned by parse_table
         3. Call THIS tool with a column_mapping that maps table columns to
            schema fields, plus any static_fields for values not in the table

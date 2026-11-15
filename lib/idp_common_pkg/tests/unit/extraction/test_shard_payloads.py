@@ -555,8 +555,8 @@ class TestInProcessShardedScopeNote:
 
     def test_single_agent_path_keeps_the_unqualified_block(self):
         # max_concurrent_batches = 1 -> no sharding -> single agent over the whole
-        # section, whose instruction must stay byte-identical to the pre-#900
-        # text (the advanced-extraction study's baseline).
+        # section, which gets the block WITHOUT the sharded scope note: its text
+        # is the whole section, so the "your pages" qualification does not apply.
         from unittest.mock import patch
 
         from pydantic import BaseModel
