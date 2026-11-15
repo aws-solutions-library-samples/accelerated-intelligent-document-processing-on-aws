@@ -722,3 +722,11 @@ def test_an_empty_selection_keeps_the_parsers_quality():
     unselected = create_parse_table_tool(source_text=_TWO_TABLES)()["quality"]
     result = create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[])
     assert result["quality"] == unselected
+
+
+def test_table_index_on_several_tables_says_every_table_will_be_mapped():
+    """The older argument does not scope the mapping; an agent that uses it on a
+    multi-table section is told so, and how to scope it."""
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_index=0)
+    warning = next(w for w in result["warnings"] if "only chooses" in w)
+    assert "table_indices=[0]" in warning
