@@ -1624,9 +1624,12 @@ section holds, and a copy that need not match the OCR. The blank-header recovery
 above compares the label rows that open each page, so a copy whose repeated label
 rows drift turns it off and the header rows come back as data (on
 `samples/Nuveen.pdf`, 534 rows for a 532-row table). A tool built without
-`source_text` -- a direct caller outside the extraction agent -- parses the
-`table_text` it is given, as before. `text_source` in the result says which one
-was parsed.
+`source_text` -- any `structured_output` caller that passes no
+`table_source_text`, such as agentic rules discovery -- parses the `table_text` it
+is given, as before, and then both the tool description and the system prompt tell
+the model to pass the table's Markdown. `text_source` in the result says which
+text was parsed. `table_index` scopes what `map_table_to_schema` maps: the selected
+table is stored as the only one.
 3. **Provides quality metrics and warnings**:
    - `parse_success_rate`: Ratio of cleanly parsed rows
    - `avg_confidence`: OCR confidence scores (when available from Textract)

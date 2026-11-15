@@ -1057,6 +1057,20 @@ table tools, or there was no large table, do not add this note.
 # extraction.task_prompt_extraction_with_confidence — not hardcoded here.
 
 
+#: Step 2 of TABLE_PARSING_PROMPT_ADDENDUM, in the two forms the tool supports. The
+#: tool holds the section text only when the caller passed ``table_source_text``
+#: (every ExtractionService path does; agentic rules discovery and outside callers
+#: do not), and an agent told "pass nothing" to a tool holding nothing spends a turn
+#: on the error that follows. structured_output_async swaps the line accordingly.
+PARSE_TABLE_STEP_HOLDS_TEXT = (
+    "2. Call parse_table with NO table_text — it already holds the document text and\n"
+    "   parses ALL its tables instantly. Do not copy the document into the call.\n"
+)
+PARSE_TABLE_STEP_NEEDS_TEXT = (
+    "2. Call parse_table with the table's Markdown as table_text — parses ALL tables\n"
+    "   in it instantly\n"
+)
+
 TABLE_PARSING_PROMPT_ADDENDUM = """
 TABLE EXTRACTION OPTIMIZATION:
 When you encounter tables in the document text (Markdown tables with | delimiters),
@@ -2353,6 +2367,11 @@ async def structured_output_async(
                      approaches it. Raising it eats into the time the retry ladder
                      and the work itself have inside one shard invocation — see the
                      budget in ``idp_common.timeout_budget`` before changing it.
+        table_source_text: The section's OCR text, with its ``--- PAGE N ---``
+            markers, for the ``parse_table`` tool to parse when table parsing is
+            enabled. With it the tool ignores any ``table_text`` the model sends and
+            the prompt tells the model to pass none; without it the tool parses the
+            ``table_text`` it is given. Pass the text the prompt was built from.
         strands_throttle_retries: Keep Strands' default ``ModelRetryStrategy``,
                      which retries a throttle inside each model call (default
                      True). Agentic extraction passes False: its calls sit inside
@@ -2395,10 +2414,15 @@ async def structured_output_async(
     # Append table parsing guidance to system prompt if enabled
     table_parsing_config = config.extraction.agentic.table_parsing
     if table_parsing_config.enabled:
-        system_prompt += TABLE_PARSING_PROMPT_ADDENDUM.format(
+        addendum = TABLE_PARSING_PROMPT_ADDENDUM.format(
             min_parse_success_rate=table_parsing_config.min_parse_success_rate,
             min_confidence_threshold=table_parsing_config.min_confidence_threshold,
         )
+        if not table_source_text:
+            addendum = addendum.replace(
+                PARSE_TABLE_STEP_HOLDS_TEXT, PARSE_TABLE_STEP_NEEDS_TEXT
+            )
+        system_prompt += addendum
         logger.info(
             "Table parsing tool enabled for agentic extraction",
             extra={
@@ -2819,6 +2843,9 @@ def structured_output(
         custom_instruction: **RECOMMENDED** - Additional task-specific instructions
                            appended to the system prompt. Use this for domain-specific
                            guidance, field clarifications, or extraction rules.
+        table_source_text: The section's OCR text for the ``parse_table`` tool; see
+                           structured_output_async. Forwarded on both the direct and
+                           the fresh-thread path.
 
     Returns:
         Tuple of (extracted data, bedrock response with token usage)

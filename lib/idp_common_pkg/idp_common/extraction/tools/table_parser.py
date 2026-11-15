@@ -935,6 +935,79 @@ def parse_markdown_tables(
         }
 
 
+#: The parse_table tool description (its docstring, which Strands sends as the tool
+#: spec). Two variants, because the instruction depends on whether the tool holds the
+#: section text: telling a model to pass nothing to a tool that holds nothing costs a
+#: turn on the error that follows.
+_HOLDS_TEXT = {
+    "lead": (
+        "Call this with NO table_text: the tool already holds the document text you\n"
+        "        were given and parses all of it, every page, exactly as OCR produced it.\n"
+        "        Do not copy the document into table_text -- that is slow, and any\n"
+        "        difference between your copy and the OCR can change the result. Use\n"
+        "        table_index to pick one table when several are found; the selection\n"
+        "        is what map_table_to_schema then maps."
+    ),
+    "table_text": (
+        "Leave empty. The tool parses the document text it holds and\n"
+        "                ignores this."
+    ),
+}
+_NEEDS_TEXT = {
+    "lead": (
+        "Pass the table's Markdown as table_text (the whole document text, or one\n"
+        "        table section of it); the tool detects table boundaries itself. Use\n"
+        "        table_index to pick one table when several are found; the selection\n"
+        "        is what map_table_to_schema then maps."
+    ),
+    "table_text": (
+        "The text containing Markdown table(s) to parse: the full\n"
+        "                document text or a specific table section."
+    ),
+}
+_PARSE_TABLE_DESCRIPTION = """
+        Parse Markdown tables from the document text into structured rows and columns.
+
+        {lead}
+
+        It parses deterministically (no LLM inference needed) and returns
+        structured rows as a list of dictionaries, plus quality metrics.
+
+        After receiving results, YOU must:
+        1. Review the quality metrics (parse_success_rate, avg_confidence if available)
+        2. Map the parsed column names to your extraction schema fields
+        3. Apply any required formatting (dates, numbers, etc.)
+        4. Use extraction_tool or apply_json_patches to store the mapped data
+        5. If quality is poor (parse_success_rate < 0.90), consider using LLM
+           extraction for those specific rows/cells instead
+
+        Args:
+            table_text: {table_text}
+            expected_columns: Optional list of column names you expect in the table.
+                Used for validation - the tool reports matched/missing/extra columns.
+            table_index: Optional index to select a specific table when multiple
+                tables are found (0-based). If None, returns the first table at
+                top level with all tables in 'tables' list.
+
+        Returns:
+            Dict with parsed data and quality metrics:
+            - status: "success" or "error" (Bedrock ToolResult-valid). The
+              richer parser status ("success"/"no_tables_found"/"error") is
+              preserved under ``parser_status`` -- read that, not ``status``,
+              for the semantic outcome.
+            - parser_status: "success", "no_tables_found", or "error"
+            - columns: list of column header strings
+            - rows: list of dicts mapping column names to cell values
+            - row_count: number of data rows
+            - table_count: number of tables found
+            - quality: dict with parse_success_rate, avg_confidence (if available), etc.
+            - warnings: list of any parsing issues encountered
+            - tables: list of all parsed tables (when multiple found)
+            - text_source: "document_text" or "table_text", whichever was parsed
+            - ignored_table_text: true when table_text was sent and not used
+        """
+
+
 def create_parse_table_tool(
     confidence_data_by_page: dict[str, str] | None = None,
     max_empty_line_gap: int = 3,
@@ -977,77 +1050,37 @@ def create_parse_table_tool(
     if confidence_data_by_page:
         merged_confidence = "\n".join(confidence_data_by_page.values())
 
-    @tool
     def parse_table(
         table_text: str = "",
         expected_columns: list[str] | None = None,
         table_index: int | None = None,
         agent: Any = None,
     ) -> dict[str, Any]:
-        """
-        Parse the Markdown tables in the document text into structured rows and columns.
-
-        Call this with NO table_text: the tool already holds the document text you
-        were given and parses all of it, every page, exactly as OCR produced it.
-        Do not copy the document into table_text -- that is slow, and any
-        difference between your copy and the OCR can change the result. Use
-        table_index to pick one table when several are found.
-
-        It parses deterministically (no LLM inference needed) and returns
-        structured rows as a list of dictionaries, plus quality metrics.
-
-        After receiving results, YOU must:
-        1. Review the quality metrics (parse_success_rate, avg_confidence if available)
-        2. Map the parsed column names to your extraction schema fields
-        3. Apply any required formatting (dates, numbers, etc.)
-        4. Use extraction_tool or apply_json_patches to store the mapped data
-        5. If quality is poor (parse_success_rate < 0.90), consider using LLM
-           extraction for those specific rows/cells instead
-
-        Args:
-            table_text: Leave empty. Only read when the tool was created without
-                the document text (direct callers outside the extraction agent);
-                otherwise the document text is parsed and this is ignored.
-            expected_columns: Optional list of column names you expect in the table.
-                Used for validation - the tool reports matched/missing/extra columns.
-            table_index: Optional index to select a specific table when multiple
-                tables are found (0-based). If None, returns the first table at
-                top level with all tables in 'tables' list.
-
-        Returns:
-            Dict with parsed data and quality metrics:
-            - status: "success" or "error" (Bedrock ToolResult-valid). The
-              richer parser status ("success"/"no_tables_found"/"error") is
-              preserved under ``parser_status`` — read that, not ``status``,
-              for the semantic outcome.
-            - parser_status: "success", "no_tables_found", or "error"
-            - columns: list of column header strings
-            - rows: list of dicts mapping column names to cell values
-            - row_count: number of data rows
-            - table_count: number of tables found
-            - quality: dict with parse_success_rate, avg_confidence (if available), etc.
-            - warnings: list of any parsing issues encountered
-            - tables: list of all parsed tables (when multiple found)
-        """
+        # The docstring is the tool description the model reads, and it depends on
+        # whether this tool holds the document text; it is set below, before
+        # @tool reads it.
         if source_text:
             text, text_source = source_text, "document_text"
         elif table_text and table_text.strip():
             text, text_source = table_text, "table_text"
         else:
+            message = (
+                "parse_table has no document text to parse and was given no "
+                "table_text. Pass the table's Markdown as table_text."
+            )
             return {
                 "status": "error",
                 "parser_status": "error",
-                "content": [
-                    {
-                        "text": (
-                            "parse_table has no document text to parse and was "
-                            "given no table_text. Pass the table's Markdown as "
-                            "table_text."
-                        )
-                    }
-                ],
+                "content": [{"text": message}],
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "table_count": 0,
+                "tables": [],
+                "quality": {},
+                "warnings": [message],
                 "text_source": None,
-                "warnings": ["no text to parse"],
+                "ignored_table_text": False,
             }
         result = parse_markdown_tables(
             text=text,
@@ -1138,9 +1171,23 @@ def create_parse_table_tool(
             },
         )
 
-        # Store parsed result in agent state for map_table_to_schema tool
+        # Store parsed result in agent state for map_table_to_schema tool. That tool
+        # maps the rows of every entry in ``tables``, so a table_index selection is
+        # stored as the only table: with the document text fixed, table_index is
+        # how the agent scopes the rows it maps to one table of several.
         if agent is not None:
-            agent.state.set("last_parse_table_result", result)
+            stored = result
+            if (
+                table_index is not None
+                and result.get("tables")
+                and 0 <= table_index < len(result["tables"])
+            ):
+                stored = {
+                    **result,
+                    "tables": [result["tables"][table_index]],
+                    "table_count": 1,
+                }
+            agent.state.set("last_parse_table_result", stored)
 
         # Record usage stats in agent state for observability
         if agent is not None:
@@ -1210,7 +1257,10 @@ def create_parse_table_tool(
         result["status"] = "error" if parser_status == "error" else "success"
         return result
 
-    return parse_table
+    parse_table.__doc__ = _PARSE_TABLE_DESCRIPTION.format(
+        **(_HOLDS_TEXT if source_text else _NEEDS_TEXT)
+    )
+    return tool(parse_table)
 
 
 def create_map_table_to_schema_tool():

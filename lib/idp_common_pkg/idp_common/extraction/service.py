@@ -871,8 +871,12 @@ class ExtractionService:
         page-marker rule, so it can qualify it. The sharded call sites pass
         :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
         wrong when read from inside a shard); the single-agent path passes
-        nothing, which keeps its instruction byte-identical to the text the
-        advanced-extraction study measured.
+        nothing. The block's wording is pinned by a unit test
+        (``test_block_is_byte_identical_to_the_pinned_text``), so a change to the
+        instruction every table-parsing agent reads is deliberate. It is not the
+        text the advanced-extraction study measured: that run told the agent to
+        pass its pages' text to ``parse_table``, and the tool now parses the
+        section text itself.
         """
         if (preflight_parse_result or {}).get("status") != "success":
             return custom_instruction
@@ -3027,7 +3031,8 @@ class ExtractionService:
 This document contains a large table with {row_count}+ rows detected by OCR analysis.
 You MUST use the parse_table tool for complete and accurate extraction:
 
-1. IMMEDIATELY call parse_table with the full document text or table section
+1. IMMEDIATELY call parse_table with NO table_text: it already holds the document
+   text and parses every page of it. Do not copy the document into the call.
 2. DO NOT attempt manual row-by-row LLM extraction for large tables
 3. Verify parse_table returned ALL expected rows (check row_count in response)
 4. If parse_table returns fewer rows than expected, investigate warnings and ensure all
@@ -3052,7 +3057,7 @@ This is not optional - use the tool immediately for any tabular data.
 This document contains tabular data with {row_count}+ rows detected.
 You MUST use the parse_table tool for accurate and complete extraction:
 
-1. Call parse_table with the document text containing the table
+1. Call parse_table with NO table_text: it already holds the document text
 2. The tool handles OCR artifacts (empty lines, page breaks) automatically
 3. Verify the row_count matches your expectation
 4. Review any warnings about table fragmentation
