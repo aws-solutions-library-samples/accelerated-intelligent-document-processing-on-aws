@@ -5,8 +5,9 @@ per-run roles) can't accumulate and exhaust the account RolesPerAccount quota
 when a run's own cleanup is interrupted. These tests mock boto3 so they need no
 AWS: they verify the age gate (never delete an in-flight concurrent run), the
 nested-stack skip (only top-level stacks are deleted; parents cascade), the
-apigw-vpc skip (owned by the other reaper), and the main-before-iam delete
-ordering.
+apigw-vpc skip (owned by the other reaper), and that a run's -iam stack is
+never deleted in the same pass as its main stack: it waits until the main stack
+is gone, and is reported when that main stack already failed to delete.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -81,8 +82,8 @@ def _summary(name, age_seconds, root=None, parent=None):
     return s
 
 
-def _install(cbd, monkeypatch, summaries):
-    fake = _FakeCfn(summaries)
+def _install(cbd, monkeypatch, summaries, in_progress=()):
+    fake = _FakeCfn(summaries, in_progress=in_progress)
     monkeypatch.setattr(cbd.boto3, "client", lambda name, *a, **k: fake)
     return fake
 
@@ -117,8 +118,12 @@ def test_an_iam_stack_waits_for_a_main_stack_the_listing_omits(cbd, monkeypatch)
     removing the -iam stack strands the main delete; so existence is asked
     directly."""
     old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
-    fake = _install(cbd, monkeypatch, [_summary("idp-0709-211927-iam", old)])
-    fake._in_progress = {"idp-0709-211927"}
+    fake = _install(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927-iam", old)],
+        in_progress={"idp-0709-211927"},
+    )
     cbd.cleanup_stale_idp_stacks()
     assert fake.deleted == []
 
@@ -546,3 +551,27 @@ def test_one_unreadable_marker_does_not_protect_every_other_run(cbd, monkeypatch
     assert cbd.cleanup_stale_idp_stacks() == []
     assert fake.deleted == ["idp-0808-120000"]
     assert fake.deleted_objects == ["ci-retained/idp-0808-120000.json"]
+
+
+def test_a_main_stack_that_already_failed_to_delete_is_a_finding(cbd, monkeypatch):
+    """Waiting converges for a delete in progress, not for one that already failed:
+    the role is kept for the retry, and the pair is reported so it cannot pin its
+    roles quietly."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    failed = _summary("idp-0709-211927", old)
+    failed["StackStatus"] = "DELETE_FAILED"
+    fake = _install(cbd, monkeypatch, [failed, _summary("idp-0709-211927-iam", old)])
+    findings = cbd.cleanup_stale_idp_stacks()
+    assert fake.deleted == ["idp-0709-211927"]  # retried; the role is kept for it
+    assert len(findings) == 1 and "idp-0709-211927" in findings[0]
+    assert "DELETE_FAILED" in findings[0]
+
+
+def test_a_main_stack_still_deleting_is_not_a_finding(cbd, monkeypatch):
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    _install(
+        cbd,
+        monkeypatch,
+        [_summary("idp-0709-211927", old), _summary("idp-0709-211927-iam", old)],
+    )
+    assert cbd.cleanup_stale_idp_stacks() == []
