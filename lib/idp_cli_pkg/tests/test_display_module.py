@@ -818,7 +818,7 @@ def test_json_a_document_the_producer_queued_exits_two_with_no_extra_field(statu
 
 
 @pytest.mark.unit
-def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queued():
+def test_json_bucket_precedence_is_completed_failed_awaiting_running_queued():
     """
     Only one bucket is read, so which one is checked first decides the answer.
 
@@ -834,6 +834,7 @@ def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queue
         running=[_doc(document_id="from-running", status="RUNNING")],
         failed=[_doc(document_id="from-failed", status="FAILED")],
         queued=[_doc(document_id="from-queued", status="QUEUED")],
+        awaiting_review=[_doc(document_id="from-awaiting", status="HITL_IN_PROGRESS")],
     )
     stats = _stats(total=1)
 
@@ -844,6 +845,8 @@ def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queue
     everywhere["completed"] = []
     assert picked(everywhere) == "from-failed"
     everywhere["failed"] = []
+    assert picked(everywhere) == "from-awaiting"
+    everywhere["awaiting_review"] = []
     assert picked(everywhere) == "from-running"
     everywhere["running"] = []
     assert picked(everywhere) == "from-queued"
@@ -1625,3 +1628,18 @@ def test_the_status_table_lists_documents_awaiting_review_and_where_to_work_them
     assert "1 document(s) awaiting human review" in out
     assert "held.pdf" in out
     assert "review queues" in out
+
+
+@pytest.mark.unit
+def test_json_for_a_single_held_document_keeps_current_step():
+    """A held document read as running before its bucket existed, and carried
+    `current_step`; a script reading that key must not start raising KeyError."""
+    status_data = _status_data(
+        total=1,
+        awaiting_review=[_doc(document_id="held.pdf", status="HITL_IN_PROGRESS")],
+    )
+
+    payload = json.loads(display.format_status_json(status_data, _stats(total=1)))
+
+    assert payload["current_step"] == "HITL_IN_PROGRESS"
+    assert payload["exit_code"] == 2

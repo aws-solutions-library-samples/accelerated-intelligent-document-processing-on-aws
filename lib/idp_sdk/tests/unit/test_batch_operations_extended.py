@@ -2121,8 +2121,10 @@ class TestGetStatusAwaitingReview:
 class TestSingleDocumentStatusForAHeldDocument:
     """Results and confidence listings name a held document's status (#2022).
 
-    Both used `if/elif` chains over four bucket names with an UNKNOWN fallthrough,
-    so a document in the awaiting-review bucket read as UNKNOWN.
+    Before #2022 `HITL_IN_PROGRESS` was an in-flight state, so both reported a
+    held document as RUNNING. It now has its own bucket, and the bucket-keyed
+    table these read is asserted to cover every bucket so none falls through to
+    UNKNOWN.
     """
 
     def test_the_status_table_covers_every_bucket(self):

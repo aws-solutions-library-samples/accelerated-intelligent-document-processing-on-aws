@@ -282,7 +282,7 @@ Get processing status for a single document.
 - `document_id` (str, required): Document identifier (S3 key format: batch-id/filename)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, and errors
+**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, errors, and `bucket` — the progress bucket the document is reported under: `completed`, `failed`, `awaiting_review` (held for human review), `running` or `queued`
 
 ```python
 status = client.document.get_status(document_id="batch-123/invoice.pdf")

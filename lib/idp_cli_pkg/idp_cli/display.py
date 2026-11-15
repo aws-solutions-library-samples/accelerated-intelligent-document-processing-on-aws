@@ -504,7 +504,9 @@ def format_status_json(status_data: Dict, stats: Dict) -> str:
             elif bucket == "failed":
                 result["error"] = doc.get("error", "Unknown error")
                 result["failed_step"] = doc.get("failed_step", "Unknown")
-            elif bucket == "running":
+            elif bucket in ("running", "awaiting_review"):
+                # A held document read as running before it had its own bucket,
+                # so it keeps the key a script may already read.
                 result["current_step"] = doc.get("current_step", doc.get("status"))
 
             # One authority for the code, shared with the table output, so
