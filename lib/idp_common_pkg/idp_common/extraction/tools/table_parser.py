@@ -1150,14 +1150,19 @@ def create_parse_table_tool(
 
         # If a specific table was requested, promote it to top level
         tables_found = result.get("tables") or []
-        index_selects = table_index is not None and 0 <= table_index < len(tables_found)
-        if table_index is not None and not index_selects:
+        # The requested index when it selects a table, else None.
+        selected_index: int | None = (
+            table_index
+            if table_index is not None and 0 <= table_index < len(tables_found)
+            else None
+        )
+        if table_index is not None and selected_index is None:
             result.setdefault("warnings", []).append(
                 f"table_index={table_index} selects nothing: {len(tables_found)} "
                 "table(s) were found, so nothing was narrowed."
             )
-        if index_selects:
-            selected = tables_found[table_index]
+        if selected_index is not None:
+            selected = tables_found[selected_index]
             result["columns"] = selected["columns"]
             result["rows"] = selected["rows"]
             result["row_count"] = selected["row_count"]
@@ -1187,16 +1192,16 @@ def create_parse_table_tool(
         # drop the others' rows silently. Every table is then kept, and a warning
         # says the selection did not narrow the mapping.
         stored = result
-        if index_selects:
-            selected = tables_found[table_index]
+        if selected_index is not None:
+            selected = tables_found[selected_index]
             fragments = [
                 i
                 for i, t in enumerate(result["tables"])
-                if i != table_index and t.get("columns") == selected.get("columns")
+                if i != selected_index and t.get("columns") == selected.get("columns")
             ]
             if fragments:
                 result.setdefault("warnings", []).append(
-                    f"table_index={table_index} did not narrow what map_table_to_schema "
+                    f"table_index={selected_index} did not narrow what map_table_to_schema "
                     f"maps: table(s) {fragments} have the same columns, so they are "
                     "fragments of one table and all are kept."
                 )
