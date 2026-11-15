@@ -776,7 +776,7 @@ def test_main_hands_the_migration_runs_to_the_stack_sweep(monkeypatch):
     monkeypatch.setattr(cbd, "publish_artifacts", _stop)
     with pytest.raises(_Stop):
         cbd.main()
-    assert seen == {"terraform_runs": {DEAD}}
+    assert seen == {"terraform_runs": {DEAD}, "abandoned": []}
 
 
 def test_the_job_finds_the_summary_of_a_migration_run():
