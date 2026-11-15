@@ -283,3 +283,146 @@ def test_the_system_prompt_tells_the_agent_not_to_pass_the_text():
     addendum = agentic_idp.TABLE_PARSING_PROMPT_ADDENDUM
     assert "Call parse_table with NO table_text" in addendum
     assert "Call parse_table with the full document text" not in addendum
+
+
+# -- the instruction matches what the tool can do -----------------------------------
+
+
+def test_the_tool_description_tells_a_tool_holding_the_text_to_be_called_empty():
+    spec = create_parse_table_tool(source_text=_DOCUMENT).tool_spec
+    assert "Call this with NO table_text" in spec["description"]
+    assert (
+        "Leave empty"
+        in spec["inputSchema"]["json"]["properties"]["table_text"]["description"]
+    )
+
+
+def test_the_tool_description_asks_for_markdown_when_the_tool_holds_none():
+    """Agentic rules discovery builds the tool with no section text; told "pass
+    nothing", its agent would spend a turn on the error."""
+    spec = create_parse_table_tool().tool_spec
+    assert "Pass the table's Markdown as table_text" in spec["description"]
+    assert "Call this with NO table_text" not in spec["description"]
+
+
+@pytest.mark.parametrize(
+    "source,step",
+    [
+        (_DOCUMENT, agentic_idp.PARSE_TABLE_STEP_HOLDS_TEXT),
+        (None, agentic_idp.PARSE_TABLE_STEP_NEEDS_TEXT),
+    ],
+    ids=["holds-text", "no-text"],
+)
+def test_the_system_prompt_step_follows_the_tool(recorded_agents, source, step):
+    other = (
+        agentic_idp.PARSE_TABLE_STEP_NEEDS_TEXT
+        if step is agentic_idp.PARSE_TABLE_STEP_HOLDS_TEXT
+        else agentic_idp.PARSE_TABLE_STEP_HOLDS_TEXT
+    )
+    with pytest.raises(_Built):
+        asyncio.run(
+            agentic_idp.structured_output_async(
+                model_id="us.amazon.nova-pro-v1:0",
+                data_format=_Doc,
+                prompt="pages",
+                config=_table_config(),
+                table_source_text=source,
+            )
+        )
+    prompt = recorded_agents[0].system_prompt
+    assert step in prompt
+    assert other not in prompt
+
+
+def test_the_addendum_carries_the_line_that_is_swapped():
+    """The swap is a string replace, so the line must really be in the template."""
+    assert (
+        agentic_idp.PARSE_TABLE_STEP_HOLDS_TEXT
+        in agentic_idp.TABLE_PARSING_PROMPT_ADDENDUM
+    )
+
+
+@pytest.mark.parametrize("strength", ["MANDATORY", "STRONGLY_RECOMMENDED"])
+def test_the_large_table_guidance_does_not_ask_for_a_copy(strength):
+    """This block precedes the pre-parsed table guidance in the same instruction, on
+    exactly the large tables this change is about."""
+    svc = _service(table_parsing={"enabled": True})
+    text = svc._build_table_parsing_guidance(
+        {"recommendation_strength": strength},
+        {"recommendation_strength": strength, "estimated_row_count": 532},
+    )
+    assert "parse_table with NO table_text" in text
+    assert "full document text" not in text
+    assert "document text containing the table" not in text
+
+
+# -- table_index scopes what map_table_to_schema maps -------------------------------
+
+
+class _State:
+    def __init__(self):
+        self._data: dict[str, Any] = {}
+
+    def get(self, key):
+        return self._data.get(key)
+
+    def set(self, key, value):
+        self._data[key] = value
+
+
+class _Agent:
+    def __init__(self):
+        self.state = _State()
+
+
+# Two tables that share column names: the funds this document reports on, and a list
+# of funds closed during the year. map_table_to_schema already drops rows whose
+# mapped columns are all empty, so only an unrelated table sharing column names can
+# leak rows into the array -- the case table_index exists for.
+_TWO_TABLES = (
+    "--- PAGE 1 ---\n"
+    "| Fund | Ticker |\n|---|---|\n| A | AAAAX |\n| B | BBBBX |\n\n"
+    "Funds closed during the year.\n\n"
+    "| Fund | Ticker | Closed |\n|---|---|---|\n| C | CCCCX | 06/30/2024 |\n"
+)
+
+
+def test_a_table_index_selection_is_the_only_table_map_table_to_schema_sees():
+    """With the text fixed to the document, table_index replaces passing a slice of
+    it, so the selection has to carry into the mapping or unrelated tables' rows
+    land in the array field."""
+    from idp_common.extraction.tools.table_parser import (
+        create_map_table_to_schema_tool,
+    )
+
+    agent = _Agent()
+    parsed = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_index=0, agent=agent
+    )
+    assert parsed["table_count"] == 2  # the agent still sees what was found
+    mapped = create_map_table_to_schema_tool()(
+        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
+    )
+    assert mapped["row_count"] == 2
+    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["AAAAX", "BBBBX"]
+
+
+def test_without_a_table_index_every_table_is_mapped():
+    """Non-vacuity for the test above: the fixture really has two tables' rows."""
+    from idp_common.extraction.tools.table_parser import (
+        create_map_table_to_schema_tool,
+    )
+
+    agent = _Agent()
+    create_parse_table_tool(source_text=_TWO_TABLES)(agent=agent)
+    mapped = create_map_table_to_schema_tool()(
+        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
+    )
+    assert mapped["row_count"] == 3
+
+
+def test_the_error_result_has_the_documented_shape():
+    result = create_parse_table_tool()()
+    for key in ("columns", "rows", "row_count", "table_count", "quality", "warnings"):
+        assert key in result, key
+    assert result["ignored_table_text"] is False
