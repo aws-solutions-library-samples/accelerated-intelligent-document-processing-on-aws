@@ -8510,6 +8510,22 @@ def cleanup_stale_ci_diagnostics():
 IDP_STACK_STALE_AGE_SECONDS = 3 * 3600  # 3h
 
 
+def _stack_still_exists(cf, name: str) -> bool:
+    """Whether CloudFormation still has a stack called ``name`` (in any state
+    other than DELETE_COMPLETE), asked directly rather than read from a listing:
+    the reaper's own list_stacks filter omits DELETE_IN_PROGRESS, which is
+    exactly the state in which deleting the stack's -iam pre-stack strands it.
+
+    Fails closed: any answer other than "does not exist" counts as existing, so
+    an unreadable stack keeps the service role it may still need.
+    """
+    try:
+        stacks = cf.describe_stacks(StackName=name).get("Stacks", [])
+    except Exception as e:  # noqa: BLE001
+        return "does not exist" not in str(e)
+    return any(st.get("StackStatus") != "DELETE_COMPLETE" for st in stacks)
+
+
 def cleanup_stale_idp_stacks(terraform_runs=None):
     """Reap OLD leftover idp- test stacks so their IAM roles don't leak (defense in depth).
 
@@ -8754,15 +8770,45 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
                 left = [f"resource directory not read: {e}"]
             if left:
                 left_behind.append(f"{name}: {len(left)} left ({'; '.join(left[:5])})")
-        for name in non_iam + iam_stacks:
+        for name in non_iam:
+            try:
+                print(f"[{name}] reaping stale idp- stack...")
+                cf.delete_stack(StackName=name)
+            except Exception as e:  # noqa: BLE001
+                print(f"[{name}] ⚠️ delete failed: {e}")
+        # A -iam stack holds the CFServiceRole its main stack deletes through.
+        # delete_stack only STARTS a delete, so deleting the -iam stack in the
+        # same pass removed the role while the main stack was still deleting;
+        # the main delete then failed part-way ("security token ... invalid")
+        # and every later night's retry failed too ("role ... cannot be
+        # assumed"), leaving it DELETE_FAILED for good. So a -iam stack is
+        # deleted only once its main stack no longer exists; until then the
+        # role stays and the -iam stack is reaped on a later run.
+        deferred_iam = []
+        for name in iam_stacks:
+            main = name[: -len("-iam")]
+            if _stack_still_exists(cf, main):
+                deferred_iam.append(name)
+                print(
+                    f"[{name}] deferred: its main stack {main} still exists, and "
+                    "deletes through this stack's service role"
+                )
+                continue
             try:
                 print(f"[{name}] reaping stale idp- stack...")
                 cf.delete_stack(StackName=name)
             except Exception as e:  # noqa: BLE001
                 print(f"[{name}] ⚠️ delete failed: {e}")
         print(
-            f"✅ Issued delete for {len(stale)} stale idp- stack(s) "
-            f"({len(non_iam)} main/probe + {len(iam_stacks)} -iam)"
+            f"✅ Issued delete for {len(stale) - len(deferred_iam)} stale idp- "
+            f"stack(s) ({len(non_iam)} main/probe + "
+            f"{len(iam_stacks) - len(deferred_iam)} -iam)"
+            + (
+                f"; {len(deferred_iam)} -iam stack(s) deferred until their main "
+                "stack is gone"
+                if deferred_iam
+                else ""
+            )
         )
 
         # Drop the markers whose stacks were just reaped. A marker left behind
