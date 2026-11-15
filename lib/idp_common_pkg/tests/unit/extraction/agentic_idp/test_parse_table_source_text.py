@@ -379,7 +379,7 @@ def test_an_index_that_selects_nothing_says_so():
     assert any("selects nothing" in w for w in result["warnings"])
 
 
-# -- table_index scopes what map_table_to_schema maps -------------------------------
+# -- table_indices scopes what map_table_to_schema maps -----------------------------
 
 
 class _State:
@@ -408,26 +408,6 @@ _TWO_TABLES = (
     "Funds closed during the year.\n\n"
     "| Fund | Ticker | Closed |\n|---|---|---|\n| C | CCCCX | 06/30/2024 |\n"
 )
-
-
-def test_a_table_index_selection_is_the_only_table_map_table_to_schema_sees():
-    """With the text fixed to the document, table_index replaces passing a slice of
-    it, so the selection has to carry into the mapping or unrelated tables' rows
-    land in the array field."""
-    from idp_common.extraction.tools.table_parser import (
-        create_map_table_to_schema_tool,
-    )
-
-    agent = _Agent()
-    parsed = create_parse_table_tool(source_text=_TWO_TABLES)(
-        table_index=0, agent=agent
-    )
-    assert parsed["table_count"] == 2  # the agent still sees what was found
-    mapped = create_map_table_to_schema_tool()(
-        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
-    )
-    assert mapped["row_count"] == 2
-    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["AAAAX", "BBBBX"]
 
 
 def test_without_a_table_index_every_table_is_mapped():
@@ -460,82 +440,12 @@ _FRAGMENTS = (
 )
 
 
-def test_a_table_index_on_a_fragment_maps_every_fragment():
-    """Following "pick one table" on a split table must not drop the other
-    fragments' rows; the selection is not applied, and the result says so."""
-    from idp_common.extraction.tools.table_parser import (
-        create_map_table_to_schema_tool,
-    )
-
-    agent = _Agent()
-    parsed = create_parse_table_tool(
-        source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
-    )(table_index=0, agent=agent)
-    assert parsed["table_count"] == 2
-    assert any("did not narrow" in w for w in parsed["warnings"])
-    mapped = create_map_table_to_schema_tool()(
-        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
-    )
-    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["AAAAX", "BBBBX", "CCCCX"]
-
-
-def test_a_narrowed_selection_keeps_the_status_contract_in_state():
-    """State's parser_status/status/content match the returned result, as they do
-    when nothing was narrowed (test_tool_writeback pins that path)."""
-    agent = _Agent()
-    returned = create_parse_table_tool(source_text=_TWO_TABLES)(
-        table_index=0, agent=agent
-    )
-    stored = agent.state.get("last_parse_table_result")
-    assert stored is not returned  # the narrowed copy, not the result itself
-    assert len(stored["tables"]) == 1
-    for key in ("parser_status", "status", "content"):
-        assert stored[key] == returned[key], key
-
-
 def test_the_agent_is_told_in_conversation_that_its_copy_was_not_used():
     """Without this, an agent that sends the text anyway gets no signal and can keep
     paying output tokens to retype the section on later turns."""
     result = create_parse_table_tool(source_text=_DOCUMENT)(table_text=_DRIFTED)
     summary = result["content"][0]["json"]
     assert any("table_text was not used" in w for w in summary["warnings"])
-
-
-# -- table_indices: the explicit choice, honoured exactly ---------------------------
-
-
-def test_table_indices_maps_only_the_tables_named_even_with_identical_columns():
-    """Two unrelated tables can share columns ("Transactions" and "Pending
-    transactions"); table_index cannot tell them from fragments, table_indices can."""
-    from idp_common.extraction.tools.table_parser import (
-        create_map_table_to_schema_tool,
-    )
-
-    agent = _Agent()
-    create_parse_table_tool(source_text=_FRAGMENTS, auto_merge_adjacent_tables=False)(
-        table_indices=[1], agent=agent
-    )
-    mapped = create_map_table_to_schema_tool()(
-        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
-    )
-    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["CCCCX"]
-
-
-def test_the_fragment_warning_names_the_way_to_choose_exactly():
-    result = create_parse_table_tool(
-        source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
-    )(table_index=0)
-    warning = next(w for w in result["warnings"] if "did not narrow" in w)
-    assert "table_indices=[0]" in warning
-
-
-def test_table_indices_that_select_nothing_say_so():
-    agent = _Agent()
-    result = create_parse_table_tool(source_text=_TWO_TABLES)(
-        table_indices=[0, 9], agent=agent
-    )
-    assert any("[9] select nothing" in w for w in result["warnings"])
-    assert len(agent.state.get("last_parse_table_result")["tables"]) == 1
 
 
 # -- observability --------------------------------------------------------------------
@@ -557,41 +467,100 @@ def test_a_call_with_nothing_to_parse_is_logged(caplog):
     assert any("no text to parse" in r.getMessage() for r in caplog.records)
 
 
-def test_a_repeated_index_maps_that_table_once():
-    """A model emitting [0, 0, 1] must not double table 0's rows: the over-count this
-    change exists to remove."""
+def _map(agent):
     from idp_common.extraction.tools.table_parser import (
         create_map_table_to_schema_tool,
     )
 
+    return create_map_table_to_schema_tool()(
+        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
+    )
+
+
+def _tickers(mapped) -> list[str]:
+    return [r["ticker"] for r in mapped.get("mapped_rows", [])]
+
+
+def test_table_indices_maps_only_the_tables_named():
+    agent = _Agent()
+    create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[1], agent=agent)
+    assert _tickers(_map(agent)) == ["CCCCX"]
+
+
+def test_table_indices_tells_same_column_tables_apart():
+    """Two unrelated tables can share columns ("Transactions" and "Pending
+    transactions"); the agent names the one it wants."""
+    agent = _Agent()
+    result = create_parse_table_tool(
+        source_text=_FRAGMENTS, auto_merge_adjacent_tables=False
+    )(table_indices=[1], agent=agent)
+    assert _tickers(_map(agent)) == ["CCCCX"]
+    # ...and is told the other may be a fragment of it.
+    assert any("[0] have the same columns" in w for w in result["warnings"])
+
+
+def test_a_repeated_index_maps_that_table_once():
+    """A model emitting [1, 0, 0] must not double table 0's rows -- the over-count
+    this change exists to remove."""
     agent = _Agent()
     create_parse_table_tool(source_text=_FRAGMENTS, auto_merge_adjacent_tables=False)(
         table_indices=[1, 0, 0], agent=agent
     )
-    mapped = create_map_table_to_schema_tool()(
-        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
-    )
-    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["AAAAX", "BBBBX", "CCCCX"]
+    assert _tickers(_map(agent)) == ["AAAAX", "BBBBX", "CCCCX"]
 
 
-def test_table_indices_that_all_miss_map_nothing():
-    """Honoured exactly: an explicit selection of nothing must not fall back to every
-    table."""
+@pytest.mark.parametrize("indices", [[], [8, 9]], ids=["empty", "all-miss"])
+def test_a_selection_of_nothing_maps_nothing(indices):
+    """Asserted through map_table_to_schema, which falls back to the top-level rows
+    when there are no tables: the top level must be empty too."""
     agent = _Agent()
-    create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[8, 9], agent=agent)
-    assert agent.state.get("last_parse_table_result")["tables"] == []
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_indices=indices, agent=agent
+    )
+    assert _tickers(_map(agent)) == []
+    assert (result["rows"], result["columns"], result["row_count"]) == ([], [], 0)
+
+
+def test_the_result_the_agent_reads_describes_the_selection():
+    """It builds its column mapping and checks its row count against the top level,
+    so the top level must be the tables that will be mapped, not table 0."""
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[1])
+    assert result["columns"] == ["Fund", "Ticker", "Closed"]
+    assert result["row_count"] == 1
+    assert [r["Ticker"] for r in result["rows"]] == ["CCCCX"]
+    assert result["mapped_table_indices"] == [1]
+    assert result["content"][0]["json"]["mapped_table_indices"] == [1]
 
 
 def test_table_indices_take_precedence_over_table_index():
-    """The top level must not describe a table other than the one being mapped."""
     agent = _Agent()
     result = create_parse_table_tool(source_text=_TWO_TABLES)(
-        table_index=1, table_indices=[0], agent=agent
+        table_index=0, table_indices=[1], agent=agent
     )
     assert any("table_index was ignored" in w for w in result["warnings"])
+    assert result["columns"] == ["Fund", "Ticker", "Closed"]
+    assert _tickers(_map(agent)) == ["CCCCX"]
+
+
+def test_table_index_alone_does_not_change_what_is_mapped():
+    """Its meaning before this change: it chooses the table shown at the top level."""
+    agent = _Agent()
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_index=1, agent=agent
+    )
+    assert result["columns"] == ["Fund", "Ticker", "Closed"]
+    assert _tickers(_map(agent)) == ["AAAAX", "BBBBX", "CCCCX"]
+
+
+def test_a_narrowed_selection_keeps_the_status_contract_in_state():
+    """State's parser_status/status/content match the returned result, as they do
+    when nothing was narrowed (test_tool_writeback pins that path)."""
+    agent = _Agent()
+    returned = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_indices=[0], agent=agent
+    )
     stored = agent.state.get("last_parse_table_result")
-    assert [t["columns"] for t in stored["tables"]] == [["Fund", "Ticker"]]
-    # table_index=1 (one row) was not promoted: the top level is the parser's
-    # default view of the first table (two rows).
-    assert result["columns"] == ["Fund", "Ticker"]
-    assert result["row_count"] == 2
+    assert stored is not returned  # the narrowed copy, not the result itself
+    assert len(stored["tables"]) == 1
+    for key in ("parser_status", "status", "content"):
+        assert stored[key] == returned[key], key
