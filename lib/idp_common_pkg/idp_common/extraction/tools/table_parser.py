@@ -940,7 +940,8 @@ def _combined_quality(tables: list[dict[str, Any]]) -> dict[str, Any]:
 
     Rates are weighted by each table's rows, counts are summed and the empty-cell
     ratio is recomputed from them, flags hold only if they hold for every table,
-    and lists are concatenated. Any other key keeps the first table's value.
+    and lists are concatenated, with a cell's ``row`` shifted to index the
+    selection's concatenated rows. Any other key keeps the first table's value.
     """
     if not tables:
         return {}
@@ -955,7 +956,7 @@ def _combined_quality(tables: list[dict[str, Any]]) -> dict[str, Any]:
     for key in dict.fromkeys(k for q in qualities for k in q):
         values = [(q[key], w) for q, w in zip(qualities, weights) if key in q]
         first = values[0][0]
-        if key in ("empty_cell_count", "total_cells"):
+        if key in ("empty_cell_count", "total_cells", "cells_matched"):
             combined[key] = sum(v for v, _ in values)
         elif isinstance(first, bool):
             combined[key] = all(v for v, _ in values)
@@ -964,7 +965,19 @@ def _combined_quality(tables: list[dict[str, Any]]) -> dict[str, Any]:
             weight = sum(w for _, w in present) or total
             combined[key] = sum(v * w for v, w in present) / weight
         elif isinstance(first, list):
-            combined[key] = [item for v, _ in values for item in v]
+            # Cells name a row of their own table; the selection's rows are the
+            # tables' rows concatenated, so shift each by the rows before it.
+            offsets, running = [], 0
+            for t in tables:
+                offsets.append(running)
+                running += t.get("row_count", 0)
+            combined[key] = [
+                {**item, "row": item["row"] + offset}
+                if isinstance(item, dict) and isinstance(item.get("row"), int)
+                else item
+                for q, offset in zip(qualities, offsets)
+                for item in q.get(key, [])
+            ]
         else:
             combined[key] = first
     if "total_cells" in combined:
@@ -1048,7 +1061,8 @@ _PARSE_TABLE_DESCRIPTION = """
             - warnings: list of any parsing issues encountered
             - tables: list of all parsed tables (when multiple found)
             - mapped_table_indices: the tables map_table_to_schema will map, when
-              table_indices was given
+              table_indices was given (table_count is then the selection's size,
+              and tables_found the number found)
             - text_source: "document_text" or "table_text", whichever was parsed
               (null when there was nothing to parse)
             - ignored_table_text: true when table_text was sent and not used
@@ -1220,6 +1234,12 @@ def create_parse_table_tool(
                     f"table_indices {missed} select nothing: {len(tables_found)} "
                     "table(s) were found."
                 )
+            if not chosen and tables_found:
+                result.setdefault("warnings", []).append(
+                    f"table_indices selected no table, so nothing will be mapped: "
+                    f"{len(tables_found)} table(s) were found. Omit table_indices to "
+                    "map all of them."
+                )
             picked = [tables_found[i] for i in chosen]
             # Tables left out that have the same columns as a picked one may be
             # fragments of it that the merge did not join.
@@ -1240,6 +1260,8 @@ def create_parse_table_tool(
                     "table_index was ignored because table_indices was given."
                 )
             result["mapped_table_indices"] = chosen
+            result["tables_found"] = len(tables_found)
+            result["table_count"] = len(chosen)
             result["columns"] = picked[0]["columns"] if picked else []
             result["rows"] = [r for t in picked for r in t.get("rows", [])]
             result["row_count"] = sum(t.get("row_count", 0) for t in picked)
@@ -1339,6 +1361,7 @@ def create_parse_table_tool(
         }
         if "mapped_table_indices" in result:
             summary["mapped_table_indices"] = result["mapped_table_indices"]
+            summary["tables_found"] = result["tables_found"]
 
         # Return dict carries BOTH the compact ``content`` (what Strands re-sends
         # to the model every turn) AND the full top-level keys (rows/tables/...)

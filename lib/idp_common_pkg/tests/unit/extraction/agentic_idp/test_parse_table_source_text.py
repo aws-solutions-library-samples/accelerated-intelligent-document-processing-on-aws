@@ -373,12 +373,6 @@ def test_the_map_tool_description_agrees_on_the_calling_convention():
     assert "parse_table on the document text" not in description
 
 
-def test_an_index_that_selects_nothing_says_so():
-    """Every other way the agent's call can miss leaves a warning; so does this."""
-    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_index=7)
-    assert any("selects nothing" in w for w in result["warnings"])
-
-
 # -- table_indices scopes what map_table_to_schema maps -----------------------------
 
 
@@ -512,6 +506,12 @@ def test_a_repeated_index_maps_that_table_once():
     assert _tickers(_map(agent)) == ["AAAAX", "BBBBX", "CCCCX"]
 
 
+def test_an_index_that_selects_nothing_says_so():
+    """Every other way the agent's call can miss leaves a warning; so does this."""
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(table_index=7)
+    assert any("selects nothing" in w for w in result["warnings"])
+
+
 @pytest.mark.parametrize("indices", [[], [8, 9]], ids=["empty", "all-miss"])
 def test_a_selection_of_nothing_maps_nothing(indices):
     """Asserted through map_table_to_schema, which falls back to the top-level rows
@@ -522,6 +522,8 @@ def test_a_selection_of_nothing_maps_nothing(indices):
     )
     assert _tickers(_map(agent)) == []
     assert (result["rows"], result["columns"], result["row_count"]) == ([], [], 0)
+    # ...and says so, the empty list included: every other way to miss warns.
+    assert any("selected no table" in w for w in result["warnings"])
 
 
 def test_the_result_the_agent_reads_describes_the_selection():
@@ -532,7 +534,10 @@ def test_the_result_the_agent_reads_describes_the_selection():
     assert result["row_count"] == 1
     assert [r["Ticker"] for r in result["rows"]] == ["CCCCX"]
     assert result["mapped_table_indices"] == [1]
-    assert result["content"][0]["json"]["mapped_table_indices"] == [1]
+    assert result["table_count"] == 1 and result["tables_found"] == 2
+    summary = result["content"][0]["json"]
+    assert summary["mapped_table_indices"] == [1]
+    assert (summary["table_count"], summary["tables_found"]) == (1, 2)
 
 
 def test_table_indices_take_precedence_over_table_index():
@@ -617,3 +622,26 @@ def test_a_call_with_nothing_to_parse_clears_an_earlier_parse_from_state():
     tool_fn(table_text=_TWO_TABLES, agent=agent)
     tool_fn(agent=agent)
     assert _tickers(_map(agent)) == []
+
+
+def test_combined_quality_sums_counts_and_reindexes_cells():
+    from idp_common.extraction.tools.table_parser import _combined_quality
+
+    a = {
+        "row_count": 10,
+        "quality": {
+            "cells_matched": 30,
+            "low_confidence_cells": [{"row": 2, "column": "Ticker"}],
+        },
+    }
+    b = {
+        "row_count": 10,
+        "quality": {
+            "cells_matched": 30,
+            "low_confidence_cells": [{"row": 4, "column": "Ticker"}],
+        },
+    }
+    combined = _combined_quality([a, b])
+    assert combined["cells_matched"] == 60
+    # Table b's row 4 is row 14 of the selection's concatenated rows.
+    assert [c["row"] for c in combined["low_confidence_cells"]] == [2, 14]
