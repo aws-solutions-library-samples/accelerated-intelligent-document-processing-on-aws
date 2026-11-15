@@ -1507,7 +1507,7 @@ def test_main_runs_the_reaper_first_and_hands_its_runs_to_the_stack_sweep(
         "cleanup_stale_idp_stacks"
     )
     (_, _, kwargs) = calls[names.index("cleanup_stale_idp_stacks")]
-    assert kwargs == {"terraform_runs": {"idp-0101-000000"}}
+    assert kwargs == {"terraform_runs": {"idp-0101-000000"}, "abandoned": []}
 
 
 def test_a_failed_state_listing_reaches_the_stack_sweep_as_unknown(cbd, monkeypatch):
@@ -1531,7 +1531,7 @@ def test_a_failed_state_listing_reaches_the_stack_sweep_as_unknown(cbd, monkeypa
     monkeypatch.setattr(cbd, "publish_artifacts", _stop)
     with pytest.raises(_StopAfterTheSweeps):
         cbd.main()
-    assert seen == {"terraform_runs": None}
+    assert seen == {"terraform_runs": None, "abandoned": []}
 
 
 def test_a_dead_run_is_destroyed_from_its_saved_configuration(cbd, monkeypatch):
