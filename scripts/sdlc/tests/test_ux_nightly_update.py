@@ -268,15 +268,13 @@ class _FakeStackListing:
     def describe_stacks(self, StackName: str) -> dict:
         # A delete_stack call only starts the delete, so a stack just deleted is
         # still there; the sweep defers its -iam stack until it is gone.
-        if StackName in self.deleted or StackName in {
-            x["StackName"] for x in self.summaries
-        }:
-            return {
-                "Stacks": [
-                    {"StackName": StackName, "StackStatus": "DELETE_IN_PROGRESS"}
-                ]
-            }
-        raise RuntimeError(f"Stack with id {StackName} does not exist")
+        if StackName in self.deleted:
+            status = "DELETE_IN_PROGRESS"
+        elif StackName in {x["StackName"] for x in self.summaries}:
+            status = "CREATE_COMPLETE"
+        else:
+            raise RuntimeError(f"Stack with id {StackName} does not exist")
+        return {"Stacks": [{"StackName": StackName, "StackStatus": status}]}
 
 
 @dataclass

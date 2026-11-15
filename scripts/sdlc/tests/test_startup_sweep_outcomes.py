@@ -205,21 +205,12 @@ class _FakeAws:
         """
         self._check("describe_stacks")
         self.described.append(StackName)
-        if self.stacks is not None and StackName in self.stacks:
-            status = self.stacks[StackName]
+        if StackName in self.deleted and not (self.stacks and StackName in self.stacks):
+            # A delete_stack call only starts the delete: a stack this run just
+            # deleted is still there. Every other name answers as before.
+            status = "DELETE_IN_PROGRESS"
         else:
-            # The account as `contents` lists it: a listed stack exists, and one
-            # whose delete this run issued is still DELETE_IN_PROGRESS (a
-            # delete_stack call only starts the delete).
-            listed = {
-                summary.get("StackName"): summary.get("StackStatus", "CREATE_COMPLETE")
-                for page in self.contents.get("list_stacks", [])
-                for summary in page.get("StackSummaries", [])
-            }
-            if StackName in self.deleted:
-                status = "DELETE_IN_PROGRESS"
-            else:
-                status = listed.get(StackName, "DELETE_COMPLETE")
+            status = (self.stacks or {}).get(StackName, "DELETE_COMPLETE")
         if status == "DELETE_COMPLETE":
             raise _client_error(
                 STACK_GONE[0],
