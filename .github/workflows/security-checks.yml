@@ -33,6 +33,11 @@ on:
 permissions:
   contents: read
 
+# Superseded runs are cancelled, as in developer-tests.yml — see the note there.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   srt_security_review:
     name: SRT Security Review
@@ -104,7 +109,7 @@ jobs:
         run: make srt-scan
 
       - name: Upload SRT reports
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: srt-reports
@@ -163,7 +168,7 @@ jobs:
         run: python3 scripts/security/dep_audit.py --no-unmapped --json dep-audit-report.json
 
       - name: Upload dependency audit report
-        if: always()
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dep-audit-report

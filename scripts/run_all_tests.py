@@ -226,6 +226,9 @@ RUN_ROOTS = [
     "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",
     "src/lambda/job_tracker",
+    # Status lookup: a refused document must return its refusal reason as `error`,
+    # or the SDK and CLI report it as "Unknown error".
+    "src/lambda/lookup_function",
     "src/lambda/mcp_credential_manager",
     "src/lambda/mcp_default_credential",
     "src/lambda/mcp_identity_interceptor",

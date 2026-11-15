@@ -369,9 +369,10 @@ would cover `scripts/tests`, `scripts/sdlc/tests`, `scripts/srt/tests` and
 `scripts/security/tests`, which is the whole gate layer.
 
 **Being registered in `RUN_ROOTS` does not mean a suite runs on a pull request.**
-`make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg` and
-`make test-packages-cicd`, and the second is a hand-enumerated recipe — so a new root
-has to be added there as well, on its own `cd <dir> && $(PYTEST_HERMETIC) …` line if it
+`make test` runs in neither CI. CI runs `make test-cicd -C lib/idp_common_pkg`,
+`make coverage-all-cicd` (every suite a coverage tree measures) and
+`make test-packages-cicd`, and the last is a hand-enumerated recipe — so a new root
+that no coverage tree measures has to be added there as well, on its own `cd <dir> && $(PYTEST_HERMETIC) …` line if it
 defines a module named `index`. `scripts/tests/test_src_lambda_tests_in_ci.py` derives
 both sides and fails until you do; 22 roots holding 506 tests were in `RUN_ROOTS` and
 in neither CI before it was generalised beyond `src/lambda/`. Everything gated goes
