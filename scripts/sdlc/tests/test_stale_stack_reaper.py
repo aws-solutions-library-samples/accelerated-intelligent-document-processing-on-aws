@@ -26,15 +26,46 @@ class _FakePaginator:
 
 
 class _FakeCfn:
-    def __init__(self, summaries):
+    """list_stacks, delete_stack and describe_stacks as CloudFormation answers
+    them: a stack whose delete was just issued is still DELETE_IN_PROGRESS (a
+    delete_stack call only starts the delete), a listed stack exists, and any
+    other name does not. ``in_progress`` adds stacks that exist but are left out
+    of the reaper's listing, as DELETE_IN_PROGRESS ones are."""
+
+    def __init__(self, summaries, in_progress=()):
         self._summaries = summaries
+        self._in_progress = set(in_progress)
         self.deleted = []
+        self.described = []
 
     def get_paginator(self, name):
         return _FakePaginator(self._summaries)
 
     def delete_stack(self, StackName):
         self.deleted.append(StackName)
+
+    def describe_stacks(self, StackName):
+        self.described.append(StackName)
+        listed = {x["StackName"] for x in self._summaries}
+        if StackName in self.deleted or StackName in self._in_progress:
+            return {
+                "Stacks": [
+                    {"StackName": StackName, "StackStatus": "DELETE_IN_PROGRESS"}
+                ]
+            }
+        if StackName in listed:
+            return {
+                "Stacks": [{"StackName": StackName, "StackStatus": "CREATE_COMPLETE"}]
+            }
+        raise ClientError(
+            {
+                "Error": {
+                    "Code": "ValidationError",
+                    "Message": f"Stack with id {StackName} does not exist",
+                }
+            },
+            "DescribeStacks",
+        )
 
 
 def _summary(name, age_seconds, root=None, parent=None):
@@ -67,7 +98,45 @@ def test_reaper_deletes_old_stacks(cbd, monkeypatch):
         ],
     )
     cbd.cleanup_stale_idp_stacks()
-    assert set(fake.deleted) == {"idp-0709-211927", "idp-0709-211927-iam"}
+    # The -iam stack waits: its main stack is still deleting through its role.
+    assert fake.deleted == ["idp-0709-211927"]
+
+
+def test_an_iam_stack_whose_main_stack_is_gone_is_reaped(cbd, monkeypatch):
+    """The later night: the main stack has finished deleting, so its -iam stack
+    (and the role in it) goes too."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install(cbd, monkeypatch, [_summary("idp-0709-211927-iam", old)])
+    cbd.cleanup_stale_idp_stacks()
+    assert fake.deleted == ["idp-0709-211927-iam"]
+    assert fake.described == ["idp-0709-211927"]
+
+
+def test_an_iam_stack_waits_for_a_main_stack_the_listing_omits(cbd, monkeypatch):
+    """The listing leaves out DELETE_IN_PROGRESS stacks, the one state in which
+    removing the -iam stack strands the main delete; so existence is asked
+    directly."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install(cbd, monkeypatch, [_summary("idp-0709-211927-iam", old)])
+    fake._in_progress = {"idp-0709-211927"}
+    cbd.cleanup_stale_idp_stacks()
+    assert fake.deleted == []
+
+
+def test_an_unanswered_existence_check_keeps_the_role(cbd, monkeypatch):
+    """Fails closed: a describe error other than "does not exist" defers."""
+    old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
+    fake = _install(cbd, monkeypatch, [_summary("idp-0709-211927-iam", old)])
+
+    def throttled(StackName):
+        raise ClientError(
+            {"Error": {"Code": "Throttling", "Message": "Rate exceeded"}},
+            "DescribeStacks",
+        )
+
+    fake.describe_stacks = throttled
+    cbd.cleanup_stale_idp_stacks()
+    assert fake.deleted == []
 
 
 def test_reaper_skips_young_stacks(cbd, monkeypatch):
@@ -123,9 +192,12 @@ def test_reaper_skips_apigw_vpc(cbd, monkeypatch):
     assert fake.deleted == ["idp-0709-211927"]
 
 
-def test_reaper_deletes_main_before_iam(cbd, monkeypatch):
-    # The main stack references its -iam CFServiceRole; deleting -iam first can
-    # strand the main stack. Order: non-iam stacks first, then -iam.
+def test_reaper_never_deletes_an_iam_stack_in_the_same_pass_as_its_main(
+    cbd, monkeypatch
+):
+    # The main stack deletes through its -iam CFServiceRole, and delete_stack only
+    # starts a delete: removing the -iam stack in the same pass stranded the main
+    # stack DELETE_FAILED with no role to retry through.
     old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
     fake = _install(
         cbd,
@@ -138,13 +210,7 @@ def test_reaper_deletes_main_before_iam(cbd, monkeypatch):
         ],
     )
     cbd.cleanup_stale_idp_stacks()
-    # Every -iam delete must come after all non-iam deletes.
-    last_non_iam = max(
-        i for i, n in enumerate(fake.deleted) if not n.endswith("-iam")
-    )
-    first_iam = min(i for i, n in enumerate(fake.deleted) if n.endswith("-iam"))
-    assert last_non_iam < first_iam
-    assert len(fake.deleted) == 4
+    assert sorted(fake.deleted) == ["idp-0709-211927", "idp-0709-211927-headless"]
 
 
 def test_reaper_ignores_non_idp_stacks(cbd, monkeypatch):
@@ -305,7 +371,7 @@ def test_an_expired_marker_lets_the_stack_be_reaped_and_drops_the_marker(
         {"idp-0709-211927": _ago(1)},
     )
     cbd.cleanup_stale_idp_stacks()
-    assert set(fake.deleted) == {"idp-0709-211927", "idp-0709-211927-iam"}
+    assert fake.deleted == ["idp-0709-211927"]  # its -iam stack follows once it is gone
     assert fake.deleted_objects == ["ci-retained/idp-0709-211927.json"]
 
 
@@ -332,16 +398,14 @@ def test_a_marker_for_an_already_deleted_stack_is_dropped(cbd, monkeypatch):
     Enough of these and the ceiling is permanently reached, which turns
     retention off for every later run while still looking enabled.
     """
-    fake = _install_with_markers(
-        cbd, monkeypatch, [], {"idp-0101-000001": _ago(99)}
-    )
+    fake = _install_with_markers(cbd, monkeypatch, [], {"idp-0101-000001": _ago(99)})
     cbd.cleanup_stale_idp_stacks()
     assert fake.deleted == []
     assert fake.deleted_objects == ["ci-retained/idp-0101-000001.json"]
 
 
 def test_an_unparseable_marker_does_not_protect_its_stack(cbd, monkeypatch):
-    """"Cannot tell" must mean "reap it", or a bad write leaks a stack."""
+    """ "Cannot tell" must mean "reap it", or a bad write leaks a stack."""
     old = cbd.IDP_STACK_STALE_AGE_SECONDS + 3600
     fake = _install_with_markers(
         cbd,
