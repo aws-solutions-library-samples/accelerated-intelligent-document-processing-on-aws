@@ -247,13 +247,13 @@ forever, the rule is run as a measurement and ratcheted: per file, the count may
   `npm run lint`, which runs with `--max-warnings 0` inside `npm run build`). It counts JSX text,
   user-facing attributes (`label`, `header`, `placeholder`, `ariaLabel`, ...), object properties
   including Cloudscape `i18nStrings` members, and strings in plain `.ts` modules (labels,
-  breadcrumbs, notifications; `*.export.ts` modules are the exception, below). Its lists run in
-  **exclude mode** only (an include list would hide every descendant of a container it did not
-  name): leaf-valued attributes and keys (`className`, `iconName`, `id`, `href`, CSS properties),
-  explicit callees (`logger.info`, `Object.keys`, `Error` constructors) and full-match patterns
-  for technical tokens (punctuation, units, kebab/snake/dotted ids, URLs, MIME types, CSS values,
-  emoji). The ESLint cache is `.ui-i18n-eslintcache` at the repository root, outside `src/ui` so
-  it does not disturb the `ui-lint` checksum; about 15 s cold, 2.5 s warm.
+  breadcrumbs, notifications). Its lists run in **exclude mode** only (an include list would hide
+  every descendant of a container it did not name): leaf-valued attributes and keys (`className`,
+  `iconName`, `id`, `href`, CSS properties), explicit callees (`logger.info`, `Object.keys`,
+  `Error` constructors) and full-match patterns for technical tokens (punctuation, units,
+  kebab/snake/dotted ids, URLs, MIME types, CSS values, emoji). The ESLint cache is
+  `.ui-i18n-eslintcache` at the repository root, outside `src/ui` so it does not disturb the
+  `ui-lint` checksum; about 15 s cold, 2.5 s warm.
 - **The baseline** is [`scripts/ui_string_debt.json`](../../../../scripts/ui_string_debt.json):
   the pinned count of every file with findings, the sha256 of the counting configuration they
   were measured with, a `highWaterMark` and `newDebtReasons`. It is registered as a count-pinned
@@ -271,17 +271,21 @@ forever, the rule is run as a measurement and ratcheted: per file, the count may
   re-records the smaller count (or removes the entry at zero). `--summary` prints totals and the
   top offenders. `--write` refuses to add a path or raise a count unless given
   `--allow-new-debt "<reason>"`, which it records in `newDebtReasons` so the growth stays
-  reviewable; the justified case is upstream code merged before the gate existed, as the two
-  `chore(ui): absorb upstream ...` commits of the foundation PR show. Export builders whose text
-  is English by design (CSV column headers, generated report headings) stay in the baseline until
-  the conversion PR that touches the screen moves the builder into a sibling `<name>.export.ts`
-  module holding only the export text and the function that assembles it. The counting rule is
-  off for `src/**/*.export.ts` (last object in `eslint.i18n.config.js`), so the module never
-  enters the baseline and the component's count drops; re-record it with `--write`. Never write
-  an `eslint-disable i18next/no-literal-string` comment: `npm run lint` does not register the
-  plugin and rejects the directive as an unknown rule, and registering it without the rule only
-  turns the error into an unused-directive warning that `--max-warnings 0` rejects. A component
-  file is never renamed into the pattern: it would excuse the whole screen.
+  reviewable; the justified cases are upstream code merged before the gate existed, as the two
+  `chore(ui): absorb upstream ...` commits of the foundation PR show, and an export module whose
+  text is English by design (below). Export builders whose text is English by design (CSV column
+  headers, generated report headings) stay counted: the gate does not tell text a user reads on
+  screen from text a user reads in a download, and an exemption by file name would take whatever
+  is written under that name out of the count unseen. Once the conversion PR that touches the
+  screen has declared everything else, the file's entry shrinks to the export text and `--write`
+  records it. To make the remaining entry self-explanatory, move the export text and the function
+  that assembles it into a sibling `<name>.export.ts` module and record the new path once with
+  `--write --allow-new-debt "<path>: <what it exports>, English by design"`: the pinned count is
+  the record, an increase needs another reason, and renaming an existing counted module into the
+  suffix meets the same refusal. Never write an `eslint-disable i18next/no-literal-string`
+  comment: `npm run lint` does not register the plugin and rejects the directive as an unknown
+  rule, and registering it without the rule only turns the error into an unused-directive warning
+  that `--max-warnings 0` rejects.
 
 ```ts
 // test-results.export.ts — the CSV a screen offers for download, English by design
@@ -293,7 +297,7 @@ export function toCsv(rows: string[][]): string {
 ```
 
 `src/ui/src/i18n/__tests__/eslint-i18n-config.test.ts` lints this example through both
-configurations: counted on a plain `.ts` path, silent on an `.export.ts` path, clean under
+configurations: counted by the counting configuration on its own `.export.ts` path, clean under
 `npm run lint`, and the file-local `eslint-disable` comment rejected there as an unknown rule.
 
 **Known gaps, stated with numbers** (measured 2026-11-05 on the tree the baseline was written
