@@ -555,3 +555,43 @@ def test_a_call_with_nothing_to_parse_is_logged(caplog):
     with caplog.at_level("WARNING", logger="idp_common.extraction.tools.table_parser"):
         create_parse_table_tool()()
     assert any("no text to parse" in r.getMessage() for r in caplog.records)
+
+
+def test_a_repeated_index_maps_that_table_once():
+    """A model emitting [0, 0, 1] must not double table 0's rows: the over-count this
+    change exists to remove."""
+    from idp_common.extraction.tools.table_parser import (
+        create_map_table_to_schema_tool,
+    )
+
+    agent = _Agent()
+    create_parse_table_tool(source_text=_FRAGMENTS, auto_merge_adjacent_tables=False)(
+        table_indices=[1, 0, 0], agent=agent
+    )
+    mapped = create_map_table_to_schema_tool()(
+        column_mapping={"Fund": "fund", "Ticker": "ticker"}, agent=agent
+    )
+    assert [r["ticker"] for r in mapped["mapped_rows"]] == ["AAAAX", "BBBBX", "CCCCX"]
+
+
+def test_table_indices_that_all_miss_map_nothing():
+    """Honoured exactly: an explicit selection of nothing must not fall back to every
+    table."""
+    agent = _Agent()
+    create_parse_table_tool(source_text=_TWO_TABLES)(table_indices=[8, 9], agent=agent)
+    assert agent.state.get("last_parse_table_result")["tables"] == []
+
+
+def test_table_indices_take_precedence_over_table_index():
+    """The top level must not describe a table other than the one being mapped."""
+    agent = _Agent()
+    result = create_parse_table_tool(source_text=_TWO_TABLES)(
+        table_index=1, table_indices=[0], agent=agent
+    )
+    assert any("table_index was ignored" in w for w in result["warnings"])
+    stored = agent.state.get("last_parse_table_result")
+    assert [t["columns"] for t in stored["tables"]] == [["Fund", "Ticker"]]
+    # table_index=1 (one row) was not promoted: the top level is the parser's
+    # default view of the first table (two rows).
+    assert result["columns"] == ["Fund", "Ticker"]
+    assert result["row_count"] == 2
