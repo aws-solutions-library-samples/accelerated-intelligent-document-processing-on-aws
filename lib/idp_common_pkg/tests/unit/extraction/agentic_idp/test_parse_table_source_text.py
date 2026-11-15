@@ -645,3 +645,37 @@ def test_combined_quality_sums_counts_and_reindexes_cells():
     assert combined["cells_matched"] == 60
     # Table b's row 4 is row 14 of the selection's concatenated rows.
     assert [c["row"] for c in combined["low_confidence_cells"]] == [2, 14]
+
+
+def test_the_summary_lists_every_table_so_the_agent_can_choose():
+    """table_indices is the only way to scope the mapping, so the result the model
+    reads must say what each index refers to."""
+    result = create_parse_table_tool(source_text=_TWO_TABLES)()
+    listed = result["content"][0]["json"]["tables"]
+    assert listed == [
+        {"index": 0, "columns": ["Fund", "Ticker"], "row_count": 2},
+        {"index": 1, "columns": ["Fund", "Ticker", "Closed"], "row_count": 1},
+    ]
+
+
+def test_one_table_is_not_listed():
+    single = "| Fund | Ticker |\n|---|---|\n| A | AAAAX |\n"
+    result = create_parse_table_tool(source_text=single)()
+    assert "tables" not in result["content"][0]["json"]
+
+
+def test_a_confidence_one_table_lacks_does_not_hide_the_others():
+    from idp_common.extraction.tools.table_parser import _combined_quality
+
+    combined = _combined_quality(
+        [
+            {"row_count": 2, "quality": {"avg_confidence": None}},
+            {"row_count": 2, "quality": {"avg_confidence": 97.0}},
+        ]
+    )
+    assert combined["avg_confidence"] == pytest.approx(97.0)
+
+
+def test_the_system_prompt_names_table_indices():
+    assert "table_indices" in agentic_idp.PARSE_TABLE_STEP_HOLDS_TEXT
+    assert "table_indices" in agentic_idp.PARSE_TABLE_STEP_NEEDS_TEXT

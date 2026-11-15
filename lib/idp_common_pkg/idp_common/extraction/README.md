@@ -1625,7 +1625,7 @@ When `table_parsing.enabled: true`, the extraction agent gains a `parse_table` t
    - Cross-validates low-confidence cells using multimodal reasoning
 
 **What it parses.** The tool parses the section's own OCR text, `--- PAGE N ---`
-markers included: the extraction service passes the text it built the prompt from
+markers included: the extraction service passes the section's OCR text it holds
 (`structured_output(table_source_text=...)`, and each shard's own text on the
 sharded path), and `create_parse_table_tool(source_text=...)` holds it. The agent
 calls `parse_table()` with no `table_text`, and a `table_text` it sends anyway is
@@ -1642,7 +1642,9 @@ table's Markdown. `text_source` in the result says which text was parsed.
 Because the agent can no longer scope the parse by passing a slice of the text,
 `table_indices` names exactly the tables `map_table_to_schema` maps (each once, in
 document order; a list that selects nothing maps nothing), and the result's top
-level and summary then describe just those tables. Same-column tables left out of
+level and summary then describe just those tables (`tables` itself still lists
+every table found, with `tables_found` their number). The summary also lists every
+table found, by index, columns and row count, so the agent can choose. Same-column tables left out of
 the selection are named in a warning, since they may be fragments of a selected
 one. `table_index` only chooses which table the top level shows, as before; it
 does not change what is mapped. To have the parser read Markdown the agent
