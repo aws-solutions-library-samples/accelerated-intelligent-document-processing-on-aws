@@ -7698,9 +7698,10 @@ def teardown_primary_stack(result, stack_name, terraform=None):
         print(
             f"[{stack_name}]     kept with it: {stack_name}-iam and "
             f"{stack_name}-PermissionsBoundary — the retained stack's roles carry "
-            "that boundary and its deletion needs that service role. Reaped by "
-            "cleanup_stale_idp_stacks / cleanup_stale_idp_policies once the "
-            "retention marker expires."
+            "that boundary and its deletion needs that service role. Once the "
+            "retention marker expires, cleanup_stale_idp_stacks reaps the stack, "
+            "and its -iam stack on a later run once the stack is gone; "
+            "cleanup_stale_idp_policies reaps the boundary."
         )
         return {"retained": True, "findings": []}
 
@@ -8510,20 +8511,24 @@ def cleanup_stale_ci_diagnostics():
 IDP_STACK_STALE_AGE_SECONDS = 3 * 3600  # 3h
 
 
-def _stack_still_exists(cf, name: str) -> bool:
-    """Whether CloudFormation still has a stack called ``name`` (in any state
-    other than DELETE_COMPLETE), asked directly rather than read from a listing:
-    the reaper's own list_stacks filter omits DELETE_IN_PROGRESS, which is
-    exactly the state in which deleting the stack's -iam pre-stack strands it.
+def _main_stack_state(cf, name: str):
+    """``("gone", None)``, ``("exists", status)`` or ``("unknown", error)`` for
+    the stack called ``name``, asked with describe_stacks rather than read from a
+    listing: the reaper's own list_stacks filter omits DELETE_IN_PROGRESS (and
+    several wedged states), which are exactly the states in which deleting the
+    stack's -iam pre-stack strands it.
 
-    Fails closed: any answer other than "does not exist" counts as existing, so
-    an unreadable stack keeps the service role it may still need.
+    Only an answer :func:`_is_stack_gone` accepts counts as gone; any other
+    failure, a throttle or a denial included, establishes nothing, so the caller
+    keeps the service role.
     """
     try:
         stacks = cf.describe_stacks(StackName=name).get("Stacks", [])
     except Exception as e:  # noqa: BLE001
-        return "does not exist" not in str(e)
-    return any(st.get("StackStatus") != "DELETE_COMPLETE" for st in stacks)
+        return ("gone", None) if _is_stack_gone(e) else ("unknown", str(e))
+    live = [st.get("StackStatus", "") for st in stacks]
+    live = [x for x in live if x != "DELETE_COMPLETE"]
+    return ("exists", live[0]) if live else ("gone", None)
 
 
 def cleanup_stale_idp_stacks(terraform_runs=None):
@@ -8553,8 +8558,11 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
     describe_stacks: the main stack deletes through the CFServiceRole the `-iam`
     stack holds, and deleting both in one pass stranded the main stack
     DELETE_FAILED with no role to retry through. Until then the `-iam` stack is
-    deferred to a later run; one whose main stack was already DELETE_FAILED when
-    listed is reported as a finding, since waiting cannot fix that.
+    deferred to a later run. One held by a main stack that waiting will not
+    resolve (DELETE_FAILED before the retry, or any state other than
+    DELETE_IN_PROGRESS), or whose existence could not be established, is reported
+    with a warning and a count; neither is a sweep finding, since every stack was
+    considered.
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
     by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and each
@@ -8799,17 +8807,27 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
         # listing, before tonight's retry): the role is still kept, so the retry
         # can work, but the pair is reported as a finding, since a main stack
         # that keeps failing would otherwise pin its roles with no signal.
-        deferred_iam, stuck_mains = [], []
+        deferred_iam, stuck_mains, unestablished_mains = [], {}, {}
         for name in iam_stacks:
             main = name[: -len("-iam")]
-            if _stack_still_exists(cf, main):
+            state, detail = _main_stack_state(cf, main)
+            if state == "gone":
+                pass
+            elif state == "unknown":
                 deferred_iam.append(name)
-                if listed_status.get(main) == "DELETE_FAILED":
-                    stuck_mains.append(main)
-                print(
-                    f"[{name}] deferred: its main stack {main} still exists, and "
-                    "deletes through this stack's service role"
-                )
+                unestablished_mains[main] = detail
+                continue
+            else:
+                deferred_iam.append(name)
+                if detail != "DELETE_IN_PROGRESS":
+                    stuck_mains[main] = detail  # wedged; waiting alone won't do it
+                elif listed_status.get(main) == "DELETE_FAILED":
+                    stuck_mains[main] = "DELETE_FAILED before this retry"
+                else:
+                    print(
+                        f"[{name}] deferred: its main stack {main} is still "
+                        "deleting, through this stack's service role"
+                    )
                 continue
             try:
                 print(f"[{name}] reaping stale idp- stack...")
@@ -8835,15 +8853,26 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
         if bucket:
             for name in expired:
                 _drop_retention_marker(bucket, name)
-        findings = []
-        if stuck_mains:
-            findings += _sweep_finding(
-                f"{len(stuck_mains)} run(s) whose main stack was already "
-                "DELETE_FAILED before this retry, so their -iam stacks and roles "
-                "are kept (the retry needs the role) and will stay until the main "
-                "delete succeeds; read each stack's events: "
-                + ", ".join(sorted(stuck_mains))
+        # Reported, not returned: the sweep considered every stack, and ending
+        # every build red until a person fixes a wedged stack would make this
+        # row worth less as the report of a sweep that genuinely did not run.
+        for main, status in sorted(stuck_mains.items()):
+            print(
+                f"  ⚠️ {main}-iam kept: its main stack {main} is {status}, which "
+                "waiting will not resolve; its roles stay until that stack is "
+                "deleted (read its events)"
             )
+        for main, why in sorted(unestablished_mains.items()):
+            print(
+                f"  ⚠️ {main}-iam kept: could not establish whether {main} still "
+                f"exists ({why}); keeping the service role, re-checked next run"
+            )
+        if stuck_mains or unestablished_mains:
+            print(
+                f"  ({len(stuck_mains)} -iam stack(s) held by a wedged main stack, "
+                f"{len(unestablished_mains)} by an unanswered existence check)"
+            )
+        findings = []
         if left_behind:
             findings += _sweep_finding(
                 "deleted Terraform label stack(s) with no state left, and their "
