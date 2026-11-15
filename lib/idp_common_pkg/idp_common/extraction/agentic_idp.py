@@ -1065,10 +1065,13 @@ table tools, or there was no large table, do not add this note.
 PARSE_TABLE_STEP_HOLDS_TEXT = (
     "2. Call parse_table with NO table_text — it already holds the document text and\n"
     "   parses ALL its tables instantly. Do not copy the document into the call.\n"
+    "   When several tables are found, the result lists each one (index, columns,\n"
+    "   row_count); pass table_indices to choose exactly which ones are mapped.\n"
 )
 PARSE_TABLE_STEP_NEEDS_TEXT = (
     "2. Call parse_table with the table's Markdown as table_text — parses ALL tables\n"
-    "   in it instantly\n"
+    "   in it instantly. When several are found, the result lists each one; pass\n"
+    "   table_indices to choose exactly which ones are mapped.\n"
 )
 
 TABLE_PARSING_PROMPT_ADDENDUM = """
@@ -1080,6 +1083,8 @@ PREFERRED WORKFLOW (fast — use for tables with 50+ rows):
 1. Extract non-table scalar fields first (e.g. account_number, statement_period)
 2. Call parse_table with NO table_text — it already holds the document text and
    parses ALL its tables instantly. Do not copy the document into the call.
+   When several tables are found, the result lists each one (index, columns,
+   row_count); pass table_indices to choose exactly which ones are mapped.
 3. Review the columns and row_count returned
 4. Call map_table_to_schema with:
    - column_mapping: maps each table column to the corresponding schema field
@@ -2371,7 +2376,8 @@ async def structured_output_async(
             markers, for the ``parse_table`` tool to parse when table parsing is
             enabled. With it the tool ignores any ``table_text`` the model sends and
             the prompt tells the model to pass none; without it the tool parses the
-            ``table_text`` it is given. Pass the text the prompt was built from.
+            ``table_text`` it is given. Pass the section's OCR text, the same text
+            ``{DOCUMENT_TEXT}`` is built from.
         strands_throttle_retries: Keep Strands' default ``ModelRetryStrategy``,
                      which retries a throttle inside each model call (default
                      True). Agentic extraction passes False: its calls sit inside
@@ -2516,7 +2522,7 @@ async def structured_output_async(
             confidence_data_by_page=_active_confidence_data_var.get(),
             max_empty_line_gap=table_parsing_config.max_empty_line_gap,
             auto_merge_adjacent_tables=table_parsing_config.auto_merge_adjacent_tables,
-            # The section text the caller built the prompt from, so the tool
+            # The section's OCR text, as the caller holds it, so the tool
             # parses the OCR itself rather than a copy the model retypes. Passed
             # explicitly, not through a ContextVar: structured_output can run this
             # on a fresh thread, which starts with an empty context.

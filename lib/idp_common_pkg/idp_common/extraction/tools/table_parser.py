@@ -954,16 +954,24 @@ def _combined_quality(tables: list[dict[str, Any]]) -> dict[str, Any]:
     qualities = [t.get("quality") or {} for t in tables]
     combined: dict[str, Any] = {}
     for key in dict.fromkeys(k for q in qualities for k in q):
-        values = [(q[key], w) for q, w in zip(qualities, weights) if key in q]
+        values = [
+            (q[key], w)
+            for q, w in zip(qualities, weights)
+            if key in q and q[key] is not None
+        ]
+        if not values:
+            combined[key] = None
+            continue
+        # Averaged over the tables that have the key, so a table without (for
+        # example) avg_confidence does not hide another table's.
         first = values[0][0]
         if key in ("empty_cell_count", "total_cells", "cells_matched"):
             combined[key] = sum(v for v, _ in values)
         elif isinstance(first, bool):
             combined[key] = all(v for v, _ in values)
         elif isinstance(first, (int, float)):
-            present = [(v, w) for v, w in values if v is not None]
-            weight = sum(w for _, w in present) or total
-            combined[key] = sum(v * w for v, w in present) / weight
+            weight = sum(w for _, w in values) or total
+            combined[key] = sum(v * w for v, w in values) / weight
         elif isinstance(first, list):
             # Cells name a row of their own table; the selection's rows are the
             # tables' rows concatenated, so shift each by the rows before it.
@@ -1362,6 +1370,17 @@ def create_parse_table_tool(
         if "mapped_table_indices" in result:
             summary["mapped_table_indices"] = result["mapped_table_indices"]
             summary["tables_found"] = result["tables_found"]
+        if len(tables_found) > 1:
+            # What the indices refer to, so the agent can choose table_indices
+            # without re-calling once per table. A few tokens per table.
+            summary["tables"] = [
+                {
+                    "index": i,
+                    "columns": t.get("columns", []),
+                    "row_count": t.get("row_count", 0),
+                }
+                for i, t in enumerate(tables_found)
+            ]
 
         # Return dict carries BOTH the compact ``content`` (what Strands re-sends
         # to the model every turn) AND the full top-level keys (rows/tables/...)

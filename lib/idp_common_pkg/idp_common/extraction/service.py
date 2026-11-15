@@ -872,8 +872,8 @@ class ExtractionService:
 
         ``scope_note`` is an optional paragraph inserted directly after the
         page-marker rule, so it can qualify it. The sharded call sites pass
-        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
-        wrong when read from inside a shard); the single-agent path passes
+        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for how the block reads
+        from inside a shard); the single-agent path passes
         nothing. The block's wording is pinned by a unit test
         (``test_block_is_byte_identical_to_the_pinned_text``), so a change to the
         instruction every table-parsing agent reads is deliberate. It is not the
