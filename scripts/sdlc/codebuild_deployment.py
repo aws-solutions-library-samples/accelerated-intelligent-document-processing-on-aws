@@ -8534,10 +8534,10 @@ def _main_stack_state(cf, name: str):
 def _main_stack_converges(status: str) -> bool:
     """Whether a main stack in ``status`` resolves without a person.
 
-    A *_IN_PROGRESS stack is still deploying or deleting. A *_COMPLETE one (a
-    run inside the age gate, or one whose age could not be established) is in
-    the listing and is deleted by a later run's age gate. Neither warrants a
-    warning. REVIEW_IN_PROGRESS (a change set nobody executes) and every
+    A *_IN_PROGRESS stack is still deploying or deleting. A *_COMPLETE one is
+    in the listing: inside the age gate, a later run's age gate deletes it; with
+    an age that could not be established, it is reported on its own line by the
+    age gate instead. Neither warrants a warning here. REVIEW_IN_PROGRESS (a change set nobody executes) and every
     *_FAILED state stay where they are, so those are reported.
     """
     if status == "REVIEW_IN_PROGRESS" or status.endswith("_FAILED"):
@@ -12881,9 +12881,10 @@ def main():
             "\n".join(f"• {note}" for note in terraform_reaps_abandoned)
         )
     if iam_stacks_kept:
-        # Not fatal either: the stack sweep keeps a -iam stack (and the run's
-        # roles in it) for a main stack waiting will not delete.
-        consolidated += "\n\n⚠️ IDP STACKS NEEDING A MANUAL DELETE\n" + (
+        # Not fatal either: the stack sweep kept a -iam stack (and the run's
+        # roles in it) because its main stack is not gone. Each note says
+        # whether a person needs to act; only a wedged main stack does.
+        consolidated += "\n\n⚠️ IDP -IAM STACKS KEPT — MAIN STACK NOT GONE\n" + (
             "\n".join(f"• {note}" for note in iam_stacks_kept)
         )
     print(f"\n{consolidated}\n")

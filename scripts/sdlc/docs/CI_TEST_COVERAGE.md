@@ -2569,6 +2569,26 @@ policies — and expires diagnostics bundles past their 30-day window. All but
 the BDA reaper are **age-gated**, so a concurrent pipeline's in-flight run is
 never touched; that one is gated on its run's surviving stacks instead.
 
+**The stack reaper deletes a run's `-iam` stack only once its main stack is
+gone.** The main stack deletes through the `CFServiceRole` that the `-iam` stack
+holds, and `delete_stack` only *starts* a delete. Deleting both in one pass
+therefore removed the role while the main delete was still running, which left
+the main stack `DELETE_FAILED` with no role to retry through. So the reaper asks
+`DescribeStacks` about each stale `-iam` stack's main stack. When the main stack
+is still deleting or deploying, or is complete but not yet past the age gate, the
+`-iam` stack is deferred quietly to a later run. Keeping it also keeps the run's
+prefix live for the IAM-role and IAM-policy reapers, which spares the role the
+retry needs. When the main stack is in a state waiting will not resolve (any
+`*_FAILED` state, or `REVIEW_IN_PROGRESS`), was `DELETE_FAILED` and was retried
+this run, or its existence could not be established, the pair is printed as a
+⚠️ and listed under `⚠️ IDP -IAM STACKS KEPT — MAIN STACK NOT GONE` in the run
+summary. None of these is a sweep finding, so they do not fail the run. Only
+the first kind needs a person (delete the main stack; the `-iam` stack goes on
+a later run). A retry note that recurs night after night means the retry is
+failing too. `cleanup_stack` still deletes a run's own `-iam` stack after
+`idp-cli delete --wait`, even when that wait timed out, so a timed-out teardown
+can still produce such a pair.
+
 **One stack is left standing at any age: `idp-ux-nightly`**, the name reserved
 for a long-lived review stack that is updated in place rather than created per
 run (`SWEEP_EXEMPT_STACK_NAMES` in `codebuild_deployment.py`). The stack and
