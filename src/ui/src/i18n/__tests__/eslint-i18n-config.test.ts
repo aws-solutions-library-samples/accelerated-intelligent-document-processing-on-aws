@@ -8,8 +8,8 @@
  * blind spot it has by construction — strings inside a `const ALL_CAPS = ...` declaration — so the
  * known gap declared in `scripts/check_ui_string_debt.py` is measured here rather than assumed.
  * Also pins the README's example of an English-by-design export module against both configurations:
- * counted on a plain `.ts` path, silent on an `.export.ts` path, clean under `npm run lint`, and the
- * file-local `eslint-disable` comment the README forbids rejected there as an unknown rule.
+ * counted by the counting configuration on its own `.export.ts` path, clean under `npm run lint`, and
+ * the file-local `eslint-disable` comment the README forbids rejected there as an unknown rule.
  */
 import { ESLint } from 'eslint';
 import { readFileSync } from 'node:fs';
@@ -27,13 +27,15 @@ const buildLinter = new ESLint({ cwd: UI_ROOT, overrideConfigFile: 'eslint.confi
 
 /**
  * The README's example of an export module, read off the file so the test lints the text a reader
- * copies: the one fence tagged `ts`, at column 0. No dedent logic on purpose: an edit that indents
- * the fence fails here by name instead of being repaired in silence.
+ * copies: the fence tagged `ts`, at column 0, whose first line is the example's own filename comment.
+ * Another `ts` fence elsewhere on the page is not this example and does not fail here. No dedent
+ * logic on purpose: an edit that indents the fence fails here by name instead of being repaired in
+ * silence.
  */
 const readmeExample = (): string => {
   const readme = readFileSync(join(UI_ROOT, 'src/i18n/README.md'), 'utf8');
-  const examples = [...readme.matchAll(/^```ts\n([\s\S]*?)\n```$/gm)].map(([, code]) => code);
-  expect(examples, 'the README must carry exactly one `ts` example: that is what this test lints').toHaveLength(1);
+  const examples = [...readme.matchAll(/^```ts\n(\/\/ test-results\.export\.ts[^\n]*\n[\s\S]*?)\n```$/gm)].map(([, code]) => code);
+  expect(examples, 'the README must carry the export-module example exactly once, opening with its filename comment').toHaveLength(1);
   return `${examples[0]}\n`;
 };
 
@@ -150,14 +152,10 @@ describe('eslint.i18n.config.js, the counting rule of the UI string-debt ratchet
 });
 
 describe('the README example of an English-by-design export module', () => {
-  it('is left alone by the counting configuration on an .export.ts path', async () => {
-    const [result] = await eslint.lintText(readmeExample(), { filePath: 'src/components/probe/results.export.ts' });
-    expect(result.messages).toEqual([]);
-  });
-
-  it('is counted by the counting configuration on a plain .ts path', async () => {
-    const [result] = await eslint.lintText(readmeExample(), { filePath: 'src/components/probe/results.ts' });
-    expect(result.messages.length, 'the header strings are findings once the file name leaves the pattern').toBeGreaterThan(0);
+  it('is counted by the counting configuration even on its .export.ts path', async () => {
+    // The suffix is a naming convention for the reader; the counter does not know it.
+    const [result] = await eslint.lintText(readmeExample(), { filePath: 'src/components/probe/test-results.export.ts' });
+    expect(result.messages.length, 'the header strings are findings on the .export.ts path too').toBeGreaterThan(0);
     const other = result.messages.filter((m) => m.ruleId !== RULE);
     expect(other, 'only the counting rule may report').toEqual([]);
     // Line 2 of the example is the header array. The count itself is not pinned, so a rewording of
@@ -167,16 +165,16 @@ describe('the README example of an English-by-design export module', () => {
   });
 
   it('passes the build configuration on the .export.ts path', async () => {
-    const [result] = await buildLinter.lintText(readmeExample(), { filePath: 'src/components/probe/results.export.ts' });
+    const [result] = await buildLinter.lintText(readmeExample(), { filePath: 'src/components/probe/test-results.export.ts' });
     expect(result.messages, 'warnings included: `npm run lint` runs with --max-warnings 0').toEqual([]);
   });
 
   it('cannot use the file-local eslint-disable comment the README forbids', async () => {
-    // The premise of the pattern: the build configuration never registers eslint-plugin-i18next, so
+    // The premise of the recipe: the build configuration never registers eslint-plugin-i18next, so
     // ESLint reports the directive as naming an unknown rule. If the build configuration ever
     // registers the plugin, this message changes and the README paragraph must be revisited.
     const code = `/* eslint-disable i18next/no-literal-string */\n${readmeExample()}`;
-    const [result] = await buildLinter.lintText(code, { filePath: 'src/components/probe/results.export.ts' });
+    const [result] = await buildLinter.lintText(code, { filePath: 'src/components/probe/test-results.export.ts' });
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].severity).toBe(2);
     expect(result.messages[0].ruleId).toBe(RULE);
