@@ -890,6 +890,16 @@ class ExtractionService:
         columns = preflight_parse_result.get("columns", [])
         table_count = preflight_parse_result.get("table_count", 0)
         scope_paragraph = f"{scope_note}\n\n" if scope_note else ""
+        # Only when several tables were found, so a single-table section's
+        # instruction is unchanged. map_table_to_schema maps every table parsed,
+        # and the agent can no longer scope that by passing a slice of the text.
+        choose_tables = (
+            "   Several tables were found: its result lists each one (index, "
+            "columns, row_count). If only some belong in the array field, pass "
+            "table_indices to name them.\n"
+            if table_count > 1
+            else ""
+        )
 
         guidance = (
             f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
@@ -906,6 +916,7 @@ class ExtractionService:
             f"1. Extract scalar fields from your pages' text\n"
             f"2. Call parse_table with no table_text: it parses the document "
             f"text you were given itself\n"
+            f"{choose_tables}"
             f"3. Call map_table_to_schema with column_mapping + static_fields\n"
             f"   (merged rows are auto-split — no manual handling needed)\n"
             f"4. Call finalize_table_extraction with table_array_field + "
@@ -3038,6 +3049,8 @@ You MUST use the parse_table tool for complete and accurate extraction:
 1. IMMEDIATELY call parse_table with NO table_text: it already holds the document
    text and parses every page of it. Do not copy the document into the call.
 2. DO NOT attempt manual row-by-row LLM extraction for large tables
+   (if the section holds several tables, pass table_indices to map only the ones
+   the schema field is for)
 3. Verify parse_table returned ALL expected rows (check row_count in response)
 4. If parse_table returns fewer rows than expected, investigate warnings and ensure all
    table fragments are parsed (tables may be split across pages)
@@ -3063,6 +3076,7 @@ You MUST use the parse_table tool for accurate and complete extraction:
 
 1. Call parse_table with NO table_text: it already holds the document text
 2. The tool handles OCR artifacts (empty lines, page breaks) automatically
+   (if several tables are found, pass table_indices to map only the right ones)
 3. Verify the row_count matches your expectation
 4. Review any warnings about table fragmentation
 5. Map the parsed columns to the required schema fields
