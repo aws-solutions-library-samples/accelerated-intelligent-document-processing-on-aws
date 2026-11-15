@@ -2574,7 +2574,7 @@ except Exception as e:
 ## Complete Example
 
 ```python
-from idp_sdk import IDPClient, RerunStep
+from idp_sdk import DocumentBucket, IDPClient, RerunStep
 import time
 
 # Initialize client
@@ -2584,12 +2584,17 @@ client = IDPClient(stack_name="my-idp-stack", region="us-west-2")
 doc_result = client.document.process(file_path="./invoice.pdf")
 doc_id = doc_result.document_id
 
-# Monitor document processing
+# Monitor document processing. Stop on an outcome, or when the document is
+# held for human review (nothing more happens until a reviewer works it).
 while True:
     status = client.document.get_status(document_id=doc_id)
     print(f"Status: {status.status.value}")
 
-    if status.status.value in ["COMPLETED", "FAILED"]:
+    if status.bucket in (
+        DocumentBucket.COMPLETED,
+        DocumentBucket.FAILED,
+        DocumentBucket.AWAITING_REVIEW,
+    ):
         break
 
     time.sleep(5)

@@ -54,7 +54,7 @@ def create_progress_bar(status_data: Dict) -> Progress:
 #: Where a reviewer works a document the monitor reports as awaiting review.
 REVIEW_LOCATION_HINT = (
     "Work them in the web UI's review queues "
-    "(Home > Queues, or Review Studio > Review Management for an Admin)."
+    "(Home › Queues, or Review Studio › Review Management for an Admin)."
 )
 
 
@@ -286,7 +286,11 @@ def show_final_summary(status_data: Dict, stats: Dict, elapsed_time: float):
         "Completed Successfully", str(stats["completed"]), style="green"
     )
     summary_table.add_row("Failed", str(stats["failed"]), style="red")
-    summary_table.add_row("Awaiting Review", str(len(awaiting)), style="magenta")
+    summary_table.add_row(
+        "Awaiting Review",
+        str(stats.get("awaiting_review", len(awaiting))),
+        style="magenta",
+    )
     summary_table.add_row("Success Rate", f"{stats['success_rate']:.1f}%")
     summary_table.add_row("Average Duration", f"{stats['avg_duration_seconds']:.1f}s")
     summary_table.add_row("Total Time", f"{elapsed_time:.1f}s")

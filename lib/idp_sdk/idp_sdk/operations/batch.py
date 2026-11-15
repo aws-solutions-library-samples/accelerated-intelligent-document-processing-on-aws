@@ -65,10 +65,11 @@ def _batch_started_at(batch_info: Dict) -> Optional[datetime]:
 
 #: The status a one-document lookup reports for each progress bucket, in the
 #: order the buckets are read. Keyed by `DocumentBucket` and asserted to cover
-#: every member by `test_batch_operations_extended.py`, because two hand-written
-#: chains here had no arm for `awaiting_review` and reported a document held for
-#: human review as UNKNOWN (#2022). That bucket reports `HITL_IN_PROGRESS`, the
-#: one status it holds, rather than a label no `DocumentState` defines.
+#: every member by `test_batch_operations_extended.py`, so a bucket added to the
+#: enum cannot fall through to UNKNOWN, which is what a hand-typed chain over the
+#: older four names would do to `awaiting_review` (#2022). That bucket reports
+#: `HITL_IN_PROGRESS`, the one status it holds, rather than a label no
+#: `DocumentState` defines; before it existed a held document read RUNNING.
 _SINGLE_DOCUMENT_STATUS_BY_BUCKET = (
     (DocumentBucket.COMPLETED, "COMPLETED"),
     (DocumentBucket.AWAITING_REVIEW, "HITL_IN_PROGRESS"),

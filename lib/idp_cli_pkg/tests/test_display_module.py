@@ -1241,14 +1241,16 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
     rule is how the polled and waited forms of `status` came to disagree (#1230).
 
     So this is exhaustive over the space the rule reads rather than a sample: every
-    combination of the four buckets being empty or not, crossed with `total` in
-    {0, 1, 2}, `all_complete` in {True, False} and `failed` in {0, 1}. A table of
-    hand-picked cases is what let the original divergence sit unnoticed.
+    combination of the five buckets being empty or not, crossed with `total` in
+    {0, 1, 2}, `all_complete` in {True, False} and `failed` in {0, 1}. The
+    awaiting-review count in `stats` follows its bucket, which is the input the
+    batch arm's review-pending branch reads. A table of hand-picked cases is what
+    let the original divergence sit unnoticed.
     """
     import itertools
 
     checked = 0
-    for pattern in itertools.product([0, 1], repeat=4):
+    for pattern in itertools.product([0, 1], repeat=5):
         for total in (0, 1, 2):
             for all_complete in (True, False):
                 for failed_count in (0, 1):
@@ -1258,6 +1260,8 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
                         "running": [_doc(status="RUNNING")] * pattern[1],
                         "failed": [_doc(status="FAILED")] * pattern[2],
                         "queued": [_doc(status="QUEUED")] * pattern[3],
+                        "awaiting_review": [_doc(status="HITL_IN_PROGRESS")]
+                        * pattern[4],
                     }
                     stats = _stats(
                         total=total,
@@ -1265,6 +1269,7 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
                         failed=failed_count,
                         running=pattern[1],
                         queued=pattern[3],
+                        awaiting_review=pattern[4],
                         all_complete=all_complete,
                     )
                     checked += 1
@@ -1276,7 +1281,7 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
                     )
 
     # The loop has to have run; a generator that produced nothing would pass.
-    assert checked == 192
+    assert checked == 384
 
 
 # ---------------------------------------------------------------------------
@@ -1330,7 +1335,7 @@ def test_the_status_and_bucket_universes_are_not_empty():
 
 @pytest.mark.unit
 def test_the_display_bucket_order_names_exactly_the_sdk_buckets():
-    """`display.py` spells the four bucket keys; a typo would skip a bucket.
+    """`display.py` spells the bucket keys; a typo would skip a bucket.
 
     `_single_document` walks `_BUCKETS_IN_PRECEDENCE_ORDER` and reads
     `status_data.get(name)`, so a misspelled entry is not an error -- it makes

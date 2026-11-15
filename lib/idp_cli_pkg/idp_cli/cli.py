@@ -4505,7 +4505,7 @@ def _monitor_progress(
                 # "gives time for documents to be picked up by the queue and
                 # tracked in DynamoDB" -- and it could never fire: it was reached
                 # only via `has_terminal_docs or waited_long_enough`, and
-                # `all_complete` is `completed + failed == total`, so for any
+                # `all_complete` was then `completed + failed == total`, so for any
                 # non-empty batch `all_complete` already implies
                 # `has_terminal_docs` and the first operand always won. The wait
                 # it described never happened once.

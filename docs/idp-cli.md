@@ -1072,7 +1072,7 @@ for a reviewer. Nothing more happens to it until someone works it, so
 `--monitor` counts it under **Awaiting Review** rather than **Running**, and
 stops once no document is queued or running. The final summary says how many
 documents are awaiting review, lists them, and says where to work them: the
-web UI's review queues (**Home > Queues**, or **Review Studio > Review
+web UI's review queues (**Home › Queues**, or **Review Studio › Review
 Management** for an Admin). Completing or rejecting a review continues the
 document; run `idp-cli status --batch-id <id>` afterwards to see the outcome.
 
