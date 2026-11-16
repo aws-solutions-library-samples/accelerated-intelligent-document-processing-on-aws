@@ -5,6 +5,10 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
+### Changed
+
+- **Amounts in the web UI now read `US$` instead of `$`, in every language.** The document page's Estimated Cost table and modal, Test Studio's cost columns, summary boxes and comparison tables, and the synthetic-document estimate show the explicit symbol, so a reader in a locale with another dollar never has to guess the currency. Decimal places are unchanged, except that the document page now shows unit prices the way Test Studio already does (`US$0.00000024`, never `$2.4e-7`); amounts of 1,000 or more gain a thousands separator (`US$1,234.5000`), and downloaded CSV comparisons keep `$` and write counts as plain digits (https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
+
 ### Fixed
 
 - **Agentic table extraction no longer counts a table's header rows as data on some runs.** `parse_table` now parses the section's own OCR text instead of a copy the agent writes into the call, so a multi-page table whose OCR puts its column labels below a blank header row is parsed the same way on every run (the copy could differ from the OCR and turn the header recovery off), and the agent no longer spends output tokens reproducing the document. Since the agent can no longer scope the parse by passing a slice of the text, a new `table_indices` argument names exactly which tables are mapped. See [Extraction & Confidence](docs/extraction-and-confidence.md) and the [extraction module README](lib/idp_common_pkg/idp_common/extraction/README.md#table-parsing-tool), which documents `table_indices`.

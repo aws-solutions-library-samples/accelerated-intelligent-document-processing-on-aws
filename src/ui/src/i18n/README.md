@@ -130,7 +130,10 @@ that takes a `locale` prop directly.
   only the `currency` part of `formatToParts` with the literal `US$`; digits, separators, the
   space before a trailing symbol and the minus sign (`-US$3.50`, `-3,50 US$`) are the locale's
   own. `fractionDigits` is required because `Intl`'s two-digit default would round a cost of
-  `0.0123` to `0.01`; state today's precision at each site.
+  `0.0123` to `0.01`; state today's precision at each site. Money never goes through
+  `intl.formatNumber`, `<FormattedNumber>` or an ICU `::currency/USD` skeleton: those print the
+  locale's own symbol (`$ US` under `fr-CA`). A message that contains a cost takes the
+  `formatUsDollars` string as a plain argument.
 - **`formatPercent` takes a ratio** (`0.125`, not `12.5`); `Intl` does the ×100.
 - **`formatFixed(value, digits)`** is the locale-aware `toFixed`; `{ useGrouping: false }`
   drops the thousands separator.
@@ -138,13 +141,24 @@ that takes a `locale` prop directly.
   copied to the clipboard, or compared or sorted as text keeps locale-neutral formatting
   (`toFixed`, `String`, `JSON.stringify`): `1 234,50` round-trips through `parseFloat` as `1`,
   and `US$0.0123` through `replace('$', '')` as `NaN`.
+- **`useFormatters()` works without the provider.** Outside `LocaleProvider` (a plain `render`
+  in a test) it formats as `en`, the runtime default, so an English component test needs no
+  provider; the app always mounts one. Its `locale` member is what a component hands to a pure
+  function that takes `locale` (`formatCostUsd(value, locale)`), so component code never calls
+  `useLocale()` for formatting; `useLocale()` still throws without the provider, because
+  switching locale needs it.
 - In `fr-CA`, ICU emits a no-break space as the group separator and before `%` and `US$`; which
   one (U+00A0, or the narrow U+202F) has changed between ICU releases, so tests match those
   positions with `\s` and never name a codepoint. jsdom's `Intl` follows the process locale, so every
   formatting test passes an explicit locale rather than relying on the machine's default.
 
-Nothing calls the helpers yet; PR 2 of the series moves the existing `toLocaleString`, `toFixed`
-and `$` sites over and records the one visible change (`US$`) in the CHANGELOG.
+Every displayed date, time and amount goes through the helpers, and so does nearly every
+number. What remains on `toFixed` or `toLocaleString` is either technical (exports,
+parse-backs, text comparisons, debug timings, chart data) or one of the exceptions named here:
+the test-run comparison's colour-graded cells and its field-metrics string, which are parsed
+back; the sentence builders in `promptCacheModel.ts` and `review-api.ts`, converted with their
+screens; and the capacity planner's quota strings, a follow-up. The comparison screen's CSV test
+pins an export beside its localized cell.
 
 ## Catalogs and the build
 
@@ -423,9 +437,12 @@ Admin, configuration and Test Studio screens (the configuration editor, includin
 is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
 invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; extension UIs built before the Feature Platform passes
-the locale, and feature `displayName`s; backend error texts until they carry stable codes; and
-document data, always. The remaining PRs of the series (formatting call sites, the screens area
-by area, the Feature Platform locale, review tooling, enabling `fr-CA`, Cognito persistence, the
-configuration editor, error codes, agent-convention docs) are listed in
+headers and generated report headings; the relative-time literal "just now", the unit suffixes
+on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
+built in template strings (`${progressPct}%`) and the stored ISO timestamps the Documents list
+shows as submitted and completed times, until their screens convert; extension UIs built
+before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
+until they carry stable codes; and document data, always. The remaining PRs of the series (the
+screens area by area, the Feature Platform locale, review tooling, enabling `fr-CA`, Cognito
+persistence, the configuration editor, error codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).

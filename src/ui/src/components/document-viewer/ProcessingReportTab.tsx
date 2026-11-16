@@ -15,6 +15,7 @@ import {
 
 import { describePromptCache } from '../common/promptCacheModel';
 import type { PromptCacheSummary } from '../common/promptCacheModel';
+import { useFormatters } from '../../i18n/format';
 
 interface Violation {
   field: string;
@@ -347,6 +348,7 @@ const ProcessFlow: React.FC<{ stages: FlowStage[] }> = ({ stages }) => (
 );
 
 const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, processingReport, inferenceResult, processingIssues }) => {
+  const { formatFixed, formatNumber, formatPercent } = useFormatters();
   if (!metadata) {
     return (
       <Box padding="l" textAlign="center" color="text-status-inactive">
@@ -436,7 +438,7 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
           <Header
             variant="h2"
             description={`${isAgentic ? 'Agentic' : 'Standard'} extraction${
-              metadata.extraction_time_seconds ? ` · ${metadata.extraction_time_seconds.toFixed(1)}s` : ''
+              metadata.extraction_time_seconds ? ` · ${formatFixed(metadata.extraction_time_seconds, 1)}s` : ''
             }`}
           >
             Extraction Outcome
@@ -455,7 +457,7 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
               <div>
                 <Box variant="awsui-key-label">Data extracted</Box>
                 <Box>
-                  {listRows > 0 ? `${listRows.toLocaleString()} row(s)` : `${scalarFields} field(s)`}
+                  {listRows > 0 ? `${formatNumber(listRows)} row(s)` : `${scalarFields} field(s)`}
                   {listRows > 0 && scalarFields > 0 ? ` + ${scalarFields} field(s)` : ''}
                 </Box>
               </div>
@@ -530,8 +532,7 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                 <div>
                   <Box variant="awsui-key-label">Model window</Box>
                   <Box>
-                    in {((sizing.max_input_tokens || 0) / 1000).toLocaleString()}K / out{' '}
-                    {((sizing.max_output_tokens || 0) / 1000).toLocaleString()}K
+                    in {formatNumber((sizing.max_input_tokens || 0) / 1000)}K / out {formatNumber((sizing.max_output_tokens || 0) / 1000)}K
                   </Box>
                 </div>
                 <div>
@@ -541,10 +542,8 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                 <div>
                   <Box variant="awsui-key-label">Shard budget (auto)</Box>
                   <Box>
-                    ~{(sizing.shard_token_budget || 0).toLocaleString()} tok · {sizing.max_pages_per_shard} pg/shard
-                    {sizing.prompt_overhead_tokens
-                      ? ` · after ~${sizing.prompt_overhead_tokens.toLocaleString()} tok of prompt overhead`
-                      : ''}
+                    ~{formatNumber(sizing.shard_token_budget || 0)} tok · {sizing.max_pages_per_shard} pg/shard
+                    {sizing.prompt_overhead_tokens ? ` · after ~${formatNumber(sizing.prompt_overhead_tokens)} tok of prompt overhead` : ''}
                   </Box>
                 </div>
                 <div>
@@ -745,14 +744,14 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                 {metadata.ocr_analysis?.estimated_row_count !== undefined && (
                   <div>
                     <Box variant="awsui-key-label">Table rows seen in OCR (estimate)</Box>
-                    <Box>~{metadata.ocr_analysis.estimated_row_count.toLocaleString()}</Box>
+                    <Box>~{formatNumber(metadata.ocr_analysis.estimated_row_count)}</Box>
                   </div>
                 )}
                 {stats && (
                   <>
                     <div>
                       <Box variant="awsui-key-label">Rows parsed by tool</Box>
-                      <Box>{(stats.rows_parsed || 0).toLocaleString()}</Box>
+                      <Box>{formatNumber(stats.rows_parsed || 0)}</Box>
                     </div>
                     <div>
                       <Box variant="awsui-key-label">Parse success rate</Box>
@@ -761,7 +760,7 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
                     {stats.confidence_available && stats.avg_confidence !== undefined && (
                       <div>
                         <Box variant="awsui-key-label">Avg OCR confidence</Box>
-                        <Box>{stats.avg_confidence.toFixed(1)}%</Box>
+                        <Box>{formatPercent(stats.avg_confidence / 100, { fractionDigits: 1 })}</Box>
                       </div>
                     )}
                   </>
@@ -769,8 +768,8 @@ const ProcessingReportTab: React.FC<ProcessingReportTabProps> = ({ metadata, pro
               </ColumnLayout>
               {inferenceResult && listRows > 0 && metadata.ocr_analysis?.estimated_row_count !== undefined && (
                 <Box padding={{ top: 'xs' }} fontSize="body-s" color="text-status-inactive">
-                  The OCR estimate (~{metadata.ocr_analysis.estimated_row_count.toLocaleString()}) is a pre-extraction guess and may differ
-                  from the {listRows.toLocaleString()} row(s) actually extracted (the authoritative count, shown in Document Data).
+                  The OCR estimate (~{formatNumber(metadata.ocr_analysis.estimated_row_count)}) is a pre-extraction guess and may differ
+                  from the {formatNumber(listRows)} row(s) actually extracted (the authoritative count, shown in Document Data).
                 </Box>
               )}
               {stats?.warnings && stats.warnings.length > 0 && (

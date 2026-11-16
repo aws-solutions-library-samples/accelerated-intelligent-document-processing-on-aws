@@ -34,6 +34,7 @@ import useConfigPrefixMappings, {
 import ConfigRevisionSelector from '../common/ConfigRevisionSelector';
 import TenantsSection from './TenantsSection';
 import { prefixError, storedPrefix, type MatchMode } from '../../utils/config-prefix-key';
+import { useFormatters } from '../../i18n/format';
 
 /**
  * Admin page for config prefix mappings: an S3 prefix in the Input bucket to a
@@ -162,6 +163,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
   // The hook already fetches once on mount, which is what this page needs.
   const { versions, loading: versionsLoading, error: versionsError } = useConfigurationVersions();
   const { mappings, loading, error, setError, loadMappings, saveMapping, removeMapping, previewAssignment } = useConfigPrefixMappings();
+  const { formatDateTime } = useFormatters();
 
   const [showForm, setShowForm] = useState(false);
   const [editingPrefix, setEditingPrefix] = useState<string | null>(null);
@@ -395,7 +397,7 @@ const ConfigPrefixMappingsLayout = (): React.JSX.Element => {
       header: 'Last changed',
       cell: (m: ConfigPrefixMapping) => (
         <SpaceBetween size="xxs">
-          <Box fontSize="body-s">{m.updatedAt ? new Date(m.updatedAt).toLocaleString() : '—'}</Box>
+          <Box fontSize="body-s">{m.updatedAt ? formatDateTime(new Date(m.updatedAt)) : '—'}</Box>
           <Box fontSize="body-s" color="text-body-secondary">
             {m.updatedBy ?? ''}
           </Box>

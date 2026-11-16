@@ -8,6 +8,7 @@ import { ButtonDropdown, Button } from '@cloudscape-design/components';
 import { listChatSessions, deleteChatSession, getChatMessages } from '../../graphql/generated';
 
 import type { ChatMessage } from '../../types/agent-chat';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 const logger = new ConsoleLogger('AgentChatHistoryDropdown');
@@ -42,6 +43,7 @@ const AgentChatHistoryDropdown = ({
   const [selectedOption, setSelectedOption] = useState<SelectedOption | null>(null);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
   const lastFetchTimeRef = useRef(0);
+  const { formatDateTime } = useFormatters();
 
   const fetchChatSessions = async (force = false) => {
     // Don't fetch if we're already loading
@@ -209,7 +211,7 @@ const AgentChatHistoryDropdown = ({
       if (Number.isNaN(date.getTime())) {
         return 'Unknown date';
       }
-      return date.toLocaleString();
+      return formatDateTime(date);
     } catch (e) {
       logger.warn(`Error formatting date: ${dateString}`, e);
       return 'Unknown date';

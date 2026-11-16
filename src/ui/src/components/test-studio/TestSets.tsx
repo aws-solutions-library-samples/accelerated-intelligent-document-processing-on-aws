@@ -35,6 +35,7 @@ import { LabelAccuracyLegend, renderLabelAccuracy } from './TestSetDetail';
 import { testSetDetailHref, testSetAnnotateHref, testSetReviewedHref } from '../../routes/constants';
 import { EDIT_GROUND_TRUTH_LABEL } from '../common/labels';
 import ReviewEffortModal from './ReviewEffortModal';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -102,6 +103,7 @@ const TestSets = (): React.JSX.Element => {
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
   // Importing by file pattern searches a whole bucket, so it is Admin-only.
   const { isAdmin } = useUserRole();
+  const { formatDate } = useFormatters();
   const [showCreateWizard, setShowCreateWizard] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -701,7 +703,7 @@ const TestSets = (): React.JSX.Element => {
     {
       id: 'createdAt',
       header: 'Created',
-      cell: (item: TestSetItem) => new Date(item.createdAt).toLocaleDateString(),
+      cell: (item: TestSetItem) => formatDate(new Date(item.createdAt)),
       sortingComparator: compareByCreatedAt,
     },
   ];
