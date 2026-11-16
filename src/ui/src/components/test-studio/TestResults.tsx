@@ -260,9 +260,10 @@ const ComprehensiveBreakdown = ({
                                 <MetricInfo metric="ECARB@30" />
                               </>
                             ),
-                            value: `${formatPercent(ecarb30.pct_errors_caught, { fractionDigits: 0 })} (${
-                              ecarb30.gain === undefined ? undefined : formatFixed(ecarb30.gain, 2)
-                            }x)`,
+                            value:
+                              ecarb30.gain !== null && ecarb30.gain !== undefined
+                                ? `${formatPercent(ecarb30.pct_errors_caught, { fractionDigits: 0 })} (${formatFixed(ecarb30.gain, 2)}x)`
+                                : 'N/A',
                           });
                         }
                       }
