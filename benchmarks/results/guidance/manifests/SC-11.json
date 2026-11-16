@@ -3,62 +3,72 @@
   "verdict": "Yes, once a Claude model classifies. Holistic classification with Claude Haiku 5.5 got 0.80 of DocSplit sections exactly right, against 0.52 for the default (Amazon Nova 2 Lite, page by page), at about the same cost ($470 against $493 per 1,000 packets). With Claude Sonnet 5.5 it got 0.90, for about $200 more per 1,000 packets. Holistic wins on finding where each document starts (boundary accuracy 0.92 with Claude Sonnet 5.5, against 0.75 page by page); once a document is found, every setup names it correctly (label accuracy 0.86 to 0.99). With Amazon Nova 2 Lite holistic barely helps, and splitting page by page first does a little better (0.65).",
   "runs": {
     "docsplit": {
-      "Page by page · Amazon Nova 2 Lite (default)": [
+      "Page by page \u00b7 Amazon Nova 2 Lite (default)": [
         "DocSplit-Poly-Seq-20261113-192327",
         "DocSplit-Poly-Seq-20261113-192328",
         "DocSplit-Poly-Seq-20261113-192329"
       ],
-      "Holistic · Amazon Nova 2 Lite (default)": [
+      "Holistic \u00b7 Amazon Nova 2 Lite (default)": [
         "DocSplit-Poly-Seq-20261113-192706",
         "DocSplit-Poly-Seq-20261113-192708",
         "DocSplit-Poly-Seq-20261113-192711"
       ],
-      "Two steps: split page by page, then classify · Amazon Nova 2 Lite (default)": [
+      "Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": [
         "DocSplit-Poly-Seq-20261113-194400",
         "DocSplit-Poly-Seq-20261113-194401",
         "DocSplit-Poly-Seq-20261113-194402"
       ],
-      "Two steps: split holistically, then classify · Amazon Nova 2 Lite (default)": [
+      "Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": [
         "DocSplit-Poly-Seq-20261113-195220",
         "DocSplit-Poly-Seq-20261113-195216",
         "DocSplit-Poly-Seq-20261113-195221"
       ],
-      "Page by page · Claude Haiku 5.5": [
+      "Page by page \u00b7 Claude Haiku 5.5": [
         "DocSplit-Poly-Seq-20261113-205038",
         "DocSplit-Poly-Seq-20261113-205043",
         "DocSplit-Poly-Seq-20261113-205044"
       ],
-      "Holistic · Claude Haiku 5.5": [
+      "Holistic \u00b7 Claude Haiku 5.5": [
         "DocSplit-Poly-Seq-20261113-205039",
         "DocSplit-Poly-Seq-20261113-205040",
         "DocSplit-Poly-Seq-20261113-205041"
       ],
-      "Two steps: split page by page, then classify · Claude Haiku 5.5": [
+      "Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": [
         "DocSplit-Poly-Seq-20261113-205452",
         "DocSplit-Poly-Seq-20261113-205554",
         "DocSplit-Poly-Seq-20261113-205629"
       ],
-      "Two steps: split holistically, then classify · Claude Haiku 5.5": [
+      "Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": [
         "DocSplit-Poly-Seq-20261113-205634",
         "DocSplit-Poly-Seq-20261113-205745",
         "DocSplit-Poly-Seq-20261113-205746"
       ],
-      "Page by page · Claude Sonnet 5.5": [
+      "Page by page \u00b7 Claude Sonnet 5.5": [
         "DocSplit-Poly-Seq-20261113-230441",
         "DocSplit-Poly-Seq-20261113-230443",
         "DocSplit-Poly-Seq-20261113-230445"
       ],
-      "Holistic · Claude Sonnet 5.5": [
+      "Holistic \u00b7 Claude Sonnet 5.5": [
         "DocSplit-Poly-Seq-20261113-230442",
         "DocSplit-Poly-Seq-20261113-230444",
         "DocSplit-Poly-Seq-20261113-230446"
       ],
-      "Two steps: split page by page, then classify · Claude Sonnet 5.5": [
+      "Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": [
         "DocSplit-Poly-Seq-20261113-230454",
         "DocSplit-Poly-Seq-20261113-230456",
         "DocSplit-Poly-Seq-20261113-230457"
       ],
-      "Two steps: split holistically, then classify · Claude Sonnet 5.5": [
+      "Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-Poly-Seq-20261113-230455",
+        "DocSplit-Poly-Seq-20261113-230458",
+        "DocSplit-Poly-Seq-20261113-230459"
+      ],
+      "Detect sections first, page by page \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-Poly-Seq-20261113-230454",
+        "DocSplit-Poly-Seq-20261113-230456",
+        "DocSplit-Poly-Seq-20261113-230457"
+      ],
+      "Detect sections first, holistic \u00b7 Claude Sonnet 5.5": [
         "DocSplit-Poly-Seq-20261113-230455",
         "DocSplit-Poly-Seq-20261113-230458",
         "DocSplit-Poly-Seq-20261113-230459"

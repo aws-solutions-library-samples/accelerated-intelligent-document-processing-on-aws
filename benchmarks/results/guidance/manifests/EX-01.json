@@ -1,6 +1,6 @@
 {
   "ablation": "EX-01",
-  "verdict": "For invoices with more than about 150 to 200 line items. Single pass got almost none of the line items right on the RealKIE invoices with 182 or more items (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items); iterative extraction got 0.32 to 0.90 on the same invoices. Below that size single pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Iterative extraction did not finish the 1,490-item invoice within Test Studio's time limit.",
+  "verdict": "When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while iterative extraction got 0.32 to 0.90. On synthetic bank statements, iterative extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Iterative extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished.",
   "runs": {
     "realkie": {
       "Single pass, Simple (default)": [

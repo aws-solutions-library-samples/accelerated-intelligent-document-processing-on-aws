@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="720" height="389" viewBox="0 0 720 389" role="img"><title>List score against rows in the list (ground truth), log scale, one point per document per value</title><desc>Single pass, Simple (default): 15 documents, running median 1.00 at 600 rows, 0.03 at 1,600 rows; Iterative, Advanced: 10 documents, running median 1.00 at 600 rows</desc><style>
+  .viz { --series: #2a78d6; --ring: #ffffff; --ink: #0b0b0b; --ink-2: #52514e;
+         --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+         --fam-nova: #2a78d6; --fam-claude: #eb6834; --fam-other: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz, svg.viz:root { --series: #3987e5;
+      --ring: #17181c; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835;
+      --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  }
+  :root[data-theme="dark"] .viz { --series: #3987e5; --ring: #17181c; --ink: #f0efec;
+    --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  .viz { max-width: 100%; height: auto; }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .panel { font-size: 13px; font-weight: 600; fill: var(--ink); }
+  .sub { font-size: 11px; fill: var(--muted); }
+  .viz .lead { font-size: 12px; fill: var(--ink); }
+  .label { font-size: 12px; fill: var(--ink-2); }
+  .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .none { font-size: 12px; fill: var(--muted); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--axis); stroke-width: 1; }
+  .band { fill: var(--series); opacity: 0.12; }
+  .dot { fill: var(--series); stroke: var(--ring); stroke-width: 2; }
+  .axislabel { font-size: 11px; fill: var(--ink-2); }
+  .note { font-size: 11px; fill: var(--muted); font-style: italic; }
+  .prices { font-size: 10px; fill: var(--muted); }
+  .num { font-size: 11px; font-weight: 700; fill: var(--ink); }
+  .halo { paint-order: stroke; stroke: var(--ring); stroke-width: 3px;
+          stroke-linejoin: round; }
+  .mcoe { stroke: var(--muted); stroke-width: 1; fill: none; }
+  .mcoe.noise { stroke-dasharray: 4 3; }
+  .mcoelabel { font-size: 11px; fill: var(--ink-2); }
+  .viz .ptitle { font-size: 12px; font-weight: 600; fill: var(--ink-2); }
+  .viz .keyhead { font-size: 11px; fill: var(--muted); font-style: italic; }
+  .viz .fam-nova { fill: var(--fam-nova); }
+  .viz .fam-claude { fill: var(--fam-claude); }
+  .viz .fam-other { fill: var(--fam-other); }
+  .viz .ctx { fill: var(--muted); opacity: 0.55; }
+  .viz .baseline { stroke: var(--ink-2); stroke-width: 1.5; stroke-dasharray: 6 4; }
+  .viz .baselinelabel { font-size: 11px; fill: var(--ink-2); }
+
+  .viz .s1 { fill: var(--fam-nova); }
+  .viz .s2 { fill: var(--fam-claude); }
+  .viz .s3 { fill: var(--fam-other); }
+  .viz .pt { opacity: 0.75; }
+  .viz .trend { fill: none; stroke-width: 2; stroke-linejoin: round; }
+  .viz .trend.t1 { stroke: var(--fam-nova); }
+  .viz .trend.t2 { stroke: var(--fam-claude); }
+  .viz .trend.t3 { stroke: var(--fam-other); }
+</style><text class="panel" x="0" y="26.0">Statement, 400 rows · Statement, 800 rows · Statement, 1,600 rows</text><text class="lead" x="0" y="41.0">Extraction model: Claude Sonnet 5</text><text class="sub"><tspan x="0" y="55.0">OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) ·</tspan><tspan x="0" y="68.0">Extraction: varies (the setting under test) · Confidence: Off · N = 15 documents × 2–3 runs</tspan></text><circle class="dot s1" cx="69.0" cy="85.0" r="5"/><text class="label" x="80.0" y="89.0">Single pass, Simple (default)</text><rect class="dot s2" x="292.8" y="80.5" width="9.0" height="9.0" rx="1.5"/><text class="label" x="308.3" y="89.0">Iterative, Advanced</text><line class="grid" x1="64" x2="696" y1="345.0" y2="345.0"/><text class="tick" x="56" y="349.0" text-anchor="end">0.00</text><line class="grid" x1="64" x2="696" y1="285.0" y2="285.0"/><text class="tick" x="56" y="289.0" text-anchor="end">0.25</text><line class="grid" x1="64" x2="696" y1="225.0" y2="225.0"/><text class="tick" x="56" y="229.0" text-anchor="end">0.50</text><line class="grid" x1="64" x2="696" y1="165.0" y2="165.0"/><text class="tick" x="56" y="169.0" text-anchor="end">0.75</text><line class="grid" x1="64" x2="696" y1="105.0" y2="105.0"/><text class="tick" x="56" y="109.0" text-anchor="end">1.00</text><line class="grid" x1="64.0" x2="64.0" y1="105" y2="345"/><text class="tick" x="64.0" y="361" text-anchor="middle">100</text><line class="grid" x1="380.0" x2="380.0" y1="105" y2="345"/><text class="tick" x="380.0" y="361" text-anchor="middle">1,000</text><line class="grid" x1="696.0" x2="696.0" y1="105" y2="345"/><text class="tick" x="696.0" y="361" text-anchor="middle">10,000</text><line class="axis" x1="64" x2="696" y1="345" y2="345"/><line class="axis" x1="64" x2="64" y1="105" y2="345"/><text class="axislabel" x="380.0" y="379" text-anchor="middle">Rows in the list (ground truth), log scale</text><text class="axislabel" transform="translate(12 225.0) rotate(-90)" text-anchor="middle">List score</text><g><title>synth-statements-400-01.pdf: Single pass, Simple (default), 400 rows, list score 1.00</title><circle class="pt s1" cx="254.3" cy="105.0" r="3.4"/></g><g><title>synth-statements-400-02.pdf: Single pass, Simple (default), 400 rows, list score 1.00</title><circle class="pt s1" cx="254.3" cy="105.0" r="3.4"/></g><g><title>synth-statements-400-03.pdf: Single pass, Simple (default), 400 rows, list score 1.00</title><circle class="pt s1" cx="254.3" cy="105.0" r="3.4"/></g><g><title>synth-statements-400-04.pdf: Single pass, Simple (default), 400 rows, list score 1.00</title><circle class="pt s1" cx="254.3" cy="105.0" r="3.4"/></g><g><title>synth-statements-400-05.pdf: Single pass, Simple (default), 400 rows, list score 1.00</title><circle class="pt s1" cx="254.3" cy="105.0" r="3.4"/></g><g><title>synth-statements-800-01.pdf: Single pass, Simple (default), 800 rows, list score 0.70</title><circle class="pt s1" cx="349.4" cy="175.8" r="3.4"/></g><g><title>synth-statements-800-02.pdf: Single pass, Simple (default), 800 rows, list score 1.00</title><circle class="pt s1" cx="349.4" cy="105.0" r="3.4"/></g><g><title>synth-statements-800-03.pdf: Single pass, Simple (default), 800 rows, list score 0.41</title><circle class="pt s1" cx="349.4" cy="246.6" r="3.4"/></g><g><title>synth-statements-800-04.pdf: Single pass, Simple (default), 800 rows, list score 1.00</title><circle class="pt s1" cx="349.4" cy="105.0" r="3.4"/></g><g><title>synth-statements-800-05.pdf: Single pass, Simple (default), 800 rows, list score 1.00</title><circle class="pt s1" cx="349.4" cy="105.0" r="3.4"/></g><g><title>synth-statements-1600-01.pdf: Single pass, Simple (default), 1,600 rows, list score 0.06</title><circle class="pt s1" cx="444.5" cy="330.8" r="3.4"/></g><g><title>synth-statements-1600-02.pdf: Single pass, Simple (default), 1,600 rows, list score 0.03</title><circle class="pt s1" cx="444.5" cy="338.6" r="3.4"/></g><g><title>synth-statements-1600-03.pdf: Single pass, Simple (default), 1,600 rows, list score 0.03</title><circle class="pt s1" cx="444.5" cy="338.6" r="3.4"/></g><g><title>synth-statements-1600-04.pdf: Single pass, Simple (default), 1,600 rows, list score 0.03</title><circle class="pt s1" cx="444.5" cy="338.6" r="3.4"/></g><g><title>synth-statements-1600-05.pdf: Single pass, Simple (default), 1,600 rows, list score 0.03</title><circle class="pt s1" cx="444.5" cy="338.6" r="3.4"/></g><g><title>synth-statements-400-01.pdf: Iterative, Advanced, 400 rows, list score 1.00</title><rect class="pt s2" x="251.2" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-400-02.pdf: Iterative, Advanced, 400 rows, list score 1.00</title><rect class="pt s2" x="251.2" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-400-03.pdf: Iterative, Advanced, 400 rows, list score 1.00</title><rect class="pt s2" x="251.2" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-400-04.pdf: Iterative, Advanced, 400 rows, list score 1.00</title><rect class="pt s2" x="251.2" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-400-05.pdf: Iterative, Advanced, 400 rows, list score 1.00</title><rect class="pt s2" x="251.2" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-800-01.pdf: Iterative, Advanced, 800 rows, list score 1.00</title><rect class="pt s2" x="346.3" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-800-02.pdf: Iterative, Advanced, 800 rows, list score 1.00</title><rect class="pt s2" x="346.3" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-800-03.pdf: Iterative, Advanced, 800 rows, list score 1.00</title><rect class="pt s2" x="346.3" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-800-04.pdf: Iterative, Advanced, 800 rows, list score 1.00</title><rect class="pt s2" x="346.3" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>synth-statements-800-05.pdf: Iterative, Advanced, 800 rows, list score 1.00</title><rect class="pt s2" x="346.3" y="101.9" width="6.1" height="6.1" rx="1.5"/></g><g><title>Single pass, Simple (default): running median</title><path class="trend t1" d="M309.9 105.0 L444.5 338.6"/></g></svg>
