@@ -157,10 +157,9 @@
   <div class="wrap">
     <span class="pill">Watch</span>
     <h2 style="margin-top:14px">See it in action</h2>
-    <p style="font-size:18px;color:var(--muted);max-width:720px;margin:0 auto">Narrated, captioned demos recorded on a test deployment, using the sample documents that ship with the accelerator.</p>
+    <p style="font-size:18px;color:var(--muted);max-width:720px;margin:0 auto">Narrated demos recorded on a test deployment, using the sample documents that ship with the accelerator.</p>
     <div class="vfeature">
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/beb7a697-2074-4932-b218-1daa7f2e8cbf" data-poster="images/idp-in-action/hero.png" id="video-idp-overview"></div>
         <h3>The GenAI IDP Accelerator: from documents to decisions <span style="font-weight:400;color:var(--muted)">(8:00)</span></h3>
         <p>For new viewers, the whole product through one lending packet. Describe a new document type and get a working configuration, then upload the packet. It's split into documents, classified and extracted, with a confidence score and a page location for each field. A low-confidence value is corrected in a review queue, and accuracy is measured against ground truth in Test Studio. Then you ask questions across every processed document, see what each one cost, and reach it all from the CLI, the SDK, MCP and extensions.</p>
@@ -168,37 +167,31 @@
     </div>
     <div class="vgrid">
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/f8039708-4d6f-4e8d-9483-82d9cb5fa653" data-poster="images/idp-in-action/quick-start.png" id="video-new-document-type"></div>
         <h3>Set up a new document type <span style="font-weight:400;color:var(--muted)">(2:00)</span></h3>
         <p>Discovery reads a sample invoice and drafts a document class, with its nested groups and line-item table, beside the class Quick Start created. Then the revision history shows exactly what Discovery added.</p>
       </div>
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/05f24c6f-5f47-47a6-9795-12b4cbfa575f" data-poster="images/idp-in-action/extraction-confidence.png" id="video-inside-a-document"></div>
         <h3>Inside a processed document <span style="font-weight:400;color:var(--muted)">(2:39)</span></h3>
         <p>The lending packet in detail: its sections and page classes, each field with its confidence and place on the page, the summary and processing report, every retained version, and a chat with the document that catches a pay slip and a W-2 naming different employees.</p>
       </div>
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/a0b24048-2369-4faf-a931-d9f697c62141" data-poster="images/idp-in-action/review-queue.png" id="video-review-queues"></div>
         <h3>Human review with review queues <span style="font-weight:400;color:var(--muted)">(2:38)</span></h3>
         <p>An Admin adds an annotator to the review queue and assigns a document. The annotator works it against the page, and hands back one that needs reprocessing rather than new values, with a reason kept in its history.</p>
       </div>
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/843aa4d7-030f-4856-aa7e-a52064b513d1" data-poster="images/idp-in-action/test-studio.png" id="video-test-studio"></div>
         <h3>Measure accuracy with Test Studio <span style="font-weight:400;color:var(--muted)">(2:12)</span></h3>
         <p>Test sets from public datasets, two runs of the same W-2 forms with different extraction models, field-level accuracy that shows where each model struggles, and a side-by-side comparison of accuracy and cost.</p>
       </div>
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/f778a71d-7360-44d9-afe4-2dbe23171042" data-poster="images/idp-in-action/agent-chat.png" id="video-ask-your-documents"></div>
         <h3>Ask your documents <span style="font-weight:400;color:var(--muted)">(2:25)</span></h3>
         <p>Agent Chat builds a table of processed documents and refines it in conversation, the error analyzer names the root cause of a failed document from its logs and traces, and the Knowledge Base answers from the documents, saying so when they don't hold the answer.</p>
       </div>
       <div class="vcard">
-        <!-- Paste the video's https://github.com/user-attachments/assets/... URL into data-video. -->
         <div class="vbox" data-video="https://github.com/user-attachments/assets/ccb92a67-c075-4163-8c56-d122b2184a69" data-poster="images/idp-in-action/operate.png" id="video-operate-at-scale"></div>
         <h3>Operate it at scale <span style="font-weight:400;color:var(--muted)">(2:11)</span></h3>
         <p>The pricing behind every cost estimate, capacity planning from the tokens real documents used, checked against live Bedrock service quotas, and routing documents and tenants to their own configuration.</p>
@@ -435,7 +428,7 @@
       <div class="card"><h3>Serverless at any volume</h3><p>Lambda, Step Functions, SQS and DynamoDB scale from one document to millions, with queuing, concurrency limits, retries and a circuit breaker built in.</p></div>
       <div class="card"><h3>Open source</h3><p>MIT-0 licensed. Change the prompts, the schemas, the pipeline, or the code itself. Inject your own logic through Lambda hooks.</p></div>
       <div class="card"><h3>Your models</h3><p>Built on Amazon Bedrock. Choose the model for each step, from Amazon Nova to Anthropic Claude, or fine-tune a classifier on your own documents.</p></div>
-      <div class="card"><h3>Deploy your way</h3><p>One-click CloudFormation, a generated Terraform or OpenTofu module, the AWS CDK constructs, or headless for API-only use.</p></div>
+      <div class="card"><h3>Deploy your way</h3><p>One-click CloudFormation, a generated Terraform or OpenTofu module, or headless for API-only use. Prefer AWS CDK? A separate port, <a href="https://github.com/cdklabs/genai-idp">GenAI IDP Accelerator for AWS CDK</a>, is released on its own schedule.</p></div>
       <div class="card"><h3>Built to be operated</h3><p>A CloudWatch dashboard, alarms, document versions and a tracking table, so you can always answer "where is this document, and what happened to it?"</p></div>
     </div>
   </div>
@@ -460,8 +453,23 @@
 
 
 <script>
-  // Each .vbox[data-video] becomes a player once a GitHub asset URL is pasted into data-video;
-  // until then it shows its poster with a "Video coming soon" label.
+  // Each .vbox[data-video] holding a GitHub asset URL becomes a player. Any other value, or a
+  // video that fails to load, shows the poster with a link to the video instead.
+  const showPoster = (box, poster, url) => {
+    box.replaceChildren();
+    const img = document.createElement('img');
+    img.src = poster; img.alt = '';
+    const soon = document.createElement('div');
+    soon.className = 'soon';
+    if (url) {
+      const a = document.createElement('a');
+      a.href = url; a.textContent = 'Watch video'; a.style.color = 'inherit';
+      soon.appendChild(a);
+    } else {
+      soon.textContent = 'Video coming soon';
+    }
+    box.append(img, soon);
+  };
   document.querySelectorAll('.vbox[data-video]').forEach((box) => {
     const url = box.dataset.video.trim();
     const poster = box.dataset.poster;
@@ -471,14 +479,13 @@
       v.style.objectFit = 'contain'; v.style.background = '#000';
       const src = document.createElement('source');
       src.src = url; src.type = 'video/mp4';
-      v.appendChild(src);
+      src.addEventListener('error', () => showPoster(box, poster, url));
+      const a = document.createElement('a');
+      a.href = url; a.textContent = 'Watch video';
+      v.append(src, a);
       box.appendChild(v);
     } else {
-      const img = document.createElement('img');
-      img.src = poster; img.alt = '';
-      const soon = document.createElement('div');
-      soon.className = 'soon'; soon.textContent = 'Video coming soon';
-      box.append(img, soon);
+      showPoster(box, poster, null);
     }
   });
 </script>

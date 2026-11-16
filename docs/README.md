@@ -13,6 +13,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
 - [Quick Start](./quick-start.md) - Cold-start configuration authoring for new deployments (chat widget + `idp-cli bootstrap`)
+- [IDP in Action](./idp-in-action.md) - An illustrated tour of the main features, with an overview video and feature walkthroughs
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
 - [AI-Guided Deployment Walkthrough](./idp-deployment-ai-guide.md) - A system prompt to paste into an AI assistant that walks you through choosing deployment parameters one question at a time
 - [After Subscribing on AWS Marketplace](./marketplace-subscription-next-steps.md) - What to do next in your own AWS account after a Marketplace subscription

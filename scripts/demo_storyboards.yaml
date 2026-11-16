@@ -28,7 +28,8 @@
 #                  the title card (start --say).
 #   persona        The Cognito group the demo is recorded as (Admin, Author,
 #                  Reviewer, Annotator, Viewer).
-#   duration_target  "m:ss". Published demos run 2–5 minutes; aim for 2–4.
+#   duration_target  "m:ss". Published demos run 2–5 minutes; aim for 2–4. A
+#                  new-viewer overview of the whole product may run longer.
 #   fixtures       What must exist before recording, and how to make it. Shipped
 #                  samples and synthetic data unless the user agreed otherwise.
 #   chapters       One per `mark`. `label` is the chapter name, `say` the narration
