@@ -14,7 +14,9 @@ row in ``.claude/rules/README.md`` is one nobody looking for it there will find.
 
 The globs are read the way the rules use them: ``**/`` spans any number of
 directories including none, a trailing ``/**`` everything beneath, and ``*`` stays
-inside one path segment.
+inside one path segment. A glob using any other syntax (braces, brackets, ``?``)
+is refused as unsupported here rather than reported as matching nothing, because
+this matcher would read it literally.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ pytestmark = pytest.mark.unit
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RULES = REPO_ROOT / ".claude" / "rules"
 README = RULES / "README.md"
+UNSUPPORTED = re.compile(r"[{}\[\]?]")
 ROW = re.compile(r"^\| \[(?P<name>[^\]]+\.md)\]\((?P<target>[^)]+)\)", re.M)
 
 
@@ -113,9 +116,15 @@ def test_a_rules_front_matter_is_a_list_of_paths_and_nothing_else(rule: Path) ->
 def test_every_glob_in_a_rule_matches_a_tracked_file(rule: Path) -> None:
     meta = _front_matter(rule.read_text("utf-8")) or {}
     tracked = _tracked()
+    globs = meta.get("paths", [])
+    unsupported = [glob for glob in globs if UNSUPPORTED.search(glob)]
+    assert not unsupported, (
+        f"{rule.name}: {unsupported} use glob syntax this test does not read; "
+        "extend _glob_regex before relying on it"
+    )
     dead = [
         glob
-        for glob in meta.get("paths", [])
+        for glob in globs
         if not any(_glob_regex(glob).match(path) for path in tracked)
     ]
     assert not dead, (

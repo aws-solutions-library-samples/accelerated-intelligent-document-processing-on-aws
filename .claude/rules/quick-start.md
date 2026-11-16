@@ -70,10 +70,11 @@ chat agent, so [agents.md](agents.md) applies too.
   the user it is talking to.
 
 ## Verify with
-- `cd lib/idp_common_pkg && make test-unit`
+- `make test`, which runs every offline suite, including those of the Lambda
+  handlers and the Test Set Generator extension under these paths
 - `make ui-test`
 - `make ai-ux-test-stories-local STORY=draft-setup-from-a-description AS=platform-admin`,
-  against the review stack, for a change to the journey
+  against the review stack, for a change to the journey or to a contract it calls
 
 ## Sources
 - [docs/quick-start.md](../../docs/quick-start.md): the user journey, the CLI form
