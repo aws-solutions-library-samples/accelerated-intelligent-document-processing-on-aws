@@ -29,6 +29,7 @@ import { getInboxPreferences as getInboxPreferencesQuery, listInboxMessages as l
 import type { InboxMessage, InboxMessageType, ListInboxMessagesQuery } from '../../graphql/generated/operation-types';
 import useInbox from '../../hooks/use-inbox';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { paginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
 import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
@@ -77,6 +78,7 @@ const markRead = (m: InboxMessage, read: boolean, readAt: string | null): InboxM
 const InboxMessagesTable = (): React.JSX.Element => {
   // 1. Hooks
   const { unreadCount, changeToken, beginUnreadSync, markMessages, markAllRead, deleteMessages, clearRead } = useInbox();
+  const { locale } = useFormatters();
   const [items, setItems] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -307,7 +309,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
       id: 'createdAt',
       header: 'Received',
       width: INBOX_COLUMN_WIDTHS.createdAt,
-      cell: (m) => <span title={formatDateTime(m.createdAt)}>{formatRelativeTime(m.createdAt)}</span>,
+      cell: (m) => <span title={formatDateTime(m.createdAt, locale)}>{formatRelativeTime(m.createdAt, locale)}</span>,
       sortingField: 'createdAt',
     },
     {

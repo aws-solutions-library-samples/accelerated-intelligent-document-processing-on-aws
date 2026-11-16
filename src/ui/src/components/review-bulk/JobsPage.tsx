@@ -27,6 +27,7 @@ import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { jobDetailHref } from '../../routes/constants';
 import { formatDateTime } from '../../utils/date-time';
+import { useFormatters } from '../../i18n/format';
 import type { BulkReviewJob } from '../../graphql/generated/schema-types';
 import { paginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
@@ -350,6 +351,7 @@ const searchText = (j: BulkReviewJob): string =>
 const JobsPage = (): React.JSX.Element => {
   // 1. Hooks
   const intl = useIntl();
+  const { formatNumber, locale } = useFormatters();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin } = useUserRole();
   const [jobs, setJobs] = useState<BulkReviewJob[] | null>(null);
@@ -452,13 +454,13 @@ const JobsPage = (): React.JSX.Element => {
     {
       id: 'created',
       header: intl.formatMessage(messages.columnCreated),
-      cell: (j) => formatDateTime(j.createdAt),
+      cell: (j) => formatDateTime(j.createdAt, locale),
       sortingField: 'createdAt',
     },
     {
       id: 'finished',
       header: intl.formatMessage(messages.columnFinished),
-      cell: (j) => (j.finishedAt ? formatDateTime(j.finishedAt) : '-'),
+      cell: (j) => (j.finishedAt ? formatDateTime(j.finishedAt, locale) : '-'),
       sortingField: 'finishedAt',
     },
     {
@@ -466,7 +468,7 @@ const JobsPage = (): React.JSX.Element => {
       header: intl.formatMessage(messages.columnProcessed),
       cell: (j) => intl.formatMessage(messages.processedOfTotal, { processed: j.processed, total: j.total }),
     },
-    { id: 'skipped', header: intl.formatMessage(messages.columnSkipped), cell: (j) => skippedCount(j).toLocaleString() },
+    { id: 'skipped', header: intl.formatMessage(messages.columnSkipped), cell: (j) => formatNumber(skippedCount(j)) },
     {
       id: 'actions',
       header: intl.formatMessage(messages.columnAction),

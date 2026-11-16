@@ -39,6 +39,8 @@ import { generateClient } from '../../api/client-shim';
 import { addDocumentsToTestSetByKey, getTestSets, listDocuments } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { isBaselineAvailable } from '../document-panel/document-export';
+import { formatDateTime, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 import type { AddDocumentsResult, AddDocumentsTarget } from './AddDocumentsModals';
 
 const logger = new ConsoleLogger('AddProcessedDocumentsModal');
@@ -184,9 +186,15 @@ const canTakeDocuments = (set: TestSetOption): boolean => set.status === 'COMPLE
 
 export const hasGroundTruth = (doc: ProcessedDocument): boolean => isBaselineAvailable(doc);
 
-export const formatSubmitted = (value: string): string => {
+export const formatSubmitted = (value: string, locale: Locale): string => {
   const date = new Date(value);
-  return value && !Number.isNaN(date.getTime()) ? date.toLocaleString() : value || '-';
+  return value && !Number.isNaN(date.getTime()) ? formatDateTime(date, locale) : value || '-';
+};
+
+/** The submitted time in the UI locale; a column's `cell` cannot call a hook, so this is a component. */
+const SubmittedCell = ({ value }: { value: string }): React.JSX.Element => {
+  const { locale } = useFormatters();
+  return <>{formatSubmitted(value, locale)}</>;
 };
 
 const COLUMNS: TableProps.ColumnDefinition<ProcessedDocument>[] = [
@@ -202,7 +210,7 @@ const COLUMNS: TableProps.ColumnDefinition<ProcessedDocument>[] = [
       ),
   },
   { id: 'configVersion', header: 'Configuration profile', cell: (d) => d.configVersion || '-', sortingField: 'configVersion' },
-  { id: 'submitted', header: 'Submitted', cell: (d) => formatSubmitted(d.submitted), sortingField: 'submitted' },
+  { id: 'submitted', header: 'Submitted', cell: (d) => <SubmittedCell value={d.submitted} />, sortingField: 'submitted' },
 ];
 
 const AddProcessedDocumentsModal = ({

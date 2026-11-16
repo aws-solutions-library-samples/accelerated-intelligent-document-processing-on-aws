@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 /**
  * `useFormatters` inside the provider: the helpers bound to the current locale, one stable
- * object per locale, re-bound when the locale changes. `fr-CA` is enabled through a mocked
+ * object per locale, re-bound when the locale changes. And outside it: the hook formats as `en`,
+ * the runtime default, instead of throwing. `fr-CA` is enabled through a mocked
  * `virtual:i18n-catalogs`, as the other provider tests do.
  */
 import React from 'react';
@@ -39,6 +40,7 @@ describe('useFormatters', () => {
     const { result } = renderHook(useProbe, { wrapper: Wrapper });
     expect(result.current.locale.locale).toBe('en');
     const en = result.current.formatters;
+    expect(en.locale).toBe('en');
     expect(en.formatDateTime(DATE, UTC)).toBe(formatDateTime(DATE, 'en', UTC));
     expect(en.formatDateTime(DATE, UTC)).toBe(DATE.toLocaleString(undefined, UTC));
     expect(en.formatUsDollars(1234.5, { fractionDigits: 2 })).toBe(formatUsDollars(1234.5, 'en', { fractionDigits: 2 }));
@@ -46,6 +48,7 @@ describe('useFormatters', () => {
     act(() => result.current.locale.setLocale('fr-CA'));
     expect(result.current.locale.locale).toBe('fr-CA');
     const fr = result.current.formatters;
+    expect(fr.locale).toBe('fr-CA');
     expect(fr.formatDateTime(DATE, UTC)).toBe('2026-10-30 17 h 40 min 05 s');
     expect(fr.formatDate(DATE, { dateStyle: 'long', ...UTC })).toBe('30 octobre 2026');
     expect(fr.formatTime(DATE, { timeStyle: 'short', ...UTC })).toBe('17 h 40');
@@ -71,5 +74,15 @@ describe('useFormatters', () => {
 
     act(() => result.current.locale.setLocale('en'));
     expect(result.current.formatters).not.toBe(second);
+  });
+
+  it('formats as en when no LocaleProvider is mounted, the runtime default of a plain render', () => {
+    // No wrapper: the component tree of an existing English test. Nothing throws, and every
+    // helper gives what the bare built-in gives today.
+    const { result } = renderHook(useFormatters);
+    expect(result.current.locale).toBe('en');
+    expect(result.current.formatDateTime(DATE, UTC)).toBe(DATE.toLocaleString(undefined, UTC));
+    expect(result.current.formatNumber(1234.5)).toBe((1234.5).toLocaleString());
+    expect(result.current.formatUsDollars(0.002, { fractionDigits: 4 })).toBe('US$0.0020');
   });
 });

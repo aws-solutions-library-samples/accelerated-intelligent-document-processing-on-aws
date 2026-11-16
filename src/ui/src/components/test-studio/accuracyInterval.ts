@@ -13,6 +13,8 @@
  * Keep the two in step: same interval (Wilson), same denominator (tp+tn over
  * tp+fp+tn+fn).
  */
+import { formatFixed, formatPercent } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 /** Two-sided 95% normal quantile. */
 const Z_95 = 1.959963984540054;
@@ -83,11 +85,14 @@ export const accuracyIntervalForField = (metrics: {
 };
 
 /** "±5.9" — the half-width in percentage points, for the table cell. */
-export const formatMargin = (interval: AccuracyInterval | null): string => (interval ? `±${(interval.margin * 100).toFixed(1)}` : '—');
+export const formatMargin = (interval: AccuracyInterval | null, locale: Locale): string =>
+  interval ? `±${formatFixed(interval.margin * 100, locale, 1)}` : '—';
 
 /** "82.6% – 94.5%" — the authoritative bounds, for the popover. */
-export const formatBounds = (interval: AccuracyInterval | null): string =>
-  interval ? `${(interval.low * 100).toFixed(1)}% – ${(interval.high * 100).toFixed(1)}%` : '—';
+export const formatBounds = (interval: AccuracyInterval | null, locale: Locale): string =>
+  interval
+    ? `${formatPercent(interval.low, locale, { fractionDigits: 1 })} – ${formatPercent(interval.high, locale, { fractionDigits: 1 })}`
+    : '—';
 
 /**
  * True when the interval is too wide for the number to support a decision.

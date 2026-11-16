@@ -5,6 +5,7 @@ import React, { useState } from 'react';
 import { Box, SpaceBetween, ExpandableSection, Button, Alert, Container } from '@cloudscape-design/components';
 import './StepDetails.css';
 import { parseStepFunctionPayload } from '../../graphql/awsjson-parsers';
+import { useFormatters } from '../../i18n/format';
 
 interface StepConfig {
   summarization?: { enabled?: boolean };
@@ -102,6 +103,7 @@ const isStepDisabled = (stepName: string, config: StepConfig | null | undefined)
 };
 
 const StepDetails = ({ step, formatDuration, getStepIcon, mergedConfig = null }: StepDetailsProps): React.JSX.Element => {
+  const { formatDateTime } = useFormatters();
   const [inputExpanded, setInputExpanded] = useState(false);
   const [outputExpanded, setOutputExpanded] = useState(false);
   const [errorExpanded, setErrorExpanded] = useState(true); // Default to expanded for errors
@@ -173,12 +175,12 @@ const StepDetails = ({ step, formatDuration, getStepIcon, mergedConfig = null }:
             </Box>
             <Box>
               <Box variant="awsui-key-label">Started</Box>
-              <Box>{step.startDate ? new Date(step.startDate).toLocaleString() : 'N/A'}</Box>
+              <Box>{step.startDate ? formatDateTime(new Date(step.startDate)) : 'N/A'}</Box>
             </Box>
             {step.stopDate && (
               <Box>
                 <Box variant="awsui-key-label">Completed</Box>
-                <Box>{new Date(step.stopDate).toLocaleString()}</Box>
+                <Box>{formatDateTime(new Date(step.stopDate))}</Box>
               </Box>
             )}
           </SpaceBetween>
@@ -250,12 +252,12 @@ const StepDetails = ({ step, formatDuration, getStepIcon, mergedConfig = null }:
                         </Box>
                         <Box>
                           <Box variant="awsui-key-label">Started</Box>
-                          <Box>{iteration.startDate ? new Date(iteration.startDate).toLocaleString() : 'N/A'}</Box>
+                          <Box>{iteration.startDate ? formatDateTime(new Date(iteration.startDate)) : 'N/A'}</Box>
                         </Box>
                         {iteration.stopDate && (
                           <Box>
                             <Box variant="awsui-key-label">Completed</Box>
-                            <Box>{new Date(iteration.stopDate).toLocaleString()}</Box>
+                            <Box>{formatDateTime(new Date(iteration.stopDate))}</Box>
                           </Box>
                         )}
                       </SpaceBetween>

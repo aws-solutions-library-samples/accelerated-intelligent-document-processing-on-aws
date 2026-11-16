@@ -150,7 +150,7 @@ describe('Document Details', () => {
     expect(document.body.textContent).not.toContain('Estimated Cost (per page');
     detailBar.chooseMenuItem('Reports', 'Estimated Cost');
     const modal = createWrapper(document.body).findModal()!;
-    expect(modal.findHeader().getElement().textContent).toMatch(/^Estimated Cost \(per page: \$/);
+    expect(modal.findHeader().getElement().textContent).toMatch(/^Estimated Cost \(per page: US\$/);
     expect(modal.findContent().findTable()).not.toBeNull();
   });
 });

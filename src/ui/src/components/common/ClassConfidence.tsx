@@ -3,6 +3,7 @@
 
 import React from 'react';
 import { Box, Popover, SpaceBetween } from '@cloudscape-design/components';
+import { useFormatters } from '../../i18n/format';
 
 interface ClassCandidate {
   Class?: string | null;
@@ -20,9 +21,6 @@ interface ClassConfidenceProps {
    */
   candidates?: (ClassCandidate | null)[] | null;
 }
-
-/** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
-const asPercent = (confidence: number): string => `${(confidence * 100).toFixed(1)}%`;
 
 /**
  * "Not scored" — deliberately an em-dash rather than a blank cell or a zero.
@@ -61,6 +59,9 @@ const NotScored = (): React.JSX.Element => (
  * calibrated traffic light. See docs/benchmarking/classification-confidence.md.
  */
 const ClassConfidence = ({ confidence, reason, candidates }: ClassConfidenceProps): React.JSX.Element => {
+  const { formatPercent } = useFormatters();
+  /** Percentage with one decimal, e.g. 0.9345 -> "93.5%". */
+  const asPercent = (value: number): string => formatPercent(value, { fractionDigits: 1 });
   const hasConfidence = typeof confidence === 'number';
   const hasReason = typeof reason === 'string' && reason.trim().length > 0;
   const ranked = (candidates ?? []).filter((c): c is ClassCandidate => !!c && !!c.Class);
