@@ -121,6 +121,10 @@ Cross-check against the file map below.
       not raise, it silently binds your model to **another model's** quota code.
       The maps are an acknowledged incomplete subset of the picklists; adding the
       model you are working on does not close that class.
+      If Service Quotas lists **no** quota for the model at all, map it to `null`
+      in both maps rather than omitting it or guessing a code: Capacity Planning
+      then skips that model's steps with a "Quota not read" warning instead of
+      failing on a missing entry.
 - [ ] `nested/multi-doc-discovery/template.yaml` and other nested templates —
       IAM / enums as applicable.
 

@@ -97,6 +97,13 @@ def convert_decimal_to_float(obj):
     return obj
 
 
+# Error codes that mean "slow down" rather than "this request is wrong".
+# Service Quotas itself answers `TooManyRequestsException`.
+THROTTLING_ERROR_CODES = frozenset(
+    {"Throttling", "ThrottlingException", "TooManyRequestsException", "RequestLimitExceeded"}
+)
+
+
 def retry_with_backoff(func, max_retries=3, base_delay=1):
     """Retry function with exponential backoff for API rate limiting."""
     for attempt in range(max_retries):
@@ -104,7 +111,7 @@ def retry_with_backoff(func, max_retries=3, base_delay=1):
             return func()
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code in ['Throttling', 'TooManyRequestsException', 'RequestLimitExceeded']:
+            if error_code in THROTTLING_ERROR_CODES:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
                     print(f"⏳ Rate limited, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
@@ -711,7 +718,8 @@ def generate_rpm_quota_codes(model_ids):
 
 # Every recommendation describing a quota that could not be read starts with this,
 # and the Capacity Planning page selects on it to show those lines in a warning
-# banner (`QUOTA_NOT_READ_PREFIX` in `src/ui/.../capacity-planning/quota-warnings.ts`). The two copies
+# banner (`QUOTA_NOT_READ_PREFIX` in
+# `src/ui/src/components/capacity-planning/quota-warnings.ts`). The two copies
 # must stay identical; `test_the_ui_selects_quota_warnings_by_the_same_prefix`
 # asserts that they do.
 QUOTA_NOT_READ_PREFIX = "⚠️ Quota not read:"
@@ -750,9 +758,12 @@ def _read_quota(quotas_client, quota_code):
     A failure is returned rather than raised so that one unreadable code costs
     one model, not the whole calculation. Only errors *from the API* are caught: a
     code that does not exist in this region (`NoSuchResourceException`), an
-    access denial, or a connection that would not complete. A response of an
-    unexpected shape still raises, because that is a defect here rather than a
-    fact about the account.
+    access denial, or a connection that would not complete. Throttling that
+    outlasts `retry_with_backoff` still raises: it is transient, and reporting it
+    as an unreadable quota would present an incomplete analysis as a complete one
+    and point at a configuration that is not wrong. A response of an unexpected
+    shape also raises, because that is a defect here rather than a fact about the
+    account.
     """
     if not quota_code:
         return None, "no Service Quotas code is published for this model"
@@ -764,7 +775,9 @@ def _read_quota(quotas_client, quota_code):
         )
     except ClientError as e:
         error = e.response.get("Error", {})
-        return None, f"{error.get('Code', 'ClientError')}: {error.get('Message', '')}".rstrip(": ")
+        if error.get("Code") in THROTTLING_ERROR_CODES:
+            raise
+        return None,f"{error.get('Code', 'ClientError')}: {error.get('Message', '')}".rstrip(": ")
     except BotoCoreError as e:
         return None, f"{type(e).__name__}: {e}"
     if not response:
@@ -830,11 +843,16 @@ def get_simple_quotas(model_ids=None):
     def mark_unreadable(kind, model_id, quota_code, reason):
         message = (
             f"{QUOTA_NOT_READ_PREFIX} {kind} quota for model {model_id} "
-            f"(quota code {quota_code or 'none'}) could not be read ({reason}). "
-            "Steps using this model are left out of the quota analysis; correct "
-            "its entry in BEDROCK_MODEL_QUOTA_CODES or BEDROCK_MODEL_RPM_QUOTA_CODES."
+            f"(quota code {quota_code or 'none'}) could not be read ({reason})."
         )
-        print(message)
+        # The remediation goes to the log, not to the page: the page's banner
+        # already says what was left out, and the variable names mean something
+        # only to whoever maintains the deployment.
+        print(
+            f"{message} Steps using this model are left out of the quota analysis; "
+            "if the code is wrong, correct it in BEDROCK_MODEL_QUOTA_CODES or "
+            "BEDROCK_MODEL_RPM_QUOTA_CODES."
+        )
         quotas["unreadable_models"].setdefault(model_id, message)
         quotas["bedrock_models"].pop(model_id, None)
 
@@ -1050,8 +1068,15 @@ def calculate_latency_distribution(
     #
     # With no model configuration to narrow by — an older caller, or a plan that
     # calls Bedrock from no step at all — the reduction falls back to the whole
-    # mapping, which is pessimistic rather than wrong and is the only answer
-    # available without knowing the steps.
+    # mapping it was given, which is pessimistic rather than wrong and is the only
+    # answer available without knowing the steps.
+    #
+    # On the handler's path that mapping is already narrowed:
+    # `get_simple_quotas` reads only the plan's models (#2024), and reads the
+    # whole code map only when no plan model has an entry in it. So the fallback
+    # below widens the reduction only in that last case; when the plan's models
+    # were read and all came back zero, it finds nothing new and the refusal
+    # after it is what the caller sees.
     all_tpm_by_model = quotas.get("bedrock_models") or {}
     planned_model_ids = plan_model_ids(pattern, model_config)
     planned_tpm_by_model = {
@@ -1066,7 +1091,7 @@ def calculate_latency_distribution(
     if not bedrock_quota_tpm_by_model and planned_tpm_by_model:
         print(
             f"⚠️ No usable TPM quota for the planned models {planned_model_ids} - "
-            "falling back to the account's full model mapping for the throughput estimate"
+            "falling back to every model quota that was read for the throughput estimate"
         )
         bedrock_quota_tpm_by_model = {
             model_id: quota for model_id, quota in all_tpm_by_model.items() if quota
@@ -1079,6 +1104,15 @@ def calculate_latency_distribution(
     if not bedrock_quota_tpm:
         raise ValueError("Bedrock TPM quota not available. Ensure BEDROCK_MODEL_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
 
+    # Reduced over every RPM entry it was given. On the handler's path that is the
+    # plan's own models, because `get_simple_quotas` builds the RPM lookup from
+    # the narrowed TPM key set; so a model the plan never calls no longer binds
+    # the request limit. For a plan whose only models are the Claude Sonnets,
+    # whose RPM entries carry their TPM code (AWS publishes no RPM quota for
+    # them), the request limit is therefore that placeholder and effectively
+    # unbounded, and the token limit — which is exact — decides the figure.
+    # `test_a_sonnet_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
+    # pins that.
     bedrock_quota_rpm = quotas.get("bedrock_models_rpm", {})
     if not bedrock_quota_rpm:
         raise ValueError("Bedrock RPM quotas not available. Ensure BEDROCK_MODEL_RPM_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")

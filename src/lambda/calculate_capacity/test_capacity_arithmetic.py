@@ -940,14 +940,16 @@ def test_the_token_limit_is_the_most_constrained_model_not_the_best_provisioned(
 def test_the_request_limit_is_also_the_most_constrained_model(monkeypatch):
     """The RPM half of the same `min` takes the binding model, and is measured.
 
-    ⚠️ "The same way" would be wrong, and the difference is the point of this
-    docstring rather than a detail: the TPM half is narrowed to the plan's step
-    models (see `test_only_the_models_the_plan_calls_constrain_its_throughput`),
-    while this one reduces over EVERY entry in the mapping —
-    `min(bedrock_quota_rpm.values())`. So a genuinely low RPM quota for a model the
-    pipeline never calls still binds the request limit, which is the defect that was
-    fixed for TPM and not for RPM. What both halves do share is taking the minimum
-    rather than a maximum, which is what the rest of this docstring is about.
+    Within this function the two halves are narrowed differently: the TPM half
+    selects the plan's step models (see
+    `test_only_the_models_the_plan_calls_constrain_its_throughput`), while this one
+    reduces over every entry of the RPM mapping it is handed —
+    `min(bedrock_quota_rpm.values())`. On the handler's path that mapping already
+    holds only the plan's models, because `get_simple_quotas` builds the RPM lookup
+    from the narrowed TPM key set; the handler-level
+    `test_a_sonnet_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
+    pins that. What both halves share is taking the minimum rather than a maximum,
+    which is what the rest of this docstring is about.
 
     Stated because the two halves disagreed for a long time — the token limit was
     taken from an account-wide ceiling that collapsed the per-model quotas to
@@ -1005,9 +1007,11 @@ def test_a_planned_model_with_the_local_1m_suffix_finds_its_base_quota(monkeypat
     The `:1m` suffix is a local convention for a 1M context window and shares the
     base model's Service Quotas entry, so a plan naming the suffixed id must find
     the base entry. Failing to would drop the model from the reduction and silently
-    fall back to the whole account mapping, which here would report the 6,000 TPM
-    of a model the plan does not call — a plausible wrong number rather than an
-    error.
+    fall back to the whole mapping this function was given, which here would report
+    the 6,000 TPM of a model the plan does not call — a plausible wrong number
+    rather than an error. (`get_simple_quotas` narrows the same way, so on the
+    handler's path the mapping holds the base entry; see
+    `test_the_shipped_map_resolves_a_one_million_context_sonnet_5_to_its_base_code`.)
     """
     quota = quotas(tpm=600000, rpm=100000, extra_tpm={"tiny": 6000})
     result = distribution(

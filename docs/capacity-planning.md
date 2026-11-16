@@ -155,21 +155,19 @@ The capacity calculation system provides the following analysis through its reso
 > measurement**, and read the TPM table when deciding whether to request an
 > increase.
 >
-> This does not distort the capacity figure. The request limit is the **minimum RPM
-> across every model in the TPM map**, not just the ones the plan calls, so an
-> overstated value cannot bind a minimum. (The TPM map is what decides membership:
-> the RPM lookup is built from its key set — `generate_rpm_quota_codes(
-> tpm_model_quotas.keys())` — and `BEDROCK_MODEL_RPM_QUOTA_CODES` only supplies the
-> code for each key it finds. The two maps carry the same keys today, and a model
-> added to one and not the other is the case the checklist in
-> `.claude/skills/add-model.md` exists to prevent.)
+> **Both limits on the throughput estimate come from the plan's own models.** Quotas
+> are read only for the models the selected profile's steps call, and the RPM
+> lookup is built from that same set — `generate_rpm_quota_codes(
+> tpm_model_quotas.keys())`, with `BEDROCK_MODEL_RPM_QUOTA_CODES` supplying the code
+> for each key — so a model the pipeline never calls constrains neither the token
+> limit nor the request limit. The two maps carry the same keys, and a model added
+> to one and not the other is the case the checklist in
+> `.claude/skills/add-model.md` exists to prevent.
 >
-> ⚠️ **Note that this reduction is over a wider set than the TPM one, and the
-> difference is not cosmetic.** The token limit *is* narrowed to the plan's step models, so a model
-> the pipeline never calls cannot constrain it. The request limit is not, so a
-> genuinely **low** RPM quota for a model you do not use still binds the RPM row and
-> can send you to request an increase you do not need. Check which model the row
-> names before acting on it.
+> ⚠️ **For a plan that calls only the Claude Sonnet models, the request limit is
+> therefore the placeholder above and does not bind.** The processing rate is then
+> set by the token limit, which is exact. No published requests-per-minute quota
+> exists to apply, so the estimate does not account for one.
 >
 > ⚠️ Separately: the quota maps cover a **subset** of the selectable models. A step
 > model with no entry in them fails Capacity Planning outright with

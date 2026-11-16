@@ -2279,6 +2279,10 @@ ORIGINAL_GET_SIMPLE_QUOTAS = index.get_simple_quotas
 
 DEAD_MODEL = "us.anthropic.claude-opus-4-1-20250805-v1:0"
 DEAD_CODE = "L-BD85BFCD"
+SONNET = "us.anthropic.claude-sonnet-5"
+# Sonnet 5's tokens-per-minute code, which the shipped RPM map also uses for it
+# because AWS publishes no requests-per-minute quota for that model.
+SONNET_CODE = "L-D4FBCF4E"
 
 
 def no_such_quota():
@@ -2320,7 +2324,8 @@ def live_quotas(wired, monkeypatch):
         asked.append(QuotaCode)
         if QuotaCode in (DEAD_CODE, "L-DEAD-RPM"):
             raise no_such_quota()
-        return {"Quota": {"Value": {"L-TPM": 100000, "L-RPM": 200}[QuotaCode]}}
+        values = {"L-TPM": 100000, "L-RPM": 200, SONNET_CODE: 6_000_000}
+        return {"Quota": {"Value": values[QuotaCode]}}
 
     client.get_service_quota.side_effect = get_service_quota
     real_client = index.boto3.client
@@ -2392,6 +2397,96 @@ def test_a_planned_model_whose_quota_cannot_be_read_is_skipped_with_a_warning(
     assert result["calculationDetails"]["quotasUsed"]["bedrock_models"] == {
         MODEL: 100000
     }
+
+
+@pytest.mark.unit
+def test_a_sonnet_only_plan_is_bound_by_its_token_limit_not_another_models_rpm(
+    live_quotas, monkeypatch
+):
+    """The request limit is reduced over the plan's models, as the token limit is.
+
+    The account also maps Nova Lite with a real 200 RPM quota, but the plan calls
+    only Sonnet 5, whose "RPM" entry is its 6,000,000 TPM code. Reading every code
+    in the map made Nova's 200 bind the request limit for a plan that never calls
+    Nova: 200 docs/min. Reading only the plan's models leaves the exact token
+    limit to decide it: 6,000,000 TPM over 6,000 tokens a document is 1,000
+    docs/min. The figure is asserted, not merely "not 200", so a different wrong
+    reduction cannot pass.
+    """
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES", json.dumps({MODEL: "L-TPM", SONNET: SONNET_CODE})
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES",
+        json.dumps({MODEL: "L-RPM", SONNET: SONNET_CODE}),
+    )
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps(
+        {
+            "classification_model": SONNET,
+            "extraction_model": SONNET,
+            "assessment_model": SONNET,
+        }
+    )
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert "L-RPM" not in live_quotas
+    assert result["latencyDistribution"]["processingRate"] == "1000 docs/min"
+
+
+@pytest.mark.unit
+def test_a_sustained_throttle_is_reported_as_a_failure_not_a_missing_quota(
+    wired, monkeypatch
+):
+    """Throttling is transient, so it must not drop a model from the analysis.
+
+    Dropping it would return `success: true` with that model's steps missing and
+    a message about the quota code, which is not what is wrong. Only one of the
+    plan's two models is throttled: were both, "every lookup failed" would refuse
+    the run either way, and this test could not tell the two behaviours apart.
+    """
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES", json.dumps({MODEL: "L-TPM", SONNET: "L-SLOW"})
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES", json.dumps({MODEL: "L-RPM", SONNET: "L-SLOW"})
+    )
+    monkeypatch.setattr(index, "get_simple_quotas", ORIGINAL_GET_SIMPLE_QUOTAS)
+    monkeypatch.setattr(index.time, "sleep", lambda _s: None)
+    client = MagicMock()
+    client.list_service_quotas.return_value = {"Quotas": []}
+    slow_calls = []
+
+    def get_service_quota(ServiceCode, QuotaCode):  # noqa: N803 - boto3 casing
+        if QuotaCode == "L-SLOW":
+            slow_calls.append(QuotaCode)
+            raise ClientError(
+                {"Error": {"Code": "TooManyRequestsException", "Message": "slow down"}},
+                "GetServiceQuota",
+            )
+        return {"Quota": {"Value": {"L-TPM": 100000, "L-RPM": 200}[QuotaCode]}}
+
+    client.get_service_quota.side_effect = get_service_quota
+    real_client = index.boto3.client
+    monkeypatch.setattr(
+        index.boto3,
+        "client",
+        lambda name, *a, **k: (
+            client if name == "service-quotas" else real_client(name, *a, **k)
+        ),
+    )
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps(
+        {"classification_model": MODEL, "extraction_model": SONNET}
+    )
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is False
+    assert "TooManyRequestsException" in result["errorMessage"]
+    assert index.QUOTA_NOT_READ_PREFIX not in result["errorMessage"]
+    # retry_with_backoff's three attempts, then the error propagates.
+    assert slow_calls == ["L-SLOW"] * 3
 
 
 @pytest.mark.unit
