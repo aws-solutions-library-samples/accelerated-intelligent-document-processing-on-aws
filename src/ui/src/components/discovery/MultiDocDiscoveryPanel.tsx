@@ -158,7 +158,7 @@ const MultiDocDiscoveryPanel = () => {
   // Settings & configuration profiles
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
-  const { formatDateTime } = useFormatters();
+  const { formatDateTime, formatFixed } = useFormatters();
   const [selectedVersion, setSelectedVersion] = useState<SelectProps.Option | null>(null);
   // Save mode: 'augment' (default) adds to the profile's existing schema;
   // 'replace' clears it first so discovery rebuilds the schema from scratch.
@@ -849,7 +849,7 @@ const MultiDocDiscoveryPanel = () => {
                 <input type="file" accept=".zip" onChange={(e) => setZipFile(e.target.files?.[0] || null)} style={{ fontSize: '14px' }} />
                 {zipFile && (
                   <Badge color="green">
-                    {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(1)} MB)
+                    {zipFile.name} ({formatFixed(zipFile.size / 1024 / 1024, 1)} MB)
                   </Badge>
                 )}
               </SpaceBetween>

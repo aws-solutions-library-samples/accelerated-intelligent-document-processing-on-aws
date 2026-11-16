@@ -64,7 +64,8 @@ import PublishVersionModal, { type PublishVersionInput } from './PublishVersionM
 import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from '../edit-screen/test-set-editor-slots';
 import { createLatestResponseGuard } from './latestResponseOnly';
-import { useFormatters } from '../../i18n/format';
+import { formatFixed, formatPercent, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 const client = generateClient();
 const logger = new ConsoleLogger('TestSetDetail');
@@ -116,7 +117,11 @@ export const renderLabelSource = (labelSource?: string | null): React.JSX.Elemen
 const DEFAULT_CONFIDENCE_THRESHOLD_PCT = 80;
 const NEAR_THRESHOLD_MARGIN_PCT = 10;
 
-export const renderConfidence = (value?: number | null, threshold?: number | null): React.JSX.Element | string => {
+export const renderConfidence = (
+  value: number | null | undefined,
+  threshold: number | null | undefined,
+  locale: Locale,
+): React.JSX.Element | string => {
   if (value === null || value === undefined) return '-';
   const pct = value <= 1 ? value * 100 : value;
   const rawThreshold = threshold ?? null;
@@ -126,7 +131,7 @@ export const renderConfidence = (value?: number | null, threshold?: number | nul
   const color = below ? 'text-status-error' : near ? 'text-status-warning' : 'text-status-success';
   return (
     <Box color={color} fontWeight={below ? 'bold' : 'normal'}>
-      {pct.toFixed(1)}%
+      {formatPercent(pct / 100, locale, { fractionDigits: 1 })}
     </Box>
   );
 };
@@ -248,6 +253,16 @@ export const renderLabelAccuracy = (
   return <Box color="text-status-inactive">Not assessed yet</Box>;
 };
 
+/**
+ * The "98.2% est." figure of a rated tier. `renderQualityTier` and `renderLabelAccuracy` are
+ * plain functions that the Test Sets list and their tests call directly, so they cannot read
+ * the UI locale themselves; this component does, where the figure is rendered.
+ */
+const EstimatedAccuracy = ({ accuracy, decimals }: { accuracy: number; decimals: number }): React.JSX.Element => {
+  const { locale } = useFormatters();
+  return <Box variant="span">{formatPercent(accuracy, locale, { fractionDigits: decimals })} est.</Box>;
+};
+
 export const renderQualityTier = (
   tier?: string | null,
   reason?: string | null,
@@ -284,7 +299,7 @@ export const renderQualityTier = (
     <Popover dismissButton={false} position="top" size="medium" triggerType="custom" content={detail}>
       <SpaceBetween direction="horizontal" size="xxs" alignItems="center">
         {accuracy !== null && accuracy !== undefined ? (
-          <Box variant="span">{(accuracy * 100).toFixed(decimals)}% est.</Box>
+          <EstimatedAccuracy accuracy={accuracy} decimals={decimals} />
         ) : (
           <Box variant="span" color="text-body-secondary">
             Not rated
@@ -302,21 +317,25 @@ export const renderQualityTier = (
  * lowest score stays in the popover because the calibration curve is built on it.
  */
 export const renderAlertCount = (
-  alertCount?: number | null,
-  fieldCount?: number | null,
-  minConfidence?: number | null,
-  threshold?: number | null,
+  alertCount: number | null | undefined,
+  fieldCount: number | null | undefined,
+  minConfidence: number | null | undefined,
+  threshold: number | null | undefined,
+  locale: Locale,
 ): React.JSX.Element | string => {
   if (alertCount === null || alertCount === undefined) return '-';
   const detail = (
     <SpaceBetween size="xxs">
       <Box variant="span">
-        Lowest field confidence: {minConfidence === null || minConfidence === undefined ? '-' : renderConfidence(minConfidence, threshold)}
+        Lowest field confidence:{' '}
+        {minConfidence === null || minConfidence === undefined ? '-' : renderConfidence(minConfidence, threshold, locale)}
       </Box>
       <Box variant="span" fontSize="body-s" color="text-body-secondary">
         {threshold === null || threshold === undefined
           ? 'Alerts count fields below the default 80% threshold.'
-          : `Alerts count fields below their configured threshold (${((threshold <= 1 ? threshold * 100 : threshold) as number).toFixed(0)}%).`}
+          : `Alerts count fields below their configured threshold (${formatPercent(threshold <= 1 ? threshold : threshold / 100, locale, {
+              fractionDigits: 0,
+            })}).`}
       </Box>
     </SpaceBetween>
   );
@@ -347,11 +366,11 @@ export const renderReviewState = (labelSource?: string | null): React.JSX.Elemen
   return <StatusIndicator type="success">Ground truth</StatusIndicator>;
 };
 
-export const formatSize = (size?: number | null): string => {
+export const formatSize = (size: number | null | undefined, locale: Locale): string => {
   if (size === null || size === undefined) return '-';
   if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  if (size < 1024 * 1024) return `${formatFixed(size / 1024, locale, 1)} KB`;
+  return `${formatFixed(size / (1024 * 1024), locale, 1)} MB`;
 };
 
 /**
@@ -398,7 +417,7 @@ const TestSetDetail = (): React.JSX.Element => {
   const navigate = useNavigate();
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const { settings } = useSettingsContext();
-  const { formatDateTime } = useFormatters();
+  const { formatDateTime, locale } = useFormatters();
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [documents, setDocuments] = useState<TestSetDocumentItem[]>([]);
@@ -1248,7 +1267,7 @@ const TestSetDetail = (): React.JSX.Element => {
                   id: 'alertCount',
                   header: 'Confidence alerts',
                   cell: (item: TestSetDocumentItem) =>
-                    renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold),
+                    renderAlertCount(item.alertCount, item.fieldCount, item.minConfidence, item.confidenceThreshold, locale),
                   sortingComparator: compareByAlertCount,
                 },
                 {
@@ -1263,7 +1282,7 @@ const TestSetDetail = (): React.JSX.Element => {
                 {
                   id: 'size',
                   header: 'Size',
-                  cell: (item: TestSetDocumentItem) => formatSize(item.size),
+                  cell: (item: TestSetDocumentItem) => formatSize(item.size, locale),
                 },
                 {
                   id: 'lastModified',

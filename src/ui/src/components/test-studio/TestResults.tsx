@@ -89,7 +89,7 @@ const ComprehensiveBreakdown = ({
   averageWeightedScore,
   confidenceMetrics,
 }: ComprehensiveBreakdownProps): React.JSX.Element => {
-  const { locale } = useFormatters();
+  const { formatFixed, formatNumber, formatPercent, locale } = useFormatters();
   const hasGradedPacketMetrics = !!gradedPacketMetrics?.mean && Object.keys(gradedPacketMetrics.mean).length > 0;
 
   if (!costBreakdown && !accuracyBreakdown && !splitClassificationMetrics && !hasGradedPacketMetrics && !fieldMetrics) {
@@ -117,7 +117,7 @@ const ComprehensiveBreakdown = ({
                         <MetricInfo metric="Avg Weighted Score" />
                       </>
                     ),
-                    value: averageWeightedScore.toFixed(3),
+                    value: formatFixed(averageWeightedScore, 3),
                   });
                 }
 
@@ -133,7 +133,7 @@ const ComprehensiveBreakdown = ({
                       ),
                       value:
                         typeof splitClassificationMetrics.page_level_accuracy === 'number'
-                          ? splitClassificationMetrics.page_level_accuracy.toFixed(3)
+                          ? formatFixed(splitClassificationMetrics.page_level_accuracy, 3)
                           : splitClassificationMetrics.page_level_accuracy?.toString() || '0',
                     });
                   }
@@ -148,7 +148,7 @@ const ComprehensiveBreakdown = ({
                       ),
                       value:
                         typeof splitClassificationMetrics.split_accuracy_with_order === 'number'
-                          ? splitClassificationMetrics.split_accuracy_with_order.toFixed(3)
+                          ? formatFixed(splitClassificationMetrics.split_accuracy_with_order, 3)
                           : splitClassificationMetrics.split_accuracy_with_order?.toString() || '0',
                     });
                   }
@@ -201,7 +201,7 @@ const ComprehensiveBreakdown = ({
                                 {metricKey && <MetricInfo metric={metricKey} />}
                               </>
                             ),
-                            value: value !== null && value !== undefined ? value.toFixed(3) : '0.000',
+                            value: formatFixed(value !== null && value !== undefined ? value : 0, 3),
                           };
                         })
                       : []),
@@ -222,7 +222,7 @@ const ComprehensiveBreakdown = ({
                                 <MetricInfo metric="AUROC" />
                               </>
                             ),
-                            value: overall.auroc.value.toFixed(3),
+                            value: formatFixed(overall.auroc.value, 3),
                           });
                         }
                         if (overall.ece?.value !== null && overall.ece?.value !== undefined) {
@@ -233,7 +233,7 @@ const ComprehensiveBreakdown = ({
                                 <MetricInfo metric="ECE" />
                               </>
                             ),
-                            value: overall.ece.value.toFixed(3),
+                            value: formatFixed(overall.ece.value, 3),
                           });
                         }
                         if (overall.brier?.value !== null && overall.brier?.value !== undefined) {
@@ -244,7 +244,7 @@ const ComprehensiveBreakdown = ({
                                 <MetricInfo metric="Brier" />
                               </>
                             ),
-                            value: overall.brier.value.toFixed(3),
+                            value: formatFixed(overall.brier.value, 3),
                           });
                         }
                         // ECARB@30
@@ -260,7 +260,9 @@ const ComprehensiveBreakdown = ({
                                 <MetricInfo metric="ECARB@30" />
                               </>
                             ),
-                            value: `${(ecarb30.pct_errors_caught * 100).toFixed(0)}% (${ecarb30.gain?.toFixed(2)}x)`,
+                            value: `${formatPercent(ecarb30.pct_errors_caught, { fractionDigits: 0 })} (${
+                              ecarb30.gain === undefined ? undefined : formatFixed(ecarb30.gain, 2)
+                            }x)`,
                           });
                         }
                       }
@@ -273,7 +275,7 @@ const ComprehensiveBreakdown = ({
                               <MetricInfo metric="Coverage Ratio" />
                             </>
                           ),
-                          value: `${(coverage.ratio * 100).toFixed(1)}% (${coverage.fields_with_confidence}/${coverage.fields_total})`,
+                          value: `${formatPercent(coverage.ratio, { fractionDigits: 1 })} (${coverage.fields_with_confidence}/${coverage.fields_total})`,
                         });
                       }
 
@@ -294,7 +296,7 @@ const ComprehensiveBreakdown = ({
                                 <span style={{ color: '#687078' }}>Classification (graded):</span> {displayName}
                               </>
                             ),
-                            value: typeof value === 'number' ? value.toFixed(3) : String(value ?? '0'),
+                            value: typeof value === 'number' ? formatFixed(value, 3) : String(value ?? '0'),
                           };
                         })
                       : []),
@@ -316,7 +318,7 @@ const ComprehensiveBreakdown = ({
                               ),
                               value:
                                 typeof value === 'number' && key.includes('accuracy')
-                                  ? value.toFixed(3)
+                                  ? formatFixed(value, 3)
                                   : value !== null && value !== undefined
                                     ? value.toString()
                                     : '0',
@@ -406,7 +408,7 @@ const ComprehensiveBreakdown = ({
             const ecabGain = ecab?.gain;
             const ecabDisplay =
               ecabPct !== null && ecabPct !== undefined && ecabGain !== null && ecabGain !== undefined
-                ? `${(ecabPct * 100).toFixed(0)}% (${ecabGain.toFixed(1)}x)`
+                ? `${formatPercent(ecabPct, { fractionDigits: 0 })} (${formatFixed(ecabGain, 1)}x)`
                 : 'N/A';
 
             return {
@@ -415,20 +417,20 @@ const ComprehensiveBreakdown = ({
               fp,
               tn,
               fn,
-              accuracy: total > 0 ? ((tp + tn) / total).toFixed(3) : 'N/A',
+              accuracy: total > 0 ? formatFixed((tp + tn) / total, 3) : 'N/A',
               observations: interval ? interval.observations : 0,
-              accuracyMargin: formatMargin(interval),
+              accuracyMargin: formatMargin(interval, locale),
               // Sorting must key on the number: the displayed value is formatted, and
               // "±10.2" sorts before "±5.9" as a string. The accuracy column gets away
               // with a string because toFixed(3) is fixed-width; margins are not.
               accuracyMarginValue: interval ? interval.margin : -1,
-              accuracyBounds: formatBounds(interval),
+              accuracyBounds: formatBounds(interval, locale),
               lowEvidence: isLowEvidence(interval),
-              precision: tp + fp > 0 ? (tp / (tp + fp)).toFixed(3) : 'N/A',
-              recall: tp + fn > 0 ? (tp / (tp + fn)).toFixed(3) : 'N/A',
-              auroc: auroc !== null && auroc !== undefined ? auroc.toFixed(3) : 'N/A',
-              ece: ece !== null && ece !== undefined ? ece.toFixed(3) : 'N/A',
-              brier: brier !== null && brier !== undefined ? brier.toFixed(3) : 'N/A',
+              precision: tp + fp > 0 ? formatFixed(tp / (tp + fp), 3) : 'N/A',
+              recall: tp + fn > 0 ? formatFixed(tp / (tp + fn), 3) : 'N/A',
+              auroc: auroc !== null && auroc !== undefined ? formatFixed(auroc, 3) : 'N/A',
+              ece: ece !== null && ece !== undefined ? formatFixed(ece, 3) : 'N/A',
+              brier: brier !== null && brier !== undefined ? formatFixed(brier, 3) : 'N/A',
               ecab30: ecabDisplay,
               depth: (fieldName.match(/\./g) || []).length,
             };
@@ -925,7 +927,7 @@ const ComprehensiveBreakdown = ({
                   const value = item.value;
                   if (value === 'N/A' || !value) return 'N/A';
                   const numValue = parseFloat(value.toString().replace(/,/g, ''));
-                  return isNaN(numValue) ? value : numValue.toLocaleString();
+                  return isNaN(numValue) ? value : formatNumber(numValue);
                 },
               },
               {
@@ -972,7 +974,7 @@ interface SelectedRange {
 const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): React.JSX.Element => {
   const { addTestRun } = useAppContext();
   const { versions } = useConfigurationVersions();
-  const { formatUsDollars } = useFormatters();
+  const { formatFixed, formatPercent, formatUsDollars } = useFormatters();
   const [results, setResults] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1448,7 +1450,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             </Box>
             <Box fontSize="heading-l">
               {results.averageConfidence !== null && results.averageConfidence !== undefined
-                ? `${((results.averageConfidence as number) * 100).toFixed(1)}%`
+                ? formatPercent(results.averageConfidence as number, { fractionDigits: 1 })
                 : 'N/A'}
             </Box>
           </Box>
@@ -1459,7 +1461,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
             </Box>
             <Box fontSize="heading-l">
               {results.overallAccuracy !== null && results.overallAccuracy !== undefined
-                ? (results.overallAccuracy as number).toFixed(3)
+                ? formatFixed(results.overallAccuracy as number, 3)
                 : 'N/A'}
             </Box>
           </Box>
@@ -1468,7 +1470,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
               Avg Weighted Score
               <MetricInfo metric="Avg Weighted Score" />
             </Box>
-            <Box fontSize="heading-l">{averageWeightedScore !== null ? averageWeightedScore.toFixed(3) : 'N/A'}</Box>
+            <Box fontSize="heading-l">{averageWeightedScore !== null ? formatFixed(averageWeightedScore, 3) : 'N/A'}</Box>
           </Box>
           {/* Excluded Docs KPI — surfaced only when a run has no-op documents
               (class has no extractable schema). Hidden on the happy path so
@@ -1595,7 +1597,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
 
                   let tooltip = `${data.count} documents in range ${range}\n\n`;
                   topDocs.forEach((doc) => {
-                    tooltip += `• ${doc.docId} (${doc.score?.toFixed(3)})\n`;
+                    tooltip += `• ${doc.docId} (${formatFixed(doc.score, 3)})\n`;
                   });
                   if (data.docs.length > 3) {
                     tooltip += `\n...and ${data.docs.length - 3} more documents`;
@@ -1765,7 +1767,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
                     {
                       id: 'score',
                       header: 'Weighted Overall Score',
-                      cell: (item) => (item.score as number).toFixed(3),
+                      cell: (item) => formatFixed(item.score as number, 3),
                     },
                   ]}
                   variant="embedded"
@@ -1914,7 +1916,7 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
                 {
                   id: 'score',
                   header: 'Score',
-                  cell: (item) => item.score.toFixed(3),
+                  cell: (item) => formatFixed(item.score, 3),
                 },
               ]}
               variant="embedded"

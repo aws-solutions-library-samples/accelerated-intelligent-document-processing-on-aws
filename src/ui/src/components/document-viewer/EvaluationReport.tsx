@@ -56,6 +56,7 @@ import {
   splitAnalysis,
   summarizeEvaluation,
 } from './evaluationReportModel';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 const logger = new ConsoleLogger('EvaluationReport');
@@ -79,6 +80,7 @@ const BAND_LABEL: Record<string, string> = { good: 'Excellent', fair: 'Good', po
 
 /** One of the headline figures. Omitted entirely when there is no value. */
 const ScoreTile = ({ label, score, hint }: { label: string; score: number | null; hint?: string }): React.JSX.Element | null => {
+  const { locale } = useFormatters();
   if (score === null) return null;
   const band = scoreBand(score);
   return (
@@ -86,7 +88,7 @@ const ScoreTile = ({ label, score, hint }: { label: string; score: number | null
       <Box variant="awsui-key-label">{label}</Box>
       <SpaceBetween direction="horizontal" size="xs" alignItems="center">
         <Box variant="h1" padding={{ top: 'n' }}>
-          {formatScore(score)}
+          {formatScore(score, locale)}
         </Box>
         <Badge color={BAND_COLOUR[band]}>{BAND_LABEL[band]}</Badge>
       </SpaceBetween>
@@ -180,36 +182,40 @@ const MetricTable = ({
   emptyText: string;
   /** The section was never evaluated: its zeros are placeholders, not measurements. */
   notScored?: boolean;
-}): React.JSX.Element => (
-  <Table
-    variant="embedded"
-    contentDensity="compact"
-    items={rows}
-    trackBy="metric"
-    columnDefinitions={[
-      { id: 'metric', header: 'Metric', cell: (row: MetricRow) => row.metric },
-      { id: 'value', header: 'Value', cell: (row: MetricRow) => (row.value === null ? 'Not scored' : row.value.toFixed(4)) },
-      {
-        id: 'rating',
-        header: 'Rating',
-        cell: (row: MetricRow) =>
-          notScored ? (
-            <StatusIndicator type="stopped">Not scored</StatusIndicator>
-          ) : row.value === null ? (
-            <StatusIndicator type="stopped">Excluded</StatusIndicator>
-          ) : row.band ? (
-            <StatusIndicator type={bandIndicator[row.band]}>{BAND_LABEL[row.band]}</StatusIndicator>
-          ) : (
-            '—'
-          ),
-      },
-    ]}
-    empty={<Box textAlign="center">{emptyText}</Box>}
-  />
-);
+}): React.JSX.Element => {
+  const { formatFixed } = useFormatters();
+  return (
+    <Table
+      variant="embedded"
+      contentDensity="compact"
+      items={rows}
+      trackBy="metric"
+      columnDefinitions={[
+        { id: 'metric', header: 'Metric', cell: (row: MetricRow) => row.metric },
+        { id: 'value', header: 'Value', cell: (row: MetricRow) => (row.value === null ? 'Not scored' : formatFixed(row.value, 4)) },
+        {
+          id: 'rating',
+          header: 'Rating',
+          cell: (row: MetricRow) =>
+            notScored ? (
+              <StatusIndicator type="stopped">Not scored</StatusIndicator>
+            ) : row.value === null ? (
+              <StatusIndicator type="stopped">Excluded</StatusIndicator>
+            ) : row.band ? (
+              <StatusIndicator type={bandIndicator[row.band]}>{BAND_LABEL[row.band]}</StatusIndicator>
+            ) : (
+              '—'
+            ),
+        },
+      ]}
+      empty={<Box textAlign="center">{emptyText}</Box>}
+    />
+  );
+};
 
 /** The markdown's "Section Split Analysis" table, plus its error list. */
 const SplitAnalysisSection = ({ split }: { split: SplitAnalysis }): React.JSX.Element => {
+  const { locale } = useFormatters();
   const verdict = (ok: boolean, label: string) => <StatusIndicator type={ok ? 'success' : 'error'}>{label}</StatusIndicator>;
   return (
     <SpaceBetween size="s">
@@ -258,11 +264,11 @@ const SplitAnalysisSection = ({ split }: { split: SplitAnalysis }): React.JSX.El
       />
       {split.graded && (
         <Box variant="small" color="text-body-secondary">
-          Graded packet score {formatScore(split.graded.finalScore)}
-          {split.graded.clusteringScore !== null && ` · clustering ${formatScore(split.graded.clusteringScore)}`}
-          {split.graded.orderingScore !== null && ` · ordering ${formatScore(split.graded.orderingScore)}`}
-          {split.graded.vMeasure !== null && ` · V-measure ${formatScore(split.graded.vMeasure)}`}
-          {split.graded.randIndex !== null && ` · Rand index ${formatScore(split.graded.randIndex)}`}
+          Graded packet score {formatScore(split.graded.finalScore, locale)}
+          {split.graded.clusteringScore !== null && ` · clustering ${formatScore(split.graded.clusteringScore, locale)}`}
+          {split.graded.orderingScore !== null && ` · ordering ${formatScore(split.graded.orderingScore, locale)}`}
+          {split.graded.vMeasure !== null && ` · V-measure ${formatScore(split.graded.vMeasure, locale)}`}
+          {split.graded.randIndex !== null && ` · Rand index ${formatScore(split.graded.randIndex, locale)}`}
         </Box>
       )}
       {split.errors.length > 0 && (
@@ -287,6 +293,7 @@ const SplitAnalysisSection = ({ split }: { split: SplitAnalysis }): React.JSX.El
  * which.
  */
 const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element => {
+  const { formatFixed } = useFormatters();
   const [expanded, setExpanded] = useState<ComparisonRow[]>([]);
   // Sorting is applied here rather than through useCollection: the rows carry
   // their children, and only the top level should reorder.
@@ -352,7 +359,7 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
           cell: (row: ComparisonRow) =>
             row.confidence === null || (describeValue(row.expected).kind === 'empty' && describeValue(row.actual).kind === 'empty')
               ? '—'
-              : `${row.confidence.toFixed(2)}${row.confidenceThreshold !== null ? ` / ${row.confidenceThreshold.toFixed(2)}` : ''}`,
+              : `${formatFixed(row.confidence, 2)}${row.confidenceThreshold !== null ? ` / ${formatFixed(row.confidenceThreshold, 2)}` : ''}`,
           width: 125,
         },
         {
@@ -364,12 +371,12 @@ const AttributeTable = ({ rows }: { rows: ComparisonRow[] }): React.JSX.Element 
               : row.children
                 ? // An aggregate: the score is over the nested comparisons below it,
                   // not a comparison of two values, and the markdown says so too.
-                  `${row.score.toFixed(3)} (aggregate)`
-                : row.score.toFixed(3),
+                  `${formatFixed(row.score, 3)} (aggregate)`
+                : formatFixed(row.score, 3),
           sortingField: 'score',
           width: 130,
         },
-        { id: 'weight', header: 'Weight', cell: (row: ComparisonRow) => (row.weight === null ? '1.00' : row.weight.toFixed(2)), width: 90 },
+        { id: 'weight', header: 'Weight', cell: (row: ComparisonRow) => formatFixed(row.weight === null ? 1 : row.weight, 2), width: 90 },
         {
           id: 'method',
           header: 'Method',
@@ -463,6 +470,7 @@ const HowScoresAreComputed = ({ hasSplit }: { hasSplit: boolean }): React.JSX.El
 );
 
 const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): React.JSX.Element => {
+  const { locale } = useFormatters();
   const [results, setResults] = useState<EvaluationResults | null>(null);
   const [loading, setLoading] = useState(true);
   const [jsonUnavailable, setJsonUnavailable] = useState(false);
@@ -520,7 +528,7 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
       split_accuracy_with_order: raw.split_accuracy_with_order,
     });
   }, [results]);
-  const executionTime = formatDuration(results?.execution_time);
+  const executionTime = formatDuration(results?.execution_time, locale);
   // Built once per change of input rather than inline in the render: rebuilding
   // every section's rows on each render also defeated AttributeTable's sort memo,
   // which keys on row identity.
@@ -640,13 +648,13 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
             <ScoreTile
               label="Split accuracy"
               score={split.withoutOrder.score}
-              hint={`${split.withoutOrder.correct} of ${split.withoutOrder.total} sections · in order ${formatScore(split.withOrder.score)}`}
+              hint={`${split.withoutOrder.correct} of ${split.withoutOrder.total} sections · in order ${formatScore(split.withOrder.score, locale)}`}
             />
           )}
           <ScoreTile
             label="F1 score"
             score={summary.f1Score}
-            hint={`Precision ${formatScore(summary.precision)} · Recall ${formatScore(summary.recall)}`}
+            hint={`Precision ${formatScore(summary.precision, locale)} · Recall ${formatScore(summary.recall, locale)}`}
           />
         </ColumnLayout>
 
@@ -758,7 +766,7 @@ const EvaluationReport = ({ reportUri, documentId }: EvaluationReportProps): Rea
           // a measured mismatch; counting it beside "not scored" contradicted the
           // alert below in miniature.
           const counterParts = [
-            failure ? 'not scored' : sectionScore !== null ? formatScore(sectionScore) : null,
+            failure ? 'not scored' : sectionScore !== null ? formatScore(sectionScore, locale) : null,
             !failure && mismatchCount > 0 ? `${mismatchCount} mismatched` : null,
           ].filter(Boolean);
 

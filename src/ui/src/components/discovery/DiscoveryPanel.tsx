@@ -116,7 +116,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
-  const { formatDateTime } = useFormatters();
+  const { formatDateTime, formatFixed } = useFormatters();
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [groundTruthFile, setGroundTruthFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -459,7 +459,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       }
 
       // Phase 2: Upload document to S3
-      const fileSizeMB = (documentFile.size / (1024 * 1024)).toFixed(1);
+      const fileSizeMB = formatFixed(documentFile.size / (1024 * 1024), 1);
       setUploadPhase(`Uploading document to S3 (${fileSizeMB} MB)...`);
 
       await uploadFileToS3(documentFile, docPresignedUrl, docObjectKey, 'document', newUploadStatus);
