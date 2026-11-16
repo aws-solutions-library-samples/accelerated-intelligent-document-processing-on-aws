@@ -48,6 +48,6 @@ describe('Estimated Cost table and stored prices', () => {
     const input = rowFor('inputTokens');
     expect(input).toContain('None');
     expect(input).not.toContain('$16');
-    expect(rowFor('outputTokens')).toContain('$0.0020');
+    expect(rowFor('outputTokens')).toContain('US$0.0020');
   });
 });

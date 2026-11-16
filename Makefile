@@ -1451,6 +1451,45 @@ ifndef TERRAFORM_MODULE_URL
 endif
 	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
 
+# In-place upgrade of a Terraform deployment between two releases of the module:
+# deploys FROM_MODULE_URL as STACK_NAME, seeds it (documents, users, a config edit,
+# a baseline and a test set), runs `idp-cli deploy --terraform` again against
+# TO_MODULE_URL, and verifies that every bucket, table, user pool and key kept its
+# physical identity, that the data in them is unchanged, that both users still sign
+# in with their old passwords, and that a new document still processes. It never
+# passes --terraform-allow-replace-stateful, so a plan the deploy guard refuses
+# fails the run. The Terraform counterpart of stacktest-upgrade. Budget about two
+# and a half hours. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>;
+# RESUME=1 continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier K).
+#   make stacktest-terraform-upgrade STACK_NAME=tfup1 ADMIN_EMAIL=you@example.com \
+#       FROM_MODULE_URL=https://.../idp-terraform-<old>.zip \
+#       TO_MODULE_URL=https://.../idp-terraform-<new>.zip
+_TFUP_ARGS = --stack-name $(STACK_NAME) --admin-email $(ADMIN_EMAIL) \
+	--from-module-url $(FROM_MODULE_URL) --to-module-url $(TO_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(PARAMETERS),--parameters $(PARAMETERS),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-upgrade: ## Upgrade a live Terraform deployment from one release's module to another in place, verify nothing was lost, tear it down (STACK_NAME= ADMIN_EMAIL= FROM_MODULE_URL= TO_MODULE_URL=)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-terraform-upgrade STACK_NAME=<stack> ADMIN_EMAIL=<email> FROM_MODULE_URL=<zip url> TO_MODULE_URL=<zip url>)
+endif
+ifndef ADMIN_EMAIL
+	$(error ADMIN_EMAIL is not set: the first deploy sends it a temporary password)
+endif
+ifndef FROM_MODULE_URL
+	$(error FROM_MODULE_URL is not set: the module zip of the release to upgrade FROM)
+endif
+ifndef TO_MODULE_URL
+	$(error TO_MODULE_URL is not set: the module zip to upgrade TO, which `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_upgrade_test.py $(_TFUP_ARGS)
+
 ##@ UI Development
 
 # ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND EVERY ONE WHOSE

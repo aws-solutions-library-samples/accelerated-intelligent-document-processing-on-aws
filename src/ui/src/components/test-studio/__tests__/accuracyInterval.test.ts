@@ -77,13 +77,13 @@ describe('accuracyIntervalForField', () => {
 describe('formatting', () => {
   it('renders the margin in percentage points and bounds as a range', () => {
     const interval = accuracyIntervalForField({ tp: 90, fp: 5, tn: 0, fn: 5 });
-    expect(formatMargin(interval)).toMatch(/^±\d+\.\d$/);
-    expect(formatBounds(interval)).toMatch(/^\d+\.\d% – \d+\.\d%$/);
+    expect(formatMargin(interval, 'en')).toMatch(/^±\d+\.\d$/);
+    expect(formatBounds(interval, 'en')).toMatch(/^\d+\.\d% – \d+\.\d%$/);
   });
 
   it('renders an em-dash when there is nothing to report', () => {
-    expect(formatMargin(null)).toBe('—');
-    expect(formatBounds(null)).toBe('—');
+    expect(formatMargin(null, 'en')).toBe('—');
+    expect(formatBounds(null, 'en')).toBe('—');
   });
 
   it('flags only intervals too wide to decide on', () => {
@@ -103,6 +103,6 @@ describe('sorting', () => {
     const narrow = accuracyIntervalForField({ tp: 36, fp: 0, tn: 0, fn: 4 })!;
 
     expect(wide.margin).toBeGreaterThan(narrow.margin);
-    expect(formatMargin(wide) < formatMargin(narrow)).toBe(true);
+    expect(formatMargin(wide, 'en') < formatMargin(narrow, 'en')).toBe(true);
   });
 });

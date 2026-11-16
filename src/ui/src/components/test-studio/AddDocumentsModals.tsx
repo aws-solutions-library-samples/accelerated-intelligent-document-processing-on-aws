@@ -29,6 +29,7 @@ import { addDocumentsToTestSet, addDocumentsToTestSetFromUpload, listBucketFiles
 import { getErrorMessage } from '../../utils/errorUtils';
 import { BUCKET_OPTIONS, TIME_FILTER_OPTIONS } from './testSetOptions';
 import AddProcessedDocumentsModal from './AddProcessedDocumentsModal';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -80,6 +81,7 @@ interface AddDocumentsModalsProps {
 }
 
 const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocumentsModalsProps): React.JSX.Element => {
+  const { formatFixed } = useFormatters();
   const [filePattern, setFilePattern] = useState('');
   const [selectedBucket, setSelectedBucket] = useState<SelectProps.Option>(BUCKET_OPTIONS[0]);
   const [selectedTimeFilter, setSelectedTimeFilter] = useState<SelectProps.Option>(TIME_FILTER_OPTIONS[0]);
@@ -398,7 +400,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                   return;
                 }
                 if (file.size > MAX_ZIP_SIZE_BYTES) {
-                  setError(`Zip file size (${(file.size / 1024 / 1024 / 1024).toFixed(2)} GB) exceeds maximum limit of 1 GB`);
+                  setError(`Zip file size (${formatFixed(file.size / 1024 / 1024 / 1024, 2)} GB) exceeds maximum limit of 1 GB`);
                   setZipFile(null);
                   return;
                 }
@@ -410,7 +412,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
             {zipFile && (
               <Box margin={{ top: 'xs' }}>
                 <Badge color="blue">
-                  {zipFile.name} ({(zipFile.size / 1024 / 1024).toFixed(1)} MB)
+                  {zipFile.name} ({formatFixed(zipFile.size / 1024 / 1024, 1)} MB)
                 </Badge>
               </Box>
             )}

@@ -30,6 +30,7 @@ import usePolling from '../../hooks/use-polling';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import QueueAnnotatorsTable, { queueAnnotatorRows } from './QueueAnnotatorsTable';
 import QueueProgress from './QueueProgress';
@@ -162,6 +163,7 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
   // The router has already decoded the queue id once.
   const { queue: queueId = '' } = useParams();
   const intl = useIntl();
+  const { locale } = useFormatters();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin, canReview, loading: roleLoading } = useUserRole();
   const navigate = useNavigate();
@@ -476,7 +478,9 @@ const ReviewQueuePage = ({ onName }: ReviewQueuePageProps): React.JSX.Element =>
                   {
                     label: 'Oldest waiting',
                     value: mySummary.oldestEnqueuedAt ? (
-                      <span title={formatDateTime(mySummary.oldestEnqueuedAt)}>{formatRelativeTime(mySummary.oldestEnqueuedAt)}</span>
+                      <span title={formatDateTime(mySummary.oldestEnqueuedAt, locale)}>
+                        {formatRelativeTime(mySummary.oldestEnqueuedAt, locale)}
+                      </span>
                     ) : (
                       '—'
                     ),

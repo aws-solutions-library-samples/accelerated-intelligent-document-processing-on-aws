@@ -12,6 +12,7 @@ import usePricing from '../../hooks/use-pricing';
 import MeteringTable from './MeteringTable';
 import { calculateTotalCosts } from './metering-cost';
 import { toPricingLookup } from '../pricing-layout/price-format';
+import { useFormatters } from '../../i18n/format';
 
 interface EstimatedCostModalProps {
   meteringData: Record<string, Record<string, unknown>>;
@@ -23,6 +24,7 @@ export { toPricingLookup };
 
 const EstimatedCostModal = ({ meteringData, pageCount, onDismiss }: EstimatedCostModalProps): React.JSX.Element => {
   const { pricing } = usePricing();
+  const { formatUsDollars } = useFormatters();
   const pricingData = useMemo(() => toPricingLookup(pricing), [pricing]);
   const { totalCost, costPerPage } = calculateTotalCosts(meteringData, pageCount ?? undefined, pricingData);
 
@@ -31,7 +33,7 @@ const EstimatedCostModal = ({ meteringData, pageCount, onDismiss }: EstimatedCos
       visible
       size={REPORT_MODAL_SIZE}
       onDismiss={onDismiss}
-      header={`Estimated Cost (per page: $${costPerPage.toFixed(4)})`}
+      header={`Estimated Cost (per page: ${formatUsDollars(costPerPage, { fractionDigits: 4 })})`}
       footer={
         <Box float="right">
           <Button variant="primary" onClick={onDismiss}>

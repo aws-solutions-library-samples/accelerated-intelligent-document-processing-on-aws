@@ -18,6 +18,7 @@ import { defineMessages, FormattedMessage, useIntl } from 'react-intl';
 import type { ReviewItemDetail } from '../../graphql/generated/operation-types';
 import { NEXT_ALERT_LABEL } from '../common/labels';
 import { MISSING_REQUIRED_KIND, reasonText } from './review-api';
+import { useFormatters } from '../../i18n/format';
 
 const messages = defineMessages<{
   sentToReview: { readonly reason: string };
@@ -57,6 +58,7 @@ interface ReviewTaskContextProps {
 
 const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): React.JSX.Element => {
   const intl = useIntl();
+  const { formatFixed } = useFormatters();
   const { item } = detail;
   const [showAll, setShowAll] = useState(false);
   // The reason Next alert moves to next.
@@ -117,7 +119,7 @@ const ReviewTaskContext = ({ detail, onReasonClick }: ReviewTaskContextProps): R
                     <Box>No extracted value; the class schema requires this field.</Box>
                   ) : (
                     <Box>
-                      Confidence {reason.score.toFixed(2)}, threshold {reason.threshold.toFixed(2)}
+                      Confidence {formatFixed(reason.score, 2)}, threshold {formatFixed(reason.threshold, 2)}
                     </Box>
                   )}
                 </SpaceBetween>

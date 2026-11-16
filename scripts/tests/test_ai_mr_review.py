@@ -3465,9 +3465,132 @@ def test_the_wrong_role_refuses_the_whole_run(
 
 
 @pytest.mark.unit
-def test_no_credentials_refuse_rather_than_skip(mod) -> None:
+def test_no_credentials_refuse_rather_than_skip(mod, tmp_path) -> None:
+    # HOME is pinned to an empty directory: without it the lookup would fall back
+    # to the developer's own ~/.aws and sign a real STS call.
     with pytest.raises(mod.Failure, match="no AWS credentials"):
-        mod.caller_role_name({})
+        mod.caller_role_name({"HOME": str(tmp_path)})
+
+
+# --- credentials the runner fleet links into $HOME/.aws -------------------------
+#
+# GitLab's runner fleet exports no AWS_* variables: its credential vendor writes
+# the session to files and symlinks that directory to $HOME/.aws before the job
+# script runs. The harness has no AWS SDK, so it must read them itself.
+
+_FILE = {
+    "AWS_ACCESS_KEY_ID": "ASIA" + "FILEKEY" * 2 + "EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "file-secret-" + "f" * 20,
+    "AWS_SESSION_TOKEN": "file-token-" + "g" * 30,
+}
+
+
+def _write_aws(home: Path, name: str, section: str, values: dict[str, str]) -> None:
+    (home / ".aws").mkdir(parents=True, exist_ok=True)
+    body = "".join(f"{k.lower()} = {v}\n" for k, v in values.items())
+    with (home / ".aws" / name).open("a") as handle:
+        handle.write(f"[{section}]\n{body}\n")
+
+
+def _capture_signed_requests(mod, monkeypatch, arn: str = "x") -> list:
+    seen: list = []
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return (
+                "<GetCallerIdentityResponse><Arn>arn:aws:sts::111122223333:"
+                f"assumed-role/{arn}/s</Arn>"
+            ).encode()
+
+    def opener(request, timeout=None):
+        seen.append(request)
+        return Answer()
+
+    monkeypatch.setattr(mod._NO_REDIRECT_OPENER, "open", opener)
+    return seen
+
+
+@pytest.mark.unit
+def test_the_runner_fleet_s_linked_credentials_file_is_read(
+    mod, monkeypatch, tmp_path
+) -> None:
+    _write_aws(tmp_path, "credentials", "default", _FILE)
+    seen = _capture_signed_requests(mod, monkeypatch, "idp-sdlc-GitLab")
+    assert mod.caller_role_name({"HOME": str(tmp_path)}) == "idp-sdlc-GitLab"
+    (request,) = seen
+    assert f"Credential={_FILE['AWS_ACCESS_KEY_ID']}/" in request.get_header(
+        "Authorization"
+    )
+    assert request.get_header("X-amz-security-token") == _FILE["AWS_SESSION_TOKEN"]
+
+
+@pytest.mark.unit
+def test_a_named_profile_is_read_from_the_config_file(mod, tmp_path) -> None:
+    _write_aws(tmp_path, "config", "default", _OLD)
+    _write_aws(tmp_path, "config", "profile ci", _FILE)
+    environ = {"HOME": str(tmp_path), "AWS_PROFILE": "ci"}
+    assert mod.job_credentials(environ) == _FILE
+
+
+@pytest.mark.unit
+def test_an_explicit_shared_credentials_file_is_honoured(mod, tmp_path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    _write_aws(elsewhere, "credentials", "default", _FILE)
+    _write_aws(tmp_path, "credentials", "default", _OLD)
+    environ = {
+        "HOME": str(tmp_path),
+        "AWS_SHARED_CREDENTIALS_FILE": str(elsewhere / ".aws" / "credentials"),
+    }
+    assert mod.job_credentials(environ) == _FILE
+
+
+@pytest.mark.unit
+def test_environment_credentials_win_over_the_file(mod, tmp_path) -> None:
+    """GitHub's OIDC session is exported as variables and must still be the one
+    used, as it is by every AWS SDK."""
+    _write_aws(tmp_path, "credentials", "default", _FILE)
+    environ = {"HOME": str(tmp_path), **_OLD}
+    assert mod.job_credentials(environ) == _OLD
+
+
+@pytest.mark.unit
+def test_a_profile_without_static_keys_refuses(mod, tmp_path) -> None:
+    (tmp_path / ".aws").mkdir()
+    (tmp_path / ".aws" / "config").write_text(
+        "[default]\ncredential_process = /bin/false\n"
+    )
+    with pytest.raises(mod.Failure, match="no AWS credentials") as refused:
+        mod.caller_role_name({"HOME": str(tmp_path)})
+    # The refusal names what it saw so the job log diagnoses it, and no value.
+    assert "sections ['default']" in str(refused.value)
+    assert "/bin/false" not in str(refused.value)
+
+
+@pytest.mark.unit
+def test_a_file_session_is_switched_away_from_and_withheld(
+    mod, monkeypatch, tmp_path
+) -> None:
+    """The GitLab shape end to end: the first session is only in the file, the
+    switch puts the review role in the environment and points the SDK's file
+    lookups at /dev/null, and the file's secret still blocks a comment."""
+    _write_aws(tmp_path, "credentials", "default", _FILE)
+    calls = _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    environ = {"HOME": str(tmp_path)}
+    assert mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    assert calls == ["GetCallerIdentity", "AssumeRole"]
+    for key, value in _NEW.items():
+        assert environ[key] == value
+    assert environ["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+    assert environ["AWS_CONFIG_FILE"] == "/dev/null"
+    assert mod.job_credentials(environ) == _NEW
+    quoted = f"{_PLAIN}the job held {_FILE['AWS_SECRET_ACCESS_KEY']}"
+    assert "a credential or token" in mod.posting_refusals(quoted, environ=environ)
 
 
 @pytest.mark.unit

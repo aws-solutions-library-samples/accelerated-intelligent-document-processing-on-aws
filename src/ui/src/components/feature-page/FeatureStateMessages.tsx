@@ -6,6 +6,8 @@ import { Alert, Box, Button, Container, Header, Link, SpaceBetween, Spinner } fr
 
 import type { FeatureEntitlement, FeatureLicenseMode } from '../../types/feature-platform';
 import { sourceDisplayLabel } from './entitlement-source';
+import { formatDateTime, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 /**
  * The buyer's own AWS Marketplace subscription management console.
@@ -389,11 +391,11 @@ export const ExpiredBanner: React.FC<{
 );
 
 /** Human-friendly rendering of an ISO-8601 timestamp (falls back to raw string on parse failure). */
-function formatDate(iso: string | null): string | null {
+function formatDate(iso: string | null, locale: Locale): string | null {
   if (!iso) return null;
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
+  return formatDateTime(d, locale);
 }
 
 /**
@@ -495,7 +497,8 @@ export const ActiveSubscriptionBanner: React.FC<{
   /** Error string from the last cancel attempt (if any). */
   cancelError?: string | null;
 }> = ({ entitlement, mismatchNote, canCancel, onCancel, cancelling, cancelError }) => {
-  const expires = formatDate(entitlement.expiresAt);
+  const { locale } = useFormatters();
+  const expires = formatDate(entitlement.expiresAt, locale);
   // The authority, named the way the customer knows it. The raw
   // `marketplace-live` identifier belongs in the *unverified* banner, where
   // naming the exact mode is the whole point; a confirmed subscription should say
