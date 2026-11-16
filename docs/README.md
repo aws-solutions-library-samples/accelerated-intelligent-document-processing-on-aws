@@ -84,6 +84,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Post-Processing Lambda Hook](./post-processing-lambda-hook.md) - Custom downstream processing integration
 - [Lambda Hook Inference](./lambda-hook-inference.md) - Custom LLM integration via Lambda hooks
+- [Decision Models](./decision-models.md) - Classify sections with a decision model that returns a probability for every class
 - [Nova Fine-Tuning](./nova-finetuning.md) - Fine-tuning Amazon Nova models for IDP tasks
 - [Custom Model Fine-Tuning](./custom-model-finetuning.md) - Fine-tuning Nova models for document classification with the accelerator
 - [OpenAI Models](./openai-models.md) - GPT-6 Astra via the Converse API (CRIS-only `us.`/`global.` IDs, agentic extraction, all regions) **and** GPT-5.4 / GPT-5.5 / GPT-5.6 (Sol/Terra/Luna) via the bedrock-mantle Responses API: the two-path split, support matrices, limitations, regions, caching, long-context pricing

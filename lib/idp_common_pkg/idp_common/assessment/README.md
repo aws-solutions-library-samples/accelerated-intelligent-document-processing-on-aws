@@ -192,6 +192,22 @@ extraction:
 - Document processing continues to completion
 - Minimal performance impact (early return)
 
+## Confidence by a decision model (`assessment/decision_model_confidence.py`)
+
+With `extraction.confidence.method: decision_model`, `assess_results` does not call
+Bedrock. `DecisionModelConfidenceScorer` walks the extracted values along the class
+schema and asks one `noul` question per leaf, with the field's path, schema
+description and value substituted into `decision_model.instructions`. Each page of
+the section (up to `decision_model.max_pages`) is one request carrying every
+question, split into chunks of `max_questions_per_request`; a leaf's confidence is
+its highest P(yes) over the pages. The result has the LLM path's parsed shape and
+goes through the same `_finalize_assessment`, so thresholds, alerts and
+explainability are unchanged; each leaf adds `confidence_source: decision_model`.
+The batcher still slices large lists, and a decider call reports `truncated=False`
+and `parsing_succeeded=True`, so no truncation retry or escalation to an LLM runs.
+Errors propagate. See [`idp_common/decision_model`](../decision_model/README.md) for
+the client and its failure contract.
+
 ## Large-list batching (`assessment/batching.py`)
 
 A single confidence inference over a large list field (e.g. a 120-row transaction

@@ -42,12 +42,15 @@ classification:
         granularity, page, packet, boundary_hints
         model settings           # no validation or confidence: it returns no class
     section_classification:      # one class per section, one call per section
-      method: llm
+      method: llm                # llm | decision_model
       pages: first_k             # first | first_k | all
       k: 2
       llm:
         system_prompt, task_prompt
         model settings + validation + confidence
+      decision_model:            # only with method: decision_model
+        endpoint, input, max_pages, instructions, timeout_ms, max_concurrency
+      low_confidence: {min_confidence, on_low_confidence}
 
   document_shape:                # Advanced — what you already know about a document
     sectionSplitting: llm_determined   # detect boundaries | disabled | page
