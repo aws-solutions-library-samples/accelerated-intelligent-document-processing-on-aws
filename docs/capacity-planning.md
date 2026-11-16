@@ -164,7 +164,7 @@ The capacity calculation system provides the following analysis through its reso
 > to one and not the other is the case the checklist in
 > `.claude/skills/add-model.md` exists to prevent.
 >
-> ⚠️ **For a plan that calls only the Claude Sonnet models, the request limit is
+> ⚠️ **For a plan that calls only Claude Sonnet 5 or Sonnet 5.5, the request limit is
 > therefore the placeholder above and does not bind.** The processing rate is then
 > set by the token limit, which is exact. No published requests-per-minute quota
 > exists to apply, so the estimate does not account for one.

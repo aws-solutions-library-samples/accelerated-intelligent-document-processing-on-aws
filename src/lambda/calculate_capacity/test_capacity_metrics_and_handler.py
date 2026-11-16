@@ -1085,9 +1085,11 @@ def model_config(**overrides):
 
 
 def quota_set(tpm=100000, rpm=200, model=MODEL):
+    """The shape `get_simple_quotas` returns, with nothing unreadable."""
     return {
         "bedrock_models": {model: tpm},
         "bedrock_models_rpm": {model: rpm},
+        "unreadable_models": {},
     }
 
 
@@ -2400,13 +2402,32 @@ def test_a_planned_model_whose_quota_cannot_be_read_is_skipped_with_a_warning(
 
 
 @pytest.mark.unit
-def test_a_sonnet_only_plan_is_bound_by_its_token_limit_not_another_models_rpm(
+def test_an_unreadable_model_the_plan_does_not_call_is_not_reported(live_quotas):
+    """With no step model configured the whole map is read, dead code included.
+
+    The dead model's failure is tolerated there, but this plan does not call it,
+    so the page must not warn about it.
+    """
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps({})
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert DEAD_CODE in live_quotas  # the whole map was read
+    assert not any(
+        r.startswith(index.QUOTA_NOT_READ_PREFIX) for r in result["recommendations"]
+    )
+
+
+@pytest.mark.unit
+def test_a_sonnet_5_only_plan_is_bound_by_its_token_limit_not_another_models_rpm(
     live_quotas, monkeypatch
 ):
     """The request limit is reduced over the plan's models, as the token limit is.
 
     The account also maps Nova Lite with a real 200 RPM quota, but the plan calls
-    only Sonnet 5, whose "RPM" entry is its 6,000,000 TPM code. Reading every code
+    only Sonnet 5, whose "RPM" entry is its 6,000,000 TPM code. (Sonnet 4.5, by
+    contrast, has a real RPM code of its own, so this is about Sonnet 5 and 5.5.) Reading every code
     in the map made Nova's 200 bind the request limit for a plan that never calls
     Nova: 200 docs/min. Reading only the plan's models leaves the exact token
     limit to decide it: 6,000,000 TPM over 6,000 tokens a document is 1,000

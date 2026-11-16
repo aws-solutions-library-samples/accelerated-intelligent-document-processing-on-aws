@@ -777,7 +777,7 @@ def _read_quota(quotas_client, quota_code):
         error = e.response.get("Error", {})
         if error.get("Code") in THROTTLING_ERROR_CODES:
             raise
-        return None,f"{error.get('Code', 'ClientError')}: {error.get('Message', '')}".rstrip(": ")
+        return None, f"{error.get('Code', 'ClientError')}: {error.get('Message', '')}".rstrip(": ")
     except BotoCoreError as e:
         return None, f"{type(e).__name__}: {e}"
     if not response:
@@ -890,7 +890,7 @@ def get_simple_quotas(model_ids=None):
     # `_lookup_quota`.
     if not quotas["bedrock_models"]:
         detail = " ".join(quotas["unreadable_models"].values())
-        raise ValueError(f"No Bedrock model quotas were retrieved. Check BEDROCK_MODEL_QUOTA_CODES configuration. {detail}".rstrip())
+        raise ValueError(f"No Bedrock model quotas were retrieved. Check BEDROCK_MODEL_QUOTA_CODES and BEDROCK_MODEL_RPM_QUOTA_CODES configuration. {detail}".rstrip())
 
     return quotas
 
@@ -1107,11 +1107,11 @@ def calculate_latency_distribution(
     # Reduced over every RPM entry it was given. On the handler's path that is the
     # plan's own models, because `get_simple_quotas` builds the RPM lookup from
     # the narrowed TPM key set; so a model the plan never calls no longer binds
-    # the request limit. For a plan whose only models are the Claude Sonnets,
+    # the request limit. For a plan whose only models are Claude Sonnet 5 or 5.5,
     # whose RPM entries carry their TPM code (AWS publishes no RPM quota for
     # them), the request limit is therefore that placeholder and effectively
     # unbounded, and the token limit — which is exact — decides the figure.
-    # `test_a_sonnet_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
+    # `test_a_sonnet_5_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
     # pins that.
     bedrock_quota_rpm = quotas.get("bedrock_models_rpm", {})
     if not bedrock_quota_rpm:
@@ -2322,7 +2322,17 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             },
             # A quota that could not be read is reported first, so the page's
             # warning banner says which model's steps the analysis left out.
-            "recommendations": list((quotas.get("unreadable_models") or {}).values())
+            # Only for models the plan calls: when `get_simple_quotas` read the
+            # whole code map (no plan model had an entry), its unreadable entries
+            # include models this plan never uses, and the banner would name them.
+            "recommendations": [
+                message
+                for model_id, message in (quotas.get("unreadable_models") or {}).items()
+                if any(
+                    _lookup_quota({model_id: message}, planned) is not None
+                    for planned in plan_model_ids(pattern, model_config)
+                )
+            ]
             + generate_adaptive_recommendations(
                 latency_distribution,
                 quota_requirements,

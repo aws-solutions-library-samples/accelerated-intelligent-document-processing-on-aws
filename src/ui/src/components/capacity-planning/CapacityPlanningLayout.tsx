@@ -1707,6 +1707,10 @@ const CapacityPlanningLayout = () => {
   }, [documentConfigs, processingConfig, results, hasCalculated]);
 
   // Memoized quota data that updates when config changes
+  // Recommendations reporting a quota the calculator could not read, shown in a
+  // warning banner above the results.
+  const quotaWarnings = useMemo(() => (results?.success ? quotaNotReadWarnings(results.recommendations) : []), [results]);
+
   const quotaData = useMemo(() => {
     // Use API response data if available - check for successful calculation
     if (results?.success && hasCalculated) {
@@ -2803,11 +2807,11 @@ const CapacityPlanningLayout = () => {
           </Alert>
         )}
 
-        {results?.success && quotaNotReadWarnings(results.recommendations).length > 0 && (
+        {quotaWarnings.length > 0 && (
           <Alert type="warning" header={<FormattedMessage {...quotaWarningMessages.header} />}>
             <FormattedMessage {...quotaWarningMessages.body} />
             <ul>
-              {quotaNotReadWarnings(results.recommendations).map((warning) => (
+              {quotaWarnings.map((warning) => (
                 <li key={warning}>{warning.slice(QUOTA_NOT_READ_PREFIX.length).trim()}</li>
               ))}
             </ul>

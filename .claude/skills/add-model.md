@@ -124,7 +124,8 @@ Cross-check against the file map below.
       If Service Quotas lists **no** quota for the model at all, map it to `null`
       in both maps rather than omitting it or guessing a code: Capacity Planning
       then skips that model's steps with a "Quota not read" warning instead of
-      failing on a missing entry.
+      failing on a missing entry. The calculation still fails if every model the
+      plan calls is `null`-mapped or otherwise unreadable.
 - [ ] `nested/multi-doc-discovery/template.yaml` and other nested templates —
       IAM / enums as applicable.
 

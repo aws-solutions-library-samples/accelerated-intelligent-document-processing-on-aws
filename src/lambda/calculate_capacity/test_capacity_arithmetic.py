@@ -802,7 +802,8 @@ def test_a_missing_complexity_variable_names_all_five(monkeypatch):
 
 
 def quotas(tpm=60000, rpm=50, extra_tpm=None):
-    """The shape `get_simple_quotas` returns: per-model mappings and nothing else.
+    """The shape `get_simple_quotas` returns: per-model mappings, plus the
+    `unreadable_models` messages (empty here), and no account-wide scalar.
 
     `extra_tpm` adds further models to the TPM mapping, which is how a fixture
     makes the reduction over it observable — with one entry every reduction
@@ -813,6 +814,7 @@ def quotas(tpm=60000, rpm=50, extra_tpm=None):
     return {
         "bedrock_models": tpm_by_model,
         "bedrock_models_rpm": {"nova": rpm},
+        "unreadable_models": {},
     }
 
 
@@ -947,7 +949,7 @@ def test_the_request_limit_is_also_the_most_constrained_model(monkeypatch):
     `min(bedrock_quota_rpm.values())`. On the handler's path that mapping already
     holds only the plan's models, because `get_simple_quotas` builds the RPM lookup
     from the narrowed TPM key set; the handler-level
-    `test_a_sonnet_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
+    `test_a_sonnet_5_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
     pins that. What both halves share is taking the minimum rather than a maximum,
     which is what the rest of this docstring is about.
 
