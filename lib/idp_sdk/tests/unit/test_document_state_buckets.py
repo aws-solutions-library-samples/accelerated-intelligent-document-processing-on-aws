@@ -4,8 +4,8 @@
 """
 Tests for the `DocumentState` -> progress-bucket partition in `idp_sdk.models.base`.
 
-Every document the SDK reports on is shown under exactly one of four buckets —
-completed, running, queued, failed — and both consumers (the SDK's own
+Every document the SDK reports on is shown under exactly one of five buckets —
+completed, running, queued, failed, awaiting review — and both consumers (the SDK's own
 `ProgressMonitor._categorize_document` and `idp_cli`'s
 `_batch_status_to_display_dicts`) used to decide that with an `if/elif` chain ending
 in a default. A default makes the mapping *total* without making it *complete*: a
@@ -20,7 +20,7 @@ absorb a newly added *terminal* state into "still working".
 So the property these tests hold is the **rule**, not a list of the states that were
 wrong at the time of writing:
 
-* the four bucket sets partition `set(DocumentState)` — every member in exactly one,
+* the bucket sets partition `set(DocumentState)` — every member in exactly one,
   nothing bucketed that is not a member, no bucket empty;
 * `classify_document_state` answers for every member, driven by a parametrisation
   derived from the enum rather than typed out, so a member added tomorrow is asked
@@ -37,6 +37,7 @@ import pytest
 
 from idp_sdk.models.base import (
     _DOCUMENT_STATE_BUCKETS,
+    AWAITING_REVIEW_DOCUMENT_STATES,
     FAILED_DOCUMENT_STATES,
     IN_FLIGHT_DOCUMENT_STATES,
     NOT_STARTED_DOCUMENT_STATES,
@@ -66,9 +67,9 @@ def test_the_enum_is_not_empty_so_the_parametrised_tests_below_are_not_vacuous()
 
 
 class TestThePartition:
-    """The four bucket sets divide `DocumentState` with no gap and no overlap."""
+    """The bucket sets divide `DocumentState` with no gap and no overlap."""
 
-    def test_the_four_buckets_partition_the_enum(self):
+    def test_the_buckets_partition_the_enum(self):
         """Union equals the enum, and nothing is in two buckets.
 
         This is the assertion a new `DocumentState` member fails on: it lands in no
@@ -85,7 +86,7 @@ class TestThePartition:
         for bucket, members in _DOCUMENT_STATE_BUCKETS.items():
             assert members, f"{bucket} holds no states"
 
-    def test_all_four_bucket_names_are_covered(self):
+    def test_every_bucket_name_is_covered(self):
         """Each `DocumentBucket` has a set, so no bucket is unreachable."""
         assert set(_DOCUMENT_STATE_BUCKETS) == set(DocumentBucket)
 
@@ -225,3 +226,40 @@ class TestRejected:
     def test_rejected_is_terminal_and_not_success(self):
         assert DocumentState.REJECTED in TERMINAL_DOCUMENT_STATES
         assert DocumentState.REJECTED not in SUCCESS_DOCUMENT_STATES
+
+
+class TestAwaitingReview:
+    """`HITL_IN_PROGRESS`: processing stopped, waiting for a human reviewer (#2022)."""
+
+    def test_held_for_review_is_in_exactly_the_awaiting_review_bucket(self):
+        holders = [
+            name
+            for name, members in _DOCUMENT_STATE_BUCKETS.items()
+            if DocumentState.HITL_IN_PROGRESS in members
+        ]
+        assert holders == [DocumentBucket.AWAITING_REVIEW]
+        assert (
+            classify_document_state("HITL_IN_PROGRESS")
+            is DocumentBucket.AWAITING_REVIEW
+        )
+
+    def test_held_for_review_is_neither_in_flight_nor_terminal(self):
+        """In flight would make a monitor wait for a person; terminal would let it
+        cache a status that changes once the document is reviewed."""
+        assert DocumentState.HITL_IN_PROGRESS not in IN_FLIGHT_DOCUMENT_STATES
+        assert DocumentState.HITL_IN_PROGRESS not in TERMINAL_DOCUMENT_STATES
+
+    def test_awaiting_review_overlaps_no_other_bucket(self):
+        others = (
+            TERMINAL_DOCUMENT_STATES
+            | IN_FLIGHT_DOCUMENT_STATES
+            | NOT_STARTED_DOCUMENT_STATES
+        )
+        assert AWAITING_REVIEW_DOCUMENT_STATES
+        assert not AWAITING_REVIEW_DOCUMENT_STATES & others
+
+    def test_the_migration_reads_review_states_from_the_same_set(self):
+        """The Terraform freeze check and the batch monitor share one definition."""
+        from idp_sdk._core.terraform_migrate import REVIEW_STATUSES
+
+        assert REVIEW_STATUSES == {s.value for s in AWAITING_REVIEW_DOCUMENT_STATES}

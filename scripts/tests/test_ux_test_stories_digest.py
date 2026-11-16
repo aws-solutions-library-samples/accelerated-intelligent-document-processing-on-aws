@@ -48,6 +48,7 @@ TITLES = {
     "find-extraction-model": "Find which model reads the fields out of your documents",
     "tell-production-from-test": "Tell production documents from test runs",
 }
+PERMISSIONS = {"route-folder-to-profile": "Manage prefix mappings"}
 
 
 def _codebuild_deployment() -> ModuleType:
@@ -836,9 +837,12 @@ def _result(
     sub_kind: str | None = None,
     commit_points: Sequence[str] = (),
     injections: int = 0,
+    expectation: str | None = None,
 ) -> story_verdict.FlowResult:
     story, persona = key.split("@")
-    expectation = "not_offered" if verdict in ("not_refused", "offered") else "allowed"
+    if expectation is None:
+        blocked = verdict in ("not_refused", "offered", "refused_as_expected")
+        expectation = "not_offered" if blocked else "allowed"
     return story_verdict.FlowResult(
         key=key,
         story=story,
@@ -1389,7 +1393,12 @@ def _slack_night(
         reruns_not_run=len(rerun_did_not_fit),
     )
     facts = story_digest.SlackFacts(
-        results=results, run=run, history=history, titles=TITLES, cap_usd=50.0
+        results=results,
+        run=run,
+        history=history,
+        titles=TITLES,
+        permissions=PERMISSIONS,
+        cap_usd=50.0,
     )
     return digest, facts
 
@@ -1415,7 +1424,7 @@ def test_a_clean_night_says_every_story_passed_and_lists_each_by_its_title() -> 
         digest, job_url="https://gitlab.invalid/-/jobs/1\n", facts=facts
     )
     assert payload == {
-        "status": "✅ 3 of 3 passed",
+        "status": "✅ 3 of 3 passed, 1 of them a permission check",
         "commit": "1a2b3c4d",
         "job_url": "https://gitlab.invalid/-/jobs/1",
         "summary": "\n".join(
@@ -1427,8 +1436,9 @@ def test_a_clean_night_says_every_story_passed_and_lists_each_by_its_title() -> 
                 "(team lead), 7 of 40 steps",
                 "✅ Make one input folder use one configuration (platform admin), "
                 "17 of 40",
-                "🚫 Make one input folder use one configuration (new analyst): "
-                "refused, as the docs say",
+                "✅ Make one input folder use one configuration (new analyst): "
+                "correctly not offered to an Author (permission: Manage prefix "
+                "mappings)",
                 "",
                 "Compared with 13 earlier nights: no regressions.",
                 "Friction: 2 hesitations, 1 dead end.",
@@ -1472,7 +1482,7 @@ def test_a_night_that_cannot_be_compared_still_passes_and_says_why_in_words(
     options.update(night)
     digest, facts = _slack_night(*_clean_attempts(), **options)
     payload = story_digest.slack_payload(digest, job_url="", facts=facts)
-    assert payload["status"] == "✅ 3 of 3 passed"
+    assert payload["status"] == "✅ 3 of 3 passed, 1 of them a permission check"
     lines = _summary_lines(payload)
     assert lines[-4:] == [
         "",
@@ -1560,7 +1570,7 @@ def test_a_failure_that_is_no_confirmed_regression_is_a_partial_pass_saying_why(
         rerun_did_not_fit=[OTHER_KEY],
     )
     payload = story_digest.slack_payload(digest, job_url="", facts=facts)
-    assert payload["status"] == "⚠️ 1 of 4 passed"
+    assert payload["status"] == "⚠️ 1 of 4 passed, 1 of them a permission check"
     assert _summary_lines(payload)[3:] == [
         "❌ Find which model reads the fields out of your documents (team lead): "
         "got stuck, the result was wrong (possibly a regression, its re-run did "
@@ -1569,8 +1579,8 @@ def test_a_failure_that_is_no_confirmed_regression_is_a_partial_pass_saying_why(
         "stuck, found no way to do it (unconfirmed)",
         "⏭️ Tell production documents from test runs (new analyst): not run, the "
         "night ran out of time",
-        "🚫 Make one input folder use one configuration (new analyst): refused, as "
-        "the docs say",
+        "✅ Make one input folder use one configuration (new analyst): correctly "
+        "not offered to an Author (permission: Manage prefix mappings)",
         "",
         "Compared with 13 earlier nights: 1 possible regression whose re-run did "
         "not fit.",
@@ -1642,7 +1652,10 @@ def test_a_harness_error_or_an_unclean_audit_is_a_harness_problem_below_a_regres
         ({"flows": []}, "⏭️ not run"),
         ({"shards_ran": 0}, "⏭️ not run"),
         ({"audits_clean": False}, "⚠️ harness problem"),
-        ({"comparable": False, "stack_state": "missing"}, "✅ 3 of 3 passed"),
+        (
+            {"comparable": False, "stack_state": "missing"},
+            "✅ 3 of 3 passed, 1 of them a permission check",
+        ),
     ],
 )
 def test_the_slack_status_is_one_of_five_plain_answers(
@@ -1680,7 +1693,7 @@ def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
     [
         (
             _earlier(_uncompared(TONIGHT - 1), _uncompared(TONIGHT - 2)),
-            "✅ 3 of 3 passed",
+            "✅ 3 of 3 passed, 1 of them a permission check",
         ),
         (
             _earlier(
@@ -1688,11 +1701,11 @@ def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
                 _uncompared(TONIGHT - 2),
                 _uncompared(TONIGHT - 3),
             ),
-            "⚠️ 3 of 3 passed, not compared for 4 nights",
+            "⚠️ 3 of 3 passed, 1 of them a permission check, not compared for 4 nights",
         ),
         (
             _earlier(_uncompared(TONIGHT - 1), gaps=[TONIGHT - 2, TONIGHT - 3]),
-            "⚠️ 3 of 3 passed, not compared for 4 nights",
+            "⚠️ 3 of 3 passed, 1 of them a permission check, not compared for 4 nights",
         ),
         (
             _earlier(
@@ -1700,7 +1713,7 @@ def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
                 _night(TONIGHT - 2, _flow("done"), audits_clean=False),
                 _uncompared(TONIGHT - 3),
             ),
-            "⚠️ 3 of 3 passed, not compared for 4 nights",
+            "⚠️ 3 of 3 passed, 1 of them a permission check, not compared for 4 nights",
         ),
         (
             _earlier(
@@ -1709,14 +1722,14 @@ def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
                 _night(TONIGHT - 3, _flow("done")),
                 _uncompared(TONIGHT - 4),
             ),
-            "✅ 3 of 3 passed",
+            "✅ 3 of 3 passed, 1 of them a permission check",
         ),
         (
             History(
                 nights=tuple(_uncompared(TONIGHT - 1 - n) for n in range(13)),
                 gaps=(),
             ),
-            "⚠️ 3 of 3 passed, not compared for 14 nights",
+            "⚠️ 3 of 3 passed, 1 of them a permission check, not compared for 14 nights",
         ),
         (
             _earlier(
@@ -1725,9 +1738,9 @@ def _earlier(*nights: Night, gaps: Sequence[int] = ()) -> History:
                 _uncompared(TONIGHT - 1),
                 _uncompared(TONIGHT - 2),
             ),
-            "✅ 3 of 3 passed",
+            "✅ 3 of 3 passed, 1 of them a permission check",
         ),
-        (None, "✅ 3 of 3 passed"),
+        (None, "✅ 3 of 3 passed, 1 of them a permission check"),
     ],
     ids=[
         "three-nights",
@@ -1832,6 +1845,84 @@ def test_a_night_whose_flows_never_started_is_not_run_and_lists_why() -> None:
     ]
 
 
+LEAD_ROUTE = "route-folder-to-profile@team-lead"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("key", "expectation", "permission", "said"),
+    [
+        (
+            LEAD_ROUTE,
+            "not_offered",
+            "Upload documents",
+            "correctly not offered to a Viewer (permission: Upload documents)",
+        ),
+        (
+            REFUSED,
+            "refused",
+            "Create/delete test sets",
+            "correctly kept from an Author (permission: Create or delete test sets)",
+        ),
+        (
+            LEAD_ROUTE,
+            "not_offered",
+            None,
+            "correctly not offered to a Viewer, as the docs say",
+        ),
+    ],
+    ids=["not-offered", "refused", "no-permission-row"],
+)
+def test_a_permission_check_says_whom_it_kept_the_task_from_and_which_row(
+    key: str, expectation: str, permission: str | None, said: str
+) -> None:
+    digest, facts = _slack_night(
+        _result(key, verdict="refused_as_expected", expectation=expectation),
+        history=_good_history(key),
+    )
+    rows = {} if permission is None else {"route-folder-to-profile": permission}
+    facts = dataclasses.replace(facts, permissions=rows)
+    payload = story_digest.slack_payload(digest, job_url="", facts=facts)
+    persona = key.partition("@")[2].replace("-", " ")
+    assert _summary_lines(payload)[3] == (
+        f"✅ Make one input folder use one configuration ({persona}): {said}"
+    )
+    assert payload["status"] == "✅ 1 of 1 passed, 1 of them a permission check"
+
+
+@pytest.mark.unit
+def test_the_status_counts_the_permission_checks_among_the_passes() -> None:
+    digest, facts = _slack_night(
+        _result(KEY, actions_used=3, budget=30),
+        _result(REFUSED, verdict="refused_as_expected"),
+        _result(LEAD_ROUTE, verdict="refused_as_expected"),
+        history=_good_history(KEY, REFUSED, LEAD_ROUTE),
+    )
+    status = story_digest.slack_payload(digest, job_url="", facts=facts)["status"]
+    assert status == "✅ 3 of 3 passed, 2 of them permission checks"
+
+    digest, facts = _slack_night(
+        _result(KEY, actions_used=3, budget=30), history=_good_history(KEY)
+    )
+    status = story_digest.slack_payload(digest, job_url="", facts=facts)["status"]
+    assert status == "✅ 1 of 1 passed"
+
+
+@pytest.mark.unit
+def test_a_permission_row_reaches_slack_as_plain_words() -> None:
+    digest, facts = _slack_night(
+        _result(REFUSED, verdict="refused_as_expected"), history=_good_history(REFUSED)
+    )
+    hostile = "<!channel> @here *now* <https://evil.invalid|look>"
+    facts = dataclasses.replace(facts, permissions={"route-folder-to-profile": hostile})
+    summary = story_digest.slack_payload(digest, job_url="", facts=facts)["summary"]
+    line = _summary_lines({"summary": summary})[3]
+    assert line.endswith(
+        "(permission: channel here now https: or or evil invalid look)"
+    )
+    assert not set("<>@*|!") & set(line)
+
+
 @pytest.mark.unit
 def test_without_results_or_titles_each_flow_is_still_named_and_nothing_is_guessed() -> (
     None
@@ -1839,7 +1930,9 @@ def test_without_results_or_titles_each_flow_is_still_named_and_nothing_is_guess
     digest, facts = _slack_night(*_clean_attempts())
     for bare in (
         story_digest.SlackFacts(),
-        dataclasses.replace(facts, results={"schema": "something/else"}, titles={}),
+        dataclasses.replace(
+            facts, results={"schema": "something/else"}, titles={}, permissions={}
+        ),
     ):
         lines = _summary_lines(
             story_digest.slack_payload(digest, job_url="", facts=bare)
@@ -1847,7 +1940,8 @@ def test_without_results_or_titles_each_flow_is_still_named_and_nothing_is_guess
         assert lines[3:6] == [
             "✅ Find extraction model (team lead)",
             "✅ Route folder to profile (platform admin)",
-            "🚫 Route folder to profile (new analyst): refused, as the docs say",
+            "✅ Route folder to profile (new analyst): correctly kept from this "
+            "role, as the docs say",
         ]
         assert not [line for line in lines if line.startswith("Friction:")]
     assert _summary_lines(story_digest.slack_payload(digest, job_url=""))[0] == (

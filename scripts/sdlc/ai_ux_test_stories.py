@@ -4885,6 +4885,9 @@ def digest_main(args: argparse.Namespace, runtime: Runtime) -> int:
             run=judged.record,
             history=history,
             titles={story.id: story.title for story in catalogue.stories},
+            permissions={
+                story.id: story.rbac for story in catalogue.stories if story.rbac
+            },
             cap_usd=cap,
         )
         text = story_digest.compose_digest_md(
