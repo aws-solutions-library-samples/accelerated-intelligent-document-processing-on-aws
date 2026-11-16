@@ -1862,7 +1862,7 @@ LEAD_ROUTE = "route-folder-to-profile@team-lead"
             REFUSED,
             "refused",
             "Create/delete test sets",
-            "correctly refused for an Author (permission: Create or delete test sets)",
+            "correctly kept from an Author (permission: Create or delete test sets)",
         ),
         (
             LEAD_ROUTE,

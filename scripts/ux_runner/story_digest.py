@@ -1338,14 +1338,16 @@ def _held(result: story_verdict.FlowResult | None, permission: object) -> str:
     """A permission check that passed, in words: whom the task was kept from, and the
     docs/rbac.md row that says so.
 
-    A ``refused`` story expects the app to refuse the attempt; a ``not_offered`` one
-    expects it never to show the control. Without the flow's result the role is not
-    known, and without the row the docs are cited in general.
+    A ``not_offered`` story passes only when the app never showed the control, so it
+    reads "not offered to". A ``refused`` story also passes when the persona reported
+    no way to do the task at all, so it claims only that the task was kept from the
+    role. Without the flow's result the role is not known, and without the row the
+    docs are cited in general.
     """
     group = _slack_text(result.group, _NAME_CHARS) if result is not None else ""
     if group:
         refused = result is not None and result.expectation == "refused"
-        how = "refused for" if refused else "not offered to"
+        how = "kept from" if refused else "not offered to"
         text = f"correctly {how} {'an' if group[0].upper() in 'AEIOU' else 'a'} {group}"
     else:
         text = "correctly kept from this role"

@@ -5,10 +5,6 @@ SPDX-License-Identifier: MIT-0
 
 ## [Unreleased]
 
-### Changed
-
-- **The nightly story digest says when a pass is a permission check.** A story whose persona the [permission matrix](docs/rbac.md#permission-matrix) keeps from its task passes when the app does not offer the task, or refuses it, and the Slack post used to list that pass as "refused, as the docs say" under a no-entry sign, which read as a failure. It now carries the same ✅ as every other pass and names the group and the matrix row, as "correctly not offered to a Viewer (permission: Upload documents)", and the status says how many passes were permission checks, as `✅ 15 of 15 passed, 2 of them permission checks`.
-
 ### Fixed
 
 - **Agentic table extraction no longer counts a table's header rows as data on some runs.** `parse_table` now parses the section's own OCR text instead of a copy the agent writes into the call, so a multi-page table whose OCR puts its column labels below a blank header row is parsed the same way on every run (the copy could differ from the OCR and turn the header recovery off), and the agent no longer spends output tokens reproducing the document. Since the agent can no longer scope the parse by passing a slice of the text, a new `table_indices` argument names exactly which tables are mapped. See [Extraction & Confidence](docs/extraction-and-confidence.md) and the [extraction module README](lib/idp_common_pkg/idp_common/extraction/README.md#table-parsing-tool), which documents `table_indices`.

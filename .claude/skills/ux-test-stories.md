@@ -516,12 +516,13 @@ each saying why in a few words, then the passes with their steps, then the permi
 checks, each naming the group the task was kept from and the [Permission
 Matrix](../../docs/rbac.md#permission-matrix) row the story cites, as "correctly not
 offered to a Viewer (permission: Upload documents)". A story that expects the app to
-refuse the attempt reads "correctly refused for" instead. A night that could not be
-compared, in a shorter run, keeps its ✅ when every story passed and says why on its own
-line, such as "Not compared with earlier nights: the review stack's update could not be
-confirmed." It closes with what the night was compared with, its hesitations and dead
-ends, and its spend against the night's cap, and stays within 2,000 characters of plain
-text by folding passes into "and N more passed" before any failure is cut.
+refuse the attempt reads "correctly kept from" instead, because it also passes when the
+persona found no way to do the task. A night that could not be compared, in a shorter
+run, keeps its ✅ when every story passed and says why on its own line, such as "Not
+compared with earlier nights: the review stack's update could not be confirmed." It
+closes with what the night was compared with, its hesitations and dead ends, and its
+spend against the night's cap, and stays within 2,000 characters of plain text by
+folding passes into "and N more passed" before any failure is cut.
 
 ## Writing a story
 
