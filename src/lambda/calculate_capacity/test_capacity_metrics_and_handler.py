@@ -65,13 +65,16 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import index
 import pytest
 import validation
+from botocore.exceptions import ClientError
 from moto import mock_aws
 
 TRACKING_TABLE = "capacity-tracking"
@@ -1373,6 +1376,37 @@ def test_a_one_million_context_variant_is_costed_against_its_base_models_quota(
 
 
 @pytest.mark.unit
+def test_a_step_on_a_model_whose_quota_could_not_be_read_is_skipped(tracking):
+    """Not refused: the model *is* mapped, so "Add model to ..." would be wrong.
+
+    `get_simple_quotas` has already recorded why the quota is missing, and the
+    handler reports that message; the other step is still costed.
+    """
+    put_metered(
+        tracking, "doc-1", {**bedrock("Extraction", 4), **bedrock("Assessment", 4)}
+    )
+    hourly = hours(
+        **{
+            "9": {
+                "docsPerHour": 60,
+                "extractionTokensPerHour": 60000,
+                "assessmentTokensPerHour": 60000,
+            }
+        }
+    )
+    quotas = quota_set()
+    quotas["unreadable_models"] = {"unreadable-model": "⚠️ Quota not read: ..."}
+    requirements = build(
+        hourly,
+        config=model_config(
+            extraction_model=MODEL, assessment_model="unreadable-model"
+        ),
+        quotas=quotas,
+    )
+    assert {r["usedFor"] for r in requirements} == {"Extraction"}
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("missing", ["bedrock_models", "bedrock_models_rpm"])
 def test_a_model_with_no_configured_quota_code_stops_the_report(tracking, missing):
     """Better a named failure than a row costed against a guessed limit."""
@@ -2161,7 +2195,7 @@ def latency_windows():
 @pytest.fixture
 def wired(tracking, monkeypatch, latency_windows):
     """A handler whose Service Quotas and timing lookups are supplied, not live."""
-    monkeypatch.setattr(index, "get_simple_quotas", lambda: quota_set())
+    monkeypatch.setattr(index, "get_simple_quotas", lambda *_a: quota_set())
 
     def timings(_pattern, latency_metrics_hours=None):
         latency_windows.append(latency_metrics_hours)
@@ -2232,12 +2266,144 @@ def test_the_handler_costs_throughput_against_the_models_its_own_config_names(
     quotas = quota_set()
     quotas["bedrock_models"]["us.amazon.nova-micro-v1:0"] = 1000
     quotas["bedrock_models_rpm"]["us.amazon.nova-micro-v1:0"] = 200
-    monkeypatch.setattr(index, "get_simple_quotas", lambda: quotas)
+    monkeypatch.setattr(index, "get_simple_quotas", lambda *_a: quotas)
 
     result = index.lambda_handler(dict(HAPPY_INPUT), None)
 
     assert result["success"] is True
     assert result["latencyDistribution"]["processingRate"] == "17 docs/min"
+
+
+# Kept before any fixture replaces it, so a test can run the real lookup.
+ORIGINAL_GET_SIMPLE_QUOTAS = index.get_simple_quotas
+
+DEAD_MODEL = "us.anthropic.claude-opus-4-1-20250805-v1:0"
+DEAD_CODE = "L-BD85BFCD"
+
+
+def no_such_quota():
+    """What Service Quotas answers for a code that does not exist in the Region."""
+    return ClientError(
+        {
+            "Error": {
+                "Code": "NoSuchResourceException",
+                "Message": "The request failed because the specified quota and "
+                "service do not exist.",
+            }
+        },
+        "GetServiceQuota",
+    )
+
+
+@pytest.fixture
+def live_quotas(wired, monkeypatch):
+    """The real `get_simple_quotas` over a stub Service Quotas client.
+
+    The code map holds the plan's model and one model whose TPM code Service
+    Quotas does not recognise, the shape #2024 was reproduced on. Returns the list
+    of quota codes the handler asked for.
+    """
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_QUOTA_CODES", json.dumps({MODEL: "L-TPM", DEAD_MODEL: DEAD_CODE})
+    )
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_RPM_QUOTA_CODES",
+        json.dumps({MODEL: "L-RPM", DEAD_MODEL: "L-DEAD-RPM"}),
+    )
+    monkeypatch.setattr(index, "get_simple_quotas", ORIGINAL_GET_SIMPLE_QUOTAS)
+    monkeypatch.setattr(index.time, "sleep", lambda _s: None)
+    asked = []
+    client = MagicMock()
+    client.list_service_quotas.return_value = {"Quotas": []}
+
+    def get_service_quota(ServiceCode, QuotaCode):  # noqa: N803 - boto3 casing
+        asked.append(QuotaCode)
+        if QuotaCode in (DEAD_CODE, "L-DEAD-RPM"):
+            raise no_such_quota()
+        return {"Quota": {"Value": {"L-TPM": 100000, "L-RPM": 200}[QuotaCode]}}
+
+    client.get_service_quota.side_effect = get_service_quota
+    real_client = index.boto3.client
+    monkeypatch.setattr(
+        index.boto3,
+        "client",
+        lambda name, *a, **k: (
+            client if name == "service-quotas" else real_client(name, *a, **k)
+        ),
+    )
+    return asked
+
+
+@pytest.mark.unit
+def test_a_dead_quota_code_for_a_model_the_plan_does_not_call_is_never_read(
+    live_quotas,
+):
+    """#2024: one code missing from the Region failed every profile's calculation.
+
+    The plan calls only `MODEL`, so the dead entry is not looked up at all and the
+    report is complete, with no warning.
+    """
+    result = index.lambda_handler(dict(HAPPY_INPUT), None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert DEAD_CODE not in live_quotas
+    assert set(live_quotas) == {"L-TPM", "L-RPM"}
+    assert {r["usedFor"] for r in result["quotaRequirements"]} == {
+        "Classification",
+        "Extraction",
+        "Assessment",
+    }
+    assert not any(
+        r.startswith(index.QUOTA_NOT_READ_PREFIX) for r in result["recommendations"]
+    )
+
+
+@pytest.mark.unit
+def test_a_planned_model_whose_quota_cannot_be_read_is_skipped_with_a_warning(
+    live_quotas,
+):
+    """The rest of the analysis survives, and the warning names model and code.
+
+    Assessment runs on the model whose quota Service Quotas does not recognise, so
+    its rows are left out, the other two steps are still reported, and the first
+    recommendation — the line the page's warning banner shows — says why.
+    """
+    payload = dict(HAPPY_INPUT)
+    payload["userConfig"] = json.dumps(
+        {
+            "classification_model": MODEL,
+            "extraction_model": MODEL,
+            "assessment_model": DEAD_MODEL,
+        }
+    )
+    result = index.lambda_handler(payload, None)
+
+    assert result["success"] is True, result["errorMessage"]
+    assert DEAD_CODE in live_quotas
+    assert {r["usedFor"] for r in result["quotaRequirements"]} == {
+        "Classification",
+        "Extraction",
+    }
+    warning = result["recommendations"][0]
+    assert warning.startswith(index.QUOTA_NOT_READ_PREFIX)
+    assert DEAD_MODEL in warning
+    assert DEAD_CODE in warning
+    assert "NoSuchResourceException" in warning
+    assert result["calculationDetails"]["quotasUsed"]["bedrock_models"] == {
+        MODEL: 100000
+    }
+
+
+@pytest.mark.unit
+def test_the_ui_selects_quota_warnings_by_the_same_prefix():
+    """The page finds these warnings by prefix, so the two copies must agree."""
+    ts = (
+        Path(__file__).resolve().parents[2]
+        / "ui/src/components/capacity-planning/quota-warnings.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"export const QUOTA_NOT_READ_PREFIX = '([^']+)';", ts)
+    assert match, "QUOTA_NOT_READ_PREFIX not found in quota-warnings.ts"
+    assert match.group(1) == index.QUOTA_NOT_READ_PREFIX
 
 
 @pytest.mark.unit
@@ -2750,7 +2916,7 @@ def test_an_unreadable_service_quotas_api_is_reported_as_a_failed_calculation(
 ):
     """The most common real failure: the execution role lacks the quota permission."""
 
-    def denied():
+    def denied(*_a):
         raise ValueError("Cannot access Service Quotas API: AccessDeniedException")
 
     monkeypatch.setattr(index, "get_simple_quotas", denied)
@@ -2765,7 +2931,7 @@ def test_an_unreadable_service_quotas_api_is_reported_as_a_failed_calculation(
 def test_the_error_detail_metric_is_truncated_for_display(wired, monkeypatch):
     """A 4 KB traceback in a metric tile breaks the layout; 100 characters fit."""
 
-    def long_failure():
+    def long_failure(*_a):
         raise ValueError("x" * 500)
 
     monkeypatch.setattr(index, "get_simple_quotas", long_failure)
@@ -2780,7 +2946,7 @@ def test_the_error_detail_metric_is_truncated_for_display(wired, monkeypatch):
 def test_a_failed_calculation_over_api_gateway_is_a_500(wired, monkeypatch):
     """A server-side failure must not be reported to the client as a bad request."""
 
-    def denied():
+    def denied(*_a):
         raise ValueError("quota lookup exploded")
 
     monkeypatch.setattr(index, "get_simple_quotas", denied)

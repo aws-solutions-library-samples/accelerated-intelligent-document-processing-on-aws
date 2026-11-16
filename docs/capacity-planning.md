@@ -176,14 +176,16 @@ The capacity calculation system provides the following analysis through its reso
 > `ValueError: TPM quota not available for model <id>` rather than omitting a row,
 > and the message names the variable to add it to.
 >
-> ⚠️ **The reverse also holds, and it is not scoped to one row: a quota code that
-> does not resolve in the stack's Region fails the whole Capacity Planning
-> response.** Every entry in both maps is fetched with `get_service_quota`, and a
-> non-throttling error is re-raised rather than skipped — so one bad code takes out
-> the report for every model, not just its own. Add a code only after confirming it
-> resolves in the Regions you deploy to, with the `aws service-quotas
-> list-service-quotas --service-code bedrock` query in
-> `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
+> **Only the models the selected profile's steps call are looked up.** A mapped
+> model whose quota Service Quotas will not return in the stack's Region (the
+> code does not exist there, or the lookup is denied) is left out of the quota
+> table, and the page shows a **"Some Bedrock quotas could not be read"** warning
+> naming the model, the quota code and the error. The rest of the analysis is
+> still reported; the calculation fails only when no planned model's quota can be
+> read. A model AWS publishes no quota for is mapped to `null`, which gives the
+> same warning without a lookup. Confirm a new code resolves in the Regions you
+> deploy to, with the `aws service-quotas list-service-quotas --service-code
+> bedrock` query in `.claude/skills/add-model.md`. `BEDROCK_MODEL_QUOTA_CODES` and
 > `BEDROCK_MODEL_RPM_QUOTA_CODES` in `template.yaml` are the authority for which
 > models are covered — read them rather than a list here, which would go stale on
 > the next model addition.
