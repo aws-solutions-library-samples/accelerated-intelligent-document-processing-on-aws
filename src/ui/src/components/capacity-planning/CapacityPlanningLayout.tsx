@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /* eslint-disable react/no-array-index-key */
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { calculateCapacity as calculateCapacityOp } from '../../graphql/generated';
 import {
@@ -32,6 +33,7 @@ import useDocumentsContext from '../../contexts/documents';
 import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENTS_TO_DETAIL, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
+import { QUOTA_NOT_READ_PREFIX, quotaNotReadWarnings } from './quota-warnings';
 import DateRangeModal from '../common/DateRangeModal';
 import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
 import { parseMetering } from '../../graphql/awsjson-parsers';
@@ -185,6 +187,21 @@ interface SelectOption {
   description?: string;
   disabled?: boolean;
 }
+
+const quotaWarningMessages = defineMessages<{ header: NoMessageValues; body: NoMessageValues }>({
+  header: {
+    id: 'capacityPlanning.quotaNotRead.header',
+    defaultMessage: 'Some Bedrock quotas could not be read',
+    description:
+      'Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas.',
+  },
+  body: {
+    id: 'capacityPlanning.quotaNotRead.body',
+    defaultMessage: 'The quota analysis below leaves out the steps that use these models.',
+    description:
+      'Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated.',
+  },
+});
 
 // Time period constants from main Document List
 const _DOCUMENT_LIST_SHARDS_PER_DAY = 6;
@@ -1690,6 +1707,10 @@ const CapacityPlanningLayout = () => {
   }, [documentConfigs, processingConfig, results, hasCalculated]);
 
   // Memoized quota data that updates when config changes
+  // Recommendations reporting a quota the calculator could not read, shown in a
+  // warning banner above the results.
+  const quotaWarnings = useMemo(() => (results?.success ? quotaNotReadWarnings(results.recommendations) : []), [results]);
+
   const quotaData = useMemo(() => {
     // Use API response data if available - check for successful calculation
     if (results?.success && hasCalculated) {
@@ -2783,6 +2804,17 @@ const CapacityPlanningLayout = () => {
               The capacity calculation service is temporarily unavailable. Showing estimated values based on your configuration. Please try
               again later for precise calculations.
             </Box>
+          </Alert>
+        )}
+
+        {quotaWarnings.length > 0 && (
+          <Alert type="warning" header={<FormattedMessage {...quotaWarningMessages.header} />}>
+            <FormattedMessage {...quotaWarningMessages.body} />
+            <ul>
+              {quotaWarnings.map((warning) => (
+                <li key={warning}>{warning.slice(QUOTA_NOT_READ_PREFIX.length).trim()}</li>
+              ))}
+            </ul>
           </Alert>
         )}
 

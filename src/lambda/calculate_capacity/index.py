@@ -34,7 +34,7 @@ from decimal import Decimal
 from typing import Any, Dict
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 # Latency spread past which the plan advises queuing or load balancing, as a
 # multiple of the typical processing time. Deliberately a fixed constant rather
@@ -97,6 +97,13 @@ def convert_decimal_to_float(obj):
     return obj
 
 
+# Error codes that mean "slow down" rather than "this request is wrong".
+# Service Quotas itself answers `TooManyRequestsException`.
+THROTTLING_ERROR_CODES = frozenset(
+    {"Throttling", "ThrottlingException", "TooManyRequestsException", "RequestLimitExceeded"}
+)
+
+
 def retry_with_backoff(func, max_retries=3, base_delay=1):
     """Retry function with exponential backoff for API rate limiting."""
     for attempt in range(max_retries):
@@ -104,7 +111,7 @@ def retry_with_backoff(func, max_retries=3, base_delay=1):
             return func()
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', '')
-            if error_code in ['Throttling', 'TooManyRequestsException', 'RequestLimitExceeded']:
+            if error_code in THROTTLING_ERROR_CODES:
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
                     print(f"⏳ Rate limited, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
@@ -709,15 +716,91 @@ def generate_rpm_quota_codes(model_ids):
     return rpm_quotas
 
 
-def get_simple_quotas():
+# Every recommendation describing a quota that could not be read starts with this,
+# and the Capacity Planning page selects on it to show those lines in a warning
+# banner (`QUOTA_NOT_READ_PREFIX` in
+# `src/ui/src/components/capacity-planning/quota-warnings.ts`). The two copies
+# must stay identical; `test_the_ui_selects_quota_warnings_by_the_same_prefix`
+# asserts that they do.
+QUOTA_NOT_READ_PREFIX = "⚠️ Quota not read:"
+
+
+def _narrow_quota_codes_to_plan(tpm_model_quotas, model_ids):
+    """The entries of the TPM code map for the models a plan calls.
+
+    Resolution follows `_lookup_quota`: an exact key first, then for a `:1m` id
+    its base id and the `:0` variant of that, because those share one quota.
+
+    A plan model with no entry is left out here and refused later, by
+    `build_simple_quota_requirements`, with a message naming the model and the
+    variable to edit. When nothing in the plan resolves — no model configuration,
+    or a plan naming only unmapped models — the whole map is returned instead, so
+    the throughput estimate still has quotas to reduce and that later refusal is
+    still the one reported.
+    """
+    if not model_ids:
+        return dict(tpm_model_quotas)
+    selected = {}
+    for model_id in model_ids:
+        candidates = [model_id]
+        if model_id.endswith(":1m"):
+            candidates += [model_id[:-3], model_id[:-3] + ":0"]
+        for key in candidates:
+            if key in tpm_model_quotas:
+                selected[key] = tpm_model_quotas[key]
+                break
+    return selected or dict(tpm_model_quotas)
+
+
+def _read_quota(quotas_client, quota_code):
+    """One quota's value, or the reason it could not be read.
+
+    A failure is returned rather than raised so that one unreadable code costs
+    one model, not the whole calculation. Only errors *from the API* are caught: a
+    code that does not exist in this region (`NoSuchResourceException`), an
+    access denial, or a connection that would not complete. Throttling that
+    outlasts `retry_with_backoff` still raises: it is transient, and reporting it
+    as an unreadable quota would present an incomplete analysis as a complete one
+    and point at a configuration that is not wrong. A response of an unexpected
+    shape also raises, because that is a defect here rather than a fact about the
+    account.
+    """
+    if not quota_code:
+        return None, "no Service Quotas code is published for this model"
+    try:
+        response = retry_with_backoff(
+            lambda: quotas_client.get_service_quota(
+                ServiceCode="bedrock", QuotaCode=quota_code
+            )
+        )
+    except ClientError as e:
+        error = e.response.get("Error", {})
+        if error.get("Code") in THROTTLING_ERROR_CODES:
+            raise
+        return None, f"{error.get('Code', 'ClientError')}: {error.get('Message', '')}".rstrip(": ")
+    except BotoCoreError as e:
+        return None, f"{type(e).__name__}: {e}"
+    if not response:
+        return None, "no response from Service Quotas"
+    return int(response["Quota"]["Value"]), None
+
+
+def get_simple_quotas(model_ids=None):
     """Get AWS service quotas from live API for both TPM and RPM.
-    
-    Requires valid quota configuration and API access - no fallback defaults.
-    Raises ValueError if quotas cannot be retrieved.
+
+    ``model_ids`` narrows the lookup to the models a plan calls (see
+    `plan_model_ids`); without it every model in the code map is read.
+
+    No quota value is ever defaulted: a model whose TPM or RPM quota cannot be
+    read is left out of **both** mappings and recorded in ``unreadable_models``,
+    keyed by model id, with a message naming the quota type, the model and the
+    code. The caller reports those messages and skips that model's steps. Only
+    when no model's quota can be read at all does this raise, because there is
+    then nothing to calculate against.
     """
     # Per-model mappings only. There is deliberately no account-wide scalar
     # alongside them: see the closing comment of this function.
-    quotas = {"bedrock_models": {}, "bedrock_models_rpm": {}}
+    quotas = {"bedrock_models": {}, "bedrock_models_rpm": {}, "unreadable_models": {}}
 
     quotas_client = boto3.client("service-quotas")
     region = boto3.Session().region_name
@@ -727,7 +810,7 @@ def get_simple_quotas():
     tpm_quota_codes_env = os.environ.get("BEDROCK_MODEL_QUOTA_CODES")
     if not tpm_quota_codes_env:
         raise ValueError("BEDROCK_MODEL_QUOTA_CODES environment variable not set. Configure model quota mappings in the Lambda environment.")
-    
+
     try:
         tpm_model_quotas = json.loads(tpm_quota_codes_env)
     except json.JSONDecodeError as e:
@@ -735,6 +818,12 @@ def get_simple_quotas():
 
     if not tpm_model_quotas:
         raise ValueError("BEDROCK_MODEL_QUOTA_CODES is empty. Add model quota code mappings.")
+
+    # Only the plan's models are looked up. The map lists every model the stack
+    # can be configured with, so reading all of it made the calculation depend on
+    # quotas for models this plan never calls (#2024).
+    tpm_model_quotas = _narrow_quota_codes_to_plan(tpm_model_quotas, model_ids)
+    print(f"🔍 Looking up quotas for {sorted(tpm_model_quotas)}")
 
     # Generate RPM quota codes - REQUIRED
     rpm_model_quotas = generate_rpm_quota_codes(tpm_model_quotas.keys())
@@ -751,47 +840,40 @@ def get_simple_quotas():
 
     retrieved_count = 0
 
-    # Retrieve TPM quotas - REQUIRED for each configured model
-    for model_id, quota_code in tpm_model_quotas.items():
-        print(f"🔍 Requesting TPM quota for {model_id} with code {quota_code}...")
-        
-        def get_tpm_quota():
-            return quotas_client.get_service_quota(
-                ServiceCode="bedrock", QuotaCode=quota_code
-            )
-        
-        model_quota = retry_with_backoff(get_tpm_quota)
-        if not model_quota:
-            raise ValueError(f"Failed to retrieve TPM quota for model {model_id} (quota code: {quota_code}). Verify the quota code is correct.")
-        
-        quota_value = int(model_quota["Quota"]["Value"])
-        quotas["bedrock_models"][model_id] = quota_value
-        print(f"✅ Retrieved {model_id} TPM quota: {quota_value}")
-        retrieved_count += 1
-        
-        # Small delay to prevent rate limiting
-        time.sleep(0.1)
+    def mark_unreadable(kind, model_id, quota_code, reason):
+        message = (
+            f"{QUOTA_NOT_READ_PREFIX} {kind} quota for model {model_id} "
+            f"(quota code {quota_code or 'none'}) could not be read ({reason})."
+        )
+        # The remediation goes to the log, not to the page: the page's banner
+        # already says what was left out, and the variable names mean something
+        # only to whoever maintains the deployment.
+        print(
+            f"{message} Steps using this model are left out of the quota analysis; "
+            "if the code is wrong, correct it in BEDROCK_MODEL_QUOTA_CODES or "
+            "BEDROCK_MODEL_RPM_QUOTA_CODES."
+        )
+        quotas["unreadable_models"].setdefault(model_id, message)
+        quotas["bedrock_models"].pop(model_id, None)
 
-    # Retrieve RPM quotas - REQUIRED for each configured model
-    for model_id, quota_code in rpm_model_quotas.items():
-        print(f"🔍 Requesting RPM quota for {model_id} with code {quota_code}...")
-        
-        def get_rpm_quota():
-            return quotas_client.get_service_quota(
-                ServiceCode="bedrock", QuotaCode=quota_code
-            )
-        
-        model_quota = retry_with_backoff(get_rpm_quota)
-        if not model_quota:
-            raise ValueError(f"Failed to retrieve RPM quota for model {model_id} (quota code: {quota_code}). Verify the quota code is correct.")
-        
-        quota_value = int(model_quota["Quota"]["Value"])
-        quotas["bedrock_models_rpm"][model_id] = quota_value
-        print(f"✅ Retrieved {model_id} RPM quota: {quota_value}")
-        retrieved_count += 1
-        
-        # Small delay to prevent rate limiting
-        time.sleep(0.1)
+    for kind, code_map, target in (
+        ("TPM", tpm_model_quotas, "bedrock_models"),
+        ("RPM", rpm_model_quotas, "bedrock_models_rpm"),
+    ):
+        for model_id, quota_code in code_map.items():
+            if model_id in quotas["unreadable_models"]:
+                continue
+            print(f"🔍 Requesting {kind} quota for {model_id} with code {quota_code}...")
+            quota_value, reason = _read_quota(quotas_client, quota_code)
+            if reason:
+                mark_unreadable(kind, model_id, quota_code, reason)
+                continue
+            quotas[target][model_id] = quota_value
+            print(f"✅ Retrieved {model_id} {kind} quota: {quota_value}")
+            retrieved_count += 1
+
+            # Small delay to prevent rate limiting
+            time.sleep(0.1)
 
     print(f"📊 Retrieved {retrieved_count} quotas from AWS Service Quotas API")
 
@@ -807,7 +889,8 @@ def get_simple_quotas():
     # `build_simple_quota_requirements` looks up each step's own model via
     # `_lookup_quota`.
     if not quotas["bedrock_models"]:
-        raise ValueError("No Bedrock model quotas were retrieved. Check BEDROCK_MODEL_QUOTA_CODES configuration.")
+        detail = " ".join(quotas["unreadable_models"].values())
+        raise ValueError(f"No Bedrock model quotas were retrieved. Check BEDROCK_MODEL_QUOTA_CODES and BEDROCK_MODEL_RPM_QUOTA_CODES configuration. {detail}".rstrip())
 
     return quotas
 
@@ -985,8 +1068,15 @@ def calculate_latency_distribution(
     #
     # With no model configuration to narrow by — an older caller, or a plan that
     # calls Bedrock from no step at all — the reduction falls back to the whole
-    # mapping, which is pessimistic rather than wrong and is the only answer
-    # available without knowing the steps.
+    # mapping it was given, which is pessimistic rather than wrong and is the only
+    # answer available without knowing the steps.
+    #
+    # On the handler's path that mapping is already narrowed:
+    # `get_simple_quotas` reads only the plan's models (#2024), and reads the
+    # whole code map only when no plan model has an entry in it. So the fallback
+    # below widens the reduction only in that last case; when the plan's models
+    # were read and all came back zero, it finds nothing new and the refusal
+    # after it is what the caller sees.
     all_tpm_by_model = quotas.get("bedrock_models") or {}
     planned_model_ids = plan_model_ids(pattern, model_config)
     planned_tpm_by_model = {
@@ -1001,7 +1091,7 @@ def calculate_latency_distribution(
     if not bedrock_quota_tpm_by_model and planned_tpm_by_model:
         print(
             f"⚠️ No usable TPM quota for the planned models {planned_model_ids} - "
-            "falling back to the account's full model mapping for the throughput estimate"
+            "falling back to every model quota that was read for the throughput estimate"
         )
         bedrock_quota_tpm_by_model = {
             model_id: quota for model_id, quota in all_tpm_by_model.items() if quota
@@ -1014,6 +1104,15 @@ def calculate_latency_distribution(
     if not bedrock_quota_tpm:
         raise ValueError("Bedrock TPM quota not available. Ensure BEDROCK_MODEL_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
 
+    # Reduced over every RPM entry it was given. On the handler's path that is the
+    # plan's own models, because `get_simple_quotas` builds the RPM lookup from
+    # the narrowed TPM key set; so a model the plan never calls no longer binds
+    # the request limit. For a plan whose only models are Claude Sonnet 5 or 5.5,
+    # whose RPM entries carry their TPM code (AWS publishes no RPM quota for
+    # them), the request limit is therefore that placeholder and effectively
+    # unbounded, and the token limit — which is exact — decides the figure.
+    # `test_a_sonnet_5_only_plan_is_bound_by_its_token_limit_not_another_models_rpm`
+    # pins that.
     bedrock_quota_rpm = quotas.get("bedrock_models_rpm", {})
     if not bedrock_quota_rpm:
         raise ValueError("Bedrock RPM quotas not available. Ensure BEDROCK_MODEL_RPM_QUOTA_CODES environment variable is configured and Service Quotas API is accessible.")
@@ -1398,6 +1497,13 @@ def build_simple_quota_requirements(
         # Validate model configuration
         if not model_id:
             print(f"⚠️ Skipping {step_name} - no model configured")
+            continue
+
+        # A model whose quota Service Quotas would not return is skipped rather
+        # than refused: `get_simple_quotas` has already recorded why, and the
+        # handler reports that message beside the rest of the analysis.
+        if _lookup_quota(quotas.get("unreadable_models") or {}, model_id) is not None:
+            print(f"⚠️ Skipping {step_name} - the quota for {model_id} could not be read")
             continue
 
         # Get TPM model quota - REQUIRED, no defaults
@@ -2022,7 +2128,8 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
         print(f"Model config for quota builder: {model_config}")
 
         # Get quotas with Applied account-level values
-        quotas = get_simple_quotas()
+        # Only for the models this plan's steps call (#2024).
+        quotas = get_simple_quotas(plan_model_ids(pattern, model_config))
 
         # Process time slots with proper JSON handling
         time_slots = []
@@ -2213,7 +2320,20 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     "bedrock_models": quotas.get("bedrock_models", {})
                 }
             },
-            "recommendations": generate_adaptive_recommendations(
+            # A quota that could not be read is reported first, so the page's
+            # warning banner says which model's steps the analysis left out.
+            # Only for models the plan calls: when `get_simple_quotas` read the
+            # whole code map (no plan model had an entry), its unreadable entries
+            # include models this plan never uses, and the banner would name them.
+            "recommendations": [
+                message
+                for model_id, message in (quotas.get("unreadable_models") or {}).items()
+                if any(
+                    _lookup_quota({model_id: message}, planned) is not None
+                    for planned in plan_model_ids(pattern, model_config)
+                )
+            ]
+            + generate_adaptive_recommendations(
                 latency_distribution,
                 quota_requirements,
                 total_docs_per_hour,
