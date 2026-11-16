@@ -14,6 +14,7 @@ For a guided tour of the main features, with the eight-minute overview video and
 ## Table of Contents
 
 - [Overview & Getting Started](#overview--getting-started)
+- [IDP in Action walkthroughs](#idp-in-action-walkthroughs)
 - [External Presentations & Demos](#external-presentations--demos)
 - [Web User Interface](#web-user-interface)
 - [Command Line Interface (CLI)](#command-line-interface-cli)
@@ -37,7 +38,7 @@ The whole product through one lending packet, for new viewers. Quick Start turns
 
 **Duration**: ~8 minutes
 
-<!-- Paste the video's https://github.com/user-attachments/assets/... URL on the next line. -->
+https://github.com/user-attachments/assets/beb7a697-2074-4932-b218-1daa7f2e8cbf
 
 **Related Documentation**: [IDP in Action](./idp-in-action.md)
 
@@ -62,6 +63,76 @@ Go from a plain-language description of your document type to a working, active 
 https://github.com/user-attachments/assets/7096c812-08be-4716-ad37-7ae4f3797fa7
 
 **Related Documentation**: [Quick Start Documentation](./quick-start.md)
+
+---
+
+## IDP in Action walkthroughs
+
+Short narrated walkthroughs of the main features, recorded with the shipped sample documents. They also appear on the [IDP in Action](./idp-in-action.md) page.
+
+### Set up a new document type
+Discovery reads a shipped sample invoice and drafts a document class from the page, with its nested groups and line-item table, beside the class Quick Start created from a description. The profile's revision history then shows exactly what Discovery added, field by field.
+
+**Duration**: ~2 minutes
+
+https://github.com/user-attachments/assets/f8039708-4d6f-4e8d-9483-82d9cb5fa653
+
+**Related Documentation**: [Discovery](./discovery.md), [Configuration Profiles](./configuration-profiles.md)
+
+---
+
+### Inside a processed document
+Everything recorded about one lending packet: its sections and page classes, each extracted value with its confidence and its place on the page, the summary and processing report, every retained version, and Chat With the Document catching a pay slip and a W-2 that name different employees.
+
+**Duration**: ~2.5 minutes
+
+https://github.com/user-attachments/assets/05f24c6f-5f47-47a6-9795-12b4cbfa575f
+
+**Related Documentation**: [Extraction & Confidence](./extraction-and-confidence.md), [Document Versions](./document-versions.md)
+
+---
+
+### Human review with review queues
+An Admin adds an annotator to the Default review queue and assigns a document. The annotator sees only their tasks, works the item against the page, and hands back one that needs reprocessing with a different profile rather than new values, with the reason kept in the item's history.
+
+**Duration**: ~2.5 minutes
+
+https://github.com/user-attachments/assets/a0b24048-2369-4faf-a931-d9f697c62141
+
+**Related Documentation**: [Review Queues](./review-queues.md)
+
+---
+
+### Measure accuracy with Test Studio
+Test sets installed from public datasets, two runs of the same ten W-2 forms with Claude Sonnet 5 and Amazon Nova 2 Lite extraction, field-level accuracy that shows which boxes a model struggles with, and a side-by-side comparison of accuracy and cost per page.
+
+**Duration**: ~2 minutes
+
+https://github.com/user-attachments/assets/843aa4d7-030f-4856-aa7e-a52064b513d1
+
+**Related Documentation**: [Test Studio](./test-studio.md)
+
+---
+
+### Ask your documents
+Agent Chat writes and runs the SQL for a table of processed documents and refines it in conversation, the error analyzer reads a failed document's logs and traces and names the root cause, and the Knowledge Base answers from the documents, saying so when they do not contain the answer.
+
+**Duration**: ~2.5 minutes
+
+https://github.com/user-attachments/assets/f778a71d-7360-44d9-afe4-2dbe23171042
+
+**Related Documentation**: [Agent Companion Chat](./agent-companion-chat.md), [Error Analyzer](./error-analyzer.md), [Knowledge Base](./knowledge-base.md)
+
+---
+
+### Operate it at scale
+The pricing table behind every cost estimate, capacity planning from the tokens real documents used, checked against the account's live Bedrock service quotas, and prefix mappings and tenants that route documents to their own configuration.
+
+**Duration**: ~2 minutes
+
+https://github.com/user-attachments/assets/ccb92a67-c075-4163-8c56-d122b2184a69
+
+**Related Documentation**: [Capacity Planning](./capacity-planning.md), [Multi-Tenant Isolation](./multi-tenancy.md)
 
 ---
 
