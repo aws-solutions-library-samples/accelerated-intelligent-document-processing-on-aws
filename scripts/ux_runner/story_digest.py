@@ -28,11 +28,12 @@ SLACK_INTRO = (
     "Each story is a first-time user doing one task from the docs alone, "
     "in a real browser."
 )
-#: Each verdict's icon on its Slack line: passed, refused as the docs say, missed
-#: the docs' expectation, did not finish, the harness failed, never started.
+#: Each verdict's icon on its Slack line: passed (a permission check that held as the
+#: docs say is a pass too, and its words say which kind it is), missed the docs'
+#: expectation, did not finish, the harness failed, never started.
 SLACK_ICONS: dict[str, str] = {
     "done": "✅",
-    "refused_as_expected": "🚫",
+    "refused_as_expected": "✅",
     "not_refused": "❌",
     "stuck": "❌",
     "offered": "❌",
@@ -1211,13 +1212,15 @@ class SlackFacts:
     ``results`` and ``run`` are the merged night's results.json and
     story-run.json, ``history`` the earlier nights it was compared with, None
     when they were not read, ``titles`` each story id's title in the catalogue,
-    and ``cap_usd`` the night's dollar cap.
+    ``permissions`` each story id's Permission Matrix row in docs/rbac.md, and
+    ``cap_usd`` the night's dollar cap.
     """
 
     results: Mapping[str, Any] | None = None
     run: Mapping[str, Any] | None = None
     history: History | None = None
     titles: Mapping[str, str] = field(default_factory=dict)
+    permissions: Mapping[str, str] = field(default_factory=dict)
     cap_usd: float | None = None
 
 
@@ -1331,12 +1334,36 @@ def _failure_lines(
     return confirmed_lines + other_lines
 
 
+def _held(result: story_verdict.FlowResult | None, permission: object) -> str:
+    """A permission check that passed, in words: whom the task was kept from, and the
+    docs/rbac.md row that says so.
+
+    A ``not_offered`` story passes only when the app never showed the control, so it
+    reads "not offered to". A ``refused`` story also passes when the persona reported
+    no way to do the task at all, so it claims only that the task was kept from the
+    role. Without the flow's result the role is not known, and without the row the
+    docs are cited in general.
+    """
+    group = _slack_text(result.group, _NAME_CHARS) if result is not None else ""
+    if group:
+        refused = result is not None and result.expectation == "refused"
+        how = "kept from" if refused else "not offered to"
+        text = f"correctly {how} {'an' if group[0].upper() in 'AEIOU' else 'a'} {group}"
+    else:
+        text = "correctly kept from this role"
+    if isinstance(permission, str):
+        permission = permission.replace("/", " or ")
+    row = _slack_text(permission, _SLACK_TITLE_CHARS)
+    return f"{text} (permission: {row})" if row else f"{text}, as the docs say"
+
+
 def _pass_lines(
     flows: Sequence[NightFlow],
     shown: Mapping[str, story_verdict.FlowResult],
     titles: Mapping[str, str],
+    permissions: Mapping[str, str],
 ) -> list[str]:
-    """The flows that passed: done with its steps, then refused as the docs say."""
+    """The flows that passed: done with its steps, then the permission checks."""
     lines: list[str] = []
     unit = " steps"
     for verdict in _SLACK_PASSES:
@@ -1345,7 +1372,9 @@ def _pass_lines(
                 continue
             who = _who(flow.key, titles)
             if verdict == "refused_as_expected":
-                lines.append(f"{SLACK_ICONS[verdict]} {who}: refused, as the docs say")
+                story = flow.key.partition("@")[0]
+                held = _held(shown.get(flow.key), permissions.get(story))
+                lines.append(f"{SLACK_ICONS[verdict]} {who}: {held}")
                 continue
             result = shown.get(flow.key)
             steps = ""
@@ -1414,6 +1443,10 @@ def _slack_status(
         return "⚠️ harness problem"
     passed = sum(1 for flow in flows if flow.verdict in story_verdict.GOOD_VERDICTS)
     tally = f"{passed} of {len(flows)} passed"
+    checks = sum(1 for flow in flows if flow.verdict == "refused_as_expected")
+    if checks:
+        kind = "a permission check" if checks == 1 else "permission checks"
+        tally += f", {checks} of them {kind}"
     if uncompared >= BASELINE_NIGHTS:
         return f"⚠️ {tally}, not compared for {uncompared} nights"
     return f"{'✅' if passed == len(flows) else '⚠️'} {tally}"
@@ -1577,6 +1610,7 @@ def slack_payload(
         return payload
     shown = _shown_flows(facts.results)
     titles = facts.titles if isinstance(facts.titles, Mapping) else {}
+    permissions = facts.permissions if isinstance(facts.permissions, Mapping) else {}
     foot = [
         "",
         _comparison_line(digest, facts.history, confirmed, len(regressed) - confirmed),
@@ -1615,7 +1649,7 @@ def slack_payload(
     payload["summary"] = _fit(
         [head, SLACK_INTRO, ""],
         _failure_lines(flows, regressed, unconfirmed, shown, titles),
-        _pass_lines(flows, shown, titles),
+        _pass_lines(flows, shown, titles, permissions),
         foot,
         SLACK_SUMMARY_CHARS,
     )
