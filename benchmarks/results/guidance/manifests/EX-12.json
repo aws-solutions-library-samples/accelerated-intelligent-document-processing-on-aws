@@ -17,6 +17,16 @@
         "RealKIE-FCC-Verified-20261113-211823",
         "RealKIE-FCC-Verified-20261113-211839",
         "RealKIE-FCC-Verified-20261113-211824"
+      ],
+      "Off: schema in the prompt \u00b7 Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-145708",
+        "RealKIE-FCC-Verified-20261116-145709",
+        "RealKIE-FCC-Verified-20261116-145710"
+      ],
+      "Structured output \u00b7 Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-145719",
+        "RealKIE-FCC-Verified-20261116-145720",
+        "RealKIE-FCC-Verified-20261116-145721"
       ]
     },
     "fake_w2": {
@@ -34,6 +44,16 @@
         "Fake-W2-Tax-Forms-20261113-212439",
         "Fake-W2-Tax-Forms-20261113-212441",
         "Fake-W2-Tax-Forms-20261113-212442"
+      ],
+      "Off: schema in the prompt \u00b7 Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261116-145709",
+        "Fake-W2-Tax-Forms-20261116-145719",
+        "Fake-W2-Tax-Forms-20261116-145721"
+      ],
+      "Structured output \u00b7 Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261116-145720",
+        "Fake-W2-Tax-Forms-20261116-145722",
+        "Fake-W2-Tax-Forms-20261116-145723"
       ]
     },
     "realkie_long": {
@@ -88,6 +108,18 @@
     "realkie-fcc-long-20261113-213057",
     "realkie-fcc-long-20261113-213058",
     "realkie-fcc-long-20261113-213059",
-    "realkie-fcc-long-20261113-213104"
+    "realkie-fcc-long-20261113-213104",
+    "RealKIE-FCC-Verified-20261116-145708",
+    "RealKIE-FCC-Verified-20261116-145709",
+    "RealKIE-FCC-Verified-20261116-145710",
+    "Fake-W2-Tax-Forms-20261116-145709",
+    "RealKIE-FCC-Verified-20261116-145719",
+    "RealKIE-FCC-Verified-20261116-145720",
+    "Fake-W2-Tax-Forms-20261116-145719",
+    "Fake-W2-Tax-Forms-20261116-145720",
+    "RealKIE-FCC-Verified-20261116-145721",
+    "Fake-W2-Tax-Forms-20261116-145721",
+    "Fake-W2-Tax-Forms-20261116-145722",
+    "Fake-W2-Tax-Forms-20261116-145723"
   ]
 }

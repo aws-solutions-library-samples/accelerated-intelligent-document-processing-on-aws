@@ -48,7 +48,7 @@ them, one suited to each.
 
 A language model, the **extraction model**, does the reading. The shipped default is Claude
 Sonnet 5 (`extraction.model`). You choose how the model works through the section with
-*Extraction mode* (`extraction.mode`): *Simple — single pass* (the default) or *Advanced —
+*Extraction mode* (`extraction.mode`): *Simple — single-pass* (the default) or *Advanced —
 sharded, for large documents*.
 
 ### What the extraction model reads
@@ -85,7 +85,7 @@ flowchart LR
     class R bank
 ```
 
-A single pass is the simplest route, and the one that reads the fewest tokens, for a section
+A single-pass is the simplest route, and the one that reads the fewest tokens, for a section
 with a bounded number of fields. Three properties follow from the single request:
 
 - **The model writes every row itself,** so the request's output grows with the length of
@@ -98,7 +98,7 @@ with a bounded number of fields. Three properties follow from the single request
 
 See [Simple (non-agentic) extraction](../extraction-and-confidence.md#simple-non-agentic-extraction).
 
-### Iterative extraction (Advanced): an agent works through the section in shards
+### Agentic extraction (Advanced): an agent works through the section in shards
 
 In Advanced mode an **agent** does the extraction: the extraction model runs in a loop, calling
 tools the accelerator gives it, until the record is complete and valid. Four mechanisms do
@@ -197,7 +197,7 @@ return a list of records instead of one. See
 
 ### How the two modes compare
 
-| | Single pass (*Simple*) | Iterative (*Advanced*) |
+| | Single-pass (*Simple*) | Agentic (*Advanced*) |
 |---|---|---|
 | Config value | `extraction.mode: simple` (default) | `extraction.mode: advanced` |
 | Model requests per section | One | Several per shard, shards in parallel |
@@ -215,14 +215,14 @@ with a [prefix mapping](../configuration-profiles.md#prefix-mappings-assigning-a
 
 **For forms and documents with a bounded number of fields, such as invoices, start with
 single-pass extraction (*Simple*), the default.** One request reads the whole section and
-returns the record. On real invoices, single-pass extraction scored as high as iterative
+returns the record. On real invoices, single-pass extraction scored as high as agentic
 extraction and read about a tenth of the extraction input tokens (see
 [Invoices](#invoices-realkie-fcc-verified)).
 
-**For documents with long lists, from a few hundred rows up, choose iterative extraction
+**For documents with long lists, from a few hundred rows up, choose agentic extraction
 (*Advanced*).** Statements, transaction logs and holdings reports are the typical cases. In
-our benchmark, iterative extraction returned every row of every statement we tested, up to
-3,200 rows on 66 pages, and from 400 rows it finished in about half the time of a single pass
+our benchmark, agentic extraction returned every row of every statement we tested, up to
+3,200 rows on 66 pages, and from 400 rows it finished in about half the time of a single-pass
 (see [Long lists](#long-lists-synthetic-bank-statements)).
 
 **In either mode, keep Amazon Textract's `TABLES` feature on** (the shipped default,
@@ -235,10 +235,10 @@ Four things decide how many tokens extraction uses:
 
 - **The rows the model writes.** Output tokens grow with the length of the list. In a single
   pass, Claude Sonnet 5 wrote about 48 output tokens per row of a three-column statement. In
-  iterative mode the table tool assembles the rows, and the agent wrote about 39 per row.
-- **How often the model rereads its instructions.** A single pass reads each page once. An
+  agentic mode the table tool assembles the rows, and the agent wrote about 39 per row.
+- **How often the model rereads its instructions.** A single-pass reads each page once. An
   agent sends its prompt again on every turn of its loop, and every shard repeats the
-  instructions and the schema, so iterative extraction reads several times the input tokens.
+  instructions and the schema, so agentic extraction reads several times the input tokens.
   Amazon Bedrock serves most of the repeated part from the prompt cache, which it bills at a
   reduced rate.
 - **Page images.** Each image adds input tokens, and how many depends on the extraction model
@@ -251,14 +251,14 @@ extraction model (release 0.6.14, November 2026; mean over the runs shown):
 
 | Statement | Runs per mode | Mode | Input per document | Output per document | Input per page | Output per page |
 |---|---|---|---|---|---|---|
-| 100 rows, 3 pages | 6 | Single pass | 20,221 | 4,900 | 6,740 | 1,633 |
-| | | Iterative | 82,691 | 4,075 | 27,564 | 1,358 |
-| 400 rows, 9 pages | 11 | Single pass | 60,000 | 19,315 | 6,667 | 2,146 |
-| | | Iterative | 215,171 | 15,597 | 23,908 | 1,733 |
-| 800 rows, 17 pages | 6 | Single pass ¹ | 112,977 | 38,556 | 6,646 | 2,268 |
-| | | Iterative | 431,289 | 31,100 | 25,370 | 1,829 |
-| 3,200 rows, 66 pages | 2 | Single pass ² | 0 | 0 | — | — |
-| | | Iterative | 1,405,276 | 123,564 | 21,292 | 1,872 |
+| 100 rows, 3 pages | 6 | Single-pass | 20,221 | 4,900 | 6,740 | 1,633 |
+| | | Agentic | 82,691 | 4,075 | 27,564 | 1,358 |
+| 400 rows, 9 pages | 11 | Single-pass | 60,000 | 19,315 | 6,667 | 2,146 |
+| | | Agentic | 215,171 | 15,597 | 23,908 | 1,733 |
+| 800 rows, 17 pages | 6 | Single-pass ¹ | 112,977 | 38,556 | 6,646 | 2,268 |
+| | | Agentic | 431,289 | 31,100 | 25,370 | 1,829 |
+| 3,200 rows, 66 pages | 2 | Single-pass ² | 0 | 0 | — | — |
+| | | Agentic | 1,405,276 | 123,564 | 21,292 | 1,872 |
 
 ¹ The four runs that returned every row. The two runs that returned part of the list wrote
 2,277 output tokens each; see
@@ -272,8 +272,8 @@ model (20 documents, 81 pages, release 0.6.14):
 
 | Configuration | Input / output per document | Input / output per page |
 |---|---|---|
-| Single pass | 14,849 / 2,121 | 3,666 / 524 |
-| Iterative | 141,719 / 6,031 | 34,992 / 1,489 |
+| Single-pass | 14,849 / 2,121 | 3,666 / 524 |
+| Agentic | 141,719 / 6,031 | 34,992 / 1,489 |
 
 Input tokens include tokens read from and written to the prompt cache. The figures cover the
 extraction phase only; classification and confidence assessment use tokens of their own. Sources:
@@ -283,17 +283,17 @@ for the statements and `benchmarks/results/v0.6.14/core/summary.json` for the in
 
 What this shows:
 
-- **On long statements, iterative extraction read 3.6 to 4.1 times the input tokens of a
-  single pass and wrote about a fifth fewer output tokens.** Between 65% and 78% of the
-  iterative input came from the prompt cache.
-- **On invoices, iterative extraction read about 9.5 times the input tokens and wrote 2.8
+- **On long statements, agentic extraction read 3.6 to 4.1 times the input tokens of a
+  single-pass and wrote about a fifth fewer output tokens.** Between 65% and 78% of the
+  agentic input came from the prompt cache.
+- **On invoices, agentic extraction read about 9.5 times the input tokens and wrote 2.8
   times the output,** with 85% of the input from the prompt cache. An invoice's short list
   gives the table tool little to save, while the agent loop still repeats its prompt.
 - **Input tokens per page stayed roughly level as statements grew,** in both modes, so a
   statement's extraction input scales with its page count and its output with its row count.
 
 The same pattern holds with Claude Sonnet 4.6, one run per size: about 3,100 input tokens per
-page in a single pass (100 to 1,600 rows) and 17,300 to 21,600 in iterative mode (100 to
+page in a single-pass (100 to 1,600 rows) and 17,300 to 21,600 in agentic mode (100 to
 3,200 rows). Source: `benchmarks/results/v0.6.14/scaling/summary.json`.
 
 ## How to measure extraction on your own documents
@@ -330,10 +330,10 @@ column and on the *Processing Report* tab.
 
 | Configuration | Typical mistake | How the accelerator reports it | What to change |
 |---|---|---|---|
-| **Single pass** on a long list | Returns the first rows of the list and reports `COMPLETED` | `extraction_rows_below_ocr_estimate` (warning) | Use iterative extraction |
-| **Single pass** on a section too large for one request | Stops before extracting | The document fails with `ExtractionInputTooLarge`, naming the request size and the remedy | Use iterative extraction |
-| **Single pass or iterative** on a section that holds several records of one class | Returns the first record only | `extraction_multi_instance_suspected`, when *Multi-instance Section Detection* is on | Set *Records per section* to *Several — wrap my single-record class* |
-| **Single pass or iterative** with a value in the wrong format | Stores the value as the model wrote it | `extraction_validation_failed` (warning) | Declare the format on the field, and say it in the description |
+| **Single-pass** on a long list | Returns the first rows of the list and reports `COMPLETED` | `extraction_rows_below_ocr_estimate` (warning) | Use agentic extraction |
+| **Single-pass** on a section too large for one request | Stops before extracting | The document fails with `ExtractionInputTooLarge`, naming the request size and the remedy | Use agentic extraction |
+| **Single-pass or agentic** on a section that holds several records of one class | Returns the first record only | `extraction_multi_instance_suspected`, when *Multi-instance Section Detection* is on | Set *Records per section* to *Several — wrap my single-record class* |
+| **Single-pass or agentic** with a value in the wrong format | Stores the value as the model wrote it | `extraction_validation_failed` (warning) | Declare the format on the field, and say it in the description |
 
 **A short list is the mistake to watch for on long documents.** On the 800-row statement, the
 two single-pass runs that returned part of the list returned its first 43 rows and finished
@@ -341,7 +341,7 @@ with `COMPLETED`. They also ran faster and wrote far fewer tokens than the compl
 neither the document status nor the run time shows the loss. The accelerator's row-count
 check does: it compares the rows extracted with the rows in the section's OCR tables of the
 same width, and raises `extraction_rows_below_ocr_estimate` when fewer than half came back.
-Across every release 0.6.14 benchmark cell that ran Claude Sonnet 5 in a single pass on that
+Across every release 0.6.14 benchmark cell that ran Claude Sonnet 5 in a single-pass on that
 statement with table-rendering OCR, 9 of 16 runs returned part of the list, and the
 accelerator raised `extraction_rows_below_ocr_estimate` on all 9. Source:
 `processing_issue_codes` in `benchmarks/results/v0.6.14/coresynth__extraction-model-sonnet5/`
@@ -359,7 +359,7 @@ Three settings change what happens to a short list:
   [Making a materially incomplete list fail the section](../extraction-and-confidence.md#making-a-materially-incomplete-list-fail-the-section--extractionrow_shortfall_action).
 - **Declare a minimum list length.** *Min Items* (`minItems`) on a list field states the
   fewest rows any real document holds. In single-pass mode a list under the floor raises
-  `extraction_list_truncated` and a schema violation, and the rows are kept. In iterative mode
+  `extraction_list_truncated` and a schema violation, and the rows are kept. In agentic mode
   the extraction tool enforces the floor in every shard, so a floor larger than one shard's
   rows fails the section; leave `minItems` off lists in sections that shard, and use
   `row_shortfall_action` instead. See
@@ -381,7 +381,7 @@ exact ground truth for every row: a three-column transaction list from 100 rows 
 3,200 rows on 66 pages. **Run:** release 0.6.14, November 2026, extraction model Claude
 Sonnet 5 (the default), Amazon Textract with `TABLES`, confidence in a separate pass.
 
-| Statement | Runs per mode | Single pass: runs with every row | Iterative: runs with every row | Single pass: median time | Iterative: median time |
+| Statement | Runs per mode | Single-pass: runs with every row | Agentic: runs with every row | Single-pass: median time | Agentic: median time |
 |---|---|---|---|---|---|
 | 100 rows, 3 pages | 6 | 6 of 6 | 6 of 6 | 69 s | 65 s |
 | 400 rows, 9 pages | 11 | 11 of 11 | 11 of 11 | 262 s | 139 s |
@@ -399,19 +399,19 @@ the right date and amount. Sources:
 
 What this shows:
 
-- **Iterative extraction returned every row at every size,** up to 3,200 rows on 66 pages, in
+- **Agentic extraction returned every row at every size,** up to 3,200 rows on 66 pages, in
   under eight minutes.
-- **From 400 rows, iterative extraction finished in about half the time of a single pass,**
-  because its shards run in parallel while a single pass writes every row in one response.
-- **Up to 400 rows on 9 pages, both modes returned every row in every run.** The single pass
+- **From 400 rows, agentic extraction finished in about half the time of a single-pass,**
+  because its shards run in parallel while a single-pass writes every row in one response.
+- **Up to 400 rows on 9 pages, both modes returned every row in every run.** The single-pass
   read fewer tokens there.
 - **Wrong values were not the issue on long lists. Missing rows were,** which is why
   completeness is the number to follow.
 
 With Claude Sonnet 4.6 (one run per size, `benchmarks/results/v0.6.14/scaling/`), a single
 pass returned every row up to 1,600 rows on 33 pages, taking about 17 and 18 minutes at
-1,200 and 1,600 rows, and the 3,200-row statement was too large for one request. Iterative extraction
-returned every row at every size, in at most about 6 minutes. How long a list a single pass completes
+1,200 and 1,600 rows, and the 3,200-row statement was too large for one request. Agentic extraction
+returned every row at every size, in at most about 6 minutes. How long a list a single-pass completes
 depends on the extraction model.
 
 ### Invoices: RealKIE-FCC-Verified
@@ -420,14 +420,14 @@ depends on the extraction model.
 broadcast-advertising invoices (81 pages) with header fields and a short list of line items.
 **Run:** release 0.6.14, November 2026, extraction model Claude Sonnet 4.6 (the benchmark's
 control), scored by Stickler as weighted accuracy, one run per configuration. Differences are
-paired by document: each configuration's score on a document minus the single pass's score on
+paired by document: each configuration's score on a document minus the single-pass's score on
 the same document, averaged over the 20 documents.
 
-| Configuration | Weighted accuracy | Difference from single pass (SE) | Documents better / worse | Extraction tokens per page, input / output |
+| Configuration | Weighted accuracy | Difference from single-pass (SE) | Documents better / worse | Extraction tokens per page, input / output |
 |---|---|---|---|---|
-| **Single pass** (baseline) | 0.798 | — | — | 3,666 / 524 |
-| Iterative | 0.774 | −0.025 (0.022) | 2 / 5 | 34,992 / 1,489 |
-| Single pass, each file one section | 0.836 | +0.038 (0.024) | 5 / 3 | 3,066 / 360 |
+| **Single-pass** (baseline) | 0.798 | — | — | 3,666 / 524 |
+| Agentic | 0.774 | −0.025 (0.022) | 2 / 5 | 34,992 / 1,489 |
+| Single-pass, each file one section | 0.836 | +0.038 (0.024) | 5 / 3 | 3,066 / 360 |
 
 SE is the standard error of the mean paired difference. Source:
 `benchmarks/results/v0.6.14/core/summary.json`, `doc == "realkie"`, cells
@@ -435,11 +435,11 @@ SE is the standard error of the mean paired difference. Source:
 
 What this shows:
 
-- **A single pass is the right default for invoices.** Iterative extraction read about 9.5
+- **A single-pass is the right default for invoices.** Agentic extraction read about 9.5
   times the input tokens per page, and its score was within about one standard error of the
-  single pass's, slightly lower.
+  single-pass's, slightly lower.
 - **Telling the accelerator that each file holds one invoice helped the most.** With section
-  splitting set to *One section*, the single pass scored 0.038 higher (SE 0.024) and used
+  splitting set to *One section*, the single-pass scored 0.038 higher (SE 0.024) and used
   fewer tokens. See
   [Splitting and Section Classification](splitting-and-classification.md#the-configuration-to-start-with).
 
@@ -536,7 +536,7 @@ jq -c '[.rows[] | select(.doc=="large_narrow.pdf" and .cell=="sonnet5-simple-sep
         | {repeat, rows_extracted, processing_issue_codes}]' \
   benchmarks/results/v0.6.14/astravalue/summary.json
 
-# Mean extraction input tokens, iterative, 400-row statement (prompt-cache tokens included)
+# Mean extraction input tokens, agentic, 400-row statement (prompt-cache tokens included)
 jq '[.rows[] | select(.doc=="med_narrow.pdf" and .cell=="core-tt-adv-sep")
      | .tokens_by_phase.Extraction
      | .inputTokens + .cacheReadInputTokens + .cacheWriteInputTokens] | add/length' \
@@ -558,7 +558,7 @@ for how each mode behaves as documents grow.
   and [Configuration Best Practices](../idp-configuration-best-practices.md).
 - **Draft a schema from sample documents:** [Discovery](../discovery.md), or
   [Quick Start](../quick-start.md) from a description.
-- **Tune iterative extraction for very large documents:**
+- **Tune agentic extraction for very large documents:**
   [Large-Document Guidance](../extraction-and-confidence.md#8-large-document-guidance).
 - **Check every list came back complete:**
   [Detecting a truncated list](../extraction-and-confidence.md#detecting-a-truncated-list).

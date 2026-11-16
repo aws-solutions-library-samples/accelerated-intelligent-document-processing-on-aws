@@ -243,7 +243,7 @@
     "docsplit|0 (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -260,7 +260,7 @@
     "docsplit|1": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -277,7 +277,7 @@
     "docsplit|2": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [

@@ -422,7 +422,7 @@
     "realkie|Textract, tables and layout (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -436,7 +436,7 @@
     "realkie|Textract, layout only": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -451,7 +451,7 @@
     "realkie|Bedrock vision model (Nova 2 Lite)": {
       "OCR": "Amazon Nova 2 Lite, reading the page images",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -469,7 +469,7 @@
     "omniai|Textract, tables and layout (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Amazon Nova 2 Lite, single pass",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -486,7 +486,7 @@
     "omniai|Textract, layout only": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Amazon Nova 2 Lite, single pass",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -503,7 +503,7 @@
     "omniai|Bedrock vision model (Nova 2 Lite)": {
       "OCR": "Amazon Nova 2 Lite, reading the page images",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Amazon Nova 2 Lite, single pass",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [

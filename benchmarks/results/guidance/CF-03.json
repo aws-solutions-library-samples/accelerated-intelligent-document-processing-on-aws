@@ -382,7 +382,7 @@
     "realkie|Separate (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -397,7 +397,7 @@
     "realkie|Integrated": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Claude Sonnet 5, integrated into extraction, plus Amazon Nova Lite",
       "billed": {
         "Assessment": [
@@ -412,7 +412,7 @@
     "realkie|Off": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Off",
       "billed": {
         "Extraction": [
@@ -423,7 +423,7 @@
     "fake_w2|Separate (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -437,7 +437,7 @@
     "fake_w2|Integrated": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Claude Sonnet 5, integrated into extraction (no calls billed)",
       "billed": {
         "Extraction": [
@@ -448,7 +448,7 @@
     "fake_w2|Off": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Off",
       "billed": {
         "Extraction": [

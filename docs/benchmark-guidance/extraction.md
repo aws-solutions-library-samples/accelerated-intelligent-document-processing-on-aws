@@ -46,7 +46,7 @@ Poor scans and handwriting give it less to read, and long tables need a mode bui
 
 | Setting | What it changes | Questions |
 |---|---|---|
-| *Extraction mode* (`extraction.mode`) | One request per section (*Simple*), or an agent that works through the section in shards (*Advanced*) | [EX-01](#when-is-agentic-iterative-extraction-worth-it), [EX-07](#does-deterministic-table-parsing-help-iterative-extraction) to [EX-09](#should-iterative-extraction-load-page-images-only-when-it-needs-them) |
+| *Extraction mode* (`extraction.mode`) | One request per section (*Simple*), or an agent that works through the section in shards (*Advanced*) | [EX-01](#when-is-agentic-extraction-worth-it), [EX-07](#does-deterministic-table-parsing-help-agentic-extraction) to [EX-09](#should-agentic-extraction-load-page-images-only-when-it-needs-them) |
 | *Extraction model* (`extraction.model`) | The model that reads the section | [EX-02](#which-extraction-model-should-i-use) |
 | Reasoning effort (`extraction.reasoning_effort`) | How long the model reasons before it answers | [EX-03](#does-more-reasoning-effort-improve-extraction) |
 | Few-shot examples | Sample documents with their correct values, added to the prompt | [EX-05](#do-few-shot-examples-help-extraction) |
@@ -57,13 +57,13 @@ Poor scans and handwriting give it less to read, and long tables need a mode bui
 
 <!-- BEGIN GENERATED FAQ -->
 
-### When is agentic (iterative) extraction worth it?
+### When is agentic extraction worth it?
 
-**Answer:** When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while iterative extraction got 0.32 to 0.90. On synthetic bank statements, iterative extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Iterative extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished. [Details: EX-01](#ex-01-when-is-agentic-iterative-extraction-worth-it)
+**Answer:** When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single-pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while agentic extraction got 0.32 to 0.90. On synthetic bank statements, agentic extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single-pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single-pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Agentic extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished. [Details: EX-01](#ex-01-when-is-agentic-extraction-worth-it)
 
 ![List score against rows in the list (ground truth) for each Extraction mode](../../images/benchmark-guidance/EX-01-by-size-synth-100.svg)
 
-*List score per document, against rows in the list (ground truth). One point per document per extraction mode, on a log scale; the line is that value's running median over log-spaced bins of the x axis. A list score is Stickler's score for the list: matched rows over the larger of the true and returned row counts.* Datasets: [Statement, 400 rows](datasets.md#synthetic-statement-400-rows-9-pages), [Statement, 800 rows](datasets.md#synthetic-statement-800-rows-17-pages), [Statement, 1,600 rows](datasets.md#synthetic-statement-1600-rows-33-pages). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Confidence: Off. Extraction by dataset: Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — Claude Sonnet 5, single pass. N = 15 documents × 2–3 runs.
+*List score per document, against rows in the list (ground truth). One point per document per extraction mode, on a log scale; the line is that value's running median over log-spaced bins of the x axis. A list score is Stickler's score for the list: matched rows over the larger of the true and returned row counts.* Datasets: [Statement, 400 rows](datasets.md#synthetic-statement-400-rows-9-pages), [Statement, 800 rows](datasets.md#synthetic-statement-800-rows-17-pages), [Statement, 1,600 rows](datasets.md#synthetic-statement-1600-rows-33-pages). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Confidence: Off. Extraction by dataset: Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — Claude Sonnet 5, single-pass. N = 15 documents × 2–3 runs.
 
 ![List score against rows in the list (ground truth) for each Extraction mode](../../images/benchmark-guidance/EX-01-by-size-realkie.svg)
 
@@ -71,7 +71,7 @@ Poor scans and handwriting give it less to read, and long tables need a mode bui
 
 ![List recall against cost per 1,000 documents (USD) for each Extraction mode](../../images/benchmark-guidance/EX-01-list.svg)
 
-*List recall against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [Statement, 400 rows](datasets.md#synthetic-statement-400-rows-9-pages), [Statement, 800 rows](datasets.md#synthetic-statement-800-rows-17-pages), [Statement, 1,600 rows](datasets.md#synthetic-statement-1600-rows-33-pages). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Confidence: Off. Extraction by dataset: Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — Claude Sonnet 5, single pass. N: Statement, 400 rows — 5 documents × 3 runs; Statement, 800 rows — 5 documents × 2–3 runs; Statement, 1,600 rows — 5 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*List recall against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [Statement, 400 rows](datasets.md#synthetic-statement-400-rows-9-pages), [Statement, 800 rows](datasets.md#synthetic-statement-800-rows-17-pages), [Statement, 1,600 rows](datasets.md#synthetic-statement-1600-rows-33-pages). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Confidence: Off. Extraction by dataset: Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — Claude Sonnet 5, single-pass. N: Statement, 400 rows — 5 documents × 3 runs; Statement, 800 rows — 5 documents × 2–3 runs; Statement, 1,600 rows — 5 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Which extraction model should I use?
 
@@ -87,7 +87,7 @@ Poor scans and handwriting give it less to read, and long tables need a mode bui
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each `extraction.reasoning_effort`](../../images/benchmark-guidance/EX-03-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How much do field descriptions matter?
 
@@ -101,17 +101,17 @@ Poor scans and handwriting give it less to read, and long tables need a mode bui
 
 **Answer:** Not yet measured. [Details: EX-06](#ex-06-does-sending-page-images-to-the-extraction-model-help)
 
-### Does deterministic table parsing help iterative extraction?
+### Does deterministic table parsing help agentic extraction?
 
-**Answer:** Not yet measured. [Details: EX-07](#ex-07-does-deterministic-table-parsing-help-iterative-extraction)
+**Answer:** Not yet measured. [Details: EX-07](#ex-07-does-deterministic-table-parsing-help-agentic-extraction)
 
-### What shard size should iterative extraction use?
+### What shard size should agentic extraction use?
 
-**Answer:** Not yet measured. [Details: EX-08](#ex-08-what-shard-size-should-iterative-extraction-use)
+**Answer:** Not yet measured. [Details: EX-08](#ex-08-what-shard-size-should-agentic-extraction-use)
 
-### Should iterative extraction load page images only when it needs them?
+### Should agentic extraction load page images only when it needs them?
 
-**Answer:** Not yet measured. [Details: EX-09](#ex-09-should-iterative-extraction-load-page-images-only-when-it-needs-them)
+**Answer:** Not yet measured. [Details: EX-09](#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them)
 
 ### Do schema validation and value coercion improve the output?
 
@@ -127,7 +127,7 @@ Poor scans and handwriting give it less to read, and long tables need a mode bui
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each Schema enforcement (`extraction.schema_enforcement.mode`)](../../images/benchmark-guidance/EX-12-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields), [RealKIE, long](datasets.md#realkie-fcc-verified-long-invoices-19-invoices-8-to-33-pages). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N: RealKIE — 20 documents × 3 runs; Fake-W2 — 20 documents × 3 runs; RealKIE, long — 19 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields), [RealKIE, long](datasets.md#realkie-fcc-verified-long-invoices-19-invoices-8-to-33-pages). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N: RealKIE — 20 documents × 3 runs; Fake-W2 — 20 documents × 3 runs; RealKIE, long — 19 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How should I extract sections that hold several records?
 
@@ -160,9 +160,9 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 
 <!-- BEGIN GENERATED ABLATIONS -->
 
-#### EX-01: When is agentic (iterative) extraction worth it?
+#### EX-01: When is agentic extraction worth it?
 
-**Answer:** When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while iterative extraction got 0.32 to 0.90. On synthetic bank statements, iterative extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Iterative extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished.
+**Answer:** When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single-pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while agentic extraction got 0.32 to 0.90. On synthetic bank statements, agentic extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single-pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single-pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Agentic extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished.
 
 *Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-173220, RealKIE-FCC-Verified-20261113-173644, RealKIE-FCC-Verified-20261113-173641, RealKIE-FCC-Verified-20261113-173219, RealKIE-FCC-Verified-20261113-173642, RealKIE-FCC-Verified-20261113-173643, Fake-W2-Tax-Forms-20261113-181721, Fake-W2-Tax-Forms-20261113-181722, Fake-W2-Tax-Forms-20261113-181723, Fake-W2-Tax-Forms-20261113-181901, Fake-W2-Tax-Forms-20261113-182002, Fake-W2-Tax-Forms-20261113-182011, realkie-fcc-short-20261113-201254, realkie-fcc-short-20261113-201252, realkie-fcc-short-20261113-201253, realkie-fcc-short-20261113-201713, realkie-fcc-short-20261113-201703, realkie-fcc-short-20261113-201714, realkie-fcc-long-20261113-201929, realkie-fcc-long-20261113-201928, realkie-fcc-long-20261113-202020, realkie-fcc-long-20261113-202336, realkie-fcc-long-20261113-202804, realkie-fcc-long-20261113-202644, synth-statements-400-20261113-231559, synth-statements-400-20261113-231602, synth-statements-400-20261113-231603, synth-statements-400-20261113-231600, synth-statements-400-20261113-231601, synth-statements-400-20261113-231604, synth-statements-800-20261113-231613, synth-statements-800-20261113-231615, synth-statements-800-20261113-231617, synth-statements-800-20261113-231614, synth-statements-800-20261113-231616, synth-statements-1600-20261113-231626, synth-statements-1600-20261113-231629, synth-statements-1600-20261113-231631 (3 failed documents left out of the scores)`.*
 
@@ -171,36 +171,36 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 | **Changes** | Extraction mode |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [Synthetic statement, 100 rows (3 pages)](datasets.md#synthetic-statement-100-rows-3-pages); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [Synthetic statement, 1,600 rows (33 pages)](datasets.md#synthetic-statement-1600-rows-33-pages); [Synthetic statement, 3,200 rows (66 pages)](datasets.md#synthetic-statement-3200-rows-66-pages); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [RealKIE-FCC-Verified, short invoices (24 invoices, 1 or 2 pages)](datasets.md#realkie-fcc-verified-short-invoices-24-invoices-1-or-2-pages); [RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)](datasets.md#realkie-fcc-verified-long-invoices-19-invoices-8-to-33-pages); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed). Extraction by dataset: Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — Claude Sonnet 5, single pass; RealKIE — varies (the setting under test); RealKIE, short — varies (the setting under test); RealKIE, long — varies (the setting under test); Fake-W2 — varies (the setting under test). Confidence by dataset: Statement, 400 rows — Off; Statement, 800 rows — Off; Statement, 1,600 rows — Off; RealKIE — Amazon Nova Lite, escalating to Claude Sonnet 5; RealKIE, short — Amazon Nova Lite, escalating to Claude Sonnet 5; RealKIE, long — Amazon Nova Lite, escalating to Claude Sonnet 5; Fake-W2 — Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed). Extraction by dataset: Statement, 400 rows — varies (the setting under test); Statement, 800 rows — varies (the setting under test); Statement, 1,600 rows — Claude Sonnet 5, single-pass; RealKIE — varies (the setting under test); RealKIE, short — varies (the setting under test); RealKIE, long — varies (the setting under test); Fake-W2 — varies (the setting under test). Confidence by dataset: Statement, 400 rows — Off; Statement, 800 rows — Off; Statement, 1,600 rows — Off; RealKIE — Amazon Nova Lite, escalating to Claude Sonnet 5; RealKIE, short — Amazon Nova Lite, escalating to Claude Sonnet 5; RealKIE, long — Amazon Nova Lite, escalating to Claude Sonnet 5; Fake-W2 — Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N: Statement, 400 rows — 5 documents × 3 runs; Statement, 800 rows — 5 documents × 2–3 runs; Statement, 1,600 rows — 5 documents × 3 runs; RealKIE — 20 documents × 3 runs; RealKIE, short — 24 documents × 3 runs; RealKIE, long — 18–19 documents × 3 runs, 1 failed document per run left out; Fake-W2 — 20 documents × 3 runs |
 
-| Dataset | Extraction mode | List recall | List precision | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Single pass, Simple (default) |
+| Dataset | Extraction mode | List recall | List precision | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Single-pass (Simple, default) |
 |---|---|---|---|---|---|---|---|---|
-| Statement, 100 rows | Single pass, Simple (default) | — | — | — | — | — | — | — |
-| Statement, 100 rows | Iterative, Advanced | — | — | — | — | — | — | — |
-| Statement, 400 rows | Single pass, Simple (default) | 1 ± 0 | 1 ± 0 | 8,839 ± 2.07 | 10,987 ± 12 | $545 ± $1.16 | 337 ± 24 | — |
-| Statement, 400 rows | Iterative, Advanced | 1 ± 0 | 1 ± 0 | 24,778 ± 4.31 | 26,928 ± 25 | $546 ± $23.6 | 241 ± 25 | — |
-| Statement, 800 rows | Single pass, Simple (default) | 0.82 ± 0.01 | 1 ± 0 | 8,568 ± 33 | 10,623 ± 17 | $957 ± $4.36 | 762 ± 39 | — |
-| Statement, 800 rows | Iterative, Advanced | 1 ± 0 | 1 ± 0 | 26,297 ± 0.66 | 28,335 ± 10 | $1,036 ± $25.7 | 779 ± 81 | $0.45 per error prevented |
-| Statement, 1,600 rows | Single pass, Simple (default) | 0.03 ± 0.01 | 1 ± 0 | 6,033 ± 17 | 8,069 ± 13 | $1,127 ± $6.63 | 366 ± 169 | — |
-| Statement, 1,600 rows | Iterative, Advanced | — | — | — | — | — | — | — |
-| Statement, 3,200 rows | Single pass, Simple (default) | — | — | — | — | — | — | — |
-| Statement, 3,200 rows | Iterative, Advanced | — | — | — | — | — | — | — |
+| Statement, 100 rows | Single-pass (Simple, default) | — | — | — | — | — | — | — |
+| Statement, 100 rows | Agentic (Advanced) | — | — | — | — | — | — | — |
+| Statement, 400 rows | Single-pass (Simple, default) | 1 ± 0 | 1 ± 0 | 8,839 ± 2.07 | 10,987 ± 12 | $545 ± $1.16 | 337 ± 24 | — |
+| Statement, 400 rows | Agentic (Advanced) | 1 ± 0 | 1 ± 0 | 24,778 ± 4.31 | 26,928 ± 25 | $546 ± $23.6 | 241 ± 25 | — |
+| Statement, 800 rows | Single-pass (Simple, default) | 0.82 ± 0.01 | 1 ± 0 | 8,568 ± 33 | 10,623 ± 17 | $957 ± $4.36 | 762 ± 39 | — |
+| Statement, 800 rows | Agentic (Advanced) | 1 ± 0 | 1 ± 0 | 26,297 ± 0.66 | 28,335 ± 10 | $1,036 ± $25.7 | 779 ± 81 | $0.45 per error prevented |
+| Statement, 1,600 rows | Single-pass (Simple, default) | 0.03 ± 0.01 | 1 ± 0 | 6,033 ± 17 | 8,069 ± 13 | $1,127 ± $6.63 | 366 ± 169 | — |
+| Statement, 1,600 rows | Agentic (Advanced) | — | — | — | — | — | — | — |
+| Statement, 3,200 rows | Single-pass (Simple, default) | — | — | — | — | — | — | — |
+| Statement, 3,200 rows | Agentic (Advanced) | — | — | — | — | — | — | — |
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each Extraction mode](../../images/benchmark-guidance/EX-01-fields.svg)
 
 *Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [RealKIE, short](datasets.md#realkie-fcc-verified-short-invoices-24-invoices-1-or-2-pages), [RealKIE, long](datasets.md#realkie-fcc-verified-long-invoices-19-invoices-8-to-33-pages), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N: RealKIE — 20 documents × 3 runs; RealKIE, short — 24 documents × 3 runs; RealKIE, long — 18–19 documents × 3 runs, 1 failed document per run left out; Fake-W2 — 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
-| Dataset | Extraction mode | Weighted accuracy | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Single pass, Simple (default) |
+| Dataset | Extraction mode | Weighted accuracy | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Single-pass (Simple, default) |
 |---|---|---|---|---|---|---|---|
-| RealKIE | Single pass, Simple (default) | 0.8 ± 0.06 | 7,042 ± 14 | 20,208 ± 339 | $145 | 58 ± 37 | — |
-| RealKIE | Iterative, Advanced | 0.8 ± 0.08 | 15,368 ± 597 | 20,843 ± 516 | $169 | 65 ± 29 | — |
-| RealKIE, short | Single pass, Simple (default) | 0.82 ± 0.06 | 8,593 ± 29 | 19,612 ± 253 | $52.8 | 22 ± 0.65 | — |
-| RealKIE, short | Iterative, Advanced | 0.82 ± 0.06 | 34,802 ± 2,925 | 41,424 ± 2,846 | $79.2 | 28 ± 1.63 | — |
-| RealKIE, long | Single pass, Simple (default) | 0.77 ± 0.08 | 7,322 ± 39 | 34,597 ± 5,531 | $404 | 105 ± 21 | — |
-| RealKIE, long | Iterative, Advanced | 0.8 ± 0.08 | 66,260 ± 5,944 | 85,090 ± 5,546 | $1,273 | 101 ± 6.87 | no measurable gain |
-| Fake-W2 | Single pass, Simple (default) | 0.95 ± 0.02 | 6,876 ± 2.3 | 15,192 ± 2.09 | $33.0 | 38 ± 1.14 | — |
-| Fake-W2 | Iterative, Advanced | 0.97 ± 0.01 | 46,661 ± 84 | 51,789 ± 84 | $61.4 | 30 ± 0.46 | no measurable gain |
+| RealKIE | Single-pass (Simple, default) | 0.8 ± 0.06 | 7,042 ± 14 | 20,208 ± 339 | $145 | 58 ± 37 | — |
+| RealKIE | Agentic (Advanced) | 0.8 ± 0.08 | 15,368 ± 597 | 20,843 ± 516 | $169 | 65 ± 29 | — |
+| RealKIE, short | Single-pass (Simple, default) | 0.82 ± 0.06 | 8,593 ± 29 | 19,612 ± 253 | $52.8 | 22 ± 0.65 | — |
+| RealKIE, short | Agentic (Advanced) | 0.82 ± 0.06 | 34,802 ± 2,925 | 41,424 ± 2,846 | $79.2 | 28 ± 1.63 | — |
+| RealKIE, long | Single-pass (Simple, default) | 0.77 ± 0.08 | 7,322 ± 39 | 34,597 ± 5,531 | $404 | 105 ± 21 | — |
+| RealKIE, long | Agentic (Advanced) | 0.8 ± 0.08 | 66,260 ± 5,944 | 85,090 ± 5,546 | $1,273 | 101 ± 6.87 | no measurable gain |
+| Fake-W2 | Single-pass (Simple, default) | 0.95 ± 0.02 | 6,876 ± 2.3 | 15,192 ± 2.09 | $33.0 | 38 ± 1.14 | — |
+| Fake-W2 | Agentic (Advanced) | 0.97 ± 0.01 | 46,661 ± 84 | 51,789 ± 84 | $61.4 | 30 ± 0.46 | no measurable gain |
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
@@ -276,7 +276,7 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 | **Changes** | `extraction.reasoning_effort` |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
 | Dataset | `extraction.reasoning_effort` | Weighted accuracy | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Low (default) |
@@ -362,14 +362,14 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 | ConfBench | Text only | — | — | — |
 
 
-#### EX-07: Does deterministic table parsing help iterative extraction?
+#### EX-07: Does deterministic table parsing help agentic extraction?
 
 **Answer:** Not yet measured.
 
 | | |
 |---|---|
 | **Changes** | `extraction.agentic.table_parsing.enabled` |
-| **Everything else** | Iterative (Advanced) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | Agentic (Advanced) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [Synthetic statement, 3,200 rows (66 pages)](datasets.md#synthetic-statement-3200-rows-66-pages) |
 | **Runs** | 3 per document, per value |
 
@@ -383,14 +383,14 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 | Statement, 3,200 rows | Off | — | — | — | — |
 
 
-#### EX-08: What shard size should iterative extraction use?
+#### EX-08: What shard size should agentic extraction use?
 
 **Answer:** Not yet measured.
 
 | | |
 |---|---|
 | **Changes** | Pages per shard (`max_pages_per_shard`) |
-| **Everything else** | Iterative (Advanced) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | Agentic (Advanced) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [Synthetic statement, 3,200 rows (66 pages)](datasets.md#synthetic-statement-3200-rows-66-pages) |
 | **Runs** | 3 per document, per value |
 
@@ -406,14 +406,14 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 | Statement, 3,200 rows | 25 | — | — | — | — |
 
 
-#### EX-09: Should iterative extraction load page images only when it needs them?
+#### EX-09: Should agentic extraction load page images only when it needs them?
 
 **Answer:** Not yet measured.
 
 | | |
 |---|---|
 | **Changes** | `extraction.agentic.table_parsing.lazy_images` |
-| **Everything else** | Iterative (Advanced) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | Agentic (Advanced) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
 | **Runs** | 3 per document, per value |
 
@@ -483,7 +483,7 @@ Weighted accuracy counts a whole list as one field, so a lost row barely moves i
 | **Changes** | Schema enforcement (`extraction.schema_enforcement.mode`) |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields); [RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)](datasets.md#realkie-fcc-verified-long-invoices-19-invoices-8-to-33-pages) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N: RealKIE — 20 documents × 3 runs; Fake-W2 — 20 documents × 3 runs; RealKIE, long — 19 documents × 3 runs |
 
 | Dataset | Schema enforcement (`extraction.schema_enforcement.mode`) | Weighted accuracy | Documents with every field right | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs cheapest |

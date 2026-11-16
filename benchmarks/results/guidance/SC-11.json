@@ -936,7 +936,7 @@
     "docsplit|Page by page \u00b7 Amazon Nova 2 Lite (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -953,7 +953,7 @@
     "docsplit|Holistic \u00b7 Amazon Nova 2 Lite (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, holistic",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -970,7 +970,7 @@
     "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite finds the sections (page by page), then Amazon Nova 2 Lite classifies them",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -990,7 +990,7 @@
     "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite finds the sections (holistic), then Amazon Nova 2 Lite classifies them",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1010,7 +1010,7 @@
     "docsplit|Page by page \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Haiku 5.5, page by page",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1027,7 +1027,7 @@
     "docsplit|Holistic \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Haiku 5.5, holistic",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1044,7 +1044,7 @@
     "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Haiku 5.5 finds the sections (page by page), then Claude Haiku 5.5 classifies them",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1064,7 +1064,7 @@
     "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1084,7 +1084,7 @@
     "docsplit|Page by page \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Sonnet 5.5, page by page",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1101,7 +1101,7 @@
     "docsplit|Holistic \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Sonnet 5.5, holistic",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1118,7 +1118,7 @@
     "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Sonnet 5.5 finds the sections (page by page), then Claude Sonnet 5.5 classifies them",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1138,7 +1138,7 @@
     "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Sonnet 5.5 finds the sections (holistic), then Claude Sonnet 5.5 classifies them",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [

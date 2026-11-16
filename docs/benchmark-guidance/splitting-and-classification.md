@@ -99,13 +99,13 @@ find where a document starts.
 | Two steps: split page by page, then classify | $484 | $477 | $826 |
 | Two steps: split holistically, then classify | $463 | $475 | $803 |
 
-*N = 19–20 documents × 3 runs, 1 failed document per run left out. Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. The best value in each table is bold.*
+*N = 19–20 documents × 3 runs, 1 failed document per run left out. Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. The best value in each table is bold.*
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
 ![Section accuracy against cost per 1,000 documents (USD) for each Granularity and strategy, by classification model](../../images/benchmark-guidance/SC-11-packet.svg)
 
-*Section accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Section accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Do I need page images in the classification prompt?
 
@@ -113,7 +113,7 @@ find where a document starts.
 
 ![Page accuracy against cost per 1,000 documents (USD) for each What the classification model reads](../../images/benchmark-guidance/SC-02-packet.svg)
 
-*Page accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better.* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Page accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better.* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Which classification model should I use?
 
@@ -121,7 +121,7 @@ find where a document starts.
 
 ![Section accuracy against cost per 1,000 documents (USD) for each Classification model](../../images/benchmark-guidance/SC-03-packet.svg)
 
-*Section accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Section accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How long a packet can holistic classification handle?
 
@@ -133,7 +133,7 @@ find where a document starts.
 
 ![Boundary accuracy against cost per 1,000 documents (USD) for each `contextPagesCount`](../../images/benchmark-guidance/SC-05-packet.svg)
 
-*Boundary accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better.* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Boundary accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better.* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Do few-shot examples help classification?
 
@@ -187,7 +187,7 @@ find where a document starts.
 | **Changes** | Granularity and strategy, by classification model |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
 
 | Dataset | Granularity and strategy, by classification model | Page accuracy | Section accuracy | Grouping score | Boundary accuracy | Label accuracy | Classification tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs Holistic · Amazon Nova 2 Lite (default) |
@@ -221,7 +221,7 @@ find where a document starts.
 | **Changes** | What the classification model reads |
 | **Everything else** | Page-by-page granularity; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
 
 | Dataset | What the classification model reads | Page accuracy | Boundary accuracy | Label accuracy | Classification tokens per page | Cost per 1,000 documents (USD) | MCoE vs Images only |
@@ -246,7 +246,7 @@ find where a document starts.
 | **Changes** | Classification model |
 | **Everything else** | Run at both granularities: page by page and holistic; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
 
 | Dataset | Classification model | Page accuracy | Section accuracy | Grouping score | Boundary accuracy | Label accuracy | Classification tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Claude Haiku 5.5 |
@@ -297,7 +297,7 @@ Needs a dataset we haven't built yet: Same-class documents back to back (to be b
 | **Changes** | `contextPagesCount` |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets); [Same-class documents back to back (to be built)](datasets.md#same-class-documents-back-to-back-to-be-built) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
 
 | Dataset | `contextPagesCount` | Boundary accuracy | Label accuracy | Over-splits | Merges | Classification tokens per page | Cost per 1,000 documents (USD) |

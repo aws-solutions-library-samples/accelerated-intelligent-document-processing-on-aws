@@ -19,8 +19,8 @@ A run manifest names the runs:
       "cache_isolated": ["RealKIE-FCC-Verified-20261113-173220", ...],
       "runs": {
         "realkie": {
-          "Single pass, Simple (default)": ["RealKIE-FCC-Verified-20261113-173220", ...],
-          "Iterative, Advanced": ["RealKIE-FCC-Verified-20261113-173219", ...]
+          "Single-pass (Simple, default)": ["RealKIE-FCC-Verified-20261113-173220", ...],
+          "Agentic (Advanced)": ["RealKIE-FCC-Verified-20261113-173219", ...]
         }
       }
     }
@@ -71,7 +71,7 @@ it in `cache_isolated`; when every run of a value is isolated, all of them count
 scored, and how many runs there were, so the pages can state N without guessing. A
 document that failed is not scored, so it is not in `docs`; `failed` says how many.
 
-    "sample": {"realkie|Iterative, Advanced": {
+    "sample": {"realkie|Agentic (Advanced)": {
         "docs": [20, 20, 20], "failed": [0, 0, 0], "runs": 3
     }}
 
@@ -79,7 +79,7 @@ document that failed is not scored, so it is not in `docs`; `failed` says how ma
 that scored it, for the documents every run of every value scored (the rule weighted
 accuracy uses). Only the keys a document has are written:
 
-    "per_doc": {"realkie|Iterative, Advanced": {"<document>": {
+    "per_doc": {"realkie|Agentic (Advanced)": {"<document>": {
         "list_score": 0.62,          Stickler's score for the largest list field:
                                      matched rows over the larger of the true and
                                      returned row counts
@@ -95,10 +95,10 @@ not include them.
 `models` says which model ran at each step, per `dataset|value`, so the pages can state
 it on every chart:
 
-    "models": {"realkie|Iterative, Advanced": {
+    "models": {"realkie|Agentic (Advanced)": {
         "OCR": "Amazon Textract (Tables, Layout, Signatures)",
         "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-        "Extraction": "Claude Sonnet 5, iterative",
+        "Extraction": "Claude Sonnet 5, agentic",
         "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
         "billed": {"Assessment": ["us.amazon.nova-lite-v1:0", ...], ...}
     }}
@@ -174,7 +174,7 @@ FEATURE_NAMES = {
     "QUERIES": "Queries",
 }
 GRANULARITY = {"page": "page by page", "packet": "holistic"}
-EXTRACTION_MODES = {"simple": "single pass", "advanced": "iterative"}
+EXTRACTION_MODES = {"simple": "single-pass", "advanced": "agentic"}
 #: The steps of a pipeline, in order, and the cost-breakdown steps that bill each one.
 STEP_BILLING = {
     "OCR": ("OCR",),

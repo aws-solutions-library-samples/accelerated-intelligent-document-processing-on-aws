@@ -1492,7 +1492,7 @@
     "realkie|Claude Sonnet 5 (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1507,7 +1507,7 @@
     "realkie|Amazon Nova Lite": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Amazon Nova Lite, single pass",
+      "Extraction": "Amazon Nova Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1522,7 +1522,7 @@
     "realkie|Amazon Nova Pro": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Amazon Nova Pro, single pass",
+      "Extraction": "Amazon Nova Pro, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1536,7 +1536,7 @@
     "realkie|Amazon Nova 2 Lite": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Amazon Nova 2 Lite, single pass",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1551,7 +1551,7 @@
     "realkie|Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Haiku 5.5, single pass",
+      "Extraction": "Claude Haiku 5.5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1566,7 +1566,7 @@
     "realkie|Claude Sonnet 4.6": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 4.6, single pass",
+      "Extraction": "Claude Sonnet 4.6, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1581,7 +1581,7 @@
     "realkie|Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5.5, single pass",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1596,7 +1596,7 @@
     "realkie|Claude Opus 5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Opus 5, single pass",
+      "Extraction": "Claude Opus 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1611,7 +1611,7 @@
     "realkie|Claude Opus 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Opus 5.5, single pass",
+      "Extraction": "Claude Opus 5.5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1626,7 +1626,7 @@
     "realkie|OpenAI GPT-6 Astra": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "OpenAI GPT-6 Astra, single pass",
+      "Extraction": "OpenAI GPT-6 Astra, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1641,7 +1641,7 @@
     "realkie|xAI Grok 4.6": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "xAI Grok 4.6, single pass",
+      "Extraction": "xAI Grok 4.6, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1656,7 +1656,7 @@
     "fake_w2|Claude Sonnet 5 (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single pass",
+      "Extraction": "Claude Sonnet 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1670,7 +1670,7 @@
     "fake_w2|Amazon Nova Lite": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Amazon Nova Lite, single pass",
+      "Extraction": "Amazon Nova Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1684,7 +1684,7 @@
     "fake_w2|Amazon Nova Pro": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Amazon Nova Pro, single pass",
+      "Extraction": "Amazon Nova Pro, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1698,7 +1698,7 @@
     "fake_w2|Amazon Nova 2 Lite": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Amazon Nova 2 Lite, single pass",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1712,7 +1712,7 @@
     "fake_w2|Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Haiku 5.5, single pass",
+      "Extraction": "Claude Haiku 5.5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1726,7 +1726,7 @@
     "fake_w2|Claude Sonnet 4.6": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 4.6, single pass",
+      "Extraction": "Claude Sonnet 4.6, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1740,7 +1740,7 @@
     "fake_w2|Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5.5, single pass",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1754,7 +1754,7 @@
     "fake_w2|Claude Opus 5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Opus 5, single pass",
+      "Extraction": "Claude Opus 5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1768,7 +1768,7 @@
     "fake_w2|Claude Opus 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Opus 5.5, single pass",
+      "Extraction": "Claude Opus 5.5, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1782,7 +1782,7 @@
     "fake_w2|OpenAI GPT-6 Astra": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "OpenAI GPT-6 Astra, single pass",
+      "Extraction": "OpenAI GPT-6 Astra, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [
@@ -1796,7 +1796,7 @@
     "fake_w2|xAI Grok 4.6": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "xAI Grok 4.6, single pass",
+      "Extraction": "xAI Grok 4.6, single-pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
         "Assessment": [

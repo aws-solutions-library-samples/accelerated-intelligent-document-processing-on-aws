@@ -21,35 +21,35 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bank-statement-sample`
 - **Test Studio test set:** not on the benchmark stack yet
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it)
+- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it)
 
 ### Synthetic statement, 400 rows (9 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-400`, 5 documents per run
-- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [TR-02](index.md#tr-02-how-long-does-a-document-take-and-how-many-documents-an-hour), [DG-01](digitization.md#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-02](digitization.md#dg-02-if-i-read-pages-with-a-vision-model-which-model), [DG-04](digitization.md#dg-04-what-resolution-should-pages-be-rendered-at), [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-iterative-extraction), [EX-09](extraction.md#ex-09-should-iterative-extraction-load-page-images-only-when-it-needs-them), [CF-01](confidence-assessment.md#cf-01-can-i-route-human-review-by-confidence), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-05](token-use.md#tu-05-how-many-tokens-does-each-extraction-model-use-for-the-same-document)
+- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [TR-02](index.md#tr-02-how-long-does-a-document-take-and-how-many-documents-an-hour), [DG-01](digitization.md#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-02](digitization.md#dg-02-if-i-read-pages-with-a-vision-model-which-model), [DG-04](digitization.md#dg-04-what-resolution-should-pages-be-rendered-at), [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [CF-01](confidence-assessment.md#cf-01-can-i-route-human-review-by-confidence), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-05](token-use.md#tu-05-how-many-tokens-does-each-extraction-model-use-for-the-same-document)
 
 ### Synthetic statement, 800 rows (17 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-800`, 5 documents per run
-- **Used by:** [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-iterative-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-iterative-extraction-use), [EX-09](extraction.md#ex-09-should-iterative-extraction-load-page-images-only-when-it-needs-them), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
+- **Used by:** [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-agentic-extraction-use), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
 
 ### Synthetic statement, 1,600 rows (33 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-1600`, 5 documents per run
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
+- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
 
 ### Synthetic statement, 3,200 rows (66 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bank-statement-sample`
 - **Test Studio test set:** not on the benchmark stack yet
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-iterative-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-iterative-extraction-use)
+- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-agentic-extraction-use)
 
 ### Synthetic file holding two statements
 
@@ -63,21 +63,27 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified)
 - **Preset:** `realkie-fcc-verified`
 - **Test Studio test set:** `realkie-fcc-verified`, 20 documents per run
-- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [TR-02](index.md#tr-02-how-long-does-a-document-take-and-how-many-documents-an-hour), [DG-01](digitization.md#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-02](digitization.md#dg-02-if-i-read-pages-with-a-vision-model-which-model), [DG-03](digitization.md#dg-03-does-a-specialized-ocr-model-beat-textract), [DG-04](digitization.md#dg-04-what-resolution-should-pages-be-rendered-at), [DG-05](digitization.md#dg-05-does-image-preprocessing-help-on-poor-scans), [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-04](extraction.md#ex-04-how-much-do-field-descriptions-matter), [EX-05](extraction.md#ex-05-do-few-shot-examples-help-extraction), [EX-06](extraction.md#ex-06-does-sending-page-images-to-the-extraction-model-help), [EX-09](extraction.md#ex-09-should-iterative-extraction-load-page-images-only-when-it-needs-them), [EX-10](extraction.md#ex-10-do-schema-validation-and-value-coercion-improve-the-output), [EX-11](extraction.md#ex-11-should-i-retry-failed-fields-with-a-stronger-model), [EX-12](extraction.md#ex-12-does-structured-output-make-single-pass-extraction-more-accurate), [CF-01](confidence-assessment.md#cf-01-can-i-route-human-review-by-confidence), [CF-02](confidence-assessment.md#cf-02-which-scoring-model-should-i-use), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-04](confidence-assessment.md#cf-04-what-confidence-threshold-should-i-set), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-03](token-use.md#tu-03-what-do-page-images-cost-in-tokens-step-by-step), [TU-04](token-use.md#tu-04-what-is-the-cheapest-configuration-that-keeps-accuracy), [TU-05](token-use.md#tu-05-how-many-tokens-does-each-extraction-model-use-for-the-same-document)
+- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [TR-02](index.md#tr-02-how-long-does-a-document-take-and-how-many-documents-an-hour), [DG-01](digitization.md#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-02](digitization.md#dg-02-if-i-read-pages-with-a-vision-model-which-model), [DG-03](digitization.md#dg-03-does-a-specialized-ocr-model-beat-textract), [DG-04](digitization.md#dg-04-what-resolution-should-pages-be-rendered-at), [DG-05](digitization.md#dg-05-does-image-preprocessing-help-on-poor-scans), [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-04](extraction.md#ex-04-how-much-do-field-descriptions-matter), [EX-05](extraction.md#ex-05-do-few-shot-examples-help-extraction), [EX-06](extraction.md#ex-06-does-sending-page-images-to-the-extraction-model-help), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [EX-10](extraction.md#ex-10-do-schema-validation-and-value-coercion-improve-the-output), [EX-11](extraction.md#ex-11-should-i-retry-failed-fields-with-a-stronger-model), [EX-12](extraction.md#ex-12-does-structured-output-make-single-pass-extraction-more-accurate), [CF-01](confidence-assessment.md#cf-01-can-i-route-human-review-by-confidence), [CF-02](confidence-assessment.md#cf-02-which-scoring-model-should-i-use), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-04](confidence-assessment.md#cf-04-what-confidence-threshold-should-i-set), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-03](token-use.md#tu-03-what-do-page-images-cost-in-tokens-step-by-step), [TU-04](token-use.md#tu-04-what-is-the-cheapest-configuration-that-keeps-accuracy), [TU-05](token-use.md#tu-05-how-many-tokens-does-each-extraction-model-use-for-the-same-document)
+
+### RealKIE-FCC-Verified, all 75 invoices
+
+- **About the dataset:** [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified)
+- **Preset:** `realkie-fcc-verified`
+- **Test Studio test set:** `realkie-fcc-verified`, 75 documents per run
 
 ### RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)
 
 - **About the dataset:** [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified)
 - **Preset:** `realkie-fcc-verified`
 - **Test Studio test set:** `realkie-fcc-long`, 19 documents per run
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [EX-12](extraction.md#ex-12-does-structured-output-make-single-pass-extraction-more-accurate)
+- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-12](extraction.md#ex-12-does-structured-output-make-single-pass-extraction-more-accurate)
 
 ### RealKIE-FCC-Verified, short invoices (24 invoices, 1 or 2 pages)
 
 - **About the dataset:** [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified)
 - **Preset:** `realkie-fcc-verified`
 - **Test Studio test set:** `realkie-fcc-short`, 24 documents per run
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it)
+- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it)
 
 ### ConfBench (RealKIE invoices with scan noise)
 
@@ -105,7 +111,7 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [Fake-W2-Tax-Forms](../idp-fundamentals/benchmark-datasets.md#fake-w2-tax-forms)
 - **Preset:** `fake-w2`
 - **Test Studio test set:** `fake-w2`, 20 documents per run
-- **Used by:** [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [EX-01](extraction.md#ex-01-when-is-agentic-iterative-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-04](extraction.md#ex-04-how-much-do-field-descriptions-matter), [EX-05](extraction.md#ex-05-do-few-shot-examples-help-extraction), [EX-06](extraction.md#ex-06-does-sending-page-images-to-the-extraction-model-help), [EX-10](extraction.md#ex-10-do-schema-validation-and-value-coercion-improve-the-output), [EX-11](extraction.md#ex-11-should-i-retry-failed-fields-with-a-stronger-model), [EX-12](extraction.md#ex-12-does-structured-output-make-single-pass-extraction-more-accurate), [EX-13](extraction.md#ex-13-how-should-i-extract-sections-that-hold-several-records), [CF-02](confidence-assessment.md#cf-02-which-scoring-model-should-i-use), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-06](confidence-assessment.md#cf-06-does-the-scoring-model-need-page-images), [TU-04](token-use.md#tu-04-what-is-the-cheapest-configuration-that-keeps-accuracy)
+- **Used by:** [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-04](extraction.md#ex-04-how-much-do-field-descriptions-matter), [EX-05](extraction.md#ex-05-do-few-shot-examples-help-extraction), [EX-06](extraction.md#ex-06-does-sending-page-images-to-the-extraction-model-help), [EX-10](extraction.md#ex-10-do-schema-validation-and-value-coercion-improve-the-output), [EX-11](extraction.md#ex-11-should-i-retry-failed-fields-with-a-stronger-model), [EX-12](extraction.md#ex-12-does-structured-output-make-single-pass-extraction-more-accurate), [EX-13](extraction.md#ex-13-how-should-i-extract-sections-that-hold-several-records), [CF-02](confidence-assessment.md#cf-02-which-scoring-model-should-i-use), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-06](confidence-assessment.md#cf-06-does-the-scoring-model-need-page-images), [TU-04](token-use.md#tu-04-what-is-the-cheapest-configuration-that-keeps-accuracy)
 
 ### DocSplit-Poly-Seq (20 packets)
 

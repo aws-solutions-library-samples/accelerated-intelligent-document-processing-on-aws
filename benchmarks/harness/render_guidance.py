@@ -18,7 +18,7 @@ benchmarks/results/guidance/<ID>.json, its values fill the table; otherwise ever
       "measured": "December 2026",
       "region": "us-west-2",
       "source": "benchmarks/results/v0.6.15/<suite>/summary.json",
-      "verdict": "Use iterative extraction above about 400 rows.",
+      "verdict": "Use agentic extraction above about 400 rows.",
       "cells": {"<dataset key>|<value>|<metric key>": {"mean": 0.812, "se": 0.006}},
       "models": {"<dataset key>|<value>": {"OCR": "...", "Extraction": "...", ...}},
       "sample": {"<dataset key>|<value>": {"docs": [20, 20], "failed": [0, 0], "runs": 2}},
@@ -419,7 +419,7 @@ MODEL_NAME = re.compile(
 
 
 def short_model(text: str) -> str:
-    """A step's models without its settings: "Claude Sonnet 5, single pass" to the model.
+    """A step's models without its settings: "Claude Sonnet 5, single-pass" to the model.
 
     One model reads as its name, wherever the line mentions it ("Amazon Nova 2 Lite
     finds the sections, then Amazon Nova 2 Lite classifies them" is Amazon Nova 2

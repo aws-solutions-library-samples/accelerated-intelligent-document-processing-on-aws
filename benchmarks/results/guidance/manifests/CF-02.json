@@ -22,6 +22,11 @@
         "RealKIE-FCC-Verified-20261113-182712",
         "RealKIE-FCC-Verified-20261113-182736",
         "RealKIE-FCC-Verified-20261113-182750"
+      ],
+      "Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-145733",
+        "RealKIE-FCC-Verified-20261116-145735",
+        "RealKIE-FCC-Verified-20261116-145734"
       ]
     },
     "fake_w2": {
@@ -44,6 +49,11 @@
         "Fake-W2-Tax-Forms-20261113-213118",
         "Fake-W2-Tax-Forms-20261113-213120",
         "Fake-W2-Tax-Forms-20261113-213121"
+      ],
+      "Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261116-145735",
+        "Fake-W2-Tax-Forms-20261116-145733",
+        "Fake-W2-Tax-Forms-20261116-145734"
       ]
     }
   },
@@ -63,6 +73,12 @@
     "Fake-W2-Tax-Forms-20261113-213118",
     "Fake-W2-Tax-Forms-20261113-213119",
     "Fake-W2-Tax-Forms-20261113-213120",
-    "Fake-W2-Tax-Forms-20261113-213121"
+    "Fake-W2-Tax-Forms-20261113-213121",
+    "Fake-W2-Tax-Forms-20261116-145735",
+    "RealKIE-FCC-Verified-20261116-145733",
+    "Fake-W2-Tax-Forms-20261116-145733",
+    "Fake-W2-Tax-Forms-20261116-145734",
+    "RealKIE-FCC-Verified-20261116-145735",
+    "RealKIE-FCC-Verified-20261116-145734"
   ]
 }
