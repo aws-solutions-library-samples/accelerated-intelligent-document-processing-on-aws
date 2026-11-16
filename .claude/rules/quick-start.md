@@ -70,7 +70,7 @@ chat agent, so [agents.md](agents.md) applies too.
   the user it is talking to.
 
 ## Verify with
-- `make test`, which runs every offline suite, including those of the Lambda
+- `make test`, which runs every offline Python suite, including those of the Lambda
   handlers and the Test Set Generator extension under these paths
 - `make ui-test`
 - `make ai-ux-test-stories-local STORY=draft-setup-from-a-description AS=platform-admin`,
