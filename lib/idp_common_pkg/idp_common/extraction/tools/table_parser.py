@@ -935,45 +935,103 @@ def parse_markdown_tables(
         }
 
 
-def create_parse_table_tool(
-    confidence_data_by_page: dict[str, str] | None = None,
-    max_empty_line_gap: int = 3,
-    auto_merge_adjacent_tables: bool = True,
-):
+def _combined_quality(tables: list[dict[str, Any]]) -> dict[str, Any]:
+    """One quality view over several tables, for a table_indices selection.
+
+    Rates are weighted by each table's rows, counts are summed and the empty-cell
+    ratio is recomputed from them, flags hold only if they hold for every table,
+    and lists are concatenated, with a cell's ``row`` shifted to index the
+    selection's concatenated rows. Any other key keeps the first table's value.
     """
-    Create a parse_table tool with optional pre-loaded confidence data.
+    if not tables:
+        return {}
+    if len(tables) == 1:
+        return dict(tables[0].get("quality") or {})
+    weights = [max(t.get("row_count", 0), 0) for t in tables]
+    total = sum(weights) or len(tables)
+    if not sum(weights):
+        weights = [1] * len(tables)
+    qualities = [t.get("quality") or {} for t in tables]
+    combined: dict[str, Any] = {}
+    for key in dict.fromkeys(k for q in qualities for k in q):
+        values = [
+            (q[key], w)
+            for q, w in zip(qualities, weights)
+            if key in q and q[key] is not None
+        ]
+        if not values:
+            combined[key] = None
+            continue
+        # Averaged over the tables that have the key, so a table without (for
+        # example) avg_confidence does not hide another table's.
+        first = values[0][0]
+        if key in ("empty_cell_count", "total_cells", "cells_matched"):
+            combined[key] = sum(v for v, _ in values)
+        elif isinstance(first, bool):
+            combined[key] = all(v for v, _ in values)
+        elif isinstance(first, (int, float)):
+            weight = sum(w for _, w in values) or total
+            combined[key] = sum(v * w for v, w in values) / weight
+        elif isinstance(first, list):
+            # Cells name a row of their own table; the selection's rows are the
+            # tables' rows concatenated, so shift each by the rows before it.
+            offsets, running = [], 0
+            for t in tables:
+                offsets.append(running)
+                running += t.get("row_count", 0)
+            combined[key] = [
+                {**item, "row": item["row"] + offset}
+                if isinstance(item, dict) and isinstance(item.get("row"), int)
+                else item
+                for q, offset in zip(qualities, offsets)
+                for item in q.get(key, [])
+            ]
+        else:
+            combined[key] = first
+    if "total_cells" in combined:
+        cells = combined["total_cells"]
+        combined["empty_cell_ratio"] = (
+            combined.get("empty_cell_count", 0) / cells if cells else 0.0
+        )
+    return combined
 
-    The tool also records usage statistics in the agent's state under the key
-    ``table_parsing_stats`` so that the extraction service can include them in
-    the result metadata for observability.
 
-    Args:
-        confidence_data_by_page: Optional dict mapping page IDs to confidence data strings.
-            When provided, the tool can cross-reference parsed values with OCR confidence scores.
-            Typically available when OCR backend is Textract; None for Bedrock OCR.
-        max_empty_line_gap: Maximum consecutive empty lines to allow within a table (default: 3)
-        auto_merge_adjacent_tables: Whether to merge adjacent tables with identical columns (default: True)
+#: The parse_table tool description (its docstring, which Strands sends as the tool
+#: spec). Two variants, because the instruction depends on whether the tool holds the
+#: section text: telling a model to pass nothing to a tool that holds nothing costs a
+#: turn on the error that follows.
+_HOLDS_TEXT = {
+    "lead": (
+        "Call this with NO table_text: the tool already holds the document text you\n"
+        "        were given and parses all of it, every page, exactly as OCR produced it.\n"
+        "        Do not copy the document into table_text -- that is slow, and any\n"
+        "        difference between your copy and the OCR can change the result. Use\n"
+        "        table_indices to name exactly the tables map_table_to_schema maps\n"
+        "        when several are found (the result then describes just those)."
+    ),
+    "table_text": (
+        "Leave empty. The tool parses the document text it holds and\n"
+        "                ignores this."
+    ),
+}
+_NEEDS_TEXT = {
+    "lead": (
+        "Pass the table's Markdown as table_text (the whole document text, or one\n"
+        "        table section of it); the tool detects table boundaries itself. Use\n"
+        "        table_indices to name exactly the tables map_table_to_schema maps\n"
+        "        when several are found (the result then describes just those)."
+    ),
+    "table_text": (
+        "The text containing Markdown table(s) to parse: the full\n"
+        "                document text or a specific table section."
+    ),
+}
+_PARSE_TABLE_DESCRIPTION = """
+        Parse Markdown tables from the document text into structured rows and columns.
 
-    Returns:
-        A Strands @tool function that the extraction agent can use
-    """
-    # Merge all page confidence data into a single string for lookup
-    merged_confidence: str | None = None
-    if confidence_data_by_page:
-        merged_confidence = "\n".join(confidence_data_by_page.values())
+        {lead}
 
-    @tool
-    def parse_table(
-        table_text: str,
-        expected_columns: list[str] | None = None,
-        table_index: int | None = None,
-        agent: Any = None,
-    ) -> dict[str, Any]:
-        """
-        Parse a Markdown table from OCR text into structured rows and columns.
-
-        Use this tool when you identify a well-formatted table in the document text.
-        It parses the table deterministically (no LLM inference needed) and returns
+        It parses deterministically (no LLM inference needed) and returns
         structured rows as a list of dictionaries, plus quality metrics.
 
         After receiving results, YOU must:
@@ -985,20 +1043,22 @@ def create_parse_table_tool(
            extraction for those specific rows/cells instead
 
         Args:
-            table_text: The text containing Markdown table(s) to parse.
-                Can be the full document text or a specific table section.
-                The tool will automatically detect table boundaries.
+            table_text: {table_text}
             expected_columns: Optional list of column names you expect in the table.
                 Used for validation - the tool reports matched/missing/extra columns.
-            table_index: Optional index to select a specific table when multiple
-                tables are found (0-based). If None, returns the first table at
-                top level with all tables in 'tables' list.
+            table_index: Optional index of a table to show at the top level when
+                multiple tables are found (0-based). It does not change what
+                map_table_to_schema maps; use table_indices for that.
+            table_indices: Optional list of 0-based table indexes to map, honoured
+                exactly: map_table_to_schema maps those tables and no others, and
+                the result's top level describes them (a list that selects nothing
+                maps nothing). Takes precedence over table_index.
 
         Returns:
             Dict with parsed data and quality metrics:
             - status: "success" or "error" (Bedrock ToolResult-valid). The
               richer parser status ("success"/"no_tables_found"/"error") is
-              preserved under ``parser_status`` — read that, not ``status``,
+              preserved under ``parser_status`` -- read that, not ``status``,
               for the semantic outcome.
             - parser_status: "success", "no_tables_found", or "error"
             - columns: list of column header strings
@@ -1008,13 +1068,115 @@ def create_parse_table_tool(
             - quality: dict with parse_success_rate, avg_confidence (if available), etc.
             - warnings: list of any parsing issues encountered
             - tables: list of all parsed tables (when multiple found)
+            - mapped_table_indices: the tables map_table_to_schema will map, when
+              table_indices was given (table_count is then the selection's size,
+              and tables_found the number found)
+            - text_source: "document_text" or "table_text", whichever was parsed
+              (null when there was nothing to parse)
+            - ignored_table_text: true when table_text was sent and not used
         """
+
+
+def create_parse_table_tool(
+    confidence_data_by_page: dict[str, str] | None = None,
+    max_empty_line_gap: int = 3,
+    auto_merge_adjacent_tables: bool = True,
+    source_text: str | None = None,
+):
+    """
+    Create a parse_table tool with optional pre-loaded confidence data.
+
+    When ``source_text`` is given, the tool parses THAT text -- the section's own
+    OCR text, exactly as the extraction service built it -- and any
+    ``table_text`` the agent passes is not used. The agent would otherwise have
+    to reproduce the whole section as a tool argument, and that copy is model
+    output: it costs as many output tokens as the section holds, and it is not
+    guaranteed to match the OCR. The parser's blank-header recovery decides by
+    comparing the label rows that open each page's fragment, so a copy whose
+    repeated header rows drift even slightly turns that recovery off, and the
+    table's header rows come back as data (seen on Nuveen.pdf: 534 rows for a
+    532-row table, with the same OCR parsed to 532 when given directly).
+
+    This deliberately removes one route: with the text held, the agent cannot have
+    the parser read Markdown it rebuilt itself (say from view_image, for a page whose
+    OCR table is malformed). Honouring an agent-supplied table on request would
+    reopen the drift above for every call that uses it, so those rows go through
+    extraction_tool / apply_json_patches instead, scoped to the affected rows.
+
+    The tool also records usage statistics in the agent's state under the key
+    ``table_parsing_stats`` so that the extraction service can include them in
+    the result metadata for observability, for every call that parsed text (a call
+    with nothing to parse returns an error and is logged instead).
+
+    Args:
+        confidence_data_by_page: Optional dict mapping page IDs to confidence data strings.
+            When provided, the tool can cross-reference parsed values with OCR confidence scores.
+            Typically available when OCR backend is Textract; None for Bedrock OCR.
+        max_empty_line_gap: Maximum consecutive empty lines to allow within a table (default: 3)
+        auto_merge_adjacent_tables: Whether to merge adjacent tables with identical columns (default: True)
+        source_text: The section's OCR text (with its ``--- PAGE N ---`` markers).
+            When set, every call parses it and ignores the agent's ``table_text``.
+            None keeps the older behaviour of parsing whatever the agent passes.
+
+    Returns:
+        A Strands @tool function that the extraction agent can use
+    """
+    # Merge all page confidence data into a single string for lookup
+    merged_confidence: str | None = None
+    if confidence_data_by_page:
+        merged_confidence = "\n".join(confidence_data_by_page.values())
+
+    def parse_table(
+        table_text: str = "",
+        expected_columns: list[str] | None = None,
+        table_index: int | None = None,
+        table_indices: list[int] | None = None,
+        agent: Any = None,
+    ) -> dict[str, Any]:
+        # The docstring is the tool description the model reads, and it depends on
+        # whether this tool holds the document text; it is set below, before the
+        # tool(parse_table) call reads it.
+        if source_text:
+            text, text_source = source_text, "document_text"
+        elif table_text and table_text.strip():
+            text, text_source = table_text, "table_text"
+        else:
+            message = (
+                "parse_table has no document text to parse and was given no "
+                "table_text. Pass the table's Markdown as table_text."
+            )
+            logger.warning("parse_table called with no text to parse")
+            error_result = {
+                "status": "error",
+                "parser_status": "error",
+                "content": [{"text": message}],
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "table_count": 0,
+                "tables": [],
+                "quality": {},
+                "warnings": [message],
+                "text_source": None,
+                "ignored_table_text": False,
+            }
+            # Overwrite any earlier parse, as every other call does, so
+            # map_table_to_schema cannot map a previous call's rows after this one.
+            if agent is not None:
+                agent.state.set("last_parse_table_result", error_result)
+            return error_result
         result = parse_markdown_tables(
-            text=table_text,
+            text=text,
             expected_columns=expected_columns,
             confidence_data=merged_confidence,
             max_empty_line_gap=max_empty_line_gap,
             auto_merge_adjacent_tables=auto_merge_adjacent_tables,
+        )
+        # Which text was parsed, so a reviewer of a run can tell a document parse
+        # from an agent-supplied one, and whether the agent sent a copy anyway.
+        result["text_source"] = text_source
+        result["ignored_table_text"] = bool(
+            source_text and table_text and table_text.strip()
         )
 
         # Add intelligent warnings for potential data completeness issues
@@ -1067,32 +1229,122 @@ def create_parse_table_tool(
             # Update warnings in result
             result["warnings"] = warnings
 
-        # If a specific table was requested, promote it to top level
-        if (
-            table_index is not None
-            and result.get("tables")
-            and 0 <= table_index < len(result["tables"])
-        ):
-            selected = result["tables"][table_index]
-            result["columns"] = selected["columns"]
-            result["rows"] = selected["rows"]
-            result["row_count"] = selected["row_count"]
-            result["quality"] = selected["quality"]
+        tables_found = result.get("tables") or []
 
+        # table_indices scopes what map_table_to_schema maps, and is honoured
+        # exactly. It is the only way to do so now that the agent cannot scope the
+        # parse by passing a slice of the text: the tool parses the document text
+        # it holds. Each table counts once, in document order (map_table_to_schema
+        # maps every entry, so a repeated index would map its rows twice), and a
+        # selection of nothing maps nothing. The result's top level and the summary
+        # the agent reads describe the selection, so it builds its column mapping
+        # and checks its row count against the tables that will be mapped.
+        chosen: list[int] | None = None
+        if table_indices is not None:
+            chosen = sorted({i for i in table_indices if 0 <= i < len(tables_found)})
+            missed = sorted({i for i in table_indices if i not in chosen})
+            if missed:
+                result.setdefault("warnings", []).append(
+                    f"table_indices {missed} select nothing: {len(tables_found)} "
+                    "table(s) were found."
+                )
+            if not chosen and tables_found:
+                result.setdefault("warnings", []).append(
+                    f"table_indices selected no table, so nothing will be mapped: "
+                    f"{len(tables_found)} table(s) were found. Omit table_indices to "
+                    "map all of them."
+                )
+            picked = [tables_found[i] for i in chosen]
+            # Tables left out that have the same columns as a picked one may be
+            # fragments of it that the merge did not join.
+            left_out = [
+                i
+                for i, t in enumerate(tables_found)
+                if i not in chosen
+                and any(t.get("columns") == p.get("columns") for p in picked)
+            ]
+            if left_out:
+                result.setdefault("warnings", []).append(
+                    f"table(s) {left_out} have the same columns as a selected table "
+                    "and are not mapped; if they are fragments of it, add them to "
+                    "table_indices."
+                )
+            if len({tuple(p.get("columns", [])) for p in picked}) > 1:
+                result.setdefault("warnings", []).append(
+                    "the selected tables have different columns; columns and "
+                    "map_table_to_schema use the first selected table's, so a "
+                    "column only another one has cannot be mapped. Map them in "
+                    "separate calls."
+                )
+            if table_index is not None:
+                result.setdefault("warnings", []).append(
+                    "table_index was ignored because table_indices was given."
+                )
+            result["mapped_table_indices"] = chosen
+            result["tables_found"] = len(tables_found)
+            result["table_count"] = len(chosen)
+            result["columns"] = picked[0]["columns"] if picked else []
+            result["rows"] = [r for t in picked for r in t.get("rows", [])]
+            result["row_count"] = sum(t.get("row_count", 0) for t in picked)
+            # An empty selection keeps the parser's own quality rather than {}: it
+            # still says how well the section parsed, which is what an agent
+            # recovering from a selection that missed needs to know.
+            if picked:
+                result["quality"] = _combined_quality(picked)
+        elif table_index is not None:
+            # Promotes one table to the top level for the agent to read; it does
+            # not change what map_table_to_schema maps (every table, as before).
+            if 0 <= table_index < len(tables_found):
+                selected = tables_found[table_index]
+                result["columns"] = selected["columns"]
+                result["rows"] = selected["rows"]
+                result["row_count"] = selected["row_count"]
+                result["quality"] = selected["quality"]
+                if len(tables_found) > 1:
+                    result.setdefault("warnings", []).append(
+                        f"table_index={table_index} only chooses the table shown "
+                        f"here; all {len(tables_found)} tables will be mapped. Pass "
+                        f"table_indices=[{table_index}] to map just this one."
+                    )
+            else:
+                result.setdefault("warnings", []).append(
+                    f"table_index={table_index} selects nothing: "
+                    f"{len(tables_found)} table(s) were found."
+                )
+
+        # Store parsed result in agent state for map_table_to_schema, which maps
+        # the rows of every entry in ``tables``: a table_indices selection is stored
+        # as a copy holding only the chosen tables.
+        stored = result
+        if chosen is not None:
+            stored = {
+                **result,
+                "tables": [tables_found[i] for i in chosen],
+                "table_count": len(chosen),
+            }
+        if result.get("ignored_table_text"):
+            result.setdefault("warnings", []).append(
+                "table_text was not used: this tool parses the document text it "
+                "holds. Call parse_table with no table_text."
+            )
+        if agent is not None:
+            agent.state.set("last_parse_table_result", stored)
+
+        # After every warning above, so the log carries the ones this call added.
         logger.info(
             "parse_table tool invoked",
             extra={
                 "status": result.get("status"),
+                "text_source": text_source,
+                "ignored_table_text": result["ignored_table_text"],
                 "table_count": result.get("table_count", 0),
                 "row_count": result.get("row_count", 0),
+                "mapped_table_indices": result.get("mapped_table_indices"),
                 "quality": result.get("quality", {}),
-                "warnings": result.get("warnings", []),
+                # A copy: the record must say what was true when it was emitted.
+                "warnings": list(result.get("warnings", [])),
             },
         )
-
-        # Store parsed result in agent state for map_table_to_schema tool
-        if agent is not None:
-            agent.state.set("last_parse_table_result", result)
 
         # Record usage stats in agent state for observability
         if agent is not None:
@@ -1138,6 +1390,20 @@ def create_parse_table_tool(
             "warnings": result.get("warnings", []),
             **visible_rows,
         }
+        if "mapped_table_indices" in result:
+            summary["mapped_table_indices"] = result["mapped_table_indices"]
+            summary["tables_found"] = result["tables_found"]
+        if len(tables_found) > 1:
+            # What the indices refer to, so the agent can choose table_indices
+            # without re-calling once per table. A few tokens per table.
+            summary["tables"] = [
+                {
+                    "index": i,
+                    "columns": t.get("columns", []),
+                    "row_count": t.get("row_count", 0),
+                }
+                for i, t in enumerate(tables_found)
+            ]
 
         # Return dict carries BOTH the compact ``content`` (what Strands re-sends
         # to the model every turn) AND the full top-level keys (rows/tables/...)
@@ -1151,18 +1417,28 @@ def create_parse_table_tool(
         # "success"/"error". The parser's richer statuses ("no_tables_found")
         # must be folded to "success"/"error" for the RETURN.
         #
-        # But ``result`` is the SAME object already stored in agent state
+        # But ``result`` is usually the SAME object already stored in agent state
         # (``last_parse_table_result``, above), so we must NOT clobber its
         # semantic status in place. Preserve the parser status under
         # ``parser_status`` first, then set the Bedrock-facing ``status``. State
-        # (and the documented contract) thus retains the original meaning.
+        # (and the documented contract) thus retains the original meaning. A
+        # table_indices selection stores a narrowed copy instead, which is given
+        # the same fields below.
         parser_status = result.get("status")
         result.setdefault("parser_status", parser_status)
         result["content"] = _compact_content(summary)
         result["status"] = "error" if parser_status == "error" else "success"
+        if stored is not result:
+            # A table_indices selection stored a narrowed copy rather than ``result``
+            # itself; give it the same status fields so state keeps the contract.
+            for key in ("parser_status", "content", "status"):
+                stored[key] = result[key]
         return result
 
-    return parse_table
+    parse_table.__doc__ = _PARSE_TABLE_DESCRIPTION.format(
+        **(_HOLDS_TEXT if source_text else _NEEDS_TEXT)
+    )
+    return tool(parse_table)
 
 
 def create_map_table_to_schema_tool():
@@ -1195,7 +1471,7 @@ def create_map_table_to_schema_tool():
         by parse_table).
 
         Workflow:
-        1. Call parse_table on the document text (parses all tables instantly)
+        1. Call parse_table (it parses the document text it was given, all tables)
         2. Review the columns returned by parse_table
         3. Call THIS tool with a column_mapping that maps table columns to
            schema fields, plus any static_fields for values not in the table

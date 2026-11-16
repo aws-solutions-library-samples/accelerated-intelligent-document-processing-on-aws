@@ -213,3 +213,8 @@ pipeline_execution_id.txt
 codebuild_logs.txt
 deployment_summary.txt
 ci_run_options.json
+
+# Working directories `idp-cli deploy --terraform` creates by default
+# (./idp-terraform/<stack-name>). They hold terraform.tfstate, which records
+# account ids, ARNs and sensitive values, and the parameters file.
+idp-terraform/

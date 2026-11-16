@@ -1016,5 +1016,8 @@ def test_the_document_the_mcp_arms_use_is_a_completed_one(monkeypatch, pages, ex
         return 200, json.dumps({"Documents": pages[index], "nextToken": nxt})
 
     monkeypatch.setattr(h, "call_body", call_body)
-    assert h.resolve_document_object_key({"api_base": "https://x"}, {"Admin": "t"}) == expected
+    assert (
+        h.resolve_document_object_key({"api_base": "https://x"}, {"Admin": "t"})
+        == expected
+    )
     assert all(a.get("limit") == h.DOCUMENT_PAGE_LIMIT for a in seen)

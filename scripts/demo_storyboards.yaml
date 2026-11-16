@@ -255,3 +255,129 @@ storyboards:
     docs: docs/multi-tenancy.md
     category: Access Control & Tenant Isolation
     last_recorded: {date: 2026-11-05, version: 0.6.13}
+
+  - id: terraform-deploy-update-migrate
+    title: Deploy the IDP Accelerator with Terraform
+    source: 'CHANGELOG [0.6.15] Added — Experimental Terraform deployment; migrate-from-genai-idp-terraform'
+    audience: Teams that standardise on Terraform or OpenTofu, and current genai-idp-terraform users
+    hook: >-
+      Every release of the IDP Accelerator now ships as a Terraform module as well as
+      CloudFormation templates. In the next few minutes we deploy it from a published
+      module and from a local clone, update it, and plan a move off the
+      genai-idp-terraform repository, all from the command line.
+    persona: Admin
+    duration_target: '4:30'
+    fixtures:
+      - A Terraform deployment made with idp-cli deploy --terraform from the published
+        0.6.15 module, with its state directory (reused, not created for the demo).
+      - A scratch root configuration with one module block pointing at the published
+        zip URL, used for init and plan only — never applied.
+      - An upstream genai-idp-terraform deployment at the pinned tag, seeded with
+        sample documents and users, made with scripts/sdlc/terraform_migration_test.py
+        --stop-after seed --keep and torn down with --teardown-only afterwards.
+      - Terminal footage is real command output, captured with script(1), redacted
+        (account ids, emails) and long output trimmed, replayed in a local file://
+        terminal page in the recorded tab. The web UI is a disposable Admin user
+        from ux_test_session.py setup, torn down after.
+    chapters:
+      - label: One release, two formats
+        say: >-
+          Each release publishes its Terraform module beside its CloudFormation
+          templates, in the same bucket, with a checksum, and a small pointer file
+          that always names the newest one.
+        do:
+          - Terminal - aws s3 ls of the release's terraform/ prefix; curl the
+            idp-terraform-latest.json pointer.
+      - label: The published module in your own configuration
+        say: >-
+          If you already run Terraform, the accelerator is one module block. Point its
+          source at the release zip, give it a name and an admin email, and init and
+          plan as usual. The module is generated from the same templates, so it
+          deploys the same resources with the same settings.
+        do:
+          - Terminal - cat main.tf; terraform init (module download); terraform plan
+            ending in its Plan summary line.
+      - label: Or let idp-cli write it for you
+        say: >-
+          For a quicker start, idp-cli deploy with the terraform flag writes the root
+          configuration, plans, checks the plan and applies it. The parameters are the
+          same CloudFormation parameter names you already use.
+        do:
+          - Terminal - idp-cli deploy --terraform against the existing deployment's
+            directory; show the generated main.tf, terraform.tfvars and
+            idp-cli-parameters.json, and the init, plan, check and apply lines.
+      - label: Build and deploy from a local clone
+        say: >-
+          To deploy your own changes, add from-code and point it at your clone. It
+          builds and publishes the templates and the module to your own bucket, then
+          deploys that module the same way.
+        do:
+          - Terminal - idp-cli deploy --terraform --from-code . ; show the build and
+            publish summary, then the plan and apply.
+      - label: Updates keep your data safe
+        say: >-
+          Updating is the same command with only what changes. idp-cli remembers the
+          earlier parameters, and it refuses any plan that would delete or replace a
+          bucket, table, user pool or key, unless we explicitly allow it.
+        do:
+          - Terminal - idp-cli deploy --terraform --parameters with one setting
+            changed; show the small plan and the apply. If rehearsal finds a safe
+            parameter that triggers it, show the stateful-replace refusal.
+      - label: Still the same IDP
+        say: >-
+          A small read-only CloudFormation label lets idp-cli and the SDK find a
+          Terraform deployment by name, so the commands you already know work
+          unchanged. Here we send a sample document through it.
+        do:
+          - Terminal - describe the label's description and tags; idp-cli process
+            --stack-name with a sample document.
+      - label: The web application you know
+        say: >-
+          And the web application is exactly the one you know. The document we sent is
+          processed and classified, and the deployment info shows the version it runs.
+        do:
+          - Browser - the deployment's web UI, signed in as a disposable Admin; open the
+            processed document; scroll to its sections and to Deployment Info.
+      - label: Moving off genai-idp-terraform
+        say: >-
+          The separate genai-idp-terraform repository is now deprecated. The migrate
+          command moves a deployment onto the built-in module in place. Its plan
+          phase reads the old state and decides, for every resource, whether it is
+          adopted, recreated or kept, so documents, configuration, users and
+          passwords stay.
+        do:
+          - Terminal - idp-cli terraform migrate-from-genai-idp-terraform plan against
+            the seeded upstream deployment; show the verdict table and the files it
+            writes.
+      - label: Every phase is a dry run first
+        say: >-
+          Each later phase is a dry run until we add apply, and the command refuses
+          anything it cannot prove is safe. The migration guide walks through every
+          step.
+        do:
+          - Terminal - migrate-from-genai-idp-terraform --help listing the phases in
+            order.
+    closing: >-
+      Terraform support is experimental, and we want your feedback. If anything does
+      not work, open an issue on GitHub and we will do our best to fix it quickly.
+      From now on, every release ships for Terraform and CloudFormation at the same
+      time. Start with the Terraform Deployment page in the documentation.
+    takeaways:
+      - Every release now ships for CloudFormation and Terraform at the same time
+      - Use the published module in your own Terraform, or idp-cli deploy --terraform
+      - --from-code builds and deploys your local clone the same way
+      - Updates refuse to replace buckets, tables, user pools and keys unless you allow it
+      - Migrate from genai-idp-terraform in place, and tell us what breaks on GitHub
+    not_shown:
+      - A full first apply (about half an hour); the published-module chapter stops at
+        plan, and the idp-cli chapters run against an existing deployment
+      - The migration phases after plan (check-retention through detach) — plan only,
+        by choice; they are listed, not run
+      - Headless and GovCloud module variants, --terraform-assume-role-arn, deleting
+        a Terraform deployment
+      - Feature-platform extensions, which still install as CloudFormation stacks
+    docs: docs/terraform.md
+    category: Command Line Interface (CLI)
+    last_recorded:
+      date: '2026-11-13'
+      version: 0.6.15
