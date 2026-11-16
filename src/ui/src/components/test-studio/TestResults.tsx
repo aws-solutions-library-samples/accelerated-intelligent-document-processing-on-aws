@@ -38,6 +38,7 @@ import MetricInfo, { ACCURACY_METRIC_MAP, SPLIT_METRIC_MAP } from './utils/Metri
 import { accuracyIntervalForField, formatBounds, formatMargin, isLowEvidence } from './accuracyInterval';
 import ClassificationErrorsPanel from './ClassificationErrorsPanel';
 import { asFiniteNumber, costCellLabels, formatCostUsd } from './formatCost';
+import { useFormatters } from '../../i18n/format';
 import {
   parseCostBreakdown,
   calculateAvgCostPerPage,
@@ -88,6 +89,7 @@ const ComprehensiveBreakdown = ({
   averageWeightedScore,
   confidenceMetrics,
 }: ComprehensiveBreakdownProps): React.JSX.Element => {
+  const { locale } = useFormatters();
   const hasGradedPacketMetrics = !!gradedPacketMetrics?.mean && Object.keys(gradedPacketMetrics.mean).length > 0;
 
   if (!costBreakdown && !accuracyBreakdown && !splitClassificationMetrics && !hasGradedPacketMetrics && !fieldMetrics) {
@@ -821,7 +823,7 @@ const ComprehensiveBreakdown = ({
                   // Unpriced / not-chargeable / charged are three distinct states
                   // that must not collapse to two; costCellLabels holds that rule
                   // and its ordering, and is unit-tested in formatCost.test.ts.
-                  const labels = costCellLabels(unitCost, cost);
+                  const labels = costCellLabels(unitCost, cost, locale);
                   contextSubtotal += cost;
 
                   costItems.push({
@@ -867,7 +869,7 @@ const ComprehensiveBreakdown = ({
                     unit: '',
                     value: '',
                     unitCost: '',
-                    estimatedCost: formatCostUsd(contextTotals[item.context]),
+                    estimatedCost: formatCostUsd(contextTotals[item.context], locale),
                     isSubtotal: true,
                     sortOrder: 1, // Subtotal items
                   });
@@ -882,7 +884,7 @@ const ComprehensiveBreakdown = ({
                   unit: '',
                   value: '',
                   unitCost: '',
-                  estimatedCost: formatCostUsd(totalCost),
+                  estimatedCost: formatCostUsd(totalCost, locale),
                   isTotal: true,
                   sortOrder: 2, // Total item
                 });
@@ -970,6 +972,7 @@ interface SelectedRange {
 const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): React.JSX.Element => {
   const { addTestRun } = useAppContext();
   const { versions } = useConfigurationVersions();
+  const { formatUsDollars } = useFormatters();
   const [results, setResults] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1429,12 +1432,14 @@ const TestResults = ({ testRunId, setSelectedTestRunId }: TestResultsProps): Rea
           <Box>
             <Box variant="awsui-key-label">Total Cost</Box>
             <Box fontSize="heading-l">
-              {results.totalCost !== null && results.totalCost !== undefined ? `$${(results.totalCost as number).toFixed(4)}` : 'N/A'}
+              {results.totalCost !== null && results.totalCost !== undefined
+                ? formatUsDollars(results.totalCost as number, { fractionDigits: 4 })
+                : 'N/A'}
             </Box>
           </Box>
           <Box>
             <Box variant="awsui-key-label">Avg Cost/Page</Box>
-            <Box fontSize="heading-l">{avgCostPerPage !== null ? `$${avgCostPerPage.toFixed(4)}` : 'N/A'}</Box>
+            <Box fontSize="heading-l">{avgCostPerPage !== null ? formatUsDollars(avgCostPerPage, { fractionDigits: 4 }) : 'N/A'}</Box>
           </Box>
           <Box>
             <Box variant="awsui-key-label">

@@ -29,6 +29,7 @@ import {
   parseConfidenceMetrics,
 } from '../../graphql/awsjson-parsers';
 import type { CostBreakdown } from '../../graphql/awsjson-types';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -42,17 +43,30 @@ interface ComparisonData {
   error?: string;
 }
 
+/**
+ * One row of the cost breakdown comparison. Each test run's cell holds the display
+ * string under `testRunId`, and the number it was formatted from under
+ * `${testRunId}__cost`, so subtotals and totals add numbers instead of parsing the
+ * display string back (which carries the locale's own digits and symbol).
+ */
 interface CostComparisonRow {
   context: string;
   serviceApi: string;
   unit: string;
   isSubtotal?: boolean;
   isTotal?: boolean;
-  [testRunId: string]: string | boolean | undefined;
+  [testRunId: string]: string | number | boolean | undefined;
 }
+
+/** A run's total cost as a number, or null when the run reports none. */
+const totalCostOf = (testRun: Record<string, unknown>): number | null => {
+  const n = Number(testRun.totalCost);
+  return testRun.totalCost !== null && testRun.totalCost !== undefined && Number.isFinite(n) ? n : null;
+};
 
 const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): React.JSX.Element => {
   const { versions } = useConfigurationVersions();
+  const { formatUsDollars } = useFormatters();
   const [comparisonData, setComparisonData] = useState<ComparisonData | null>(null);
   const [comparing, setComparing] = useState(false);
   const [currentAttempt, setCurrentAttempt] = useState(1);
@@ -60,14 +74,13 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
   const [preferences, setPreferences] = useLocalStorage('test-comparison-preferences', { wrapLines: false });
 
   // Color grading functions
-  const getCostColorGrade = (cost: unknown, allCosts: unknown[]): React.CSSProperties => {
-    if (!cost || cost === 'N/A') return {};
-    const numCost = typeof cost === 'string' ? parseFloat(cost.replace('$', '')) : cost;
-    const validCosts = allCosts.filter((c) => c && c !== 'N/A').map((c) => (typeof c === 'string' ? parseFloat(c.replace('$', '')) : c));
+  const getCostColorGrade = (cost: number | null, allCosts: (number | null)[]): React.CSSProperties => {
+    if (cost === null) return {};
+    const validCosts = allCosts.filter((c): c is number => c !== null);
     if (validCosts.length === 0) return {};
 
-    const sortedCosts = [...validCosts].sort((a, b) => Number(a) - Number(b));
-    const index = sortedCosts.indexOf(numCost);
+    const sortedCosts = [...validCosts].sort((a, b) => a - b);
+    const index = sortedCosts.indexOf(cost);
     const ratio = validCosts.length === 1 ? 0 : index / (validCosts.length - 1);
 
     // Green → Yellow → Red gradient
@@ -1142,7 +1155,9 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                   ...Object.fromEntries(
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => [
                       testRunId,
-                      testRun.totalCost !== null && testRun.totalCost !== undefined ? `$${Number(testRun.totalCost).toFixed(4)}` : 'N/A',
+                      testRun.totalCost !== null && testRun.totalCost !== undefined
+                        ? formatUsDollars(Number(testRun.totalCost), { fractionDigits: 4 })
+                        : 'N/A',
                     ]),
                   ),
                 },
@@ -1151,7 +1166,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                   ...Object.fromEntries(
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => {
                       const avg = calculateAvgCostPerPage(testRun.totalCost as number, testRun.costBreakdown as CostBreakdown);
-                      return [testRunId, avg !== null ? `$${avg.toFixed(4)}` : 'N/A'];
+                      return [testRunId, avg !== null ? formatUsDollars(avg, { fractionDigits: 4 }) : 'N/A'];
                     }),
                   ),
                 },
@@ -1234,8 +1249,8 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                     let style = {};
 
                     if (item.metricKey === 'Total Cost') {
-                      const allCosts = Object.keys(completeTestRuns).map((id) => item[id]);
-                      style = getCostColorGrade(value, allCosts);
+                      // Graded from the runs' numbers, not from the formatted cells.
+                      style = getCostColorGrade(totalCostOf(completeTestRuns[testRunId]), Object.values(completeTestRuns).map(totalCostOf));
                     } else if (item.metricKey === 'Average Weighted Overall Score') {
                       const allScores = Object.keys(completeTestRuns).map((id) => item[id]);
                       style = getScoreColorGrade(value, allScores);
@@ -2018,7 +2033,8 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
 
                   const details = (serviceKey ? services[serviceKey] : {}) as Record<string, unknown>;
                   const estimatedCost = Number(details.estimated_cost) || 0;
-                  row[testRunId] = estimatedCost > 0 ? `$${estimatedCost.toFixed(4)}` : 'N/A';
+                  row[testRunId] = estimatedCost > 0 ? formatUsDollars(estimatedCost, { fractionDigits: 4 }) : 'N/A';
+                  row[`${testRunId}__cost`] = estimatedCost;
                 });
 
                 return row;
@@ -2051,12 +2067,10 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
 
                   Object.keys(completeTestRuns).forEach((testRunId) => {
                     const contextTotal = contextItems.reduce((sum, contextItem) => {
-                      const value = contextItem[testRunId];
-                      if (typeof value !== 'string' || value === 'N/A') return sum;
-                      const numValue = parseFloat(value.replace('$', ''));
-                      return sum + (isNaN(numValue) ? 0 : numValue);
+                      const n = contextItem[`${testRunId}__cost`];
+                      return typeof n === 'number' ? sum + n : sum;
                     }, 0);
-                    subtotalRow[testRunId] = `$${contextTotal.toFixed(4)}`;
+                    subtotalRow[testRunId] = formatUsDollars(contextTotal, { fractionDigits: 4 });
                   });
 
                   finalItems.push(subtotalRow);
@@ -2073,12 +2087,10 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
 
               Object.keys(completeTestRuns).forEach((testRunId) => {
                 const grandTotal = tableItems.reduce((sum, item) => {
-                  const value = item[testRunId];
-                  if (typeof value !== 'string' || value === 'N/A') return sum;
-                  const numValue = parseFloat(value.replace('$', ''));
-                  return sum + (isNaN(numValue) ? 0 : numValue);
+                  const n = item[`${testRunId}__cost`];
+                  return typeof n === 'number' ? sum + n : sum;
                 }, 0);
-                totalRow[testRunId] = `$${grandTotal.toFixed(4)}`;
+                totalRow[testRunId] = formatUsDollars(grandTotal, { fractionDigits: 4 });
               });
 
               finalItems.push(totalRow);
@@ -2128,7 +2140,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                             color: item.isTotal ? '#0073bb' : 'inherit',
                           }}
                         >
-                          {(item[testRunId] as string) || '$0.0000'}
+                          {(item[testRunId] as string) || formatUsDollars(0, { fractionDigits: 4 })}
                         </span>
                       ),
                     })),
