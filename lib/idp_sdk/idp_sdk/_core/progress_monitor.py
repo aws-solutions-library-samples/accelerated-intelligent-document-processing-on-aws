@@ -375,8 +375,15 @@ class ProgressMonitor:
                 doc_status["error"] = result.get("Error", "Aborted by user")
                 doc_status["failed_step"] = result.get("FailedStep", "N/A")
             elif status == "FAILED":
-                doc_status["error"] = result.get("Error", "Unknown error")
-                doc_status["failed_step"] = result.get("FailedStep", "Unknown")
+                # The lookup function returns lowercase `error`/`failed_step`, the
+                # same keys the batch path reads; the capitalised keys are kept as a
+                # fallback for an older deployed lookup function.
+                doc_status["error"] = (
+                    result.get("error") or result.get("Error") or "Unknown error"
+                )
+                doc_status["failed_step"] = (
+                    result.get("failed_step") or result.get("FailedStep") or "Unknown"
+                )
             elif status == "COMPLETED":
                 doc_status["num_sections"] = result.get("NumSections", 0)
 
