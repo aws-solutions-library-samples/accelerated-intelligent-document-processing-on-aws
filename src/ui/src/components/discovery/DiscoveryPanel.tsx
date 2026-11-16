@@ -47,6 +47,7 @@ import { SUPPORTED_DISCOVERY_EXTENSIONS } from '../common/constants';
 import PdfPageSelector from './PdfPageSelector';
 import type { PageRange } from './PdfPageSelector';
 import CreateConfigProfileModal from '../common/CreateConfigProfileModal';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 
@@ -115,6 +116,7 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
   const { versions, loading: versionsLoading, getVersionOptions, fetchVersions } = useConfigurationVersions();
+  const { formatDateTime } = useFormatters();
   const [documentFile, setDocumentFile] = useState<File | null>(null);
   const [groundTruthFile, setGroundTruthFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -721,8 +723,11 @@ const DiscoveryPanel = ({ discoveryType = 'classes' }: DiscoveryPanelProps = {})
       cell: (item: DiscoveryJob) => {
         if (!item.createdAt) return '—';
         try {
-          return new Date(item.createdAt).toLocaleString(undefined, {
-            month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+          return formatDateTime(new Date(item.createdAt), {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
           });
         } catch {
           return item.createdAt;

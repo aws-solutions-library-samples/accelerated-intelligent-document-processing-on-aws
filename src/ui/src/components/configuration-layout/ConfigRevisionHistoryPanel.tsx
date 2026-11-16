@@ -22,6 +22,8 @@ import useUserRole from '../../hooks/use-user-role';
 import ConfigurationComparison from './ConfigurationComparison';
 import ResizableModal from '../common/ResizableModal';
 import UnrecordedChangesAlert from '../common/UnrecordedChangesAlert';
+import { formatDateTime, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 interface ConfigRevisionHistoryPanelProps {
   /** Configuration Profile whose history is shown. */
@@ -47,7 +49,7 @@ const formatSize = (bytes?: number | null): string => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-const formatWhen = (iso?: string | null): string => (iso ? new Date(iso).toLocaleString() : '-');
+const formatWhen = (iso: string | null | undefined, locale: Locale): string => (iso ? formatDateTime(new Date(iso), locale) : '-');
 
 /**
  * Revision history for one Configuration Profile.
@@ -63,6 +65,7 @@ const ConfigRevisionHistoryPanel = ({
   onRestored,
 }: ConfigRevisionHistoryPanelProps): React.JSX.Element => {
   const { isAdmin, canWrite } = useUserRole();
+  const { locale } = useFormatters();
   const {
     revisions,
     profileMatchesPublished,
@@ -238,7 +241,7 @@ const ConfigRevisionHistoryPanel = ({
                 </SpaceBetween>
               ),
             },
-            { id: 'createdAt', header: 'Saved', cell: (item: ConfigProfileRevision) => formatWhen(item.createdAt) },
+            { id: 'createdAt', header: 'Saved', cell: (item: ConfigProfileRevision) => formatWhen(item.createdAt, locale) },
             { id: 'createdBy', header: 'By', cell: (item: ConfigProfileRevision) => item.createdBy || '-' },
             { id: 'notes', header: 'Notes', cell: (item: ConfigProfileRevision) => item.notes || '-' },
             { id: 'size', header: 'Size', cell: (item: ConfigProfileRevision) => formatSize(item.sizeBytes) },

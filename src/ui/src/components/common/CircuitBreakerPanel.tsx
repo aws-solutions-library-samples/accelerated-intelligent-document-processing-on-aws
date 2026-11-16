@@ -18,6 +18,8 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 
 import useUserRole from '../../hooks/use-user-role';
 import type { CircuitBreakerStatus } from '../../graphql/generated/operation-types';
+import { formatDateTime, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 const logger = new ConsoleLogger('CircuitBreakerPanel');
 
@@ -56,10 +58,10 @@ const ACTIONS: Record<ActionKind, ActionConfig> = {
   },
 };
 
-const formatDateTime = (iso?: string | null): string => {
+const formatWhen = (iso: string | null | undefined, locale: Locale): string => {
   if (!iso) return '—';
   try {
-    return new Date(iso).toLocaleString();
+    return formatDateTime(new Date(iso), locale);
   } catch {
     return iso;
   }
@@ -82,6 +84,7 @@ interface CircuitBreakerPanelProps {
 
 const CircuitBreakerPanel = ({ visible, status, onDismiss, onPause, onResume, onProbe }: CircuitBreakerPanelProps): React.JSX.Element => {
   const { isAdmin } = useUserRole();
+  const { locale } = useFormatters();
   const [activeAction, setActiveAction] = useState<ActionKind | null>(null);
   const [reason, setReason] = useState<string>('');
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -153,8 +156,8 @@ const CircuitBreakerPanel = ({ visible, status, onDismiss, onPause, onResume, on
               label: 'State',
               value: display ? <StatusIndicator type={display.type}>{display.label}</StatusIndicator> : currentState,
             },
-            { label: 'Opened at', value: formatDateTime(status.openedAt) },
-            { label: 'Last checked', value: formatDateTime(status.lastCheckedAt) },
+            { label: 'Opened at', value: formatWhen(status.openedAt, locale) },
+            { label: 'Last checked', value: formatWhen(status.lastCheckedAt, locale) },
             { label: 'Failure count', value: String(status.failureCount ?? 0) },
             { label: 'Recovery attempts', value: String(status.recoveryAttempts ?? 0) },
             { label: 'Last error', value: status.lastError || '—' },

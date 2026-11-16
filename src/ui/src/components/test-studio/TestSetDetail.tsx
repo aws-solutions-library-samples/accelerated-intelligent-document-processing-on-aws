@@ -64,6 +64,7 @@ import PublishVersionModal, { type PublishVersionInput } from './PublishVersionM
 import RemoveDocumentsModal from './RemoveDocumentsModal';
 import type { TestSetDocumentSectionRef } from '../edit-screen/test-set-editor-slots';
 import { createLatestResponseGuard } from './latestResponseOnly';
+import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
 const logger = new ConsoleLogger('TestSetDetail');
@@ -397,6 +398,7 @@ const TestSetDetail = (): React.JSX.Element => {
   const navigate = useNavigate();
   const { navigationOpen, setNavigationOpen } = useAppContext();
   const { settings } = useSettingsContext();
+  const { formatDateTime } = useFormatters();
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;
 
   const [documents, setDocuments] = useState<TestSetDocumentItem[]>([]);
@@ -1266,7 +1268,7 @@ const TestSetDetail = (): React.JSX.Element => {
                 {
                   id: 'lastModified',
                   header: 'Last modified',
-                  cell: (item: TestSetDocumentItem) => (item.lastModified ? new Date(item.lastModified).toLocaleString() : '-'),
+                  cell: (item: TestSetDocumentItem) => (item.lastModified ? formatDateTime(new Date(item.lastModified)) : '-'),
                 },
                 {
                   id: 'sections',
