@@ -351,7 +351,7 @@ const searchText = (j: BulkReviewJob): string =>
 const JobsPage = (): React.JSX.Element => {
   // 1. Hooks
   const intl = useIntl();
-  const { formatNumber } = useFormatters();
+  const { formatNumber, locale } = useFormatters();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin } = useUserRole();
   const [jobs, setJobs] = useState<BulkReviewJob[] | null>(null);
@@ -454,13 +454,13 @@ const JobsPage = (): React.JSX.Element => {
     {
       id: 'created',
       header: intl.formatMessage(messages.columnCreated),
-      cell: (j) => formatDateTime(j.createdAt),
+      cell: (j) => formatDateTime(j.createdAt, locale),
       sortingField: 'createdAt',
     },
     {
       id: 'finished',
       header: intl.formatMessage(messages.columnFinished),
-      cell: (j) => (j.finishedAt ? formatDateTime(j.finishedAt) : '-'),
+      cell: (j) => (j.finishedAt ? formatDateTime(j.finishedAt, locale) : '-'),
       sortingField: 'finishedAt',
     },
     {
