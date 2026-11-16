@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuthenticator } from '@aws-amplify/ui-react';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 import { DOCUMENTS_PATH } from '../routes/constants';
@@ -135,7 +136,7 @@ const i18nStrings: AnnotationContextProps.I18nStrings = {
   labelDismissAnnotation: DISMISS_LABEL,
 };
 
-export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
+const GuidedTourScope = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
   const quickStartAvailable = useQuickStartAvailable();
   const navigate = useNavigate();
@@ -193,6 +194,17 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
       </AnnotationContext>
     </GuidedTourContext.Provider>
   );
+};
+
+/**
+ * The tour, scoped to the signed-in user. It sits above the routes, so it mounts
+ * before sign-in, and the role check behind Quick Start reads the session once per
+ * mount. Keying the scope on the user remounts it at sign-in and sign-out, so an
+ * Admin who signs in through the form gets the tour's Quick Start step.
+ */
+export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
+  const { user } = useAuthenticator((context) => [context.user]);
+  return <GuidedTourScope key={user?.userId ?? 'signed-out'}>{children}</GuidedTourScope>;
 };
 
 export const useGuidedTour = (): GuidedTourContextValue => {

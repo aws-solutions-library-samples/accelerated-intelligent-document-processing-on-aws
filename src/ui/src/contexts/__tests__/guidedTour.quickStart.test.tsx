@@ -13,6 +13,7 @@ const { annotation, role } = vi.hoisted(() => ({
   role: { isAdmin: true },
 }));
 vi.mock('../../hooks/use-user-role', () => ({ default: () => role }));
+vi.mock('@aws-amplify/ui-react', () => ({ useAuthenticator: () => ({ user: { userId: 'u1' } }) }));
 vi.mock('@cloudscape-design/components/annotation-context', () => ({
   default: ({ onFinish, children }: { onFinish: () => void; children: React.ReactNode }) => {
     annotation.onFinish = onFinish;

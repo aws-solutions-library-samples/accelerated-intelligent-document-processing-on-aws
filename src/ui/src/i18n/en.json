@@ -1391,6 +1391,14 @@
     "defaultMessage": "Loading test sets",
     "description": "Shown in the test set field while the list of test sets loads."
   },
+  "testStudio.createTestSetWizard.noConfiguration": {
+    "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents.",
+    "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is not offered Quick Start. <link> wraps a link to the Discovery page."
+  },
+  "testStudio.createTestSetWizard.noConfigurationWithQuickStart": {
+    "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or use Quick Start from the welcome page to describe them in your own words.",
+    "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page."
+  },
   "testStudio.itemEdit.regroupPending": {
     "defaultMessage": "Loading the saved grouping…",
     "description": "Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections."
