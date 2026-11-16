@@ -90,7 +90,8 @@ def _caller_in_groups(event, allowed):
 
 
 def _enforce_agent_chat_groups(event):
-    """Reject a caller who is not in a group permitted to use Agent Chat.
+    """Reject a caller who is not in a group permitted to use Agent Chat, and a
+    Quick Start turn (``method`` ``quick_start``) from anyone but an Admin.
 
     The resolver in front of the dispatcher path already applies this check; this
     is the same gate applied where the work actually happens, so an invocation

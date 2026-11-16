@@ -253,7 +253,8 @@ def _claim_session_or_403(session_id: str, claims: dict) -> None:
 def _enforce_groups_or_403(identity: dict, method: str) -> None:
     """Apply the Agent Chat group gate BEFORE the SSE response is committed.
 
-    Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
+    ``method`` is the requested one, so the processor's rule for a Quick Start turn
+    applies here too. Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
     one policy and one predicate, and translates its ``PermissionError`` into a
     real HTTP 403 — which is only possible here, ahead of
     ``StreamingResponse``. Once the stream is open the status is fixed at 200 and

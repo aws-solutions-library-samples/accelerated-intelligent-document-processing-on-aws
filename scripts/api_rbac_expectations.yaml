@@ -1301,6 +1301,9 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/agent_request_handler/index.py
     args: { query: "hi", agentIds: ["x"] }
+    note: refuses Quick-Start-Agent in agentIds for every caller, and the
+      analytics processor refuses it again. Quick Start runs only from its own
+      panel, which is Admin only.
   getAgentJobStatus:
     groups: [Admin, Author, Viewer]
     kind: read
@@ -1335,7 +1338,8 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/list_available_agents/index.py
     args: {}
     note: server-side _caller_in_groups check matches the schema directive
-      (Reviewer excluded). Formerly GAP-03.
+      (Reviewer excluded). Formerly GAP-03. Quick-Start-Agent is left out of
+      the list for every caller.
   listChatSessions:
     groups: ANY
     kind: read

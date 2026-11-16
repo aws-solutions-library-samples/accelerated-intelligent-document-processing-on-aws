@@ -7,7 +7,7 @@ SPDX-License-Identifier: MIT-0
 
 ### Changed
 
-- **Quick Start is for Admins.** Quick Start creates and activates a configuration profile, which only an Admin may create, so only Admins see its side navigation button, Welcome page entry, guided-tour step and chat panel, and both chat routes refuse a Quick Start message from any other group. See [Quick Start](docs/quick-start.md#web-ui).
+- **Quick Start is for Admins.** Quick Start creates and activates a configuration profile, which only an Admin may create, so only Admins see its side navigation button, Welcome page entry, guided-tour step and chat panel, both chat routes refuse a Quick Start message from any other group, and Document Analytics no longer lists or runs Quick Start's agent. See [Quick Start](docs/quick-start.md#web-ui).
 
 ### Fixed
 

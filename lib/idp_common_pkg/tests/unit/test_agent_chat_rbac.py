@@ -103,6 +103,105 @@ def test_list_agents_allows_permitted_groups(list_agents_index, group):
     assert result == [{"name": "doc-agent"}]
 
 
+# --- Quick Start's agent is reached only from its own panel -------------------
+# Quick Start runs from its own panel, offered to Admins. As a Document Analytics
+# agent it would run without the profile writes it exists for, and its read tools
+# would return every profile's schemas whatever the caller's configuration scope.
+
+_QUICK_START = "Quick-Start-Agent"
+
+
+@pytest.fixture
+def agent_request_index(monkeypatch):
+    monkeypatch.setenv("AGENT_TABLE", "agents")
+    monkeypatch.setenv("AGENT_PROCESSOR_FUNCTION", "proc")
+    with patch("boto3.resource") as resource, patch("boto3.client") as client:
+        module = _load("agent_request_handler_qs", "agent_request_handler/index.py")
+        yield module, resource.return_value.Table.return_value, client.return_value
+
+
+@pytest.fixture
+def analytics_processor():
+    stubs = {}
+    for name, attrs in {
+        "idp_common.agents.analytics": ("get_analytics_config", "parse_agent_response"),
+        "idp_common.agents.common.config": ("configure_logging",),
+        "idp_common.agents.factory": ("agent_factory",),
+    }.items():
+        stub = types.ModuleType(name)
+        for attr in attrs:
+            setattr(stub, attr, MagicMock())
+        stubs[name] = stub
+    with (
+        patch.dict(sys.modules, stubs),
+        patch("boto3.resource"),
+        patch("boto3.Session"),
+    ):
+        yield _load_from_repo(
+            "analytics_agent_processor_qs", "src/lambda/agent_processor/index.py"
+        )
+
+
+def _agent_query(group, agent_ids):
+    return {
+        "identity": {
+            "claims": {"cognito:groups": [group], "email": "u@example.com"},
+            "username": "u1",
+            "sub": "sub-u",
+        },
+        "arguments": {"query": "draft a schema for paystubs", "agentIds": agent_ids},
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Admin", "Author", "Viewer"])
+def test_list_agents_never_offers_quick_starts_agent(list_agents_index, group):
+    list_agents_index.agent_factory.list_available_agents.return_value = [
+        {"agent_id": "Analytics-Agent"},
+        {"agent_id": _QUICK_START},
+    ]
+    event = {"identity": {"claims": {"cognito:groups": [group]}}, "arguments": {}}
+    assert list_agents_index.handler(event, None) == [{"agent_id": "Analytics-Agent"}]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("group", ["Admin", "Author", "Viewer"])
+def test_submit_agent_query_refuses_quick_starts_agent(agent_request_index, group):
+    module, table, lam = agent_request_index
+    for agent_ids in ([_QUICK_START], ["Analytics-Agent", _QUICK_START]):
+        with pytest.raises(PermissionError, match="not as an analytics agent"):
+            module.handler(_agent_query(group, agent_ids), None)
+    table.put_item.assert_not_called()
+    lam.invoke.assert_not_called()
+
+
+@pytest.mark.unit
+def test_submit_agent_query_still_runs_the_analytics_agents(agent_request_index):
+    module, table, _ = agent_request_index
+    module.handler(_agent_query("Viewer", ["Analytics-Agent"]), None)
+    assert table.put_item.called
+
+
+@pytest.mark.unit
+def test_the_analytics_processor_refuses_quick_starts_agent(analytics_processor):
+    with pytest.raises(ValueError, match="not as an analytics agent"):
+        analytics_processor.process_agent_query("draft a schema", [_QUICK_START])
+    assert not analytics_processor.agent_factory.create_agent.called
+    assert not analytics_processor.agent_factory.create_orchestrator_agent.called
+
+
+@pytest.mark.unit
+def test_every_route_names_quick_starts_agent_by_its_registered_id(
+    list_agents_index, agent_request_index, analytics_processor
+):
+    from idp_common.chat_session_agents import QUICK_START_AGENT_ID
+
+    assert QUICK_START_AGENT_ID == _QUICK_START
+    assert list_agents_index._QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+    assert agent_request_index[0]._QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+    assert analytics_processor.QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+
+
 @pytest.mark.unit
 def test_list_agents_allows_direct_lambda_invocation(list_agents_index):
     """No 'identity' (IAM/backend invoke) bypasses the Cognito group check."""

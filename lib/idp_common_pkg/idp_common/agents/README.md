@@ -483,7 +483,9 @@ For that method the processor runs `Quick-Start-Agent` directly through
 `agent_factory.create_conversational_agent`, with the same DynamoDB memory keyed by
 session id, and records the session under the `quick_start` surface so its history
 lists apart from Agent Chat's. Every other method removes `Quick-Start-Agent` from
-the orchestrator's agent list. Its tools (`quick_start/tools/bootstrap_tools.py`)
+the orchestrator's agent list, `listAvailableAgents` leaves it out, and Document
+Analytics' `submitAgentQuery` and its processor refuse it, so the panel is its only
+entry point. Its tools (`quick_start/tools/bootstrap_tools.py`)
 write the Configuration table and, when the Test Set Generator extension is
 installed, enqueue generation on that extension's queue. Because it creates a
 configuration profile, which only an Admin may create, a `quick_start` turn is
