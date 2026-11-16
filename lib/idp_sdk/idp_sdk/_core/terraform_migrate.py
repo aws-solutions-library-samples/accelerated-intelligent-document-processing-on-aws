@@ -46,6 +46,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 
 from idp_common.config.constants import PRE_HISTORY_NOTES
 from idp_sdk.exceptions import IDPConfigurationError
+from idp_sdk.models.base import AWAITING_REVIEW_DOCUMENT_STATES
 
 MODULE_CALL = "idp"
 MODULE_PREFIX = f"module.{MODULE_CALL}."
@@ -1816,7 +1817,9 @@ TERMINAL_STATUSES = frozenset(
         "MALWARE_SCAN_FAILED",
     }
 )
-REVIEW_STATUSES = frozenset({"HITL_IN_PROGRESS"})
+#: Taken from the SDK's progress buckets, so the migration's idea of "waiting
+#: for a reviewer" and the batch monitor's cannot drift apart.
+REVIEW_STATUSES = frozenset(state.value for state in AWAITING_REVIEW_DOCUMENT_STATES)
 
 
 def upload_rule_states(plan: MigrationPlan, events) -> List[Dict[str, str]]:
@@ -1870,8 +1873,9 @@ class DocumentScan:
             )
         if self.in_review:
             out.append(
-                f"{len(self.in_review)} document(s) are waiting for human review "
-                "(HITL_IN_PROGRESS). Whether the new deployment can complete a "
+                f"{len(self.in_review)} document(s) are waiting for human review ("
+                + ", ".join(sorted({d["status"] for d in self.in_review}))
+                + "). Whether the new deployment can complete a "
                 "review the old one started has not been verified; finish or reject "
                 "the reviews in the old web UI first, or name each document with "
                 "--ignore-document"

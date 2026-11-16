@@ -220,6 +220,7 @@ class FakeBatch:
             in_progress=0,
             failed=0,
             queued=0,
+            awaiting_review=0,
             all_complete=True,
         )
 
@@ -495,3 +496,60 @@ def test_a_document_derived_result_leaves_the_handler_with_its_envelope(handler)
     body = json.loads(out["body"])
     assert body["provenance"]["documentDerived"] == ["documents"]
     assert body["documents"] == [{"fields": {}}]
+
+
+def test_scoped_status_counts_documents_awaiting_review_as_settled(
+    sdk, lookup, monkeypatch
+):
+    """A held document settles a scoped caller's batch, as it does an unscoped one.
+
+    The scoped branch restates the SDK's `all_complete` over the documents in
+    scope, so it has to know the awaiting-review bucket too; reading only
+    completed + failed left an agent polling a batch whose one in-scope document
+    sat in review, with no bound (#2022).
+    """
+
+    def get_status(batch_id):
+        def one(document_id, status, bucket):
+            return SimpleNamespace(
+                document_id=document_id,
+                status=SimpleNamespace(value=status),
+                duration_seconds=1,
+                review_status=None,
+                bucket=SimpleNamespace(value=bucket),
+            )
+
+        docs = [
+            one("a.pdf", "COMPLETED", "completed"),
+            one("b.pdf", "HITL_IN_PROGRESS", "awaiting_review"),
+            one("g.pdf", "RUNNING", "running"),
+        ]
+        return SimpleNamespace(
+            documents=docs,
+            total=3,
+            completed=1,
+            in_progress=1,
+            failed=0,
+            queued=0,
+            awaiting_review=1,
+            all_complete=False,
+        )
+
+    monkeypatch.setattr(sdk, "get_status", get_status)
+    tool = tool_module("batch_status").BatchStatusTool()
+
+    out = tool.execute(batch_id="x", caller=SCOPED)
+
+    # g.pdf, the running one, is out of scope; the in-scope pair has settled.
+    assert out["status"]["total"] == 2
+    assert out["status"]["awaiting_review"] == 1
+    assert out["all_complete"] is True
+    # A person is the blocker, and the response says so in words.
+    assert "1 document(s) awaiting human review" in out["message"]
+
+
+def test_status_without_documents_in_review_carries_no_review_message(sdk, lookup):
+    tool = tool_module("batch_status").BatchStatusTool()
+    out = tool.execute(batch_id="x", caller=caller())
+    assert out["status"]["awaiting_review"] == 0
+    assert "message" not in out

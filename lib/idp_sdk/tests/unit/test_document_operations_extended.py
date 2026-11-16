@@ -46,6 +46,7 @@ from idp_sdk.exceptions import (
     IDPResourceNotFoundError,
 )
 from idp_sdk.models import (
+    DocumentBucket,
     DocumentDownloadResult,
     DocumentMetadata,
     DocumentReprocessResult,
@@ -206,7 +207,13 @@ class TestProcess:
 #: category key present, timings as empty strings when the document has none,
 #: ``duration`` a float in seconds, and no page or section counts at all.
 def _status_summary(**categories):
-    summary = {"completed": [], "running": [], "queued": [], "failed": []}
+    summary = {
+        "completed": [],
+        "running": [],
+        "queued": [],
+        "failed": [],
+        "awaiting_review": [],
+    }
     summary.update(categories)
     summary["total"] = sum(len(v) for v in summary.values() if isinstance(v, list))
     summary["all_complete"] = not (summary["running"] or summary["queued"])
@@ -240,6 +247,36 @@ def _patch_monitor(monkeypatch, status_summary):
 
 
 class TestGetStatus:
+    def test_a_document_held_for_review_is_returned_not_reported_missing(
+        self, aws_credentials, monkeypatch
+    ):
+        """A document in a review queue exists; it must not read as not found.
+
+        The lookup walked a hand-typed list of four buckets, so once the monitor
+        put `HITL_IN_PROGRESS` in its own bucket the document matched nothing and
+        `get_status` raised `IDPResourceNotFoundError` (#2022).
+        """
+        _patch_monitor(
+            monkeypatch,
+            _status_summary(
+                awaiting_review=[
+                    {
+                        "document_id": "batch-1/held.pdf",
+                        "status": "HITL_IN_PROGRESS",
+                        "start_time": "",
+                        "end_time": "",
+                        "duration": 30.0,
+                    }
+                ]
+            ),
+        )
+
+        client = IDPClient(stack_name=STACK_NAME, region="us-east-1")
+        status = client.document.get_status("batch-1/held.pdf")
+
+        assert status.status == "HITL_IN_PROGRESS"
+        assert status.bucket is DocumentBucket.AWAITING_REVIEW
+
     def test_a_completed_document_maps_every_field(self, aws_credentials, monkeypatch):
         calls = _patch_monitor(
             monkeypatch,
