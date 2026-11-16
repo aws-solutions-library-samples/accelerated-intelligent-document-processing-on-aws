@@ -105,6 +105,8 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
     return { backgroundColor: `rgb(${r}, ${g}, ${b})`, color: textColor };
   };
 
+  // Grades by parsing the rendered cell, so the cells it reads (Average Weighted Overall Score and
+  // the accuracy segment of the field-level string) stay `toFixed`; give it numbers before localizing them.
   const getScoreColorGrade = (score: unknown, allScores: unknown[]): React.CSSProperties => {
     if (!score || score === 'N/A') return {};
     const numScore = typeof score === 'string' ? parseFloat(score) : score;
@@ -589,7 +591,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
 
           const details = (serviceKey ? services[serviceKey] : {}) as Record<string, unknown>;
           const value = Number(details.value) || 0;
-          row.push(value > 0 ? value.toLocaleString() : 'N/A');
+          row.push(value > 0 ? String(value) : 'N/A');
         });
 
         usageRows.push(row);
@@ -1181,7 +1183,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => [
                       testRunId,
                       testRun.overallAccuracy !== null && testRun.overallAccuracy !== undefined
-                        ? Number(testRun.overallAccuracy).toFixed(3)
+                        ? formatFixed(Number(testRun.overallAccuracy), 3)
                         : 'N/A',
                     ]),
                   ),
@@ -1218,7 +1220,7 @@ const TestComparison = ({ preSelectedTestRunIds = [] }: TestComparisonProps): Re
                     Object.entries(completeTestRuns).map(([testRunId, testRun]) => [
                       testRunId,
                       testRun.averageConfidence !== null && testRun.averageConfidence !== undefined
-                        ? `${(Number(testRun.averageConfidence) * 100).toFixed(1)}%`
+                        ? formatPercent(Number(testRun.averageConfidence), { fractionDigits: 1 })
                         : 'N/A',
                     ]),
                   ),

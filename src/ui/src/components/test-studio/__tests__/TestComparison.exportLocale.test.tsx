@@ -8,7 +8,8 @@
  * a US-dollar amount in that locale, with the decimal comma and a (no-break) space before the
  * currency. The CSV is read by other software, a spreadsheet or a script that parses each cell
  * back, so its cells keep `$` and the `.` decimal in every locale: `"$0.5000"` round-trips,
- * `0,5000 US$` would not.
+ * `0,5000 US$` would not; and a token count is written as plain digits, `"1234567"`, never
+ * grouped.
  */
 
 import { screen, waitFor, within } from '@testing-library/react';
@@ -48,7 +49,13 @@ const renderComparison = async () => {
         configs: [],
         metrics: JSON.stringify({
           'run-a': run({ filesCount: 0, completedFiles: 0, failedFiles: 0 }),
-          'run-b': run({ filesCount: 4, completedFiles: 3, failedFiles: 1 }),
+          'run-b': run({
+            filesCount: 4,
+            completedFiles: 3,
+            failedFiles: 1,
+            // One usage line: `value` is a token count the CSV must write as plain digits.
+            costBreakdown: { ctx: { 'bedrock/claude_inputTokens': { value: 1234567, estimated_cost: 1.23 } } },
+          }),
           'run-c': run({}),
         }),
       },
@@ -103,5 +110,9 @@ describe('TestComparison costs under a locale', () => {
     const lines = (await blobs[0].text()).split('\n');
     const row = (label: string) => lines.find((l) => l.startsWith(`"${label}",`));
     expect(row('Total Cost')).toBe('"Total Cost","$0.5000","$0.5000","$0.5000"');
+
+    // The usage section follows the cost section, whose own "ctx" line reads "$1.2300".
+    const usage = lines.slice(lines.indexOf('"=== USAGE BREAKDOWN ==="'));
+    expect(usage.find((l) => l.startsWith('"ctx",'))).toBe('"ctx","bedrock/claude","inputTokens","N/A","1234567","N/A"');
   });
 });

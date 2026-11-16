@@ -17,10 +17,13 @@
  * formatting (`toFixed`, `String`, `JSON.stringify`) and must not go through these helpers:
  * `1 234,50` round-trips through `parseFloat` as `1`.
  *
- * Every displayed date, time, number, percentage and amount in the UI goes through these
- * helpers or through `useFormatters()`. A `toFixed` or `toLocaleString` that remains in a
- * component is there on purpose: its value is exported, parsed back, compared as text, logged
- * or fed to a chart.
+ * Every displayed date, time and amount in the UI goes through these helpers or through
+ * `useFormatters()`, and so does nearly every number. What remains on `toFixed` or
+ * `toLocaleString` is either technical (exported, parsed back, compared as text, logged or fed
+ * to a chart) or one of the exceptions named here: the test-run comparison's colour-graded
+ * cells and its field-metrics string, which are parsed back; the sentence builders in
+ * `promptCacheModel.ts` and `review-api.ts`, converted with their screens; and the capacity
+ * planner's quota strings, a follow-up.
  */
 import { useMemo } from 'react';
 import { DEFAULT_LOCALE, type Locale } from './locales';

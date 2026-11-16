@@ -152,10 +152,13 @@ that takes a `locale` prop directly.
   positions with `\s` and never name a codepoint. jsdom's `Intl` follows the process locale, so every
   formatting test passes an explicit locale rather than relying on the machine's default.
 
-Every displayed date, time, number, percentage and amount goes through the helpers. The
-`toFixed` and `toLocaleString` calls that remain in components are exports, parse-backs, text
-comparisons, debug timings and chart data, each locale-neutral on purpose; the comparison
-screen's CSV test pins one of them beside its localized cell.
+Every displayed date, time and amount goes through the helpers, and so does nearly every
+number. What remains on `toFixed` or `toLocaleString` is either technical (exports,
+parse-backs, text comparisons, debug timings, chart data) or one of the exceptions named here:
+the test-run comparison's colour-graded cells and its field-metrics string, which are parsed
+back; the sentence builders in `promptCacheModel.ts` and `review-api.ts`, converted with their
+screens; and the capacity planner's quota strings, a follow-up. The comparison screen's CSV test
+pins an export beside its localized cell.
 
 ## Catalogs and the build
 
@@ -411,9 +414,12 @@ Admin, configuration and Test Studio screens (the configuration editor, includin
 is a committed follow-up right after `fr-CA` ships; the rest is optional later); Cognito
 invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
-headers and generated report headings; extension UIs built before the Feature Platform passes
-the locale, and feature `displayName`s; backend error texts until they carry stable codes; and
-document data, always. The remaining PRs of the series (formatting call sites, the screens area
-by area, the Feature Platform locale, review tooling, enabling `fr-CA`, Cognito persistence, the
-configuration editor, error codes, agent-convention docs) are listed in
+headers and generated report headings; the relative-time literal "just now", the unit suffixes
+on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
+built in template strings (`${progressPct}%`) and the stored ISO timestamps the Documents list
+shows as submitted and completed times, until their screens convert; extension UIs built
+before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
+until they carry stable codes; and document data, always. The remaining PRs of the series (the
+screens area by area, the Feature Platform locale, review tooling, enabling `fr-CA`, Cognito
+persistence, the configuration editor, error codes, agent-convention docs) are listed in
 [issue #1770](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
