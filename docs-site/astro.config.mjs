@@ -32,6 +32,7 @@ export default defineConfig({
           label: "Overview",
           items: [
             { label: "Welcome", slug: "index" },
+            { label: "IDP in Action", slug: "idp-in-action" },
             {
               label: "Blogs, Customer Stories & Research",
               slug: "references",
