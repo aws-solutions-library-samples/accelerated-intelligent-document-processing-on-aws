@@ -1,6 +1,6 @@
 {
   "ablation": "EX-01",
-  "verdict": "When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single-pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while agentic extraction got 0.32 to 0.90. On synthetic bank statements, agentic extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single-pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single-pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Agentic extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished.",
+  "verdict": "When an invoice has more than about 100 line items. With Claude Sonnet 5 on 48 RealKIE invoices, single-pass scored 0.26 on the invoices with 101 to 300 line items and 0.00 on those with more than 300; agentic extraction scored 0.47 and 0.71, and cost 1.2× and 6.3× as much. At 100 line items or fewer single-pass scored higher (0.65 against 0.56 at 1 to 20 line items), and agentic cost 1.1× to 2.8× as much. Over all 48 invoices agentic cost 1.6× as much. With Claude Sonnet 5.5, on 20 invoices of up to 100 line items, both modes scored 0.62 and agentic cost 0.8× as much. Agentic extraction did not finish the invoice with 1,490 line items within Test Studio's time limit.",
   "runs": {
     "realkie": {
       "Single-pass (Simple, default)": [
@@ -13,12 +13,12 @@
         "RealKIE-FCC-Verified-20261113-173642",
         "RealKIE-FCC-Verified-20261113-173643"
       ],
-      "Single-pass \u00b7 Claude Sonnet 5.5": [
+      "Single-pass · Claude Sonnet 5.5": [
         "RealKIE-FCC-Verified-20261116-145655",
         "RealKIE-FCC-Verified-20261116-145659",
         "RealKIE-FCC-Verified-20261116-145657"
       ],
-      "Agentic \u00b7 Claude Sonnet 5.5": [
+      "Agentic · Claude Sonnet 5.5": [
         "RealKIE-FCC-Verified-20261116-145656",
         "RealKIE-FCC-Verified-20261116-145658",
         "RealKIE-FCC-Verified-20261116-145707"
@@ -59,7 +59,7 @@
         "realkie-fcc-long-20261113-202804",
         "realkie-fcc-long-20261113-202644"
       ],
-      "Single-pass \u00b7 Claude Sonnet 5.5": [
+      "Single-pass · Claude Sonnet 5.5": [
         "realkie-fcc-long-20261116-145655",
         "realkie-fcc-long-20261116-145656",
         "realkie-fcc-long-20261116-145654"
@@ -101,7 +101,8 @@
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "max_failed": {
-    "realkie_long": 1
+    "realkie_long": 1,
+    "realkie_all": 3
   },
   "cache_isolated": [
     "synth-statements-400-20261113-231559",

@@ -1083,10 +1083,14 @@ def draw_scatter(
 
 #: Categorical slots for a chart whose series are the values of one setting: a color
 #: and a marker shape each, so a reader who cannot tell the colors apart still can
-#: tell the series apart. Three is the most this chart is used for. The rules sit
-#: beside STYLE rather than in it, so a chart that draws no series carries none of
-#: them and its image does not change when they do.
+#: tell the series apart. Three colors and three shapes; more series than that are
+#: drawn as a composite (a color per one part of the value, a shape and line style
+#: per the other), never as cycled colors. The rules sit beside STYLE rather than in
+#: it, so a chart that draws no series carries none of them and its image does not
+#: change when they do.
 SERIES_SHAPES = ("circle", "square", "diamond")
+#: One (color, shape) index pair per series; shape 2 and 3 also dash the trend line.
+Slots = list[tuple[int, int]]
 SERIES_STYLE = """
   .viz .s1 { fill: var(--fam-nova); }
   .viz .s2 { fill: var(--fam-claude); }
@@ -1096,6 +1100,9 @@ SERIES_STYLE = """
   .viz .trend.t1 { stroke: var(--fam-nova); }
   .viz .trend.t2 { stroke: var(--fam-claude); }
   .viz .trend.t3 { stroke: var(--fam-other); }
+  .viz .trend.d2 { stroke-dasharray: 7 3; }
+  .viz .trend.d3 { stroke-dasharray: 2 3; }
+  .viz .swatch { stroke-width: 2; }
 """
 BY_PLOT_H = 240
 BY_LEGEND_H = 20
@@ -1138,20 +1145,35 @@ def _running_median(
     return out
 
 
+def _slots(count: int, slots: Slots | None) -> Slots:
+    """The (color, shape) of each series: the given slots, or one slot each in turn."""
+    if slots and len(slots) == count:
+        return [(c % 3, sh % 3) for c, sh in slots]
+    return [(i % 3, i % 3) for i in range(count)]
+
+
 def _legend(
-    series: list[str], y: float, left: float, width: float
+    series: list[str], y: float, left: float, width: float, slots: Slots | None = None
 ) -> tuple[str, float]:
-    """A swatch and a label per series, wrapped onto as many lines as it takes."""
+    """A swatch and a label per series, wrapped onto as many lines as it takes.
+
+    The swatch is the series' marker on a short stretch of its trend line, so a line
+    style that tells two series apart is in the key too.
+    """
     out: list[str] = []
     x, line = left, 0
-    for i, value in enumerate(series):
-        w = 16 + len(value) * CHAR_W + 18
+    for value, (c, sh) in zip(series, _slots(len(series), slots), strict=True):
+        w = 38 + len(value) * CHAR_W + 18
         if x > left and x + w > left + width:
             x, line = left, line + 1
         cy = y + line * BY_LEGEND_H
-        out.append(marker(SERIES_SHAPES[i % 3], x + 5, cy - 4, 5, f"dot s{i % 3 + 1}"))
         out.append(
-            f'<text class="label" x="{x + 16:.1f}" y="{cy:.1f}">{escape(value)}</text>'
+            f'<line class="trend swatch t{c + 1} d{sh + 1}" x1="{x + 5:.1f}" '
+            f'x2="{x + 32:.1f}" y1="{cy - 4:.1f}" y2="{cy - 4:.1f}"/>'
+        )
+        out.append(marker(SERIES_SHAPES[sh], x + 5, cy - 4, 5, f"dot s{c + 1}"))
+        out.append(
+            f'<text class="label" x="{x + 38:.1f}" y="{cy:.1f}">{escape(value)}</text>'
         )
         x += w
     return "".join(out), (line + 1) * BY_LEGEND_H
@@ -1164,6 +1186,7 @@ def draw_by_size(
     *,
     title: str = "",
     models: Models = "",
+    slots: Slots | None = None,
 ) -> str:
     """Return an SVG plotting one per-document score against the document's size.
 
@@ -1171,7 +1194,10 @@ def draw_by_size(
         x is a count, drawn on a log axis; y is a score. One point per document per
         value, colored and shaped by value, with the running median of each value
         over log-spaced bins as a line, so a trend reads without a fitted curve.
+    slots: optional (color, shape) per series, for more series than there are
+        colors; by default each series takes the next color and shape.
     """
+    styles = _slots(len(series), slots)
     points = [(x, y) for _, pts in series for _, x, y in pts]
     if not points:
         return ""
@@ -1193,7 +1219,9 @@ def draw_by_size(
         sub, sub_h = models_svg(models, top + 18)
         body.append(sub)
         top += PANEL_TITLE_H + sub_h
-    key_svg, key_h = _legend([v for v, _ in series], top + 10, left, right - left)
+    key_svg, key_h = _legend(
+        [v for v, _ in series], top + 10, left, right - left, slots
+    )
     body.append(key_svg)
     y0 = top + key_h + 6
     y1 = y0 + BY_PLOT_H
@@ -1228,16 +1256,15 @@ def draw_by_size(
         f'rotate(-90)" text-anchor="middle">{escape(y_name)}</text>'
     )
     desc_parts: list[str] = []
-    for i, (value, pts) in enumerate(series):
-        slot = i % 3 + 1
+    for (value, pts), (c, sh) in zip(series, styles, strict=True):
         for doc, x, y in pts:
             body.append(
                 f"<g><title>{escape(doc)}: {escape(value)}, {x:,.0f} rows, "
                 f"{escape(lower_name(y_name))} {y:.2f}</title>"
-                + marker(SERIES_SHAPES[i % 3], px(x), py(y), 3.4, f"pt s{slot}")
+                + marker(SERIES_SHAPES[sh], px(x), py(y), 3.4, f"pt s{c + 1}")
                 + "</g>"
             )
-    for i, (value, pts) in enumerate(series):
+    for (value, pts), (c, sh) in zip(series, styles, strict=True):
         trend = _running_median([(x, y) for _, x, y in pts], xt[0], xt[-1])
         if len(trend) > 1:
             path = " ".join(
@@ -1246,7 +1273,7 @@ def draw_by_size(
             )
             body.append(
                 f"<g><title>{escape(value)}: running median</title>"
-                f'<path class="trend t{i % 3 + 1}" d="{path}"/></g>'
+                f'<path class="trend t{c + 1} d{sh + 1}" d="{path}"/></g>'
             )
         desc_parts.append(
             f"{value}: {len(pts)} documents, running median "

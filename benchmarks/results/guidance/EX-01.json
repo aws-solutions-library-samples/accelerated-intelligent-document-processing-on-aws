@@ -2,8 +2,8 @@
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "region": "us-east-1",
-  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-173220, RealKIE-FCC-Verified-20261113-173644, RealKIE-FCC-Verified-20261113-173641, RealKIE-FCC-Verified-20261113-173219, RealKIE-FCC-Verified-20261113-173642, RealKIE-FCC-Verified-20261113-173643, Fake-W2-Tax-Forms-20261113-181721, Fake-W2-Tax-Forms-20261113-181722, Fake-W2-Tax-Forms-20261113-181723, Fake-W2-Tax-Forms-20261113-181901, Fake-W2-Tax-Forms-20261113-182002, Fake-W2-Tax-Forms-20261113-182011, realkie-fcc-short-20261113-201254, realkie-fcc-short-20261113-201252, realkie-fcc-short-20261113-201253, realkie-fcc-short-20261113-201713, realkie-fcc-short-20261113-201703, realkie-fcc-short-20261113-201714, realkie-fcc-long-20261113-201929, realkie-fcc-long-20261113-201928, realkie-fcc-long-20261113-202020, realkie-fcc-long-20261113-202336, realkie-fcc-long-20261113-202804, realkie-fcc-long-20261113-202644, synth-statements-400-20261113-231559, synth-statements-400-20261113-231602, synth-statements-400-20261113-231603, synth-statements-400-20261113-231600, synth-statements-400-20261113-231601, synth-statements-400-20261113-231604, synth-statements-800-20261113-231613, synth-statements-800-20261113-231615, synth-statements-800-20261113-231617, synth-statements-800-20261113-231614, synth-statements-800-20261113-231616, synth-statements-1600-20261113-231626, synth-statements-1600-20261113-231629, synth-statements-1600-20261113-231631 (3 failed documents left out of the scores)",
-  "verdict": "When a document's lists run past about 150 rows. On RealKIE invoices with 182 or more line items, single-pass got almost none right (line-item score 0.00 to 0.50, and 0 on the invoices with 309, 392 and 1,490 items), while agentic extraction got 0.32 to 0.90. On synthetic bank statements, agentic extraction returned every one of 1,600 rows exactly right on all 15 runs of the 1,600-row statements, where single-pass returned 3%; at 800 rows it was 1.00 against 0.82, and at 400 both were perfect. Below about 150 rows single-pass did better and cost less: across all 20 RealKIE invoices its line-item score was 0.61 against 0.45. Agentic extraction is slow on very long lists: about 39 minutes for a 1,600-row statement, past Test Studio's time limit, so Test Studio reports those runs as failed although every document finished.",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-173220, RealKIE-FCC-Verified-20261113-173644, RealKIE-FCC-Verified-20261113-173641, RealKIE-FCC-Verified-20261113-173219, RealKIE-FCC-Verified-20261113-173642, RealKIE-FCC-Verified-20261113-173643, RealKIE-FCC-Verified-20261116-145655, RealKIE-FCC-Verified-20261116-145659, RealKIE-FCC-Verified-20261116-145657, RealKIE-FCC-Verified-20261116-145656, RealKIE-FCC-Verified-20261116-145658, RealKIE-FCC-Verified-20261116-145707, Fake-W2-Tax-Forms-20261113-181721, Fake-W2-Tax-Forms-20261113-181722, Fake-W2-Tax-Forms-20261113-181723, Fake-W2-Tax-Forms-20261113-181901, Fake-W2-Tax-Forms-20261113-182002, Fake-W2-Tax-Forms-20261113-182011, realkie-fcc-short-20261113-201254, realkie-fcc-short-20261113-201252, realkie-fcc-short-20261113-201253, realkie-fcc-short-20261113-201713, realkie-fcc-short-20261113-201703, realkie-fcc-short-20261113-201714, realkie-fcc-long-20261113-201929, realkie-fcc-long-20261113-201928, realkie-fcc-long-20261113-202020, realkie-fcc-long-20261113-202336, realkie-fcc-long-20261113-202804, realkie-fcc-long-20261113-202644, realkie-fcc-long-20261116-145655, realkie-fcc-long-20261116-145656, realkie-fcc-long-20261116-145654, synth-statements-400-20261113-231559, synth-statements-400-20261113-231602, synth-statements-400-20261113-231603, synth-statements-400-20261113-231600, synth-statements-400-20261113-231601, synth-statements-400-20261113-231604, synth-statements-800-20261113-231613, synth-statements-800-20261113-231615, synth-statements-800-20261113-231617, synth-statements-800-20261113-231614, synth-statements-800-20261113-231616, synth-statements-1600-20261113-231626, synth-statements-1600-20261113-231629, synth-statements-1600-20261113-231631 (3 failed documents left out of the scores)",
+  "verdict": "When an invoice has more than about 100 line items. With Claude Sonnet 5 on 48 RealKIE invoices, single-pass scored 0.26 on the invoices with 101 to 300 line items and 0.00 on those with more than 300; agentic extraction scored 0.47 and 0.71, and cost 1.2\u00d7 and 6.3\u00d7 as much. At 100 line items or fewer single-pass scored higher (0.65 against 0.56 at 1 to 20 line items), and agentic cost 1.1\u00d7 to 2.8\u00d7 as much. Over all 48 invoices agentic cost 1.6\u00d7 as much. With Claude Sonnet 5.5, on 20 invoices of up to 100 line items, both modes scored 0.62 and agentic cost 0.8\u00d7 as much. Agentic extraction did not finish the invoice with 1,490 line items within Test Studio's time limit.",
   "cells": {
     "realkie|Single-pass (Simple, default)|weighted_accuracy": {
       "mean": 0.802328,
@@ -138,6 +138,134 @@
       "se": 0.0
     },
     "realkie|Agentic (Advanced)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.806642,
+      "se": 0.032814
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6991.156379,
+      "se": 7.20782
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 13565.353909,
+      "se": 94.632485
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 20556.510288,
+      "se": 87.424747
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 52.425261,
+      "se": 2.113268
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|list_recall": {
+      "mean": 0.503434,
+      "se": 0.011091
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|list_precision": {
+      "mean": 0.254068,
+      "se": 0.008364
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|auroc": {
+      "mean": 0.498952,
+      "se": 0.002359
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.217235,
+      "se": 0.008338
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.220011,
+      "se": 0.038894
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.299356,
+      "se": 0.000267
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.832545,
+      "se": 0.031382
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 439844.851852,
+      "se": 424453.600951
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 172902.440329,
+      "se": 166563.785299
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 612747.292181,
+      "se": 591017.363848
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 56.208087,
+      "se": 7.455096
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|list_recall": {
+      "mean": 0.923251,
+      "se": 0.014203
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|list_precision": {
+      "mean": 0.178517,
+      "se": 0.007003
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|auroc": {
+      "mean": 0.574316,
+      "se": 0.016401
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.155085,
+      "se": 0.01044
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.395552,
+      "se": 0.026607
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.299038,
+      "se": 0.000423
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
@@ -533,6 +661,74 @@
       "mean": 1.0,
       "se": 0.0
     },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.777062,
+      "se": 0.043932
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 7359.629283,
+      "se": 79.590939
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 35334.380062,
+      "se": 10192.629215
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 42694.009346,
+      "se": 10272.175561
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 134.789376,
+      "se": 1.635832
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|list_recall": {
+      "mean": 0.138034,
+      "se": 0.030098
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|list_precision": {
+      "mean": 0.450963,
+      "se": 0.039832
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.052632,
+      "se": 0.0
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|auroc": {
+      "mean": 0.467996,
+      "se": 0.055712
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.186014,
+      "se": 0.043731
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.281994,
+      "se": 0.084074
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.299707,
+      "se": 0.000104
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
     "synth_400|Agentic (Advanced)|weighted_accuracy": {
       "mean": 1.0,
       "se": 0.0
@@ -801,6 +997,32 @@
       ],
       "runs": 3
     },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
     "fake_w2|Single-pass (Simple, default)": {
       "docs": [
         20,
@@ -876,6 +1098,19 @@
         1,
         1,
         1
+      ],
+      "runs": 3
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "docs": [
+        19,
+        19,
+        19
+      ],
+      "failed": [
+        0,
+        0,
+        0
       ],
       "runs": 3
     },
@@ -974,6 +1209,36 @@
         ]
       }
     },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
+        ]
+      }
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, agentic",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
+        ]
+      }
+    },
     "fake_w2|Single-pass (Simple, default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
@@ -1058,6 +1323,21 @@
         ],
         "Extraction": [
           "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
         ]
       }
     },
@@ -1185,6 +1465,92 @@
         "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
         "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 3306.0,
         "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 2481.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 33685.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 12645.8,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3776.95,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1747.45,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1695.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 25271.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1376.55,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.7,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.5,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 31.0,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 27652.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 19945.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3736.4,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1686.55,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1610.25,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 84.75,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 25271.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1288.95,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.7,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 28355.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 18016.85,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3752.3,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1744.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1610.25,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 84.75,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 25271.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1376.5,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.7,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 10466.2,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 17.05,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12827.4,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2660.2,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 52424.1,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 3554.35,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 2798.65,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 2498.0,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 10098.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 86.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12452.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2734.65,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 51009.15,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 6797.5,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 3002.35,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 2585.25,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 9723.8,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 141.1,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12155.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2599.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 54615.35,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 4024.75,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 3201.65,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 2595.85,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 527.05,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 52.1,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 103.45,
         "textract/analyze_document-Tables|pages": 4.05
       }
     ],
@@ -1398,6 +1764,53 @@
         "textract/analyze_document-Tables|pages": 11.8889
       }
     ],
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 89575.2105,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 53659.0526,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 44320.3684,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 3334.1053,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1516.5789,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 178.4211,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 77229.5789,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 2435.4211,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2777.5789,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 3980.8421,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 70.4211,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 89.6842,
+        "textract/analyze_document-Tables|pages": 11.2632
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 102574.7895,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 52481.0526,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 216400.4211,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 5493.8421,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1605.7895,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 89.2105,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 77229.6316,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 3928.7368,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 23332.5789,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 144.6842,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 232.3684,
+        "textract/analyze_document-Tables|pages": 11.2632
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 122837.0526,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 48347.9474,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 388165.1579,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 8915.1579,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1427.3684,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 267.6316,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 77229.6316,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 5540.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 26989.0526,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 116.6842,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 92.0526,
+        "textract/analyze_document-Tables|pages": 11.2632
+      }
+    ],
     "synth_400|Agentic (Advanced)": [
       {
         "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 136658.2,
@@ -1518,6 +1931,12 @@
       "run": "RealKIE-FCC-Verified-20261113-173219",
       "index": 0
     },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
+    },
     "fake_w2|Single-pass (Simple, default)": {
       "mode": "cold-run",
       "run": "Fake-W2-Tax-Forms-20261113-181722",
@@ -1548,6 +1967,9 @@
       "run": "realkie-fcc-long-20261113-202336",
       "index": 0
     },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
+    },
     "synth_400|Agentic (Advanced)": {
       "mode": "cache-isolated"
     },
@@ -1570,121 +1992,161 @@
         "list_score": 0.99619,
         "list_rows": 10,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999595,
+        "cost": 0.074175
       },
       "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
         "list_score": 0.3,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.882979,
+        "cost": 0.037332
       },
       "08e2649c3291ee569a116260d46e9866.pdf": {
         "list_score": 1.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.033084
       },
       "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
         "list_score": 0.651409,
         "list_rows": 57,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.918892,
+        "cost": 0.137595
       },
       "1220d048d2a75d910c52e7f290e32ca0.pdf": {
         "list_score": 0.262597,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474744,
+        "cost": 0.15576
       },
       "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
         "list_score": 0.670588,
         "list_rows": 20,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.872758,
+        "cost": 0.367907
       },
       "1b238269de30dec67297e7ad8630116e.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89055,
+        "cost": 0.038783
       },
       "1b26192b674944e82347df9cfa3288ff.pdf": {
         "list_score": 0.575638,
         "list_rows": 80,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.862657,
+        "cost": 0.400591
       },
       "21762bcc61029b7a5020647d7ced6aa5.pdf": {
         "list_score": 0.866667,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.824271,
+        "cost": 0.386487
       },
       "26372a567adab41e404cab267067d73f.pdf": {
         "list_score": 0.866667,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.77305,
+        "cost": 0.041698
       },
       "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
         "list_score": 0.4,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.160336
       },
       "33fe0051cbf2e777e47a1e717091c61f.pdf": {
         "list_score": 0.266667,
         "list_rows": 12,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680639,
+        "cost": 0.262761
       },
       "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
         "list_score": 0.797436,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531642,
+        "cost": 0.042809
       },
       "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
         "list_score": 0.621212,
         "list_rows": 22,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.91715,
+        "cost": 0.172833
       },
       "3b9f33e058641d47cf2ebe76b9382648.pdf": {
         "list_score": 0.333333,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.033157
       },
       "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
         "list_score": 0.913197,
         "list_rows": 17,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.778,
+        "cost": 0.115988
       },
       "3dabc131205d3a2c74a73eb545494d3f.pdf": {
         "list_score": 0.945238,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.994174,
+        "cost": 0.067253
       },
       "4d96667dff249bbfb513294f95313b71.pdf": {
         "list_score": 0.005797,
         "list_rows": 69,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.147995
       },
       "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.038593
       },
       "536c5c90c803552970cad769b6caef45.pdf": {
         "list_score": 0.5375,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.857618,
+        "cost": 0.193371
       }
     },
     "realkie|Agentic (Advanced)": {
@@ -1692,285 +2154,729 @@
         "list_score": 0.8,
         "list_rows": 10,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.094624
       },
       "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
         "list_score": 0.2,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.87234,
+        "cost": 0.074156
       },
       "08e2649c3291ee569a116260d46e9866.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.468085,
+        "cost": 0.105044
       },
       "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
         "list_score": 0.718075,
         "list_rows": 57,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.903238,
+        "cost": 0.182985
       },
       "1220d048d2a75d910c52e7f290e32ca0.pdf": {
         "list_score": 0.194805,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.201168
       },
       "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
         "list_score": 0.394687,
         "list_rows": 20,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.701562,
+        "cost": 0.380175
       },
       "1b238269de30dec67297e7ad8630116e.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891443,
+        "cost": 0.075064
       },
       "1b26192b674944e82347df9cfa3288ff.pdf": {
         "list_score": 0.558018,
         "list_rows": 80,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931704,
+        "cost": 0.386371
       },
       "21762bcc61029b7a5020647d7ced6aa5.pdf": {
         "list_score": 0.173333,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.88684,
+        "cost": 0.251352
       },
       "26372a567adab41e404cab267067d73f.pdf": {
         "list_score": 0.8,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.078932
       },
       "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
         "list_score": 0.4,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.154275
       },
       "33fe0051cbf2e777e47a1e717091c61f.pdf": {
         "list_score": 0.151724,
         "list_rows": 12,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.661319,
+        "cost": 0.282251
       },
       "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
         "list_score": 0.6,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510638,
+        "cost": 0.080685
       },
       "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
         "list_score": 0.567558,
         "list_rows": 22,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.932719,
+        "cost": 0.186149
       },
       "3b9f33e058641d47cf2ebe76b9382648.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.101482
       },
       "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
         "list_score": 0.732804,
         "list_rows": 17,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971575,
+        "cost": 0.12544
       },
       "3dabc131205d3a2c74a73eb545494d3f.pdf": {
         "list_score": 1.0,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.108436
       },
       "4d96667dff249bbfb513294f95313b71.pdf": {
         "list_score": 0.005797,
         "list_rows": 69,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.140419
       },
       "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
         "list_score": 0.666667,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.115743
       },
       "536c5c90c803552970cad769b6caef45.pdf": {
         "list_score": 0.392377,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.860891,
+        "cost": 0.250664
+      }
+    },
+    "realkie|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.072094
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.4,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.68544,
+        "cost": 0.031697
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.02992
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931606,
+        "cost": 0.129722
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.413074,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.490753,
+        "cost": 0.163145
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.623529,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.725907,
+        "cost": 0.365044
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.4,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871952,
+        "cost": 0.033423
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.385185,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.771474,
+        "cost": 0.371437
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.533491,
+        "cost": 0.37892
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.038087
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.155512
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.353311,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.689857,
+        "cost": 0.261039
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.70922,
+        "cost": 0.036403
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975822,
+        "cost": 0.167092
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.028526
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970741,
+        "cost": 0.108061
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.895238,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988855,
+        "cost": 0.06185
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.147597
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.033286
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.189769
+      }
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.07534
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.366667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.698582,
+        "cost": 0.037473
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.031029
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.943715,
+        "cost": 0.156087
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.342857,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.483283,
+        "cost": 0.131886
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.399241,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702047,
+        "cost": 0.280941
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.942874,
+        "cost": 0.039928
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.40225,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787473,
+        "cost": 0.316293
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.5,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.912924,
+        "cost": 0.146212
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.038322
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.406061,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702772,
+        "cost": 0.111355
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.185278,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675879,
+        "cost": 0.246912
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.038469
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.782709,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.955607,
+        "cost": 0.124431
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.030044
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970741,
+        "cost": 0.083971
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.847917,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.983821,
+        "cost": 0.058485
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.6,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957447,
+        "cost": 0.17155
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.764091,
+        "cost": 0.043835
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.394745,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.914335,
+        "cost": 0.175891
       }
     },
     "fake_w2|Single-pass (Simple, default)": {
       "w2_test_0000.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916221,
+        "cost": 0.03203
       },
       "w2_test_0001.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032269
       },
       "w2_test_0002.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032349
       },
       "w2_test_0003.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.032205
       },
       "w2_test_0004.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.03191
       },
       "w2_test_0005.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975142,
+        "cost": 0.032245
       },
       "w2_test_0006.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.03214
       },
       "w2_test_0007.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032064
       },
       "w2_test_0008.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.032274
       },
       "w2_test_0009.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.032077
       },
       "w2_test_0010.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.882102,
+        "cost": 0.032358
       },
       "w2_test_0011.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032142
       },
       "w2_test_0012.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893939,
+        "cost": 0.039847
       },
       "w2_test_0013.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.040107
       },
       "w2_test_0014.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032383
       },
       "w2_test_0015.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.032225
       },
       "w2_test_0016.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.032093
       },
       "w2_test_0017.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032025
       },
       "w2_test_0018.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.968102,
+        "cost": 0.032277
       },
       "w2_test_0019.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.032081
       }
     },
     "fake_w2|Agentic (Advanced)": {
       "w2_test_0000.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.9541,
+        "cost": 0.05307
       },
       "w2_test_0001.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.054301
       },
       "w2_test_0002.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.053113
       },
       "w2_test_0003.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.053375
       },
       "w2_test_0004.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.096188
       },
       "w2_test_0005.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975142,
+        "cost": 0.052291
       },
       "w2_test_0006.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.09881
       },
       "w2_test_0007.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.054189
       },
       "w2_test_0008.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.059771
       },
       "w2_test_0009.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.101434
       },
       "w2_test_0010.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.99858,
+        "cost": 0.055203
       },
       "w2_test_0011.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.055708
       },
       "w2_test_0012.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.052232
       },
       "w2_test_0013.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.053964
       },
       "w2_test_0014.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.053617
       },
       "w2_test_0015.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.054927
       },
       "w2_test_0016.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.053211
       },
       "w2_test_0017.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.054695
       },
       "w2_test_0018.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.97488,
+        "cost": 0.058015
       },
       "w2_test_0019.jpg": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.059365
       }
     },
     "realkie_short|Single-pass (Simple, default)": {
@@ -1978,145 +2884,193 @@
         "list_score": 1.0,
         "list_rows": 10,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.07431
       },
       "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
         "list_score": 0.2,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.87234,
+        "cost": 0.032914
       },
       "08e2649c3291ee569a116260d46e9866.pdf": {
         "list_score": 1.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.77305,
+        "cost": 0.028834
       },
       "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
         "list_score": 0.584742,
         "list_rows": 57,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.84503,
+        "cost": 0.138112
       },
       "1b238269de30dec67297e7ad8630116e.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89055,
+        "cost": 0.034582
       },
       "26372a567adab41e404cab267067d73f.pdf": {
         "list_score": 0.866667,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.77305,
+        "cost": 0.037454
       },
       "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
         "list_score": 0.8,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531915,
+        "cost": 0.038708
       },
       "3b9f33e058641d47cf2ebe76b9382648.pdf": {
         "list_score": 0.666667,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730496,
+        "cost": 0.028943
       },
       "3dabc131205d3a2c74a73eb545494d3f.pdf": {
         "list_score": 1.0,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.063096
       },
       "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.034343
       },
       "75986ca8ed4b97420672b7782390c742.pdf": {
         "list_score": 0.318667,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.686826,
+        "cost": 0.037767
       },
       "77e4c8dfae992bc561e181c9a0fb4251.pdf": {
         "list_score": 0.933333,
         "list_rows": 2,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992908,
+        "cost": 0.032672
       },
       "7bc4cc14d20c04204f81948012da50c9.pdf": {
         "list_score": 0.6375,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.925975,
+        "cost": 0.082761
       },
       "7c4e113ac908349db24caff741a89313.pdf": {
         "list_score": 1.0,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.070044
       },
       "7ec895784100dd7287978ab5cac9f283.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531915,
+        "cost": 0.03282
       },
       "8ecb95435a6eeb3dd384d6eb2f007c3c.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.03041
       },
       "a501c2b139c99cc56e6d41a8f9df17a1.pdf": {
         "list_score": 0.666667,
         "list_rows": 2,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964539,
+        "cost": 0.032777
       },
       "aac03825090fe7c0a55c2dffce4605cc.pdf": {
         "list_score": 0.797054,
         "list_rows": 46,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.97841,
+        "cost": 0.087062
       },
       "b55d327a4141362f2b2c9a3eab1a6ba2.pdf": {
         "list_score": 0.133333,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.624113,
+        "cost": 0.058974
       },
       "cd3fc7791eda2953c2ef8364bd17418c.pdf": {
         "list_score": 0.6,
         "list_rows": 23,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.088748
       },
       "dc1df85e4e29cc5406286fc8d909f17c.pdf": {
         "list_score": 0.8,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93617,
+        "cost": 0.030777
       },
       "e0e8f4257b2fc8144b5d1d30d7bfb2ae.pdf": {
         "list_score": 0.821958,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.768293,
+        "cost": 0.069916
       },
       "f07820a290eb3f3ff606b0153c9f38f1.pdf": {
         "list_score": 0.8,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.032476
       },
       "fa1d6b17927c2218ccd0abc33e001c3f.pdf": {
         "list_score": 0.4,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93617,
+        "cost": 0.06777
       }
     },
     "realkie_short|Agentic (Advanced)": {
@@ -2124,145 +3078,193 @@
         "list_score": 0.8,
         "list_rows": 10,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.079327
       },
       "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
         "list_score": 0.2,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.87234,
+        "cost": 0.048142
       },
       "08e2649c3291ee569a116260d46e9866.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.609929,
+        "cost": 0.074191
       },
       "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
         "list_score": 0.584742,
         "list_rows": 57,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.925985,
+        "cost": 0.189156
       },
       "1b238269de30dec67297e7ad8630116e.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891443,
+        "cost": 0.08216
       },
       "26372a567adab41e404cab267067d73f.pdf": {
         "list_score": 0.8,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.053005
       },
       "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
         "list_score": 0.733333,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.524823,
+        "cost": 0.055329
       },
       "3b9f33e058641d47cf2ebe76b9382648.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.074125
       },
       "3dabc131205d3a2c74a73eb545494d3f.pdf": {
         "list_score": 1.0,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.083423
       },
       "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
         "list_score": 0.6,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.07669
       },
       "75986ca8ed4b97420672b7782390c742.pdf": {
         "list_score": 0.318667,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.708103,
+        "cost": 0.052938
       },
       "77e4c8dfae992bc561e181c9a0fb4251.pdf": {
         "list_score": 0.666667,
         "list_rows": 2,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964539,
+        "cost": 0.048574
       },
       "7bc4cc14d20c04204f81948012da50c9.pdf": {
         "list_score": 0.6375,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.925975,
+        "cost": 0.106814
       },
       "7c4e113ac908349db24caff741a89313.pdf": {
         "list_score": 1.0,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.092998
       },
       "7ec895784100dd7287978ab5cac9f283.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.075953
       },
       "8ecb95435a6eeb3dd384d6eb2f007c3c.pdf": {
         "list_score": 0.0,
         "list_rows": 0,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.666667,
+        "cost": 0.085822
       },
       "a501c2b139c99cc56e6d41a8f9df17a1.pdf": {
         "list_score": 0.466667,
         "list_rows": 2,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.943262,
+        "cost": 0.048619
       },
       "aac03825090fe7c0a55c2dffce4605cc.pdf": {
         "list_score": 0.929385,
         "list_rows": 46,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992488,
+        "cost": 0.10234
       },
       "b55d327a4141362f2b2c9a3eab1a6ba2.pdf": {
         "list_score": 0.088889,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.477541,
+        "cost": 0.078091
       },
       "cd3fc7791eda2953c2ef8364bd17418c.pdf": {
         "list_score": 0.228986,
         "list_rows": 23,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.683935,
+        "cost": 0.094339
       },
       "dc1df85e4e29cc5406286fc8d909f17c.pdf": {
         "list_score": 0.8,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.879433,
+        "cost": 0.071041
       },
       "e0e8f4257b2fc8144b5d1d30d7bfb2ae.pdf": {
         "list_score": 0.870238,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.77343,
+        "cost": 0.092111
       },
       "f07820a290eb3f3ff606b0153c9f38f1.pdf": {
         "list_score": 0.8,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.047402
       },
       "fa1d6b17927c2218ccd0abc33e001c3f.pdf": {
         "list_score": 0.4,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93617,
+        "cost": 0.088597
       }
     },
     "realkie_long|Single-pass (Simple, default)": {
@@ -2270,109 +3272,145 @@
         "list_score": 0.670588,
         "list_rows": 20,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.801836,
+        "cost": 0.369174
       },
       "1b26192b674944e82347df9cfa3288ff.pdf": {
         "list_score": 0.515446,
         "list_rows": 80,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.927175,
+        "cost": 0.378772
       },
       "21762bcc61029b7a5020647d7ced6aa5.pdf": {
         "list_score": 0.866667,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675335,
+        "cost": 0.227345
       },
       "33fe0051cbf2e777e47a1e717091c61f.pdf": {
         "list_score": 0.309989,
         "list_rows": 12,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678156,
+        "cost": 0.262761
       },
       "5b79d718c8ac073a5b3c3ba2162173cb.pdf": {
         "list_score": 0.866667,
         "list_rows": 85,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.985816,
+        "cost": 0.3841
       },
       "64e40cb2f126bad63679f19505e8b0bf.pdf": {
         "list_score": 0.796667,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962737,
+        "cost": 0.257675
       },
       "74c8d84d79f73e08eb87fdd673193ba8.pdf": {
         "list_score": 0.023077,
         "list_rows": 182,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.896072,
+        "cost": 0.259772
       },
       "99bcbdbef0480727179f27eb4899b8f8.pdf": {
         "list_score": 0.5625,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.719415,
+        "cost": 0.356827
       },
       "9bb60d3c7732561e0576613f0ea97ea2.pdf": {
         "list_score": 0.00102,
         "list_rows": 392,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893726,
+        "cost": 0.477274
       },
       "ad34d418249cfeb23d1986824160016d.pdf": {
         "list_score": 0.266667,
         "list_rows": 22,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.453901,
+        "cost": 0.306877
       },
       "b798ae73d6da562122e7d2f94e29571e.pdf": {
         "list_score": 0.657966,
         "list_rows": 67,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.304039,
+        "cost": 0.33075
       },
       "beedfe6996eb6c310858b05c7df6bea3.pdf": {
         "list_score": 0.497703,
         "list_rows": 247,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.733798,
+        "cost": 0.853438
       },
       "c840a967e02f2119ff0ec15a7b782b7e.pdf": {
         "list_score": 0.6,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.470629
       },
       "d1a83bbb1eeb256a325dab9e0ce6235b.pdf": {
         "list_score": 0.001294,
         "list_rows": 309,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893755,
+        "cost": 0.32507
       },
       "d5db82c9c27ffcb1fcf25583fab2feaa.pdf": {
         "list_score": 0.993141,
         "list_rows": 54,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765228,
+        "cost": 0.304694
       },
       "e519085a4bfc0211f4139c332bc3d60c.pdf": {
         "list_score": 0.799092,
         "list_rows": 15,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.95735,
+        "cost": 0.272098
       },
       "e8dda1aad4be9ddf95ced75e544fec69.pdf": {
         "list_score": 0.706137,
         "list_rows": 61,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.755972,
+        "cost": 0.405127
       },
       "fa565ac45dba24366c6da8b86c775691.pdf": {
         "list_score": 0.475834,
         "list_rows": 34,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.731472,
+        "cost": 0.345167
       }
     },
     "realkie_long|Agentic (Advanced)": {
@@ -2380,109 +3418,291 @@
         "list_score": 0.405262,
         "list_rows": 20,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702687,
+        "cost": 0.342594
       },
       "1b26192b674944e82347df9cfa3288ff.pdf": {
         "list_score": 0.530878,
         "list_rows": 80,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.928817,
+        "cost": 0.365175
       },
       "21762bcc61029b7a5020647d7ced6aa5.pdf": {
         "list_score": 0.194771,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.876512,
+        "cost": 0.212923
       },
       "33fe0051cbf2e777e47a1e717091c61f.pdf": {
         "list_score": 0.151724,
         "list_rows": 12,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.668411,
+        "cost": 0.24832
       },
       "5b79d718c8ac073a5b3c3ba2162173cb.pdf": {
         "list_score": 0.733333,
         "list_rows": 85,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971631,
+        "cost": 0.711451
       },
       "64e40cb2f126bad63679f19505e8b0bf.pdf": {
         "list_score": 0.755263,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.966872,
+        "cost": 0.220487
       },
       "74c8d84d79f73e08eb87fdd673193ba8.pdf": {
         "list_score": 0.315385,
         "list_rows": 182,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.927169,
+        "cost": 0.464281
       },
       "99bcbdbef0480727179f27eb4899b8f8.pdf": {
         "list_score": 0.457143,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.850051,
+        "cost": 0.358049
       },
       "9bb60d3c7732561e0576613f0ea97ea2.pdf": {
         "list_score": 0.904851,
         "list_rows": 392,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.989878,
+        "cost": 3.967106
       },
       "ad34d418249cfeb23d1986824160016d.pdf": {
         "list_score": 0.211472,
         "list_rows": 22,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.432531,
+        "cost": 0.28401
       },
       "b798ae73d6da562122e7d2f94e29571e.pdf": {
         "list_score": 0.73786,
         "list_rows": 67,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.525304,
+        "cost": 0.335047
       },
       "beedfe6996eb6c310858b05c7df6bea3.pdf": {
         "list_score": 0.63297,
         "list_rows": 247,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.514146,
+        "cost": 0.843611
       },
       "c840a967e02f2119ff0ec15a7b782b7e.pdf": {
         "list_score": 0.470855,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894063,
+        "cost": 0.319698
       },
       "d1a83bbb1eeb256a325dab9e0ce6235b.pdf": {
         "list_score": 0.521287,
         "list_rows": 309,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.949073,
+        "cost": 1.082489
       },
       "d5db82c9c27ffcb1fcf25583fab2feaa.pdf": {
         "list_score": 0.768469,
         "list_rows": 54,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.741327,
+        "cost": 0.300346
       },
       "e519085a4bfc0211f4139c332bc3d60c.pdf": {
         "list_score": 0.792062,
         "list_rows": 15,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977879,
+        "cost": 0.363671
       },
       "e8dda1aad4be9ddf95ced75e544fec69.pdf": {
         "list_score": 0.133333,
         "list_rows": 61,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.695035,
+        "cost": 0.51682
       },
       "fa565ac45dba24366c6da8b86c775691.pdf": {
         "list_score": 0.411797,
         "list_rows": 34,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.724659,
+        "cost": 0.364395
+      }
+    },
+    "realkie_long|Single-pass \u00b7 Claude Sonnet 5.5": {
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.647059,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.728411,
+        "cost": 0.364662
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.450315,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.70748,
+        "cost": 0.370345
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.691667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.507782,
+        "cost": 0.286839
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.353311,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.689857,
+        "cost": 0.2624
+      },
+      "5b79d718c8ac073a5b3c3ba2162173cb.pdf": {
+        "list_score": 1.0,
+        "list_rows": 85,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.3592
+      },
+      "64e40cb2f126bad63679f19505e8b0bf.pdf": {
+        "list_score": 0.796667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978369,
+        "cost": 0.256743
+      },
+      "74c8d84d79f73e08eb87fdd673193ba8.pdf": {
+        "list_score": 0.023077,
+        "list_rows": 182,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.896072,
+        "cost": 0.331349
+      },
+      "99bcbdbef0480727179f27eb4899b8f8.pdf": {
+        "list_score": 0.5625,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.932181,
+        "cost": 0.355206
+      },
+      "9bb60d3c7732561e0576613f0ea97ea2.pdf": {
+        "list_score": 0.203741,
+        "list_rows": 392,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.915292,
+        "cost": 0.688973
+      },
+      "ad34d418249cfeb23d1986824160016d.pdf": {
+        "list_score": 0.526628,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.580847,
+        "cost": 0.30247
+      },
+      "b798ae73d6da562122e7d2f94e29571e.pdf": {
+        "list_score": 0.527683,
+        "list_rows": 67,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.290179,
+        "cost": 0.334603
+      },
+      "beedfe6996eb6c310858b05c7df6bea3.pdf": {
+        "list_score": 0.417274,
+        "list_rows": 247,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.725242,
+        "cost": 0.753553
+      },
+      "c840a967e02f2119ff0ec15a7b782b7e.pdf": {
+        "list_score": 0.325,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.928191,
+        "cost": 0.309397
+      },
+      "d1a83bbb1eeb256a325dab9e0ce6235b.pdf": {
+        "list_score": 0.005609,
+        "list_rows": 309,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894214,
+        "cost": 0.330943
+      },
+      "d5db82c9c27ffcb1fcf25583fab2feaa.pdf": {
+        "list_score": 0.926475,
+        "list_rows": 54,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.758136,
+        "cost": 0.302379
+      },
+      "e519085a4bfc0211f4139c332bc3d60c.pdf": {
+        "list_score": 0.719841,
+        "list_rows": 15,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970196,
+        "cost": 0.27167
+      },
+      "e8dda1aad4be9ddf95ced75e544fec69.pdf": {
+        "list_score": 0.769543,
+        "list_rows": 61,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.762717,
+        "cost": 0.401938
+      },
+      "fa565ac45dba24366c6da8b86c775691.pdf": {
+        "list_score": 0.386292,
+        "list_rows": 34,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.721946,
+        "cost": 0.43172
       }
     },
     "synth_400|Agentic (Advanced)": {
@@ -2490,31 +3710,41 @@
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.53975
       },
       "synth-statements-400-02.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.543706
       },
       "synth-statements-400-03.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.547614
       },
       "synth-statements-400-04.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.558412
       },
       "synth-statements-400-05.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.538415
       }
     },
     "synth_400|Single-pass (Simple, default)": {
@@ -2522,31 +3752,41 @@
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.547172
       },
       "synth-statements-400-02.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.543918
       },
       "synth-statements-400-03.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.544553
       },
       "synth-statements-400-04.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.542896
       },
       "synth-statements-400-05.pdf": {
         "list_score": 1.0,
         "list_rows": 400,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.546209
       }
     },
     "synth_800|Single-pass (Simple, default)": {
@@ -2554,31 +3794,41 @@
         "list_score": 0.705,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901667,
+        "cost": 0.906689
       },
       "synth-statements-800-02.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.031968
       },
       "synth-statements-800-03.pdf": {
         "list_score": 0.41,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.803333,
+        "cost": 0.778895
       },
       "synth-statements-800-04.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.032656
       },
       "synth-statements-800-05.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.033717
       }
     },
     "synth_800|Agentic (Advanced)": {
@@ -2586,31 +3836,41 @@
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.051488
       },
       "synth-statements-800-02.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.005053
       },
       "synth-statements-800-03.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.067299
       },
       "synth-statements-800-04.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.053224
       },
       "synth-statements-800-05.pdf": {
         "list_score": 1.0,
         "list_rows": 800,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 1.004238
       }
     },
     "synth_1600|Single-pass (Simple, default)": {
@@ -2618,31 +3878,53 @@
         "list_score": 0.059375,
         "list_rows": 1600,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.686458,
+        "cost": 1.14768
       },
       "synth-statements-1600-02.pdf": {
         "list_score": 0.026875,
         "list_rows": 1600,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 1.121476
       },
       "synth-statements-1600-03.pdf": {
         "list_score": 0.026875,
         "list_rows": 1600,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 1.120251
       },
       "synth-statements-1600-04.pdf": {
         "list_score": 0.026875,
         "list_rows": 1600,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 1.124357
       },
       "synth-statements-1600-05.pdf": {
         "list_score": 0.026875,
         "list_rows": 1600,
         "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.675625,
+        "cost": 1.123604
+      }
+    }
+  },
+  "unfinished": {
+    "realkie_long|Agentic (Advanced)": {
+      "cee75ca6adb0224732696bff7ee5dc32.pdf": {
+        "runs": 3,
+        "of": 3,
+        "list_rows": 1490,
+        "status": [
+          "COMPLETED"
+        ]
       }
     }
   }

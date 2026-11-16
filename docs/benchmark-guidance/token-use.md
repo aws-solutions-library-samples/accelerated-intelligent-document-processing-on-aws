@@ -55,7 +55,7 @@ Some benchmarks here reuse runs from other pages.
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each Configuration](../../images/benchmark-guidance/TU-04-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: varies (the setting under test) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: varies (the setting under test) · Confidence: varies (the setting under test). N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: varies (the setting under test) · Extraction: varies (the setting under test) · Confidence: varies (the setting under test). N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How many tokens does each extraction model use for the same document?
 
@@ -163,7 +163,7 @@ Some benchmarks here reuse runs from other pages.
 | **Changes** | Configuration |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
-| **Models** | OCR: varies (the setting under test) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: varies (the setting under test) · Confidence: varies (the setting under test). |
+| **Models** | OCR: varies (the setting under test) · Extraction: varies (the setting under test) · Confidence: varies (the setting under test). |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
 | Dataset | Configuration | Weighted accuracy | Documents with every field right | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Claude Haiku 5.5, Layout only, confidence off |

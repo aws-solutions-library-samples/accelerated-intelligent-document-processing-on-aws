@@ -44,7 +44,7 @@ right in the page text, the fix is in your classification or extraction definiti
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each OCR reader](../../images/benchmark-guidance/DG-01-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [OmniAI, bank checks](datasets.md#omniai-ocr-benchmark-bank-checks-20). Models: OCR: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. Classification by dataset: RealKIE — Amazon Nova 2 Lite, page by page (no calls billed); OmniAI, bank checks — Amazon Nova 2 Lite, page by page. Extraction by dataset: RealKIE — Claude Sonnet 5, single-pass; OmniAI, bank checks — Amazon Nova 2 Lite, single-pass. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [OmniAI, bank checks](datasets.md#omniai-ocr-benchmark-bank-checks-20). Models: OCR: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. Classification by dataset: OmniAI, bank checks — Amazon Nova 2 Lite, page by page. Extraction by dataset: RealKIE — Claude Sonnet 5, single-pass; OmniAI, bank checks — Amazon Nova 2 Lite, single-pass. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### If I read pages with a vision model, which model?
 
@@ -60,7 +60,7 @@ right in the page text, the fix is in your classification or extraction definiti
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each `ocr.image.dpi`](../../images/benchmark-guidance/DG-04-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Does image preprocessing help on poor scans?
 
@@ -72,7 +72,7 @@ right in the page text, the fix is in your classification or extraction definiti
 
 ![Weighted accuracy against cost per 1,000 documents (USD) for each `ocr.features`](../../images/benchmark-guidance/DG-06-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: varies (the setting under test) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How much accuracy does scan quality cost?
 
@@ -107,7 +107,7 @@ right in the page text, the fix is in your classification or extraction definiti
 | **Changes** | OCR reader |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [OmniAI-OCR-Benchmark, bank checks (20)](datasets.md#omniai-ocr-benchmark-bank-checks-20); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. Classification by dataset: RealKIE — Amazon Nova 2 Lite, page by page (no calls billed); OmniAI, bank checks — Amazon Nova 2 Lite, page by page. Extraction by dataset: RealKIE — Claude Sonnet 5, single-pass; OmniAI, bank checks — Amazon Nova 2 Lite, single-pass. |
+| **Models** | OCR: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. Classification by dataset: OmniAI, bank checks — Amazon Nova 2 Lite, page by page. Extraction by dataset: RealKIE — Claude Sonnet 5, single-pass; OmniAI, bank checks — Amazon Nova 2 Lite, single-pass. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
 | Dataset | OCR reader | Weighted accuracy | OCR tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs cheapest |
@@ -198,7 +198,7 @@ right in the page text, the fix is in your classification or extraction definiti
 | **Changes** | `ocr.image.dpi` |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
 | Dataset | `ocr.image.dpi` | Weighted accuracy | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs 150 |
@@ -251,7 +251,7 @@ right in the page text, the fix is in your classification or extraction definiti
 | **Changes** | `ocr.features` |
 | **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
 | **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: varies (the setting under test) · Classification: Amazon Nova 2 Lite, page by page (no calls billed) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Models** | OCR: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
 | Dataset | `ocr.features` | Weighted accuracy | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs LAYOUT only |

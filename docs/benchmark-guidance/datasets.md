@@ -21,35 +21,34 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bank-statement-sample`
 - **Test Studio test set:** not on the benchmark stack yet
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it)
 
 ### Synthetic statement, 400 rows (9 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-400`, 5 documents per run
-- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [TR-02](index.md#tr-02-how-long-does-a-document-take-and-how-many-documents-an-hour), [DG-01](digitization.md#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-02](digitization.md#dg-02-if-i-read-pages-with-a-vision-model-which-model), [DG-04](digitization.md#dg-04-what-resolution-should-pages-be-rendered-at), [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [CF-01](confidence-assessment.md#cf-01-can-i-route-human-review-by-confidence), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-05](token-use.md#tu-05-how-many-tokens-does-each-extraction-model-use-for-the-same-document)
+- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [TR-02](index.md#tr-02-how-long-does-a-document-take-and-how-many-documents-an-hour), [DG-01](digitization.md#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-02](digitization.md#dg-02-if-i-read-pages-with-a-vision-model-which-model), [DG-04](digitization.md#dg-04-what-resolution-should-pages-be-rendered-at), [DG-06](digitization.md#dg-06-which-textract-features-do-i-need), [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-02](extraction.md#ex-02-which-extraction-model-should-i-use), [EX-03](extraction.md#ex-03-does-more-reasoning-effort-improve-extraction), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [CF-01](confidence-assessment.md#cf-01-can-i-route-human-review-by-confidence), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-05](token-use.md#tu-05-how-many-tokens-does-each-extraction-model-use-for-the-same-document)
 
 ### Synthetic statement, 800 rows (17 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-800`, 5 documents per run
-- **Used by:** [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-agentic-extraction-use), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
+- **Used by:** [SC-10](splitting-and-classification.md#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-agentic-extraction-use), [EX-09](extraction.md#ex-09-should-agentic-extraction-load-page-images-only-when-it-needs-them), [CF-03](confidence-assessment.md#cf-03-separate-scoring-pass-or-integrated-into-extraction), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
 
 ### Synthetic statement, 1,600 rows (33 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bench-synth-statements`
 - **Test Studio test set:** `synth-statements-1600`, 5 documents per run
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
+- **Used by:** [CF-07](confidence-assessment.md#cf-07-how-should-long-lists-be-scored)
 
 ### Synthetic statement, 3,200 rows (66 pages)
 
 - **About the dataset:** [Synthetic statement](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bank-statement-sample`
 - **Test Studio test set:** not on the benchmark stack yet
-- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it), [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-agentic-extraction-use)
+- **Used by:** [EX-07](extraction.md#ex-07-does-deterministic-table-parsing-help-agentic-extraction), [EX-08](extraction.md#ex-08-what-shard-size-should-agentic-extraction-use)
 
 ### Synthetic file holding two statements
 
@@ -70,6 +69,7 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified)
 - **Preset:** `realkie-fcc-verified`
 - **Test Studio test set:** `realkie-fcc-verified`, 75 documents per run
+- **Used by:** [EX-01](extraction.md#ex-01-when-is-agentic-extraction-worth-it)
 
 ### RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)
 

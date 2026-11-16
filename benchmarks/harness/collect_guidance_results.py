@@ -85,12 +85,30 @@ accuracy uses). Only the keys a document has are written:
                                      returned row counts
         "list_rows": 247,            rows the ground truth has in that list
         "boundary_accuracy": 1.0,    from the document's own doc_split_metrics
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.81,   Test Studio's weighted score for the document
+        "cost": 0.0412               USD for this document: its own Bedrock and
+                                     Textract metering, priced like the run costs
     }}}
 
 `boundary_accuracy` and `label_accuracy` are also written as per-run cells, each the
 mean over the documents that run scored, because Test Studio's run-level metrics do
 not include them.
+
+A document's `cost` comes from the `Metering` attribute of its tracking-table item,
+priced with config_library/pricing.yaml by the renderer's own unit prices. It follows
+`cost_basis`: the mean over every run when the value's runs are cache-isolated,
+otherwise the coldest run alone. Tracking items are cached on disk per run (only
+finished ones), so a re-collect reads nothing from DynamoDB.
+
+`unfinished` names, per `dataset|value`, the documents some run of that value did not
+score although another run of the dataset did: usually a document that outran Test
+Studio's time limit. `status` is the document's tracking status in the runs that
+missed it (COMPLETED means it finished after Test Studio stopped waiting):
+
+    "unfinished": {"realkie_long|Agentic (Advanced)": {"<document>": {
+        "runs": 3, "of": 3, "list_rows": 1490, "status": ["COMPLETED"]
+    }}}
 
 `models` says which model ran at each step, per `dataset|value`, so the pages can state
 it on every chart:
@@ -125,6 +143,7 @@ from pathlib import Path
 from typing import Any
 
 import boto3
+from render_guidance import unit_price
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "benchmarks" / "results" / "guidance"
@@ -143,6 +162,9 @@ DOC_SPLIT_METRICS = ("boundary_accuracy", "label_accuracy")
 #: row-count file per test set under `_rows/`.
 DOC_EVAL_CACHE = Path("/tmp/guidance-runs/doceval")
 DOC_EVAL_WORKERS = 8
+#: Where tracking-table items are cached: one file per run, the fields below only.
+TRACKING_CACHE = Path("/tmp/guidance-runs/tracking")
+TRACKING_FIELDS = ("WorkflowStartTime", "CompletionTime", "ObjectStatus", "Metering")
 #: The review budget behind `errors_caught_30`: the share of values a reviewer checks,
 #: lowest confidence first, as Test Studio keys it under error_capture_at_budget.
 REVIEW_BUDGET = "0.30"
@@ -377,6 +399,30 @@ def run_usage(result: dict[str, Any]) -> dict[str, float]:
     return {k: round(v / docs, 4) for k, v in sorted(totals.items())}
 
 
+def metering_cost(metering: dict[str, Any], unpriced: set[str]) -> float:
+    """One document's Bedrock and Textract cost in USD, from its own metering.
+
+    Metering keys look like `<step>/bedrock/<model id>` with a unit map under each,
+    and are priced the way the renderer prices a run's usage: per `bedrock/<model
+    id>|<unit>`, with `requests` and `totalTokens` left out. Usage with no price
+    counts as $0 and is added to `unpriced`.
+    """
+    total = 0.0
+    for key, units in metering.items():
+        _, _, service_id = str(key).partition("/")
+        if not service_id.startswith(PRICED_SERVICES) or not isinstance(units, dict):
+            continue
+        for unit, amount in units.items():
+            if unit in UNPRICED_UNITS or not amount:
+                continue
+            price = unit_price(service_id, unit)
+            if price is None:
+                unpriced.add(f"{service_id}|{unit}")
+                continue
+            total += float(amount) * price
+    return total
+
+
 def list_field(result: dict[str, Any]) -> str | None:
     """The run's largest list field: the parent whose cells were scored most often.
 
@@ -575,15 +621,81 @@ def pages(result: dict[str, Any]) -> int:
     return int(result.get("splitClassificationMetrics", {}).get("total_pages") or 0)
 
 
-def workflow_seconds(table: Any, run_id: str, doc_keys: list[str]) -> list[float]:
+class TrackingItems:
+    """Each document's tracking-table item, as far as the collector reads it.
+
+    An item is `PK = doc#<run ID>/<document>`, `SK = none`. Only TRACKING_FIELDS are
+    read, with `Metering` parsed from its JSON string, and only finished items (those
+    with a CompletionTime) are cached, one file per run, so a document still running
+    is read again next time.
+    """
+
+    def __init__(self, table_name: str, region: str, cache: Path) -> None:
+        self.ddb = boto3.client("dynamodb", region_name=region)
+        self.table_name = table_name
+        self.cache = cache
+
+    def _get(self, run_id: str, doc: str) -> dict[str, Any] | None:
+        names = {f"#f{i}": f for i, f in enumerate(TRACKING_FIELDS)}
+        raw = self.ddb.get_item(
+            TableName=self.table_name,
+            Key={"PK": {"S": f"doc#{run_id}/{doc}"}, "SK": {"S": "none"}},
+            ProjectionExpression=", ".join(names),
+            ExpressionAttributeNames=names,
+        ).get("Item")
+        if not raw:
+            return None
+        item: dict[str, Any] = {
+            k: v["S"] for k, v in raw.items() if k in TRACKING_FIELDS and "S" in v
+        }
+        if item.get("Metering"):
+            try:
+                item["Metering"] = json.loads(item["Metering"])
+            except ValueError:
+                item.pop("Metering")
+        return item
+
+    def items(self, run_id: str, docs: list[str]) -> dict[str, dict[str, Any]]:
+        """The items of one run's documents, by document name."""
+        path = self.cache / f"{run_id}.json"
+        known: dict[str, dict[str, Any]] = (
+            json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        )
+        wanted = [d for d in dict.fromkeys(docs) if d not in known]
+        found = dict(known)
+        fresh = False
+        with ThreadPoolExecutor(max_workers=DOC_EVAL_WORKERS) as pool:
+            for doc, item in pool.map(lambda d: (d, self._get(run_id, d)), wanted):
+                if not item:
+                    continue
+                found[doc] = item
+                if item.get("CompletionTime"):
+                    known[doc] = item
+                    fresh = True
+        if fresh:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(known, sort_keys=True), encoding="utf-8")
+        return {d: found[d] for d in docs if d in found}
+
+
+def pick_cost(
+    by_run: dict[int, float], all_isolated: bool, cold_index: int
+) -> float | None:
+    """A document's cost over a value's runs, on the basis the run costs use.
+
+    Cache-isolated runs are priced alike, so the cost is the mean over the runs that
+    metered the document; otherwise only the coldest run counts, because the others
+    read the prompt cache it wrote.
+    """
+    if all_isolated:
+        return statistics.fmean(by_run.values()) if by_run else None
+    return by_run.get(cold_index)
+
+
+def workflow_seconds(items: dict[str, dict[str, Any]]) -> list[float]:
     out = []
-    for key in doc_keys:
-        item = table.get_item(Key={"PK": f"doc#{key}", "SK": "none"}).get("Item")
-        if (
-            not item
-            or not item.get("CompletionTime")
-            or not item.get("WorkflowStartTime")
-        ):
+    for item in items.values():
+        if not item.get("CompletionTime") or not item.get("WorkflowStartTime"):
             continue
         start = datetime.fromisoformat(item["WorkflowStartTime"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(item["CompletionTime"].replace("Z", "+00:00"))
@@ -601,11 +713,11 @@ def stack_resources(stack: str, region: str) -> dict[str, str]:
     return out
 
 
-def tracking_table(resources: dict[str, str], stack: str, region: str) -> Any:
+def tracking_table(resources: dict[str, str], stack: str) -> str:
     name = resources.get("TrackingTable")
     if not name:
         raise SystemExit(f"{stack}: no TrackingTable resource")
-    return boto3.resource("dynamodb", region_name=region).Table(name)
+    return name
 
 
 def main() -> int:
@@ -619,6 +731,12 @@ def main() -> int:
         help="where per-document evaluations and row counts are cached",
     )
     parser.add_argument(
+        "--tracking-cache",
+        type=Path,
+        default=TRACKING_CACHE,
+        help="where tracking-table items (timings, metering) are cached",
+    )
+    parser.add_argument(
         "--no-per-doc",
         action="store_true",
         help="skip the per-document evaluations (no S3 reads beyond the run results)",
@@ -627,7 +745,10 @@ def main() -> int:
 
     man = json.loads(args.manifest.read_text(encoding="utf-8"))
     resources = stack_resources(man["stack"], man["region"])
-    table = tracking_table(resources, man["stack"], man["region"])
+    tracking = TrackingItems(
+        tracking_table(resources, man["stack"]), man["region"], args.tracking_cache
+    )
+    unpriced: set[str] = set()
     evals = (
         None
         if args.no_per_doc
@@ -640,14 +761,19 @@ def main() -> int:
     basis: dict[str, dict[str, Any]] = {}
     models: dict[str, dict[str, Any]] = {}
     sample: dict[str, dict[str, Any]] = {}
+    unfinished: dict[str, dict[str, dict[str, Any]]] = {}
     run_ids: list[str] = []
     failed_total = 0
     # Score every value of a dataset on the same documents: those scored in every run
     # of every value. A document one value fails on (a timeout, a content filter)
     # would otherwise count against the values that finished it.
     common: dict[str, set[str]] = {}
+    # Every document some run of the dataset scored: a document a value's run is
+    # missing from is one that run did not finish.
+    universe: dict[str, set[str]] = {}
     for ds_key, values in man["runs"].items():
         docs: set[str] | None = None
+        universe[ds_key] = set()
         for ids in values.values():
             for run_id in ids:
                 path = args.results_dir / f"{run_id}-result.json"
@@ -659,6 +785,7 @@ def main() -> int:
                 )
                 keys = {k.split("/", 1)[1] for k in scores}
                 docs = keys if docs is None else docs & keys
+                universe[ds_key] |= keys
         common[ds_key] = docs or set()
     for ds_key, values in man["runs"].items():
         for value, ids in values.items():
@@ -677,6 +804,9 @@ def main() -> int:
             doc_metrics: dict[str, dict[str, list[float]]] = {}
             list_fields: list[str] = []
             testsets: list[str] = []
+            # Each document's cost per run, by run index, and the runs that missed it.
+            doc_costs: dict[str, dict[int, float]] = {}
+            missed: dict[str, list[str]] = {}
             for index, run_id in enumerate(ids):
                 path = args.results_dir / f"{run_id}-result.json"
                 result = json.loads(path.read_text(encoding="utf-8"))
@@ -741,7 +871,16 @@ def main() -> int:
                     # the way Test Studio's own run metrics are.
                     for metric, vals in split_means.items():
                         per_run.setdefault(metric, []).append(statistics.fmean(vals))
-                secs = workflow_seconds(table, run_id, list(scores))
+                names = [k.split("/", 1)[1] for k in scores]
+                items = tracking.items(run_id, names)
+                for doc, item in items.items():
+                    if isinstance(item.get("Metering"), dict):
+                        doc_costs.setdefault(doc, {})[index] = metering_cost(
+                            item["Metering"], unpriced
+                        )
+                for doc in sorted(universe[ds_key] - set(names)):
+                    missed.setdefault(doc, []).append(run_id)
+                secs = workflow_seconds(items)
                 if secs:
                     medians.append(statistics.median(secs))
             cell = f"{ds_key}|{value}|"
@@ -761,6 +900,10 @@ def main() -> int:
                 if len(vals) == len(ids):
                     cells[cell + metric] = mean_se(vals)
             key = f"{ds_key}|{value}"
+            all_isolated = bool(ids) and all(i in isolated for i in ids)
+            # A document's cost follows the run cost's basis: every run when the runs
+            # are cache-isolated, otherwise the coldest run alone.
+            cold_index = min(coldest)[3] if coldest else 0
             if evals is not None and doc_metrics:
                 shown = [
                     d
@@ -786,10 +929,38 @@ def main() -> int:
                     for metric in DOC_SPLIT_METRICS:
                         if metric in found:
                             entry[metric] = round(statistics.fmean(found[metric]), 6)
+                    if doc in per_doc:
+                        entry["weighted_accuracy"] = round(
+                            statistics.fmean(per_doc[doc]), 6
+                        )
+                    cost = pick_cost(doc_costs.get(doc) or {}, all_isolated, cold_index)
+                    if cost is not None:
+                        entry["cost"] = round(cost, 6)
                     if entry:
                         entries[doc] = entry
                 if entries:
                     by_doc[key] = entries
+            if missed:
+                field = statistics.mode(list_fields) if list_fields else ""
+                rows = (
+                    evals.rows(statistics.mode(testsets), sorted(missed), field)
+                    if evals is not None and field and testsets
+                    else {}
+                )
+                found_missed: dict[str, dict[str, Any]] = {}
+                for doc, run_list in sorted(missed.items()):
+                    statuses = {
+                        str(item.get("ObjectStatus") or "UNKNOWN")
+                        for run_id in run_list
+                        for item in [tracking.items(run_id, [doc]).get(doc) or {}]
+                    }
+                    found_missed[doc] = {
+                        "runs": len(run_list),
+                        "of": len(ids),
+                        **({"list_rows": rows[doc]} if doc in rows else {}),
+                        "status": sorted(statuses),
+                    }
+                unfinished[key] = found_missed
             if scored:
                 sample[key] = {"docs": scored, "failed": failures, "runs": len(ids)}
             if step_lines:
@@ -800,7 +971,6 @@ def main() -> int:
                 }
                 with_billed(lines, bedrock_steps, billed)
                 models[key] = {**lines, "billed": dict(sorted(billed.items()))}
-            all_isolated = bool(ids) and all(i in isolated for i in ids)
             if all_isolated and any(runs_usage) and not all(runs_usage):
                 # Test Studio occasionally records no metering for a run. With
                 # cache-isolated runs every run is priced alike, so price the
@@ -838,6 +1008,8 @@ def main() -> int:
     }
     if by_doc:
         out["per_doc"] = by_doc
+    if unfinished:
+        out["unfinished"] = unfinished
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / f"{man['ablation']}.json"
     path.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
@@ -847,6 +1019,10 @@ def main() -> int:
     for k, entries in by_doc.items():
         with_list = [d for d in entries.values() if "list_score" in d]
         print(f"  {k}: {len(entries)} documents, {len(with_list)} with a list score")
+    for k, late in unfinished.items():
+        print(f"  {k}: {len(late)} documents some run did not finish")
+    for name in sorted(unpriced):
+        print(f"  warning: no price for {name}; counted as $0", file=sys.stderr)
     if evals is not None and evals.missing:
         for name in sorted(evals.missing)[:5]:
             print(f"  no per-document evaluation at {name}", file=sys.stderr)

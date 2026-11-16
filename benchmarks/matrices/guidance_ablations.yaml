@@ -30,7 +30,15 @@
 #             file's `per_doc` against a per-document size, one point per document per
 #             value, on a log x axis, with a running median per value. Datasets whose
 #             keys share a prefix (realkie, realkie_short, realkie_long) are one pool
-#             and share one chart, deduplicated by document name.
+#             and share one chart, deduplicated by document name. A pool's `<prefix>_all`
+#             dataset (realkie_all), once it has per-document results, stands for the
+#             whole pool, and the subsets are not drawn.
+#   strata    optional {by, bands, noun, score, documents}: under each by-size chart, a
+#             table of the pool's documents banded by the per-document metric `by`
+#             (bands are lower bounds: [0, 1, 21] reads "no <noun>", "1–20", "21 or
+#             more"), with each value's mean `score`, weighted accuracy and cost per
+#             1,000 documents, and what each model's agentic value costs against its
+#             single-pass value. `documents` names the documents in the table.
 #   grid      optional {rows, cols}: values are named "<row> · <col>" and render as a grid
 #   set       per value, the configuration overrides that produce it (dotted paths),
 #             in the order of `values`; run_guidance_ablation.py applies them
@@ -295,13 +303,14 @@ ablations:
     page: extraction
     question: "When is agentic extraction worth it?"
     changes: "Extraction mode"
-    values: ["Single-pass (Simple, default)", "Agentic (Advanced)"]
-    set: [{"extraction.mode": "simple"}, {"extraction.mode": "advanced"}]
-    datasets: [synth_100, synth_400, synth_800, synth_1600, synth_3200, realkie, realkie_short, realkie_long, fake_w2]
+    values: ["Single-pass · Claude Haiku 5.5", "Agentic · Claude Haiku 5.5", "Single-pass · Claude Sonnet 5.5", "Agentic · Claude Sonnet 5.5", "Single-pass (Simple, default)", "Agentic (Advanced)"]
+    set: [{"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.mode": "simple"}, {"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.mode": "advanced"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.mode": "simple"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.mode": "advanced"}, {"extraction.mode": "simple"}, {"extraction.mode": "advanced"}]
+    datasets: [realkie_all, realkie, realkie_short, realkie_long, fake_w2]
     runs: 3
     metrics: [list_recall, list_precision, weighted_accuracy, extraction_tokens, total_tokens, median_seconds]
-    plot: list_recall
+    plot: weighted_accuracy
     by_size: {metric: list_score, x: list_rows}
+    strata: {by: list_rows, bands: [0, 1, 21, 101, 301], noun: line items, score: list_score, documents: invoices}
   - id: EX-02
     page: extraction
     question: "Which extraction model should I use?"

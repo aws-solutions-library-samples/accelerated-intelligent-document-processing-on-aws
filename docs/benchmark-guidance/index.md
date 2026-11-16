@@ -28,7 +28,7 @@ Start from these choices, then confirm them on a test set of your own documents.
 | Decision | Choose | Why |
 |---|---|---|
 | Splitting packets into documents | Holistic classification with Claude Haiku 5.5; Claude Sonnet 5.5 for the most accuracy | [0.80 of sections exactly right, against 0.52 for the default, at the same cost](splitting-and-classification.md#does-holistic-classification-beat-page-by-page-classification) |
-| Single-pass or agentic extraction | Single-pass, unless a document's lists run past about 150 rows; then agentic | [Above that size single-pass loses almost every row; agentic returned all 1,600 of 1,600](extraction.md#when-is-agentic-extraction-worth-it) |
+| Single-pass or agentic extraction | Single-pass, unless a document's lists run past about 100 rows; then agentic | [Above 300 line items agentic scored 0.71 against 0 for single-pass, and cost about 6× as much; below 100, single-pass scored higher and agentic cost 1.1× to 2.8× as much](extraction.md#when-is-agentic-extraction-worth-it) |
 | Scoring model, if people review by confidence | Claude Haiku 5.5 | [Catches every error on W-2s when reviewing 30% of values, at the default's cost; the default does worse than random](confidence-assessment.md#which-scoring-model-should-i-use) |
 | Confidence, if nobody reviews by it | Off | [Scoring is 55% to 65% of tokens and changes no extracted value](confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction) |
 | Schema enforcement | Structured output | [As accurate or slightly better, and a little cheaper; the forced tool lowered accuracy](extraction.md#does-structured-output-make-single-pass-extraction-more-accurate) |

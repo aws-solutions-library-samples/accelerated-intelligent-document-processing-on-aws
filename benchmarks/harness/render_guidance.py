@@ -130,6 +130,18 @@ SCATTER_CAPTION = (
 #: Pipeline steps named on every chart, in order.
 MODEL_STEPS = ("OCR", "Classification", "Extraction", "Confidence")
 VARIES = "varies (the setting under test)"
+#: A step line the collector writes for a step that called nothing: a Bedrock step
+#: with no calls billed, confidence off, or no OCR. A chart that names such a step's
+#: model reads as though that model did the work, so it is left out.
+NOT_RUN_SUFFIX = "(no calls billed)"
+NOT_RUN = ("Off", "No OCR step")
+
+
+def ran(text: str) -> bool:
+    """Whether a step line describes a step that actually ran."""
+    return not text.endswith(NOT_RUN_SUFFIX) and text not in NOT_RUN
+
+
 #: The pipeline step each page is about, and how its lead line names that step's model.
 PAGE_STEPS = {
     "digitization": ("OCR", "OCR"),
@@ -292,7 +304,8 @@ def model_steps(
     """The model at each step, per dataset, over a set of values.
 
     A step whose model or setting differs between those values is the one under test,
-    so it reads "varies" rather than naming one of them.
+    so it reads "varies" rather than naming one of them. A step that ran for none of
+    the values (ran()) is left out.
     """
     out: dict[str, dict[str, str]] = {}
     for ds_key in ds_keys:
@@ -303,11 +316,13 @@ def model_steps(
                 text = entry.get(step)
                 if text:
                     seen.setdefault(step, []).append(str(text))
-        if seen:
-            out[ds_key] = {
-                step: texts[0] if len(set(texts)) == 1 else VARIES
-                for step, texts in seen.items()
-            }
+        shown = {
+            step: texts[0] if len(set(texts)) == 1 else VARIES
+            for step, texts in seen.items()
+            if any(ran(t) for t in texts)
+        }
+        if shown:
+            out[ds_key] = shown
     return out
 
 
@@ -336,9 +351,9 @@ def models_sentence(
             parts.append(
                 f"{step} by dataset: "
                 + "; ".join(
-                    f"{datasets[k].get('short', datasets[k]['name'])} — "
-                    f"{steps[k].get(step, EMPTY)}"
+                    f"{datasets[k].get('short', datasets[k]['name'])} — {steps[k][step]}"
                     for k in present
+                    if step in steps[k]
                 )
             )
         else:
@@ -450,6 +465,7 @@ def lead_line(
         str(text) if step == "OCR" else short_model(str(text))
         for value in values
         if (text := (models.get(f"{ds_key}|{value}") or {}).get(step))
+        and ran(str(text))
     }
     if not texts:
         return ""
@@ -575,6 +591,71 @@ def by_size_series(
     return out
 
 
+def pool_sources(
+    pool: list[str], values: list[str], per_doc: dict[str, Any]
+) -> list[str]:
+    """The datasets of a pool to draw from.
+
+    A pool's `<prefix>_all` dataset holds every document the subsets do, so once it
+    has per-document results it stands for the pool alone; until then the subsets
+    merge (by_size_owners).
+    """
+    whole = [
+        k
+        for k in pool
+        if k.endswith("_all") and any(per_doc.get(f"{k}|{v}") for v in values)
+    ]
+    return whole[:1] or [k for k in pool if not k.endswith("_all")]
+
+
+#: Extraction modes as the collector's Extraction line names them, in column order.
+MODES = ("single-pass", "agentic")
+
+
+def value_modes(
+    models: dict[str, dict[str, Any]], ds_keys: list[str], values: list[str]
+) -> dict[str, tuple[str, str]]:
+    """Each value's extraction model and mode, read from its Extraction line.
+
+    The line reads "<model>, <mode>[, ...]" (collect_guidance_results.extraction_line).
+    A value whose line names no mode, or whose runs used more than one configuration,
+    is left out.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    for value in values:
+        for ds_key in ds_keys:
+            text = str((models.get(f"{ds_key}|{value}") or {}).get("Extraction") or "")
+            parts = text.split(", ")
+            if " ; " not in text and len(parts) > 1 and parts[1] in MODES:
+                out[value] = (short_model(parts[0]), parts[1])
+                break
+    return out
+
+
+def mode_label(value: str, modes: dict[str, tuple[str, str]]) -> str:
+    """ "Agentic · Claude Sonnet 5": the mode and model, which every value has."""
+    if value not in modes:
+        return value
+    model, mode = modes[value]
+    return f"{mode[:1].upper()}{mode[1:]} · {model}"
+
+
+def series_slots(
+    names: list[str], modes: dict[str, tuple[str, str]]
+) -> list[tuple[int, int]] | None:
+    """Color by mode and shape by model, when the values are modes of several models.
+
+    Six values in six cycled colors would be read by color alone; two colors for the
+    two modes and a shape (and a line style) per model keep each one legible.
+    """
+    if not names or any(n not in modes for n in names):
+        return None
+    order = list(dict.fromkeys(modes[n][0] for n in names))
+    if len(order) < 2 or len(order) > 3:
+        return None
+    return [(MODES.index(modes[n][1]), order.index(modes[n][0])) for n in names]
+
+
 def render_by_size(
     ab: dict[str, Any], reg: dict[str, Any], results: dict[str, Any]
 ) -> tuple[list[str], dict[str, str]]:
@@ -582,7 +663,8 @@ def render_by_size(
 
     One chart per pool of datasets (dataset_pools), drawn from the results file's
     per-document scores: where a mean over a dataset says which value wins, this says
-    at what size it starts winning.
+    at what size it starts winning. An ablation with `strata` gets its table under
+    each chart (render_strata).
     """
     spec = ab.get("by_size") or {}
     per_doc = results.get("per_doc") or {}
@@ -596,11 +678,12 @@ def render_by_size(
     md: list[str] = []
     plots: dict[str, str] = {}
     for pool in dataset_pools(ab["datasets"]):
-        owner = by_size_owners(pool, ab["values"], per_doc, sample)
+        sources = pool_sources(pool, ab["values"], per_doc)
+        owner = by_size_owners(sources, ab["values"], per_doc, sample)
         series = by_size_series(owner, ab["values"], per_doc, metric, x_metric)
         if not series:
             continue
-        used = sorted(set(owner.values()), key=pool.index)
+        used = sorted(set(owner.values()), key=sources.index)
         drawn = sorted({doc for _, pts in series for doc, _, _ in pts})
         steps = model_steps(models, used, ab["values"])
         runs = span(
@@ -615,6 +698,10 @@ def render_by_size(
         n_text = f"N = {len(drawn)} documents × {runs} runs"
         y_name = metrics[metric]["name"]
         x_name = f"{metrics[x_metric]['name']}, log scale"
+        modes = value_modes(models, used, ab["values"])
+        slots = series_slots([v for v, _ in series], modes)
+        if slots:
+            series = [(mode_label(v, modes), pts) for v, pts in series]
         name = f"{ab['id']}-by-size-{pool[0].replace('_', '-')}.svg"
         plots[name] = draw_by_size(
             x_name,
@@ -629,6 +716,7 @@ def render_by_size(
                     p for p in (models_text(steps.get(used[0], {})), n_text) if p
                 ),
             ),
+            slots=slots,
         )
         alt = (
             f"{y_name} against {lower_first(metrics[x_metric]['name'])} "
@@ -637,6 +725,7 @@ def render_by_size(
         caption = (
             f"*{y_name} per document, against {lower_first(metrics[x_metric]['name'])}. "
             + BY_SIZE_CAPTION.format(changes=lower_first(ab["changes"]))
+            + (f" {SLOTS_CAPTION}" if slots else "")
             + (f" {LIST_SCORE_CAPTION}" if metric == "list_score" else "")
             + "*"
             + " Datasets: "
@@ -648,7 +737,285 @@ def render_by_size(
             caption += f" {plot_models}"
         caption += f" {n_text}."
         md += [f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""]
+        if ab.get("strata"):
+            md += render_strata(ab, reg, results, sources)
     return md, plots
+
+
+SLOTS_CAPTION = "Color marks the extraction mode, and shape and line style the model."
+
+
+def band_labels(bands: list[int], noun: str) -> list[str]:
+    """ "No line items", "1–20", ..., "More than 300", for bands given as lower bounds."""
+    out = []
+    for i, lo in enumerate(bands):
+        hi = bands[i + 1] - 1 if i + 1 < len(bands) else None
+        if hi is None:
+            out.append(f"More than {lo - 1:,}" if lo > 0 else "Any")
+        elif lo == hi == 0:
+            out.append(f"No {noun}")
+        elif lo == hi:
+            out.append(f"{lo:,}")
+        else:
+            out.append(f"{lo:,}–{hi:,}")
+    return out
+
+
+def band_of(x: float, bands: list[int]) -> int:
+    return max(i for i, lo in enumerate(bands) if x >= lo) if x >= bands[0] else -1
+
+
+def strata_docs(
+    sources: list[str],
+    values: list[str],
+    per_doc: dict[str, dict[str, dict[str, float]]],
+    sample: dict[str, dict[str, Any]],
+    score: str,
+    by: str,
+) -> tuple[list[str], dict[str, tuple[str, float]]]:
+    """The values with per-document results, and the documents every one of them scored.
+
+    Each document is counted once, under the first source dataset (most runs first)
+    in which every value has its `score`; `by` comes from the same entries. Returns
+    the values and {document: (dataset, by)}.
+    """
+    shown = [v for v in values if any(per_doc.get(f"{k}|{v}") for k in sources)]
+
+    def runs(ds_key: str) -> int:
+        return sum(
+            int((sample.get(f"{ds_key}|{v}") or {}).get("runs") or 0) for v in shown
+        )
+
+    docs: dict[str, tuple[str, float]] = {}
+    for ds_key in sorted(sources, key=lambda k: (-runs(k), sources.index(k))):
+        entries = [per_doc.get(f"{ds_key}|{v}") or {} for v in shown]
+        for doc in entries[0] if entries else {}:
+            if doc in docs:
+                continue
+            found = [e.get(doc) or {} for e in entries]
+            size = next((f[by] for f in found if by in f), None)
+            if size is not None and all(score in f for f in found):
+                docs[doc] = (ds_key, float(size))
+    return shown, docs
+
+
+def ratio_text(num: float | None, den: float | None) -> str:
+    if num is None or not den:
+        return EMPTY
+    return f"{num / den:.1f}×"
+
+
+def render_strata(
+    ab: dict[str, Any], reg: dict[str, Any], results: dict[str, Any], sources: list[str]
+) -> list[str]:
+    """A pool's documents banded by size: one table per set of models that scored
+    the same documents (strata_table).
+
+    A table counts only documents every value in it scored, so a model run on fewer
+    of the pool's documents than another gets a table of its own instead of shrinking
+    the other's to its documents.
+    """
+    spec = ab["strata"]
+    per_doc = results.get("per_doc") or {}
+    sample = results.get("sample") or {}
+    models = results.get("models") or {}
+    by, score = str(spec["by"]), str(spec.get("score") or ab["by_size"]["metric"])
+    values = [v for v in ab["values"] if any(per_doc.get(f"{k}|{v}") for k in sources)]
+    modes = value_modes(models, sources, values)
+    # Values grouped by model, in the registry's order; a value with no mode is its
+    # own group.
+    groups: dict[str, list[str]] = {}
+    for v in values:
+        groups.setdefault(modes[v][0] if v in modes else v, []).append(v)
+    tables: list[tuple[frozenset[str], list[str]]] = []
+    for group in groups.values():
+        _, docs = strata_docs(sources, group, per_doc, sample, score, by)
+        if not docs:
+            continue
+        found = frozenset(docs)
+        same = next((t for t in tables if t[0] == found), None)
+        if same:
+            same[1].extend(group)
+        else:
+            tables.append((found, list(group)))
+    out: list[str] = []
+    for _, group in tables:
+        out += strata_table(ab, reg, results, sources, group)
+    if out:
+        out += [cost_note(str(results.get("region") or "")), ""]
+    return out
+
+
+def strata_table(
+    ab: dict[str, Any],
+    reg: dict[str, Any],
+    results: dict[str, Any],
+    sources: list[str],
+    shown: list[str],
+) -> list[str]:
+    """One table of a pool's documents banded by size, for some of the values.
+
+    Rows are the `strata` bands and a total; for each value, the mean per-document
+    `score`, weighted accuracy and cost per 1,000 documents over the band's documents
+    (only documents every value here scored); and, for each model with both modes,
+    what agentic costs against single-pass. The best score in each row is bold. A
+    document a value did not finish is named in a note rather than dropped silently.
+    """
+    spec = ab["strata"]
+    datasets: dict[str, Any] = reg["datasets"]
+    per_doc = results.get("per_doc") or {}
+    sample = results.get("sample") or {}
+    models = results.get("models") or {}
+    by, score = str(spec["by"]), str(spec.get("score") or ab["by_size"]["metric"])
+    bands = [int(b) for b in spec["bands"]]
+    noun = str(spec.get("noun") or "rows")
+    things = str(spec.get("documents") or "documents")
+    thing = things.removesuffix("s")
+    values, docs = strata_docs(sources, shown, per_doc, sample, score, by)
+    if not docs or not values:
+        return []
+    modes = value_modes(models, sources, values)
+    labels = {v: mode_label(v, modes) for v in values}
+    pairs: list[tuple[str, str, str]] = []
+    for model in dict.fromkeys(modes[v][0] for v in values if v in modes):
+        single = next((v for v in values if modes.get(v) == (model, MODES[0])), None)
+        agent = next((v for v in values if modes.get(v) == (model, MODES[1])), None)
+        if single and agent:
+            pairs.append((model, single, agent))
+    score_name = noun.removesuffix("s").replace(" ", "-") + " score"
+
+    def means(group: list[str], value: str, metric: str) -> float | None:
+        found = [
+            float(e[metric])
+            for doc in group
+            if metric
+            in (e := (per_doc.get(f"{docs[doc][0]}|{value}") or {}).get(doc) or {})
+        ]
+        return statistics.fmean(found) if found else None
+
+    header = [noun[:1].upper() + noun[1:], things[:1].upper() + things[1:]]
+    for v in values:
+        header += [
+            f"{labels[v]}: {score_name}",
+            f"{labels[v]}: weighted accuracy",
+            f"{labels[v]}: cost per 1,000",
+        ]
+    header += [
+        "Agentic costs" if len(pairs) == 1 else f"Agentic costs, {model}"
+        for model, _, _ in pairs
+    ]
+    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    groups = [
+        [d for d, (_, x) in docs.items() if band_of(x, bands) == i]
+        for i in range(len(bands))
+    ]
+    rows = list(zip(band_labels(bands, noun), groups, strict=True))
+    rows.append((f"All {things}", sorted(docs)))
+    for label, group in rows:
+        if not group:
+            continue
+        scores = {v: means(group, v, score) for v in values}
+        best = max((m for m in scores.values() if m is not None), default=None)
+        row = [
+            label if not label.startswith("All ") else f"**{label}**",
+            f"{len(group):,}",
+        ]
+        for v in values:
+            m = scores[v]
+            text = EMPTY if m is None else f"{m:.2f}"
+            if m is not None and best is not None and len(values) > 1:
+                text = f"**{text}**" if f"{m:.2f}" == f"{best:.2f}" else text
+            acc = means(group, v, "weighted_accuracy")
+            cost = means(group, v, "cost")
+            row += [
+                text,
+                EMPTY if acc is None else f"{acc:.2f}",
+                EMPTY if cost is None else money(cost * 1000),
+            ]
+        for _, single, agent in pairs:
+            row.append(
+                ratio_text(means(group, agent, "cost"), means(group, single, "cost"))
+            )
+        out.append("| " + " | ".join(row) + " |")
+    out.append("")
+
+    used = sorted({k for k, _ in docs.values()}, key=sources.index)
+    runs = span(
+        [
+            int((sample.get(f"{k}|{v}") or {}).get("runs") or 0)
+            for k in used
+            for v in values
+            if (sample.get(f"{k}|{v}") or {}).get("runs")
+        ]
+        or [ab.get("runs", 0)]
+    )
+    basis = results.get("cost_basis") or {}
+    cold = any(
+        (basis.get(f"{k}|{v}") or {}).get("mode") == "cold-run"
+        for k in used
+        for v in values
+    )
+    note = (
+        f"*{things[:1].upper() + things[1:]} grouped by the {noun} their ground truth "
+        f"holds. Each score and cost is a mean over the row's {things}; only {things} every "
+        f"run of every value scored are counted, each once. The "
+        f"{score_name} is Stickler's score for the list: matched rows over the larger "
+        "of the true and returned row counts. Cost is each "
+        f"{thing}'s own Amazon Bedrock and Amazon Textract metering"
+        + (
+            ", from each value's first, cold-cache run"
+            if cold
+            else ", averaged over runs that share no prompt cache"
+        )
+        + "; Agentic costs is agentic's cost over single-pass's for the same model. "
+        f"The best {score_name} in each row is bold.* Datasets: "
+        + ", ".join(dataset_label(k, datasets, short=True) for k in used)
+        + f". N = {len(docs)} {things} × {runs} runs."
+    )
+    out += [note, ""]
+
+    # Documents a value did not finish: counted, named by size, never hidden.
+    unfinished = results.get("unfinished") or {}
+    for v in values:
+        late: dict[str, dict[str, Any]] = {}
+        for k in sources:
+            for doc, entry in (unfinished.get(f"{k}|{v}") or {}).items():
+                late.setdefault(doc, entry)
+        if not late:
+            continue
+        timed_out = {
+            d: e for d, e in late.items() if set(e.get("status") or []) <= {"COMPLETED"}
+        }
+        failed = {d: e for d, e in late.items() if d not in timed_out}
+
+        def described(group: dict[str, dict[str, Any]]) -> str:
+            parts = []
+            for _, e in sorted(
+                group.items(), key=lambda de: de[1].get("list_rows", -1)
+            ):
+                size = (
+                    f"{int(e['list_rows']):,} {noun}"
+                    if "list_rows" in e
+                    else "size unknown"
+                )
+                parts.append(f"{size}, {e['runs']} of {e['of']} runs")
+            return "; ".join(parts)
+
+        for group, verb in (
+            (timed_out, "did not finish"),
+            (failed, "failed on"),
+        ):
+            if not group:
+                continue
+            n = len(group)
+            word = thing if n == 1 else things
+            limit = " in Test Studio's time limit" if verb == "did not finish" else ""
+            out += [
+                f"{labels[v]} {verb} {n} {word}{limit} ({described(group)}). "
+                f"{'It is' if n == 1 else 'They are'} left out of every column.",
+                "",
+            ]
+    return out
 
 
 def details_heading(ab: dict[str, Any]) -> str:
