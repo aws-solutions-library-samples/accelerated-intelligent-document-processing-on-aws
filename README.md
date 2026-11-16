@@ -7,6 +7,8 @@ SPDX-License-Identifier: MIT-0
 
 
 
+🎬 **[See IDP in Action](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/idp-in-action.html)** — an illustrated tour of the main features, with an eight-minute overview video
+
 📖 **[Browse the Documentation Site](https://aws-solutions-library-samples.github.io/accelerated-intelligent-document-processing-on-aws/)** — searchable, with sidebar navigation
 
 ## Table of Contents

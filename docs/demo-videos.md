@@ -9,6 +9,8 @@ SPDX-License-Identifier: MIT-0
 
 This page contains all demonstration videos for the GenAI Intelligent Document Processing (GenAIIDP) accelerator, organized by feature category.
 
+For a guided tour of the main features, with the eight-minute overview video and the feature walkthroughs beside the screens they show, start with [IDP in Action](./idp-in-action.md).
+
 ## Table of Contents
 
 - [Overview & Getting Started](#overview--getting-started)
@@ -29,6 +31,17 @@ This page contains all demonstration videos for the GenAI Intelligent Document P
 ---
 
 ## Overview & Getting Started
+
+### The GenAI IDP Accelerator: from documents to decisions
+The whole product through one lending packet, for new viewers. Quick Start turns a plain-language description into a supplier-invoice configuration, then the sample lending packet is split into six documents, classified and extracted, with a confidence score and a page location for every value. A low-confidence pay slip is checked in a review queue, two extraction models are compared on accuracy and cost in Test Studio, Agent Chat charts the processed documents and the Knowledge Base answers from them, and each document's itemized cost, the administration pages and the extensions catalog close the tour.
+
+**Duration**: ~8 minutes
+
+<!-- Paste the video's https://github.com/user-attachments/assets/... URL on the next line. -->
+
+**Related Documentation**: [IDP in Action](./idp-in-action.md)
+
+---
 
 ### Solution Overview
 A scalable, serverless solution for automated document processing and information extraction using AWS services.
