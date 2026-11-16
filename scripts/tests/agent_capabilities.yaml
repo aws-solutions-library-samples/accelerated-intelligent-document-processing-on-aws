@@ -257,6 +257,13 @@ roles:
       - {kind: delete, bucket: OutputBucket, key: /*,
          unused: "S3CrudPolicy grants it; no delete call on this function's code path.
            Inferred from source, not measured."}
+    invoke:
+      - {resource: "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-*",
+         uses: "Advanced extraction runs its model calls and its confidence pass here:
+           LambdaHook inference, and decision-model confidence through
+           idp_common/decision_model/invoker.py, whose endpoint function names must
+           start with GENAIIDP- (FUNCTION_NAME_PREFIX). The ARN is chosen by
+           configuration, not by a tool."}
   MultiDocDiscoveryAnalyzeFunction:
     template: nested/multi-doc-discovery/template.yaml
     object_access:
