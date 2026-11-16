@@ -15,6 +15,7 @@ from idp_sdk.exceptions import (
     IDPResourceNotFoundError,
 )
 from idp_sdk.models import (
+    DocumentBucket,
     DocumentDeletionResult,
     DocumentDownloadResult,
     DocumentInfo,
@@ -116,8 +117,11 @@ class DocumentOperation:
 
         status_data = monitor.get_batch_status([document_id])
 
-        # Find document in status data
-        for category in ["completed", "running", "queued", "failed"]:
+        # Find document in status data. Every bucket the monitor fills, derived
+        # from the enum rather than typed out, so a bucket added to
+        # `DocumentBucket` cannot make an existing document read as not found --
+        # which is what a four-name list would do to `awaiting_review` (#2022).
+        for category in [bucket.value for bucket in DocumentBucket]:
             for doc in status_data.get(category, []):
                 if doc.get("document_id") == document_id:
                     start_time = doc.get("start_time")
@@ -138,6 +142,7 @@ class DocumentOperation:
                         error=doc.get("error"),
                         review=ReviewInfo.from_lookup(doc.get("review")),
                         review_status=(doc.get("review") or {}).get("status"),
+                        bucket=DocumentBucket(category),
                     )
 
         raise IDPResourceNotFoundError(f"Document not found: {document_id}")

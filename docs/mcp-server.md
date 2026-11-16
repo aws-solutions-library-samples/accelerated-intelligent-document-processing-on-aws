@@ -429,7 +429,8 @@ no error-detail field either way. What you get instead is the **count** of failu
     "completed": "integer",
     "in_progress": "integer",
     "failed": "integer",
-    "queued": "integer"
+    "queued": "integer",
+    "awaiting_review": "integer"
   },
   "progress": {
     "percentage": "number"
@@ -437,6 +438,15 @@ no error-detail field either way. What you get instead is the **count** of failu
   "all_complete": "boolean"
 }
 ```
+
+`all_complete` is `true` once no document is queued or running. A document
+waiting for human review (`awaiting_review`, status `HITL_IN_PROGRESS`) counts as
+settled, because nothing more happens to it until a reviewer completes or rejects
+it in the web UI's review queues, so an agent polling this tool stops rather than
+waiting on a person. It does not mean every document has an outcome: check
+`awaiting_review` before treating the batch's results as final.
+`progress.percentage` is the share of documents that **completed**, so it stays
+below 100 while any document is failed or awaiting review.
 
 With `options.detailed: true` the response gains a `documents` array, one entry per
 document in the batch, each with `document_id`, `status`, `duration_seconds` and
@@ -468,7 +478,8 @@ document in the batch, each with `document_id`, `status`, `duration_seconds` and
     "completed": 3,
     "in_progress": 1,
     "failed": 0,
-    "queued": 1
+    "queued": 1,
+    "awaiting_review": 0
   },
   "progress": {
     "percentage": 60.0

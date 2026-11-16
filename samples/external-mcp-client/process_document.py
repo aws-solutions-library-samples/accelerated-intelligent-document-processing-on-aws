@@ -241,7 +241,13 @@ def check_status(
         )
 
         if result_data.get("all_complete"):
-            print("    Processing complete!")
+            # Settled: nothing queued or running. A document held for human
+            # review counts as settled and has no final result yet.
+            awaiting = status.get("awaiting_review", 0)
+            if awaiting:
+                print(f"    Processing finished; {awaiting} document(s) await review")
+            else:
+                print("    Processing complete!")
             return result
 
         time.sleep(5)
