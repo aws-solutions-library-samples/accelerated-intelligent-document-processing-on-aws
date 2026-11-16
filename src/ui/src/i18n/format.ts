@@ -17,9 +17,10 @@
  * formatting (`toFixed`, `String`, `JSON.stringify`) and must not go through these helpers:
  * `1 234,50` round-trips through `parseFloat` as `1`.
  *
- * Nothing calls these yet. PR 2 of the series moves the existing call sites over, classifying
- * each `toFixed` site as prose or technical (D15), and records the one visible change, `US$`
- * in place of `$`, in the CHANGELOG.
+ * Every displayed date, time, number, percentage and amount in the UI goes through these
+ * helpers or through `useFormatters()`. A `toFixed` or `toLocaleString` that remains in a
+ * component is there on purpose: its value is exported, parsed back, compared as text, logged
+ * or fed to a chart.
  */
 import { useMemo } from 'react';
 import { DEFAULT_LOCALE, type Locale } from './locales';

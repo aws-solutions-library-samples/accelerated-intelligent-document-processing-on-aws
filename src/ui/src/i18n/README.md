@@ -152,8 +152,10 @@ that takes a `locale` prop directly.
   positions with `\s` and never name a codepoint. jsdom's `Intl` follows the process locale, so every
   formatting test passes an explicit locale rather than relying on the machine's default.
 
-Nothing calls the helpers yet; PR 2 of the series moves the existing `toLocaleString`, `toFixed`
-and `$` sites over and records the one visible change (`US$`) in the CHANGELOG.
+Every displayed date, time, number, percentage and amount goes through the helpers. The
+`toFixed` and `toLocaleString` calls that remain in components are exports, parse-backs, text
+comparisons, debug timings and chart data, each locale-neutral on purpose; the comparison
+screen's CSV test pins one of them beside its localized cell.
 
 ## Catalogs and the build
 
