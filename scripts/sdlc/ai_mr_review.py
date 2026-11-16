@@ -1851,11 +1851,13 @@ def sigv4_headers(
     }
 
 
-_CREDENTIAL_FILE_KEYS = {
-    "AWS_ACCESS_KEY_ID": "aws_access_key_id",
-    "AWS_SECRET_ACCESS_KEY": "aws_secret_access_key",
-    "AWS_SESSION_TOKEN": "aws_session_token",
-}
+#: The session's three environment names. Each one's option name in the shared
+#: files is the same name lowercased (``aws_access_key_id`` and so on).
+_CREDENTIAL_FILE_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+)
 
 
 def _file_credentials(environ: Mapping[str, str]) -> dict[str, str]:
@@ -1895,10 +1897,10 @@ def _file_credentials(environ: Mapping[str, str]) -> dict[str, str]:
         if not parser.has_section(section):
             continue
         found = {
-            key: parser.get(section, option).strip()
-            for key, option in _CREDENTIAL_FILE_KEYS.items()
-            if parser.has_option(section, option)
-            and parser.get(section, option).strip()
+            key: parser.get(section, key.lower()).strip()
+            for key in _CREDENTIAL_FILE_KEYS
+            if parser.has_option(section, key.lower())
+            and parser.get(section, key.lower()).strip()
         }
         if found.get("AWS_ACCESS_KEY_ID") and found.get("AWS_SECRET_ACCESS_KEY"):
             return found
