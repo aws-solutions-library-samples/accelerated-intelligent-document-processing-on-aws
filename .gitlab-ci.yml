@@ -1340,6 +1340,11 @@ ai_mr_review:
     # masked project variable), replaces the job's credentials in its own
     # environment, and then asks STS which role it holds and refuses to review on
     # any other.
+    #
+    # ⚠️ The fleet exports NO AWS_* variables: its vendor writes the job's session
+    # to files and symlinks them to $HOME/.aws in pre_build_script. The script has
+    # no AWS SDK, so job_credentials() in ai_mr_review.py reads those files itself;
+    # an env-only reader fails every run with "no AWS credentials".
     REVIEW_ROLE_NAME: "idp-sdlc-GitLabReview"
     REVIEW_HARNESS_DIR: "/tmp/review-harness"
     REVIEW_HARNESS: "scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
