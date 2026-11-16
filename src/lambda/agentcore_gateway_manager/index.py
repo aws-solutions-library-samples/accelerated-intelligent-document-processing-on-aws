@@ -90,7 +90,7 @@ IDP_TOOLS_SCHEMA = [
     },
     {
         "name": "status",
-        "description": "Get processing status for a batch of documents. Returns progress, timing, and error information.",
+        "description": "Get processing status for a batch of documents. Returns progress, timing, and error information. all_complete is true once nothing is queued or running; documents held for human review are counted in status.awaiting_review and have no final result until a reviewer completes or rejects them.",
         "inputSchema": {
             "type": "object",
             "properties": {
