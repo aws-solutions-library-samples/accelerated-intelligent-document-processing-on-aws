@@ -1,6 +1,6 @@
 {
   "ablation": "EX-01",
-  "verdict": "When an invoice has more than about 100 line items. With Claude Sonnet 5 on 48 RealKIE invoices, single-pass scored 0.26 on the invoices with 101 to 300 line items and 0.00 on those with more than 300; agentic extraction scored 0.47 and 0.71, and cost 1.2× and 6.3× as much. At 100 line items or fewer single-pass scored higher (0.65 against 0.56 at 1 to 20 line items), and agentic cost 1.1× to 2.8× as much. Over all 48 invoices agentic cost 1.6× as much. With Claude Sonnet 5.5, on 20 invoices of up to 100 line items, both modes scored 0.62 and agentic cost 0.8× as much. Agentic extraction did not finish the invoice with 1,490 line items within Test Studio's time limit.",
+  "verdict": "When an invoice has more than about 100 line items, and then with Claude Haiku 5.5. On all 75 RealKIE invoices, single-pass scored as well as agentic or better up to 100 line items (0.69 against 0.57 with Claude Haiku 5.5 at 1 to 20 items), and with the 5.5 models agentic cost about the same there. Above 100 line items single-pass got almost no line items right (0.00 to 0.22) while agentic got 0.43 to 0.80. On those long invoices agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($329 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, so the long bands rest on few invoices; Test Studio could not score the longest (1,490 items), because its evaluation step timed out although extraction finished.",
   "runs": {
     "realkie": {
       "Single-pass (Simple, default)": [
@@ -63,6 +63,11 @@
         "realkie-fcc-long-20261116-145655",
         "realkie-fcc-long-20261116-145656",
         "realkie-fcc-long-20261116-145654"
+      ],
+      "Agentic · Claude Sonnet 5.5": [
+        "realkie-fcc-long-20261116-145707",
+        "realkie-fcc-long-20261116-145708",
+        "realkie-fcc-long-20261116-145709"
       ]
     },
     "synth_400": {
@@ -93,6 +98,28 @@
         "synth-statements-1600-20261113-231626",
         "synth-statements-1600-20261113-231629",
         "synth-statements-1600-20261113-231631"
+      ]
+    },
+    "realkie_all": {
+      "Single-pass · Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-152541",
+        "RealKIE-FCC-Verified-20261116-152542",
+        "RealKIE-FCC-Verified-20261116-152544"
+      ],
+      "Single-pass · Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-152951",
+        "RealKIE-FCC-Verified-20261116-152953",
+        "RealKIE-FCC-Verified-20261116-152954"
+      ],
+      "Agentic · Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-152540",
+        "RealKIE-FCC-Verified-20261116-152543",
+        "RealKIE-FCC-Verified-20261116-152545"
+      ],
+      "Agentic · Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-152955",
+        "RealKIE-FCC-Verified-20261116-152950",
+        "RealKIE-FCC-Verified-20261116-152952"
       ]
     }
   },
@@ -127,6 +154,21 @@
     "realkie-fcc-long-20261116-145656",
     "RealKIE-FCC-Verified-20261116-145657",
     "RealKIE-FCC-Verified-20261116-145707",
-    "realkie-fcc-long-20261116-145654"
+    "realkie-fcc-long-20261116-145654",
+    "realkie-fcc-long-20261116-145707",
+    "realkie-fcc-long-20261116-145708",
+    "realkie-fcc-long-20261116-145709",
+    "RealKIE-FCC-Verified-20261116-152541",
+    "RealKIE-FCC-Verified-20261116-152542",
+    "RealKIE-FCC-Verified-20261116-152544",
+    "RealKIE-FCC-Verified-20261116-152951",
+    "RealKIE-FCC-Verified-20261116-152953",
+    "RealKIE-FCC-Verified-20261116-152954",
+    "RealKIE-FCC-Verified-20261116-152540",
+    "RealKIE-FCC-Verified-20261116-152543",
+    "RealKIE-FCC-Verified-20261116-152955",
+    "RealKIE-FCC-Verified-20261116-152545",
+    "RealKIE-FCC-Verified-20261116-152950",
+    "RealKIE-FCC-Verified-20261116-152952"
   ]
 }
