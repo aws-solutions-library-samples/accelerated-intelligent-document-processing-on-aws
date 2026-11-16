@@ -130,7 +130,10 @@ that takes a `locale` prop directly.
   only the `currency` part of `formatToParts` with the literal `US$`; digits, separators, the
   space before a trailing symbol and the minus sign (`-US$3.50`, `-3,50 US$`) are the locale's
   own. `fractionDigits` is required because `Intl`'s two-digit default would round a cost of
-  `0.0123` to `0.01`; state today's precision at each site.
+  `0.0123` to `0.01`; state today's precision at each site. Money never goes through
+  `intl.formatNumber`, `<FormattedNumber>` or an ICU `::currency/USD` skeleton: those print the
+  locale's own symbol (`$ US` under `fr-CA`). A message that contains a cost takes the
+  `formatUsDollars` string as a plain argument.
 - **`formatPercent` takes a ratio** (`0.125`, not `12.5`); `Intl` does the ×100.
 - **`formatFixed(value, digits)`** is the locale-aware `toFixed`; `{ useGrouping: false }`
   drops the thousands separator.
@@ -138,6 +141,12 @@ that takes a `locale` prop directly.
   copied to the clipboard, or compared or sorted as text keeps locale-neutral formatting
   (`toFixed`, `String`, `JSON.stringify`): `1 234,50` round-trips through `parseFloat` as `1`,
   and `US$0.0123` through `replace('$', '')` as `NaN`.
+- **`useFormatters()` works without the provider.** Outside `LocaleProvider` (a plain `render`
+  in a test) it formats as `en`, the runtime default, so an English component test needs no
+  provider; the app always mounts one. Its `locale` member is what a component hands to a pure
+  function that takes `locale` (`formatCostUsd(value, locale)`), so component code never calls
+  `useLocale()` for formatting; `useLocale()` still throws without the provider, because
+  switching locale needs it.
 - In `fr-CA`, ICU emits a no-break space as the group separator and before `%` and `US$`; which
   one (U+00A0, or the narrow U+202F) has changed between ICU releases, so tests match those
   positions with `\s` and never name a codepoint. jsdom's `Intl` follows the process locale, so every

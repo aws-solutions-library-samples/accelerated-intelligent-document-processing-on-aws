@@ -154,8 +154,14 @@ export const LocaleProvider = ({ children, enabledLocales = ENABLED_LOCALES }: L
   );
 };
 
+/**
+ * The locale context when a `LocaleProvider` is mounted, `null` otherwise. For a reader that
+ * has a correct default without the provider (`useFormatters`, which then formats as `en`).
+ */
+export const useOptionalLocale = (): LocaleContextValue | null => useContext(LocaleContext);
+
 export const useLocale = (): LocaleContextValue => {
-  const ctx = useContext(LocaleContext);
+  const ctx = useOptionalLocale();
   if (!ctx) throw new Error('useLocale must be used within LocaleProvider');
   return ctx;
 };
