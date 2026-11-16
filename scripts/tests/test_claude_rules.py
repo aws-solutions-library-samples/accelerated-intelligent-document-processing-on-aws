@@ -12,6 +12,9 @@ row in ``.claude/rules/README.md`` is one nobody looking for it there will find.
 * a rule's front matter holds a ``paths:`` list of strings and nothing else; and
 * the README's table and the directory name the same rule files, in both directions.
 
+Rule files are read at any depth under ``.claude/rules/``, because Claude Code loads
+them recursively, and a table row names a file by its path relative to that directory.
+
 The globs are read the way the rules use them: ``**/`` spans any number of
 directories including none, a trailing ``/**`` everything beneath, and ``*`` stays
 inside one path segment. A glob using any other syntax (braces, brackets, ``?``)
@@ -38,7 +41,11 @@ ROW = re.compile(r"^\| \[(?P<name>[^\]]+\.md)\]\((?P<target>[^)]+)\)", re.M)
 
 
 def _rule_files() -> list[Path]:
-    return sorted(path for path in RULES.glob("*.md") if path.name != "README.md")
+    return sorted(path for path in RULES.rglob("*.md") if path != README)
+
+
+def _name(rule: Path) -> str:
+    return rule.relative_to(RULES).as_posix()
 
 
 def _front_matter(text: str) -> dict | None:
@@ -101,25 +108,41 @@ def test_globs_are_read_the_way_the_rules_use_them(
     assert bool(_glob_regex(glob).match(path)) is matches
 
 
-@pytest.mark.parametrize("rule", _rule_files(), ids=lambda path: path.name)
+@pytest.mark.parametrize(
+    ("glob", "unsupported"),
+    [
+        ("src/ui/src/**/*.{ts,tsx}", True),
+        ("src/[ab]/index.py", True),
+        ("src/?.py", True),
+        ("src/ui/**", False),
+        ("**/test_*.py", False),
+    ],
+)
+def test_syntax_this_matcher_does_not_read_is_recognised(
+    glob: str, unsupported: bool
+) -> None:
+    assert bool(UNSUPPORTED.search(glob)) is unsupported
+
+
+@pytest.mark.parametrize("rule", _rule_files(), ids=_name)
 def test_a_rules_front_matter_is_a_list_of_paths_and_nothing_else(rule: Path) -> None:
     meta = _front_matter(rule.read_text("utf-8"))
     if meta is None:
         return
-    assert set(meta) == {"paths"}, f"{rule.name}: front matter keys {sorted(meta)}"
+    assert set(meta) == {"paths"}, f"{_name(rule)}: front matter keys {sorted(meta)}"
     globs = meta["paths"]
-    assert isinstance(globs, list) and globs, f"{rule.name}: paths is not a list"
-    assert all(isinstance(glob, str) and glob for glob in globs), rule.name
+    assert isinstance(globs, list) and globs, f"{_name(rule)}: paths is not a list"
+    assert all(isinstance(glob, str) and glob for glob in globs), _name(rule)
 
 
-@pytest.mark.parametrize("rule", _rule_files(), ids=lambda path: path.name)
+@pytest.mark.parametrize("rule", _rule_files(), ids=_name)
 def test_every_glob_in_a_rule_matches_a_tracked_file(rule: Path) -> None:
     meta = _front_matter(rule.read_text("utf-8")) or {}
     tracked = _tracked()
     globs = meta.get("paths", [])
     unsupported = [glob for glob in globs if UNSUPPORTED.search(glob)]
     assert not unsupported, (
-        f"{rule.name}: {unsupported} use glob syntax this test does not read; "
+        f"{_name(rule)}: {unsupported} use glob syntax this test does not read; "
         "extend _glob_regex before relying on it"
     )
     dead = [
@@ -128,7 +151,7 @@ def test_every_glob_in_a_rule_matches_a_tracked_file(rule: Path) -> None:
         if not any(_glob_regex(glob).match(path) for path in tracked)
     ]
     assert not dead, (
-        f"{rule.name}: {dead} match no tracked file, so the rule never loads for "
+        f"{_name(rule)}: {dead} match no tracked file, so the rule never loads for "
         "them. Point each at the file or tree it was written for, or remove it."
     )
 
@@ -138,7 +161,7 @@ def test_the_readme_lists_every_rule_file_and_no_other() -> None:
         match["name"]: match["target"] for match in ROW.finditer(README.read_text())
     }
     assert all(name == target for name, target in rows.items()), rows
-    on_disk = {path.name for path in _rule_files()}
+    on_disk = {_name(path) for path in _rule_files()}
     assert set(rows) == on_disk, (
         f"listed but missing: {sorted(set(rows) - on_disk)}; "
         f"present but not listed: {sorted(on_disk - set(rows))}"
