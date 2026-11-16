@@ -56,7 +56,7 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [Synthetic file holding two statements](../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements)
 - **Preset:** `bank-statement-sample`
 - **Test Studio test set:** not on the benchmark stack yet
-- **Used by:** [SC-01](splitting-and-classification.md#sc-01-does-holistic-classification-beat-page-by-page-classification), [EX-13](extraction.md#ex-13-how-should-i-extract-sections-that-hold-several-records)
+- **Used by:** [EX-13](extraction.md#ex-13-how-should-i-extract-sections-that-hold-several-records)
 
 ### RealKIE-FCC-Verified (20 invoices)
 
@@ -112,7 +112,7 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [DocSplit-Poly-Seq](../idp-fundamentals/benchmark-datasets.md#docsplit-poly-seq)
 - **Preset:** `docsplit`
 - **Test Studio test set:** `docsplit`, 20 documents per run
-- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [SC-01](splitting-and-classification.md#sc-01-does-holistic-classification-beat-page-by-page-classification), [SC-11](splitting-and-classification.md#sc-11-which-splitting-mechanism-works-best-with-each-classification-model), [SC-02](splitting-and-classification.md#sc-02-do-i-need-page-images-in-the-classification-prompt), [SC-03](splitting-and-classification.md#sc-03-which-classification-model-should-i-use), [SC-04](splitting-and-classification.md#sc-04-how-long-a-packet-can-holistic-classification-handle), [SC-05](splitting-and-classification.md#sc-05-does-neighboring-page-context-help-page-by-page-classification), [SC-06](splitting-and-classification.md#sc-06-do-few-shot-examples-help-classification), [SC-07](splitting-and-classification.md#sc-07-how-much-do-class-descriptions-matter), [SC-08](splitting-and-classification.md#sc-08-does-accuracy-drop-as-i-add-document-classes), [SC-09](splitting-and-classification.md#sc-09-how-small-can-classification-images-be), [CF-05](confidence-assessment.md#cf-05-does-classification-confidence-flag-the-wrong-document-class), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-03](token-use.md#tu-03-what-do-page-images-cost-in-tokens-step-by-step)
+- **Used by:** [TR-01](index.md#tr-01-how-much-do-results-vary-between-identical-runs), [SC-11](splitting-and-classification.md#sc-11-does-holistic-classification-beat-page-by-page-classification), [SC-02](splitting-and-classification.md#sc-02-do-i-need-page-images-in-the-classification-prompt), [SC-03](splitting-and-classification.md#sc-03-which-classification-model-should-i-use), [SC-04](splitting-and-classification.md#sc-04-how-long-a-packet-can-holistic-classification-handle), [SC-05](splitting-and-classification.md#sc-05-does-neighboring-page-context-help-page-by-page-classification), [SC-06](splitting-and-classification.md#sc-06-do-few-shot-examples-help-classification), [SC-07](splitting-and-classification.md#sc-07-how-much-do-class-descriptions-matter), [SC-08](splitting-and-classification.md#sc-08-does-accuracy-drop-as-i-add-document-classes), [SC-09](splitting-and-classification.md#sc-09-how-small-can-classification-images-be), [CF-05](confidence-assessment.md#cf-05-does-classification-confidence-flag-the-wrong-document-class), [TU-01](token-use.md#tu-01-where-do-the-tokens-go), [TU-02](token-use.md#tu-02-how-much-does-prompt-caching-save-in-extraction), [TU-03](token-use.md#tu-03-what-do-page-images-cost-in-tokens-step-by-step)
 
 ## Datasets we haven't built yet
 
@@ -122,7 +122,7 @@ describes where each dataset comes from and how its ground truth was made.
 
 ### Same-class documents back to back (to be built)
 
-- **Used by:** [SC-01](splitting-and-classification.md#sc-01-does-holistic-classification-beat-page-by-page-classification), [SC-05](splitting-and-classification.md#sc-05-does-neighboring-page-context-help-page-by-page-classification)
+- **Used by:** [SC-05](splitting-and-classification.md#sc-05-does-neighboring-page-context-help-page-by-page-classification)
 
 ### Packets with section and field ground truth (to be built)
 

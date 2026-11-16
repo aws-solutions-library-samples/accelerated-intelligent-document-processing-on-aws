@@ -2,8 +2,8 @@
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "region": "us-east-1",
-  "source": "Test Studio runs DocSplit-Poly-Seq-20261113-192327, DocSplit-Poly-Seq-20261113-192328, DocSplit-Poly-Seq-20261113-192329, DocSplit-Poly-Seq-20261113-192706, DocSplit-Poly-Seq-20261113-192708, DocSplit-Poly-Seq-20261113-192711, DocSplit-Poly-Seq-20261113-194400, DocSplit-Poly-Seq-20261113-194401, DocSplit-Poly-Seq-20261113-194402, DocSplit-Poly-Seq-20261113-195220, DocSplit-Poly-Seq-20261113-195216, DocSplit-Poly-Seq-20261113-195221, DocSplit-Poly-Seq-20261113-205038, DocSplit-Poly-Seq-20261113-205043, DocSplit-Poly-Seq-20261113-205044, DocSplit-Poly-Seq-20261113-205039, DocSplit-Poly-Seq-20261113-205040, DocSplit-Poly-Seq-20261113-205041, DocSplit-Poly-Seq-20261113-205452, DocSplit-Poly-Seq-20261113-205554, DocSplit-Poly-Seq-20261113-205629, DocSplit-Poly-Seq-20261113-205634, DocSplit-Poly-Seq-20261113-205745, DocSplit-Poly-Seq-20261113-205746, DocSplit-Poly-Seq-20261113-210247, DocSplit-Poly-Seq-20261113-205935, DocSplit-Poly-Seq-20261113-210649, DocSplit-Poly-Seq-20261113-205807, DocSplit-Poly-Seq-20261113-205856, DocSplit-Poly-Seq-20261113-205917, DocSplit-Poly-Seq-20261113-210718, DocSplit-Poly-Seq-20261113-210754, DocSplit-Poly-Seq-20261113-210749, DocSplit-Poly-Seq-20261113-210759, DocSplit-Poly-Seq-20261113-210800, DocSplit-Poly-Seq-20261113-211359 (14 failed documents left out of the scores)",
-  "verdict": "Holistic, with a Claude classification model. Holistic with Claude Haiku 5.5 cost about the same as the default, Amazon Nova 2 Lite page by page ($470 against $493 per 1,000 packets), and got 0.80 of DocSplit sections exactly right, against 0.52. Holistic with Claude Sonnet 5 got 0.89 for about $200 more per 1,000 packets. With Amazon Nova 2 Lite, holistic barely helped (0.55). Detecting sections first added nothing over holistic with a Claude model and cost more.",
+  "source": "Test Studio runs DocSplit-Poly-Seq-20261113-192327, DocSplit-Poly-Seq-20261113-192328, DocSplit-Poly-Seq-20261113-192329, DocSplit-Poly-Seq-20261113-192706, DocSplit-Poly-Seq-20261113-192708, DocSplit-Poly-Seq-20261113-192711, DocSplit-Poly-Seq-20261113-194400, DocSplit-Poly-Seq-20261113-194401, DocSplit-Poly-Seq-20261113-194402, DocSplit-Poly-Seq-20261113-195220, DocSplit-Poly-Seq-20261113-195216, DocSplit-Poly-Seq-20261113-195221, DocSplit-Poly-Seq-20261113-205038, DocSplit-Poly-Seq-20261113-205043, DocSplit-Poly-Seq-20261113-205044, DocSplit-Poly-Seq-20261113-205039, DocSplit-Poly-Seq-20261113-205040, DocSplit-Poly-Seq-20261113-205041, DocSplit-Poly-Seq-20261113-205452, DocSplit-Poly-Seq-20261113-205554, DocSplit-Poly-Seq-20261113-205629, DocSplit-Poly-Seq-20261113-205634, DocSplit-Poly-Seq-20261113-205745, DocSplit-Poly-Seq-20261113-205746, DocSplit-Poly-Seq-20261113-230441, DocSplit-Poly-Seq-20261113-230443, DocSplit-Poly-Seq-20261113-230445, DocSplit-Poly-Seq-20261113-230442, DocSplit-Poly-Seq-20261113-230444, DocSplit-Poly-Seq-20261113-230446, DocSplit-Poly-Seq-20261113-230454, DocSplit-Poly-Seq-20261113-230456, DocSplit-Poly-Seq-20261113-230457, DocSplit-Poly-Seq-20261113-230455, DocSplit-Poly-Seq-20261113-230458, DocSplit-Poly-Seq-20261113-230459 (16 failed documents left out of the scores)",
+  "verdict": "Yes, once a Claude model classifies. Holistic classification with Claude Haiku 5.5 got 0.80 of DocSplit sections exactly right, against 0.52 for the default (Amazon Nova 2 Lite, page by page), at about the same cost ($470 against $493 per 1,000 packets). With Claude Sonnet 5.5 it got 0.90, for about $200 more per 1,000 packets. Holistic wins on finding where each document starts (boundary accuracy 0.92 with Claude Sonnet 5.5, against 0.75 page by page); once a document is found, every setup names it correctly (label accuracy 0.86 to 0.99). With Amazon Nova 2 Lite holistic barely helps, and splitting page by page first does a little better (0.65).",
   "cells": {
     "docsplit|Page by page \u00b7 Amazon Nova 2 Lite (default)|weighted_accuracy": {
       "mean": 0.31768,
@@ -133,131 +133,131 @@
       "mean": 0.863196,
       "se": 0.027333
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|weighted_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|weighted_accuracy": {
       "mean": 0.300136,
       "se": 0.03996
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|classification_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|classification_tokens": {
       "mean": 2820.951151,
       "se": 14.141441
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|extraction_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|extraction_tokens": {
       "mean": 6953.707365,
       "se": 9.880858
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|scoring_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|scoring_tokens": {
       "mean": 4633.535638,
       "se": 43.058401
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|total_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|total_tokens": {
       "mean": 14408.194154,
       "se": 57.884252
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|median_seconds": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|median_seconds": {
       "mean": 135.778208,
       "se": 7.568354
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|list_precision": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|all_fields_right": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|calibration_error": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|calibration_error": {
       "mean": 0.963056,
       "se": 0.002993
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30": {
       "mean": 0.299374,
       "se": 0.000154
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30_random": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30_random": {
       "mean": 0.299374,
       "se": 0.000154
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|page_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|page_accuracy": {
       "mean": 0.812714,
       "se": 0.010302
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|section_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|section_accuracy": {
       "mean": 0.652723,
       "se": 0.007012
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|grouping_score": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|grouping_score": {
       "mean": 0.804378,
       "se": 0.004515
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|boundary_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|boundary_accuracy": {
       "mean": 0.675373,
       "se": 0.007099
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)|label_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)|label_accuracy": {
       "mean": 0.91695,
       "se": 0.002162
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|weighted_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|weighted_accuracy": {
       "mean": 0.313503,
       "se": 0.030853
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|classification_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|classification_tokens": {
       "mean": 1741.410249,
       "se": 13.101538
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|extraction_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|extraction_tokens": {
       "mean": 6495.551658,
       "se": 5.464686
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|scoring_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|scoring_tokens": {
       "mean": 4112.982111,
       "se": 8.57002
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|total_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|total_tokens": {
       "mean": 12349.944017,
       "se": 21.052967
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|median_seconds": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|median_seconds": {
       "mean": 159.055463,
       "se": 13.793637
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|list_precision": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|all_fields_right": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|calibration_error": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|calibration_error": {
       "mean": 0.959312,
       "se": 0.005999
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30": {
       "mean": 0.298741,
       "se": 0.000574
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30_random": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|errors_caught_30_random": {
       "mean": 0.298741,
       "se": 0.000574
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|page_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|page_accuracy": {
       "mean": 0.755409,
       "se": 0.009096
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|section_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|section_accuracy": {
       "mean": 0.546841,
       "se": 0.022443
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|grouping_score": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|grouping_score": {
       "mean": 0.897914,
       "se": 0.005276
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|boundary_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|boundary_accuracy": {
       "mean": 0.623976,
       "se": 0.023499
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)|label_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)|label_accuracy": {
       "mean": 0.912559,
       "se": 0.004997
     },
@@ -389,389 +389,389 @@
       "mean": 0.951127,
       "se": 0.005132
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.262132,
       "se": 0.032494
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|classification_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|classification_tokens": {
       "mean": 11296.776286,
       "se": 17.75318
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|extraction_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|extraction_tokens": {
       "mean": 6802.996644,
       "se": 5.117644
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|scoring_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|scoring_tokens": {
       "mean": 4531.809843,
       "se": 13.963385
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|total_tokens": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|total_tokens": {
       "mean": 22631.582774,
       "se": 6.86947
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|median_seconds": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|median_seconds": {
       "mean": 76.789477,
       "se": 10.073402
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|list_precision": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|all_fields_right": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|calibration_error": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|calibration_error": {
       "mean": 0.970079,
       "se": 0.001532
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|errors_caught_30": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|errors_caught_30": {
       "mean": 0.299417,
       "se": 0.000381
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
       "mean": 0.299417,
       "se": 0.000381
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|page_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|page_accuracy": {
       "mean": 0.842282,
       "se": 0.012099
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|section_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|section_accuracy": {
       "mean": 0.72963,
       "se": 0.009799
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|grouping_score": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|grouping_score": {
       "mean": 0.881986,
       "se": 0.00048
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|boundary_accuracy": {
       "mean": 0.74542,
       "se": 0.010715
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5|label_accuracy": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5|label_accuracy": {
       "mean": 0.935963,
       "se": 0.017122
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.291902,
       "se": 0.026014
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|classification_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|classification_tokens": {
       "mean": 10295.129785,
       "se": 48.142331
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|extraction_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|extraction_tokens": {
       "mean": 6754.336556,
       "se": 6.623601
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|scoring_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|scoring_tokens": {
       "mean": 4564.70196,
       "se": 154.8004
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|total_tokens": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|total_tokens": {
       "mean": 21614.168301,
       "se": 205.843944
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|median_seconds": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|median_seconds": {
       "mean": 128.046508,
       "se": 10.579728
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|list_precision": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|all_fields_right": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|calibration_error": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|calibration_error": {
       "mean": 0.95557,
       "se": 0.006825
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|errors_caught_30": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|errors_caught_30": {
       "mean": 0.299335,
       "se": 0.000139
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
       "mean": 0.299335,
       "se": 0.000139
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|page_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|page_accuracy": {
       "mean": 0.866413,
       "se": 0.007604
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|section_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|section_accuracy": {
       "mean": 0.761438,
       "se": 0.023917
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|grouping_score": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|grouping_score": {
       "mean": 0.906414,
       "se": 0.006492
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|boundary_accuracy": {
       "mean": 0.780343,
       "se": 0.028869
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5|label_accuracy": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|label_accuracy": {
       "mean": 0.95267,
       "se": 0.009562
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|weighted_accuracy": {
-      "mean": 0.280413,
-      "se": 0.0237
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.275213,
+      "se": 0.032679
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|classification_tokens": {
-      "mean": 6254.461108,
-      "se": 6.35928
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|classification_tokens": {
+      "mean": 8749.183445,
+      "se": 2.336854
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|extraction_tokens": {
-      "mean": 6753.028066,
-      "se": 5.814028
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6932.950783,
+      "se": 3.070819
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|scoring_tokens": {
-      "mean": 4316.788927,
-      "se": 12.652923
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 4503.529083,
+      "se": 35.357593
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|total_tokens": {
-      "mean": 17324.278101,
-      "se": 21.799027
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 20185.663311,
+      "se": 37.813553
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|median_seconds": {
-      "mean": 104.614224,
-      "se": 12.920829
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 190.383297,
+      "se": 11.070754
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|list_precision": {
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|all_fields_right": {
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|calibration_error": {
-      "mean": 0.966951,
-      "se": 0.002444
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.965296,
+      "se": 0.002044
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|errors_caught_30": {
-      "mean": 0.298884,
-      "se": 0.000262
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.298844,
+      "se": 0.000399
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|errors_caught_30_random": {
-      "mean": 0.298884,
-      "se": 0.000262
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.298844,
+      "se": 0.000399
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|page_accuracy": {
-      "mean": 0.890928,
-      "se": 0.014342
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 0.880313,
+      "se": 0.001119
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|section_accuracy": {
-      "mean": 0.894118,
-      "se": 0.005882
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 0.762963,
+      "se": 0.009799
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|grouping_score": {
-      "mean": 0.934134,
-      "se": 0.002241
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 0.847684,
+      "se": 0.004611
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|boundary_accuracy": {
-      "mean": 0.926168,
-      "se": 0.004161
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 0.747697,
+      "se": 0.01179
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5|label_accuracy": {
-      "mean": 0.962528,
-      "se": 0.008439
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5|label_accuracy": {
+      "mean": 0.987061,
+      "se": 0.000219
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|weighted_accuracy": {
-      "mean": 0.285277,
-      "se": 0.033454
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.277971,
+      "se": 0.025652
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|classification_tokens": {
-      "mean": 8673.273533,
-      "se": 7.410857
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|classification_tokens": {
+      "mean": 6233.506946,
+      "se": 7.602061
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|extraction_tokens": {
-      "mean": 7035.34369,
-      "se": 9.10652
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6751.751529,
+      "se": 7.310284
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|scoring_tokens": {
-      "mean": 4635.639125,
-      "se": 25.837941
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 4301.495549,
+      "se": 5.105501
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|total_tokens": {
-      "mean": 20344.256348,
-      "se": 13.198694
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 17286.754024,
+      "se": 18.422088
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|median_seconds": {
-      "mean": 163.116589,
-      "se": 18.094223
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 216.491102,
+      "se": 6.835446
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|list_precision": {
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|all_fields_right": {
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|calibration_error": {
-      "mean": 0.961952,
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.959662,
+      "se": 0.00507
+    },
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.298947,
+      "se": 1.3e-05
+    },
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.298947,
+      "se": 1.3e-05
+    },
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 0.946348,
+      "se": 0.01348
+    },
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 0.903922,
       "se": 0.001961
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|errors_caught_30": {
-      "mean": 0.299218,
-      "se": 0.000676
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 0.933721,
+      "se": 0.002318
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|errors_caught_30_random": {
-      "mean": 0.299218,
-      "se": 0.000676
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 0.91829,
+      "se": 0.004802
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|page_accuracy": {
-      "mean": 0.884404,
-      "se": 0.004295
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5|label_accuracy": {
+      "mean": 0.980482,
+      "se": 0.008991
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|section_accuracy": {
-      "mean": 0.701743,
-      "se": 0.004982
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.254685,
+      "se": 0.033126
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|grouping_score": {
-      "mean": 0.779723,
-      "se": 0.004071
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|classification_tokens": {
+      "mean": 11292.181497,
+      "se": 11.318714
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|boundary_accuracy": {
-      "mean": 0.661796,
-      "se": 0.003906
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6829.277773,
+      "se": 6.13537
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5|label_accuracy": {
-      "mean": 0.985839,
-      "se": 0.000272
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 4430.781113,
+      "se": 48.31646
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|weighted_accuracy": {
-      "mean": 0.260951,
-      "se": 0.03255
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 22552.240383,
+      "se": 63.799832
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|classification_tokens": {
-      "mean": 11382.087006,
-      "se": 12.556351
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 87.417867,
+      "se": 4.210846
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|extraction_tokens": {
-      "mean": 6862.187818,
-      "se": 1.949538
-    },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|scoring_tokens": {
-      "mean": 4458.746437,
-      "se": 14.14874
-    },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|total_tokens": {
-      "mean": 22703.021261,
-      "se": 2.993619
-    },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|median_seconds": {
-      "mean": 215.508919,
-      "se": 58.490959
-    },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|list_precision": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|all_fields_right": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|calibration_error": {
-      "mean": 0.965936,
-      "se": 0.003332
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.957718,
+      "se": 0.004127
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|errors_caught_30": {
-      "mean": 0.299161,
-      "se": 0.000315
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.299575,
+      "se": 0.000213
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|errors_caught_30_random": {
-      "mean": 0.299161,
-      "se": 0.000315
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.299575,
+      "se": 0.000213
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|page_accuracy": {
-      "mean": 0.888088,
-      "se": 0.012249
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 0.943641,
+      "se": 0.001673
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|section_accuracy": {
-      "mean": 0.784532,
-      "se": 0.010419
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 0.776688,
+      "se": 0.006982
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|grouping_score": {
-      "mean": 0.874428,
-      "se": 0.007281
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 0.881589,
+      "se": 0.006797
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|boundary_accuracy": {
-      "mean": 0.774506,
-      "se": 0.015101
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 0.76702,
+      "se": 0.008401
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5|label_accuracy": {
-      "mean": 0.930847,
-      "se": 0.001682
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5|label_accuracy": {
+      "mean": 0.987061,
+      "se": 0.000219
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|weighted_accuracy": {
-      "mean": 0.280202,
-      "se": 0.02314
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.280462,
+      "se": 0.025256
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|classification_tokens": {
-      "mean": 10205.825589,
-      "se": 46.266867
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|classification_tokens": {
+      "mean": 10192.195804,
+      "se": 126.239541
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|extraction_tokens": {
-      "mean": 6749.866272,
-      "se": 14.120729
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6753.221445,
+      "se": 28.514811
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|scoring_tokens": {
-      "mean": 4355.219537,
-      "se": 22.561253
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 4441.101399,
+      "se": 108.220727
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|total_tokens": {
-      "mean": 21310.911398,
-      "se": 51.20642
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|total_tokens": {
+      "mean": 21386.518648,
+      "se": 47.078015
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|median_seconds": {
-      "mean": 160.896905,
-      "se": 39.123708
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|median_seconds": {
+      "mean": 110.382694,
+      "se": 5.564188
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|list_precision": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|all_fields_right": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|calibration_error": {
-      "mean": 0.963858,
-      "se": 0.003626
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.967323,
+      "se": 0.001322
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|errors_caught_30": {
-      "mean": 0.299368,
-      "se": 0.000446
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.298794,
+      "se": 0.000606
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|errors_caught_30_random": {
-      "mean": 0.299368,
-      "se": 0.000446
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.298794,
+      "se": 0.000606
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|page_accuracy": {
-      "mean": 0.922475,
-      "se": 0.020725
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 0.962704,
+      "se": 0.00508
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|section_accuracy": {
-      "mean": 0.891939,
-      "se": 0.011749
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 0.87451,
+      "se": 0.010375
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|grouping_score": {
-      "mean": 0.923598,
-      "se": 0.004323
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|grouping_score": {
+      "mean": 0.9284,
+      "se": 0.008947
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|boundary_accuracy": {
-      "mean": 0.906052,
-      "se": 0.009465
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 0.882458,
+      "se": 0.007895
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5|label_accuracy": {
-      "mean": 0.968304,
-      "se": 0.010992
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5|label_accuracy": {
+      "mean": 0.980995,
+      "se": 0.005847
     }
   },
   "sample": {
@@ -801,7 +801,7 @@
       ],
       "runs": 3
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "docs": [
         20,
         20,
@@ -814,7 +814,7 @@
       ],
       "runs": 3
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "docs": [
         20,
         19,
@@ -853,7 +853,7 @@
       ],
       "runs": 3
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": {
       "docs": [
         20,
         20,
@@ -866,7 +866,7 @@
       ],
       "runs": 3
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": {
       "docs": [
         20,
         19,
@@ -879,46 +879,33 @@
       ],
       "runs": 3
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5": {
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5": {
       "docs": [
-        19,
+        20,
         20,
         20
       ],
       "failed": [
-        1,
+        0,
         0,
         0
       ],
       "runs": 3
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5": {
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5": {
       "docs": [
         20,
         19,
-        20
-      ],
-      "failed": [
-        0,
-        1,
-        0
-      ],
-      "runs": 3
-    },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5": {
-      "docs": [
-        20,
-        20,
         19
       ],
       "failed": [
         0,
-        0,
+        1,
         1
       ],
       "runs": 3
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": {
       "docs": [
         20,
         19,
@@ -926,6 +913,19 @@
       ],
       "failed": [
         0,
+        1,
+        1
+      ],
+      "runs": 3
+    },
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": {
+      "docs": [
+        19,
+        19,
+        19
+      ],
+      "failed": [
+        1,
         1,
         1
       ],
@@ -967,7 +967,7 @@
         ]
       }
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite finds the sections (page by page), then Amazon Nova 2 Lite classifies them",
       "Extraction": "Claude Sonnet 5, single pass",
@@ -987,7 +987,7 @@
         ]
       }
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Amazon Nova 2 Lite finds the sections (holistic), then Amazon Nova 2 Lite classifies them",
       "Extraction": "Claude Sonnet 5, single pass",
@@ -1041,7 +1041,7 @@
         ]
       }
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Haiku 5.5 finds the sections (page by page), then Claude Haiku 5.5 classifies them",
       "Extraction": "Claude Sonnet 5, single pass",
@@ -1061,7 +1061,7 @@
         ]
       }
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
       "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them",
       "Extraction": "Claude Sonnet 5, single pass",
@@ -1081,9 +1081,9 @@
         ]
       }
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5": {
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Claude Sonnet 5, holistic",
+      "Classification": "Claude Sonnet 5.5, page by page",
       "Extraction": "Claude Sonnet 5, single pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
@@ -1091,16 +1091,16 @@
           "us.amazon.nova-lite-v1:0"
         ],
         "Classification": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-sonnet-5-5"
         ],
         "Extraction": [
           "us.anthropic.claude-sonnet-5"
         ]
       }
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5": {
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Claude Sonnet 5, page by page",
+      "Classification": "Claude Sonnet 5.5, holistic",
       "Extraction": "Claude Sonnet 5, single pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
@@ -1108,16 +1108,16 @@
           "us.amazon.nova-lite-v1:0"
         ],
         "Classification": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-sonnet-5-5"
         ],
         "Extraction": [
           "us.anthropic.claude-sonnet-5"
         ]
       }
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Claude Sonnet 5 finds the sections (page by page), then Claude Sonnet 5 classifies them",
+      "Classification": "Claude Sonnet 5.5 finds the sections (page by page), then Claude Sonnet 5.5 classifies them",
       "Extraction": "Claude Sonnet 5, single pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
@@ -1128,16 +1128,16 @@
           "us.anthropic.claude-sonnet-5"
         ],
         "SectionClassification": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-sonnet-5-5"
         ],
         "Splitting": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-sonnet-5-5"
         ]
       }
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Claude Sonnet 5 finds the sections (holistic), then Claude Sonnet 5 classifies them",
+      "Classification": "Claude Sonnet 5.5 finds the sections (holistic), then Claude Sonnet 5.5 classifies them",
       "Extraction": "Claude Sonnet 5, single pass",
       "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
       "billed": {
@@ -1148,10 +1148,10 @@
           "us.anthropic.claude-sonnet-5"
         ],
         "SectionClassification": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-sonnet-5-5"
         ],
         "Splitting": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-sonnet-5-5"
         ]
       }
     }
@@ -1251,7 +1251,7 @@
         "textract/analyze_document-Tables|pages": 14.9
       }
     ],
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)": [
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": [
       {
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 18588.85,
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 135.15,
@@ -1298,7 +1298,7 @@
         "textract/analyze_document-Tables|pages": 15.0526
       }
     ],
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)": [
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": [
       {
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 4589.7,
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
@@ -1439,7 +1439,7 @@
         "textract/analyze_document-Tables|pages": 15.0526
       }
     ],
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5": [
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": [
       {
         "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 50979.7,
         "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 5519.55,
@@ -1486,7 +1486,7 @@
         "textract/analyze_document-Tables|pages": 14.9
       }
     ],
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5": [
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": [
       {
         "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 35007.95,
         "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 13767.55,
@@ -1533,143 +1533,191 @@
         "textract/analyze_document-Tables|pages": 14.9
       }
     ],
-    "docsplit|Holistic \u00b7 Claude Sonnet 5": [
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 43522.6842,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 5190.2105,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14484.6842,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1605.6316,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 10193.5789,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 180997.3158,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4250.3684,
-        "textract/analyze_document-Tables|pages": 15.0526
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42701.95,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6244.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 13655.2,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1516.35,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 9979.3,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 82.05,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 179788.9,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4097.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 15496.1,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 40542.85,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8611.9,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1755.5,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 33398.4,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 1646.4,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 90044.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 5211.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 9048.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 791.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 89784.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3606.35,
         "textract/analyze_document-Tables|pages": 14.9
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 38928.2,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 10359.15,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 13791.1,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1618.4,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 10063.25,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 179788.9,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4175.8,
-        "textract/analyze_document-Tables|pages": 14.9
-      }
-    ],
-    "docsplit|Page by page \u00b7 Claude Sonnet 5": [
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 45069.55,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 12806.85,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 9359.5,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2047.45,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 45825.95,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 180016.05,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 8270.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 21772.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 34299.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8938.75,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1755.4,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 34104.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 940.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 90044.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 5276.25,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 9073.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 871.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 89808.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3633.65,
         "textract/analyze_document-Tables|pages": 14.9
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 46943.7895,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 11161.2105,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 9982.7368,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2231.1053,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 45354.3158,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 984.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 181162.7368,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 8532.7368,
-        "textract/analyze_document-Tables|pages": 15.0526
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 41128.4,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 15167.1,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 10024.65,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2003.75,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 46010.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 180052.2,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 8359.65,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 22063.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 35511.95,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8647.35,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1913.25,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 34456.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 588.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 90044.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 5331.9,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 9287.45,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 550.95,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 89784.7,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3662.0,
         "textract/analyze_document-Tables|pages": 14.9
       }
     ],
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5": [
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 38221.3,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 17812.5,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8975.1,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1833.9,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 16484.55,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 227.6,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 248525.2,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 6221.35,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 12045.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 36940.55,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 13687.8,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1548.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1738.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 165.6,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 90306.65,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 869.3,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 7570.5,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 685.15,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 89484.55,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3078.4,
         "textract/analyze_document-Tables|pages": 14.9
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42532.75,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 13089.15,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 9056.1,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1647.4,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 16600.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 248864.65,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 6397.95,
-        "textract/analyze_document-Tables|pages": 14.9
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 15920.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 32790.5789,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14348.5789,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1555.0526,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1830.3158,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 87.1579,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 90947.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 955.8947,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 7929.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 387.9474,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90039.9474,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3154.1579,
+        "textract/analyze_document-Tables|pages": 15.0526
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42237.7368,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 13608.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 9316.6316,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1652.8947,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 17351.5263,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 251146.8947,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 6487.6842,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 15576.8421,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 33127.6316,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14476.1579,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1571.2632,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1830.3158,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 87.1579,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 90947.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 773.3684,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 8045.0526,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 270.8947,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90040.0526,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3176.4737,
         "textract/analyze_document-Tables|pages": 15.0526
       }
     ],
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5": [
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37519.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 11865.9,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 13857.8,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1579.05,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 15287.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 43661.35,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 13573.9,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8478.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1673.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 20275.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 454.6,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 144119.95,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 3616.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 8901.4,
         "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 234090.9,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4850.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 89604.35,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3371.35,
         "textract/analyze_document-Tables|pages": 14.9
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 29897.7895,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20181.3158,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14470.1053,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1629.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 14736.7895,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37077.1053,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 18790.4737,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8855.7895,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1674.6842,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 20944.7368,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 188.6316,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 145264.7368,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 3700.8421,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 9214.7368,
         "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 233958.6316,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 5004.2105,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90204.2105,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3438.6316,
         "textract/analyze_document-Tables|pages": 15.0526
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 41732.3684,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 7378.1053,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14263.3158,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1634.5263,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 15258.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 36269.5263,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 19589.1579,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 8122.5263,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1628.9474,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 20574.0526,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 377.2632,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 144989.8947,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 3699.3158,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 9023.3684,
         "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 234900.5789,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4992.8947,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90166.0526,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3428.1053,
+        "textract/analyze_document-Tables|pages": 15.0526
+      }
+    ],
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 33689.9474,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 15432.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14553.4737,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1688.7895,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 7590.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 274.7368,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 145379.9474,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 2077.2105,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 8652.2632,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90102.9474,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3348.0,
+        "textract/analyze_document-Tables|pages": 15.0526
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 33011.0526,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 15982.2632,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14339.6316,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1749.4211,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 7618.6842,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 246.0526,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 145379.9474,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 2072.6316,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 8521.6842,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 150.8421,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90102.9474,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3286.9474,
+        "textract/analyze_document-Tables|pages": 15.0526
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 33029.3684,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 17591.4737,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 17700.1579,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1783.2105,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 7043.8421,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 32.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 140644.3158,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1898.7368,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 7724.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 89938.4737,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 3133.1579,
         "textract/analyze_document-Tables|pages": 15.0526
       }
     ]
@@ -1685,12 +1733,12 @@
       "run": "DocSplit-Poly-Seq-20261113-192706",
       "index": 0
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "mode": "cold-run",
       "run": "DocSplit-Poly-Seq-20261113-194400",
       "index": 0
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "mode": "cold-run",
       "run": "DocSplit-Poly-Seq-20261113-195216",
       "index": 1
@@ -1705,35 +1753,27 @@
       "run": "DocSplit-Poly-Seq-20261113-205040",
       "index": 1
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": {
       "mode": "cold-run",
       "run": "DocSplit-Poly-Seq-20261113-205554",
       "index": 1
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": {
       "mode": "cold-run",
       "run": "DocSplit-Poly-Seq-20261113-205634",
       "index": 0
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-210649",
-      "index": 2
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
     },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-205917",
-      "index": 2
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-210718",
-      "index": 0
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-210800",
-      "index": 1
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
     }
   },
   "per_doc": {
@@ -1890,7 +1930,7 @@
         "label_accuracy": 1.0
       }
     },
-    "docsplit|Detect sections first, page by page \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "packet_0001.pdf": {
         "boundary_accuracy": 0.5,
         "label_accuracy": 1.0
@@ -1968,7 +2008,7 @@
         "label_accuracy": 1.0
       }
     },
-    "docsplit|Detect sections first, holistic \u00b7 Amazon Nova 2 Lite (default)": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite (default)": {
       "packet_0001.pdf": {
         "boundary_accuracy": 0.555567,
         "label_accuracy": 0.833333
@@ -2200,7 +2240,7 @@
         "label_accuracy": 1.0
       }
     },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": {
       "packet_0001.pdf": {
         "boundary_accuracy": 0.6667,
         "label_accuracy": 0.75
@@ -2277,7 +2317,7 @@
         "label_accuracy": 1.0
       }
     },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Haiku 5.5": {
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": {
       "packet_0001.pdf": {
         "boundary_accuracy": 0.777767,
         "label_accuracy": 0.783333
@@ -2355,85 +2395,7 @@
         "label_accuracy": 1.0
       }
     },
-    "docsplit|Holistic \u00b7 Claude Sonnet 5": {
-      "packet_0001.pdf": {
-        "boundary_accuracy": 0.8333,
-        "label_accuracy": 1.0
-      },
-      "packet_0002.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0003.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0004.pdf": {
-        "boundary_accuracy": 0.866667,
-        "label_accuracy": 0.766667
-      },
-      "packet_0005.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0006.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 1.0
-      },
-      "packet_0007.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 1.0
-      },
-      "packet_0008.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 0.666667
-      },
-      "packet_0009.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0010.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0011.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0012.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0013.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0014.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0015.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0016.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 0.8333
-      },
-      "packet_0017.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0019.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0020.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      }
-    },
-    "docsplit|Page by page \u00b7 Claude Sonnet 5": {
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5": {
       "packet_0001.pdf": {
         "boundary_accuracy": 0.6667,
         "label_accuracy": 1.0
@@ -2459,21 +2421,23 @@
         "label_accuracy": 1.0
       },
       "packet_0007.pdf": {
-        "boundary_accuracy": 0.733333,
+        "boundary_accuracy": 0.8,
         "label_accuracy": 1.0
       },
       "packet_0008.pdf": {
-        "boundary_accuracy": 0.0
+        "boundary_accuracy": 0.333333,
+        "label_accuracy": 1.0
       },
       "packet_0009.pdf": {
-        "boundary_accuracy": 0.0
+        "boundary_accuracy": 0.333333,
+        "label_accuracy": 1.0
       },
       "packet_0010.pdf": {
-        "boundary_accuracy": 0.75,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0
       },
       "packet_0011.pdf": {
-        "boundary_accuracy": 0.7143,
+        "boundary_accuracy": 0.8095,
         "label_accuracy": 1.0
       },
       "packet_0012.pdf": {
@@ -2485,7 +2449,7 @@
         "label_accuracy": 1.0
       },
       "packet_0014.pdf": {
-        "boundary_accuracy": 0.666667,
+        "boundary_accuracy": 0.75,
         "label_accuracy": 1.0
       },
       "packet_0015.pdf": {
@@ -2493,111 +2457,33 @@
         "label_accuracy": 1.0
       },
       "packet_0016.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
-      },
-      "packet_0017.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0019.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0020.pdf": {
-        "boundary_accuracy": 0.666667,
-        "label_accuracy": 1.0
-      }
-    },
-    "docsplit|Detect sections first, page by page \u00b7 Claude Sonnet 5": {
-      "packet_0001.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
-      },
-      "packet_0002.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
-      },
-      "packet_0003.pdf": {
-        "boundary_accuracy": 0.875,
-        "label_accuracy": 1.0
-      },
-      "packet_0004.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 0.75
-      },
-      "packet_0005.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0006.pdf": {
-        "boundary_accuracy": 0.6,
-        "label_accuracy": 1.0
-      },
-      "packet_0007.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 1.0
-      },
-      "packet_0008.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 0.0
-      },
-      "packet_0009.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
-      },
-      "packet_0010.pdf": {
-        "boundary_accuracy": 0.916667,
-        "label_accuracy": 1.0
-      },
-      "packet_0011.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0012.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0013.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0014.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0015.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
-      },
-      "packet_0016.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 0.888867
-      },
-      "packet_0017.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0019.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0
-      },
-      "packet_0020.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
-      }
-    },
-    "docsplit|Detect sections first, holistic \u00b7 Claude Sonnet 5": {
-      "packet_0001.pdf": {
         "boundary_accuracy": 0.777767,
         "label_accuracy": 1.0
       },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      }
+    },
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.722233,
+        "label_accuracy": 1.0
+      },
       "packet_0002.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0
       },
       "packet_0003.pdf": {
-        "boundary_accuracy": 0.958333,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0
       },
       "packet_0004.pdf": {
@@ -2618,7 +2504,163 @@
       },
       "packet_0008.pdf": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 0.666667
+        "label_accuracy": 0.833333
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0
+      },
+      "packet_0016.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      }
+    },
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.444433,
+        "label_accuracy": 1.0
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 0.875,
+        "label_accuracy": 1.0
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.75
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 1.0
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.733333,
+        "label_accuracy": 1.0
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 0.7143,
+        "label_accuracy": 1.0
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.25,
+        "label_accuracy": 1.0
+      },
+      "packet_0016.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      }
+    },
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.75
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0
       },
       "packet_0009.pdf": {
         "boundary_accuracy": 0.5,
@@ -2641,16 +2683,16 @@
         "label_accuracy": 1.0
       },
       "packet_0014.pdf": {
-        "boundary_accuracy": 0.75,
+        "boundary_accuracy": 0.833333,
         "label_accuracy": 1.0
       },
       "packet_0015.pdf": {
-        "boundary_accuracy": 0.916667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 0.8889
       },
       "packet_0016.pdf": {
         "boundary_accuracy": 1.0,
-        "label_accuracy": 0.944433
+        "label_accuracy": 1.0
       },
       "packet_0017.pdf": {
         "boundary_accuracy": 0.75,

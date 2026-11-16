@@ -49,6 +49,36 @@
         "realkie-fcc-long-20261113-202804",
         "realkie-fcc-long-20261113-202644"
       ]
+    },
+    "synth_400": {
+      "Iterative, Advanced": [
+        "synth-statements-400-20261113-231559",
+        "synth-statements-400-20261113-231602",
+        "synth-statements-400-20261113-231603"
+      ],
+      "Single pass, Simple (default)": [
+        "synth-statements-400-20261113-231600",
+        "synth-statements-400-20261113-231601",
+        "synth-statements-400-20261113-231604"
+      ]
+    },
+    "synth_800": {
+      "Single pass, Simple (default)": [
+        "synth-statements-800-20261113-231613",
+        "synth-statements-800-20261113-231615",
+        "synth-statements-800-20261113-231617"
+      ],
+      "Iterative, Advanced": [
+        "synth-statements-800-20261113-231614",
+        "synth-statements-800-20261113-231616"
+      ]
+    },
+    "synth_1600": {
+      "Single pass, Simple (default)": [
+        "synth-statements-1600-20261113-231626",
+        "synth-statements-1600-20261113-231629",
+        "synth-statements-1600-20261113-231631"
+      ]
     }
   },
   "stack": "sr-testing",
@@ -57,5 +87,21 @@
   "measured": "November 2026",
   "max_failed": {
     "realkie_long": 1
-  }
+  },
+  "cache_isolated": [
+    "synth-statements-400-20261113-231559",
+    "synth-statements-400-20261113-231600",
+    "synth-statements-400-20261113-231601",
+    "synth-statements-400-20261113-231602",
+    "synth-statements-400-20261113-231603",
+    "synth-statements-400-20261113-231604",
+    "synth-statements-800-20261113-231613",
+    "synth-statements-800-20261113-231614",
+    "synth-statements-800-20261113-231615",
+    "synth-statements-800-20261113-231616",
+    "synth-statements-800-20261113-231617",
+    "synth-statements-1600-20261113-231626",
+    "synth-statements-1600-20261113-231629",
+    "synth-statements-1600-20261113-231631"
+  ]
 }
