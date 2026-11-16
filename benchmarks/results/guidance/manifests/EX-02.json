@@ -1,6 +1,6 @@
 {
   "ablation": "EX-02",
-  "verdict": "On W-2 forms, Claude Opus 5, Claude Opus 5.5, OpenAI GPT-6 Astra and xAI Grok 4.6 were nearly perfect (0.999), 0.04 above the default, Claude Sonnet 5 (0.96), and Claude Haiku 5.5 scored 0.98; the Amazon Nova models scored 0.06 to 0.16 below the default. On RealKIE invoices no model scored measurably different from the default (0.74 to 0.84). Each model family counts tokens differently, so compare models on cost rather than tokens. xAI Grok 4.6 took about three times as long per document.",
+  "verdict": "Claude Haiku 5.5 for most forms and invoices; Claude Opus 5.5 when every field must be right. Claude Haiku 5.5 scored 0.98 on W-2 forms and 0.79 on RealKIE invoices for about half the cost of the default, Claude Sonnet 5 (0.96 and 0.80). Claude Opus 5.5, OpenAI GPT-6 Astra and xAI Grok 4.6 were nearly perfect on W-2s (0.999); Claude Sonnet 5.5 scored below Claude Sonnet 5 there (0.92). On RealKIE invoices no model scored measurably different from the default. The Amazon Nova models scored 0.06 to 0.16 lower on W-2s. xAI Grok 4.6 took about three times as long per document.",
   "runs": {
     "realkie": {
       "Claude Sonnet 5 (default)": [

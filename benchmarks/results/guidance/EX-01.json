@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261113-173220, RealKIE-FCC-Verified-20261113-173644, RealKIE-FCC-Verified-20261113-173641, RealKIE-FCC-Verified-20261113-173219, RealKIE-FCC-Verified-20261113-173642, RealKIE-FCC-Verified-20261113-173643, RealKIE-FCC-Verified-20261116-145655, RealKIE-FCC-Verified-20261116-145659, RealKIE-FCC-Verified-20261116-145657, RealKIE-FCC-Verified-20261116-145656, RealKIE-FCC-Verified-20261116-145658, RealKIE-FCC-Verified-20261116-145707, Fake-W2-Tax-Forms-20261113-181721, Fake-W2-Tax-Forms-20261113-181722, Fake-W2-Tax-Forms-20261113-181723, Fake-W2-Tax-Forms-20261113-181901, Fake-W2-Tax-Forms-20261113-182002, Fake-W2-Tax-Forms-20261113-182011, realkie-fcc-short-20261113-201254, realkie-fcc-short-20261113-201252, realkie-fcc-short-20261113-201253, realkie-fcc-short-20261113-201713, realkie-fcc-short-20261113-201703, realkie-fcc-short-20261113-201714, realkie-fcc-long-20261113-201929, realkie-fcc-long-20261113-201928, realkie-fcc-long-20261113-202020, realkie-fcc-long-20261113-202336, realkie-fcc-long-20261113-202804, realkie-fcc-long-20261113-202644, realkie-fcc-long-20261116-145655, realkie-fcc-long-20261116-145656, realkie-fcc-long-20261116-145654, realkie-fcc-long-20261116-145707, realkie-fcc-long-20261116-145708, realkie-fcc-long-20261116-145709, synth-statements-400-20261113-231559, synth-statements-400-20261113-231602, synth-statements-400-20261113-231603, synth-statements-400-20261113-231600, synth-statements-400-20261113-231601, synth-statements-400-20261113-231604, synth-statements-800-20261113-231613, synth-statements-800-20261113-231615, synth-statements-800-20261113-231617, synth-statements-800-20261113-231614, synth-statements-800-20261113-231616, synth-statements-1600-20261113-231626, synth-statements-1600-20261113-231629, synth-statements-1600-20261113-231631, RealKIE-FCC-Verified-20261116-152541, RealKIE-FCC-Verified-20261116-152542, RealKIE-FCC-Verified-20261116-152544, RealKIE-FCC-Verified-20261116-152951, RealKIE-FCC-Verified-20261116-152953, RealKIE-FCC-Verified-20261116-152954, RealKIE-FCC-Verified-20261116-152540, RealKIE-FCC-Verified-20261116-152543, RealKIE-FCC-Verified-20261116-152545, RealKIE-FCC-Verified-20261116-152955, RealKIE-FCC-Verified-20261116-152950, RealKIE-FCC-Verified-20261116-152952 (12 failed documents left out of the scores)",
-  "verdict": "When an invoice has more than about 100 line items. With Claude Sonnet 5 on 48 RealKIE invoices, single-pass scored 0.26 on the invoices with 101 to 300 line items and 0.00 on those with more than 300; agentic extraction scored 0.47 and 0.71, and cost 1.2\u00d7 and 6.3\u00d7 as much. At 100 line items or fewer single-pass scored higher (0.65 against 0.56 at 1 to 20 line items), and agentic cost 1.1\u00d7 to 2.8\u00d7 as much. Over all 48 invoices agentic cost 1.6\u00d7 as much. With Claude Sonnet 5.5, on 20 invoices of up to 100 line items, both modes scored 0.62 and agentic cost 0.8\u00d7 as much. Agentic extraction finished the invoice with 1,490 line items in about 10 minutes, but Test Studio's evaluation step timed out before it could score it, so that invoice is left out.",
+  "verdict": "When an invoice has more than about 100 line items, and then with Claude Haiku 5.5. On all 75 RealKIE invoices, single-pass scored as well as agentic or better up to 100 line items (0.69 against 0.57 with Claude Haiku 5.5 at 1 to 20 items), and with the 5.5 models agentic cost about the same there. Above 100 line items single-pass got almost no line items right (0.00 to 0.22) while agentic got 0.44 to 0.79. On those long invoices agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($316 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, so the long bands rest on few invoices; Test Studio could not score the longest (1,490 items), because its evaluation step timed out although extraction finished.",
   "cells": {
     "realkie|Single-pass (Simple, default)|weighted_accuracy": {
       "mean": 0.802328,
@@ -1038,8 +1038,8 @@
       "se": 0.0
     },
     "realkie_all|Single-pass \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
-      "mean": 0.817395,
-      "se": 0.018488
+      "mean": 0.81924,
+      "se": 0.018646
     },
     "realkie_all|Single-pass \u00b7 Claude Sonnet 5.5|extraction_tokens": {
       "mean": 7428.437075,
@@ -1106,8 +1106,8 @@
       "se": 0.0
     },
     "realkie_all|Single-pass \u00b7 Claude Haiku 5.5|weighted_accuracy": {
-      "mean": 0.815276,
-      "se": 0.018328
+      "mean": 0.817092,
+      "se": 0.018486
     },
     "realkie_all|Single-pass \u00b7 Claude Haiku 5.5|extraction_tokens": {
       "mean": 7672.903912,
@@ -1242,24 +1242,72 @@
       "se": 0.0
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5|weighted_accuracy": {
-      "mean": 0.80868,
-      "se": 0.019698
+      "mean": 0.807849,
+      "se": 0.019713
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5|extraction_tokens": {
-      "mean": 26065.133705,
-      "se": 13045.394403
+      "mean": 38873.624884,
+      "se": 620.26307
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5|scoring_tokens": {
-      "mean": 7426.575673,
-      "se": 3728.478926
+      "mean": 11215.46611,
+      "se": 344.621964
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5|total_tokens": {
-      "mean": 33491.709378,
-      "se": 16770.812262
+      "mean": 50089.090994,
+      "se": 926.573755
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5|median_seconds": {
-      "mean": 60.143715,
-      "se": 1.331035
+      "mean": 60.468075,
+      "se": 0.834123
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|list_recall": {
+      "mean": 0.672103,
+      "se": 0.028243
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 0.431276,
+      "se": 0.012974
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.009009,
+      "se": 0.009009
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|auroc": {
+      "mean": 0.539093,
+      "se": 0.017687
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.15816,
+      "se": 0.025615
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|errors_caught_30": {
+      "mean": 0.364727,
+      "se": 0.026558
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
+      "mean": 0.299926,
+      "se": 1.2e-05
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie_all|Agentic \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     }
   },
   "sample": {
@@ -2553,6 +2601,21 @@
         "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 997.1216,
         "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 133.1892,
         "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 216.5,
+        "textract/analyze_document-Tables|pages": 5.2973
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 20634.2568,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 28038.1486,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 5466.6351,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 103200.5541,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 8894.6081,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 60491.2568,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 13829.0541,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 689.2027,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 127.473,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 188.0,
         "textract/analyze_document-Tables|pages": 5.2973
       },
       {
@@ -5177,14 +5240,6 @@
         "weighted_accuracy": 0.744308,
         "cost": 0.081038
       },
-      "cee75ca6adb0224732696bff7ee5dc32.pdf": {
-        "list_score": 0.000537,
-        "list_rows": 1490,
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.680908,
-        "cost": 1.840855
-      },
       "cfa6bc56d5a21930a89f42b31ce5de4a.pdf": {
         "list_score": 0.533333,
         "list_rows": 6,
@@ -5778,14 +5833,6 @@
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.737464,
         "cost": 0.034475
-      },
-      "cee75ca6adb0224732696bff7ee5dc32.pdf": {
-        "list_score": 0.000268,
-        "list_rows": 1490,
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.68088,
-        "cost": 1.323758
       },
       "cfa6bc56d5a21930a89f42b31ce5de4a.pdf": {
         "list_score": 0.274815,
@@ -6528,20 +6575,20 @@
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
-        "list_score": 0.794074,
+        "list_score": 0.789383,
         "list_rows": 10,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.978093,
-        "cost": 0.033594
+        "weighted_accuracy": 0.977594,
+        "cost": 0.033965
       },
       "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
-        "list_score": 0.35,
+        "list_score": 0.3,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.803191,
-        "cost": 0.01652
+        "weighted_accuracy": 0.762411,
+        "cost": 0.016937
       },
       "08e2649c3291ee569a116260d46e9866.pdf": {
         "list_score": 0.0,
@@ -6549,63 +6596,63 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.680851,
-        "cost": 0.034873
+        "cost": 0.040316
       },
       "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
         "list_score": 0.588251,
         "list_rows": 57,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.893275,
-        "cost": 0.133991
+        "weighted_accuracy": 0.902141,
+        "cost": 0.102223
       },
       "1220d048d2a75d910c52e7f290e32ca0.pdf": {
-        "list_score": 0.420519,
+        "list_score": 0.446407,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.491545,
-        "cost": 0.082216
+        "weighted_accuracy": 0.494299,
+        "cost": 0.082426
       },
       "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
-        "list_score": 0.387097,
+        "list_score": 0.414557,
         "list_rows": 20,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.275223,
-        "cost": 0.192051
+        "weighted_accuracy": 0.278144,
+        "cost": 0.192901
       },
       "1b238269de30dec67297e7ad8630116e.pdf": {
-        "list_score": 0.5,
+        "list_score": 0.466667,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.88259,
-        "cost": 0.017363
+        "weighted_accuracy": 0.879044,
+        "cost": 0.017437
       },
       "1b26192b674944e82347df9cfa3288ff.pdf": {
-        "list_score": 0.421439,
+        "list_score": 0.465923,
         "list_rows": 80,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.917174,
-        "cost": 0.178352
+        "weighted_accuracy": 0.921907,
+        "cost": 0.179255
       },
       "21762bcc61029b7a5020647d7ced6aa5.pdf": {
-        "list_score": 0.488636,
+        "list_score": 0.414646,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.911715,
-        "cost": 0.124852
+        "weighted_accuracy": 0.903843,
+        "cost": 0.124483
       },
       "26372a567adab41e404cab267067d73f.pdf": {
-        "list_score": 0.7,
+        "list_score": 0.666667,
         "list_rows": 6,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.968085,
-        "cost": 0.017491
+        "weighted_accuracy": 0.964539,
+        "cost": 0.01743
       },
       "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
         "list_score": 0.4,
@@ -6613,7 +6660,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.702128,
-        "cost": 0.079402
+        "cost": 0.07991
       },
       "33fe0051cbf2e777e47a1e717091c61f.pdf": {
         "list_score": 0.205503,
@@ -6621,7 +6668,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.674133,
-        "cost": 0.14862
+        "cost": 0.148064
       },
       "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
         "list_score": 0.6,
@@ -6629,15 +6676,15 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.531915,
-        "cost": 0.017487
+        "cost": 0.017376
       },
       "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
-        "list_score": 0.659847,
+        "list_score": 0.67094,
         "list_rows": 22,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.942537,
-        "cost": 0.082399
+        "weighted_accuracy": 0.943717,
+        "cost": 0.083201
       },
       "3b9f33e058641d47cf2ebe76b9382648.pdf": {
         "list_score": 0.0,
@@ -6645,71 +6692,71 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.680851,
-        "cost": 0.050775
+        "cost": 0.050588
       },
       "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
-        "list_score": 0.724569,
+        "list_score": 0.7247,
         "list_rows": 17,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.970699,
-        "cost": 0.049636
+        "weighted_accuracy": 0.970713,
+        "cost": 0.049536
       },
       "3dabc131205d3a2c74a73eb545494d3f.pdf": {
-        "list_score": 0.839732,
+        "list_score": 0.893155,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.98295,
-        "cost": 0.031978
+        "weighted_accuracy": 0.988633,
+        "cost": 0.032508
       },
       "4d96667dff249bbfb513294f95313b71.pdf": {
-        "list_score": 0.695297,
+        "list_score": 0.465463,
         "list_rows": 69,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.967585,
-        "cost": 0.094999
+        "weighted_accuracy": 0.943134,
+        "cost": 0.089131
       },
       "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
-        "list_score": 0.533333,
+        "list_score": 0.555556,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.737589,
-        "cost": 0.019868
+        "weighted_accuracy": 0.739953,
+        "cost": 0.020054
       },
       "536c5c90c803552970cad769b6caef45.pdf": {
-        "list_score": 0.317241,
+        "list_score": 0.318883,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.90609,
-        "cost": 0.12525
+        "weighted_accuracy": 0.906264,
+        "cost": 0.132378
       },
       "5b79d718c8ac073a5b3c3ba2162173cb.pdf": {
-        "list_score": 0.8,
+        "list_score": 0.799819,
         "list_rows": 85,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.978723,
-        "cost": 0.163266
+        "weighted_accuracy": 0.978704,
+        "cost": 0.159763
       },
       "5cca3cc07f830f202928faa5a8f316af.pdf": {
-        "list_score": 0.218221,
+        "list_score": 0.340935,
         "list_rows": 43,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.916832,
-        "cost": 0.122525
+        "weighted_accuracy": 0.922794,
+        "cost": 0.121303
       },
       "64e40cb2f126bad63679f19505e8b0bf.pdf": {
         "list_score": 0.755263,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.973964,
-        "cost": 0.139694
+        "weighted_accuracy": 0.966872,
+        "cost": 0.140176
       },
       "7429ba503d96718740c2f714598b40a4.pdf": {
         "list_score": 0.096552,
@@ -6717,39 +6764,39 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.691123,
-        "cost": 0.098485
+        "cost": 0.097981
       },
       "74c8d84d79f73e08eb87fdd673193ba8.pdf": {
-        "list_score": 0.352198,
+        "list_score": 0.339927,
         "list_rows": 182,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.931085,
-        "cost": 0.177728
+        "weighted_accuracy": 0.929779,
+        "cost": 0.166769
       },
       "75986ca8ed4b97420672b7782390c742.pdf": {
-        "list_score": 0.478667,
+        "list_score": 0.425333,
         "list_rows": 4,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.725124,
-        "cost": 0.017856
+        "weighted_accuracy": 0.71945,
+        "cost": 0.01802
       },
       "77e4c8dfae992bc561e181c9a0fb4251.pdf": {
         "list_score": 0.6,
         "list_rows": 2,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.946809,
-        "cost": 0.017372
+        "weighted_accuracy": 0.950355,
+        "cost": 0.017052
       },
       "796ff0059c7e2d3310f3d4e6afc66516.pdf": {
-        "list_score": 0.592771,
+        "list_score": 0.544578,
         "list_rows": 83,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.524888,
-        "cost": 0.115956
+        "weighted_accuracy": 0.508624,
+        "cost": 0.117683
       },
       "7bc4cc14d20c04204f81948012da50c9.pdf": {
         "list_score": 0.6375,
@@ -6757,7 +6804,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.925975,
-        "cost": 0.035584
+        "cost": 0.050253
       },
       "7c4e113ac908349db24caff741a89313.pdf": {
         "list_score": 1.0,
@@ -6765,7 +6812,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.787234,
-        "cost": 0.032563
+        "cost": 0.032996
       },
       "7ec895784100dd7287978ab5cac9f283.pdf": {
         "list_score": 0.0,
@@ -6773,15 +6820,15 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.680851,
-        "cost": 0.035365
+        "cost": 0.037659
       },
       "8064c51e90f5e7bb8b36c1dcf68f9feb.pdf": {
-        "list_score": 0.822773,
+        "list_score": 0.853413,
         "list_rows": 99,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.76838,
-        "cost": 0.083942
+        "weighted_accuracy": 0.77164,
+        "cost": 0.082937
       },
       "8ecb95435a6eeb3dd384d6eb2f007c3c.pdf": {
         "list_score": 0.0,
@@ -6789,15 +6836,15 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.659574,
-        "cost": 0.036732
+        "cost": 0.044265
       },
       "99bcbdbef0480727179f27eb4899b8f8.pdf": {
-        "list_score": 0.485714,
+        "list_score": 0.494533,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.670719,
-        "cost": 0.190912
+        "weighted_accuracy": 0.671657,
+        "cost": 0.190055
       },
       "9a5b4d80b3d2fa19526ec0f1fafa1b24.pdf": {
         "list_score": 0.6,
@@ -6805,71 +6852,71 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.744681,
-        "cost": 0.102073
+        "cost": 0.08986
       },
       "9bb60d3c7732561e0576613f0ea97ea2.pdf": {
-        "list_score": 0.685159,
+        "list_score": 0.790076,
         "list_rows": 392,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.966506,
-        "cost": 0.336563
+        "weighted_accuracy": 0.977668,
+        "cost": 0.348133
       },
       "9e977067f404eaf0840ff4d8c87edf60.pdf": {
-        "list_score": 0.171429,
+        "list_score": 0.172063,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.911854,
-        "cost": 0.097189
+        "weighted_accuracy": 0.911922,
+        "cost": 0.116034
       },
       "a501c2b139c99cc56e6d41a8f9df17a1.pdf": {
-        "list_score": 0.5,
+        "list_score": 0.466667,
         "list_rows": 2,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.946809,
-        "cost": 0.016919
+        "weighted_accuracy": 0.943262,
+        "cost": 0.016838
       },
       "aac03825090fe7c0a55c2dffce4605cc.pdf": {
-        "list_score": 0.896052,
+        "list_score": 0.929385,
         "list_rows": 46,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.988942,
-        "cost": 0.073145
+        "weighted_accuracy": 0.992488,
+        "cost": 0.061567
       },
       "acd999ab74841ff7c9b8f3e2fb00df9f.pdf": {
-        "list_score": 0.132468,
+        "list_score": 0.131602,
         "list_rows": 77,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.482177,
-        "cost": 0.083139
+        "weighted_accuracy": 0.482085,
+        "cost": 0.083552
       },
       "ad34d418249cfeb23d1986824160016d.pdf": {
-        "list_score": 0.197987,
+        "list_score": 0.199098,
         "list_rows": 22,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.478509,
-        "cost": 0.161374
+        "weighted_accuracy": 0.482174,
+        "cost": 0.161874
       },
       "b55d327a4141362f2b2c9a3eab1a6ba2.pdf": {
         "list_score": 0.133333,
         "list_rows": 3,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.681496,
-        "cost": 0.031912
+        "weighted_accuracy": 0.686009,
+        "cost": 0.032241
       },
       "b798ae73d6da562122e7d2f94e29571e.pdf": {
-        "list_score": 0.740459,
+        "list_score": 0.740935,
         "list_rows": 67,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.525581,
-        "cost": 0.172705
+        "weighted_accuracy": 0.525631,
+        "cost": 0.177321
       },
       "b839a844556a9c3414f0cc8c3f386ebd.pdf": {
         "list_score": 0.6,
@@ -6877,15 +6924,15 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.953841,
-        "cost": 0.081528
+        "cost": 0.072345
       },
       "b9c03770cf700075de53e44c70b20f4f.pdf": {
         "list_score": 0.8,
         "list_rows": 13,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.97054,
-        "cost": 0.049007
+        "weighted_accuracy": 0.968964,
+        "cost": 0.049208
       },
       "bd6cfc5de633f9ded20312a2b2169b3f.pdf": {
         "list_score": 0.6,
@@ -6893,15 +6940,15 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.957447,
-        "cost": 0.047923
+        "cost": 0.047421
       },
       "beedfe6996eb6c310858b05c7df6bea3.pdf": {
-        "list_score": 0.508097,
+        "list_score": 0.538731,
         "list_rows": 247,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.500861,
-        "cost": 0.317972
+        "weighted_accuracy": 0.50412,
+        "cost": 0.309284
       },
       "c179dadf6e00d237dbd773f2625979ca.pdf": {
         "list_score": 0.019048,
@@ -6909,7 +6956,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.895643,
-        "cost": 0.062161
+        "cost": 0.062608
       },
       "c2c347be879f649389d51e143c7d2b90.pdf": {
         "list_score": 0.6,
@@ -6917,23 +6964,23 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.957447,
-        "cost": 0.06516
+        "cost": 0.064841
       },
       "c37905bd2051f90731a3cfbbd6214119.pdf": {
-        "list_score": 0.915302,
+        "list_score": 0.903181,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.778224,
-        "cost": 0.065741
+        "weighted_accuracy": 0.776934,
+        "cost": 0.066394
       },
       "c840a967e02f2119ff0ec15a7b782b7e.pdf": {
-        "list_score": 0.456522,
+        "list_score": 0.469565,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.878353,
-        "cost": 0.129273
+        "weighted_accuracy": 0.879741,
+        "cost": 0.131603
       },
       "c86d3402da034360ee3b62f8183c3e17.pdf": {
         "list_score": 0.191304,
@@ -6941,23 +6988,23 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.476795,
-        "cost": 0.055276
+        "cost": 0.055925
       },
       "c904ae14f36aceb1151d976d74e39e9a.pdf": {
         "list_score": 0.8,
         "list_rows": 12,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.93229,
-        "cost": 0.064922
+        "weighted_accuracy": 0.940676,
+        "cost": 0.064862
       },
       "caa7473ca2633d4a48445cd1d0ef2881.pdf": {
-        "list_score": 0.4,
+        "list_score": 0.404444,
         "list_rows": 15,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.723404,
-        "cost": 0.050772
+        "weighted_accuracy": 0.723877,
+        "cost": 0.05103
       },
       "cb4e0286d5b42a83c5d505d29d8a775b.pdf": {
         "list_score": 0.655556,
@@ -6965,7 +7012,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.879166,
-        "cost": 0.072916
+        "cost": 0.073955
       },
       "cd3fc7791eda2953c2ef8364bd17418c.pdf": {
         "list_score": 0.6,
@@ -6973,7 +7020,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.723404,
-        "cost": 0.036529
+        "cost": 0.036453
       },
       "cfa6bc56d5a21930a89f42b31ce5de4a.pdf": {
         "list_score": 0.2,
@@ -6981,31 +7028,31 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.675252,
-        "cost": 0.076963
+        "cost": 0.077198
       },
       "d1a83bbb1eeb256a325dab9e0ce6235b.pdf": {
-        "list_score": 0.909594,
+        "list_score": 0.780581,
         "list_rows": 309,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.990382,
-        "cost": 0.320624
+        "weighted_accuracy": 0.976658,
+        "cost": 0.284722
       },
       "d5db82c9c27ffcb1fcf25583fab2feaa.pdf": {
-        "list_score": 0.72489,
+        "list_score": 0.725832,
         "list_rows": 54,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.757967,
-        "cost": 0.133937
+        "weighted_accuracy": 0.758067,
+        "cost": 0.134556
       },
       "d6523f5ba0b04167641f296bd3991e7f.pdf": {
-        "list_score": 0.7,
+        "list_score": 0.666667,
         "list_rows": 1,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.968085,
-        "cost": 0.072845
+        "weighted_accuracy": 0.964539,
+        "cost": 0.064105
       },
       "d66e599a539fd5f8061a85e5e8c61003.pdf": {
         "list_score": 0.133333,
@@ -7013,15 +7060,15 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.907801,
-        "cost": 0.097024
+        "cost": 0.09608
       },
       "dbaedc3226690f4dfc19f401c9b6db2a.pdf": {
-        "list_score": 0.296667,
+        "list_score": 0.2,
         "list_rows": 60,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.712411,
-        "cost": 0.092743
+        "weighted_accuracy": 0.702128,
+        "cost": 0.077547
       },
       "dc1df85e4e29cc5406286fc8d909f17c.pdf": {
         "list_score": 0.8,
@@ -7029,55 +7076,55 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.93617,
-        "cost": 0.020164
+        "cost": 0.019134
       },
       "e0e8f4257b2fc8144b5d1d30d7bfb2ae.pdf": {
-        "list_score": 0.807143,
+        "list_score": 0.829762,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.766717,
-        "cost": 0.033148
+        "weighted_accuracy": 0.769124,
+        "cost": 0.032886
       },
       "e519085a4bfc0211f4139c332bc3d60c.pdf": {
-        "list_score": 0.701175,
+        "list_score": 0.640783,
         "list_rows": 15,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.946933,
-        "cost": 0.151716
+        "weighted_accuracy": 0.947601,
+        "cost": 0.149659
       },
       "e8dcdc39047de03f648321f61583b10f.pdf": {
-        "list_score": 0.675,
+        "list_score": 0.65,
         "list_rows": 16,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.965426,
-        "cost": 0.107943
+        "weighted_accuracy": 0.962766,
+        "cost": 0.094126
       },
       "e8dda1aad4be9ddf95ced75e544fec69.pdf": {
-        "list_score": 0.627555,
+        "list_score": 0.532025,
         "list_rows": 61,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.747612,
-        "cost": 0.19499
+        "weighted_accuracy": 0.737449,
+        "cost": 0.193034
       },
       "ea99cd29b83332f41d8bc16511f4bd6d.pdf": {
-        "list_score": 0.753889,
+        "list_score": 0.72787,
         "list_rows": 10,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.548286,
-        "cost": 0.096025
+        "weighted_accuracy": 0.545518,
+        "cost": 0.096809
       },
       "ef3f9ec55c8438337f6f45d65b57ceef.pdf": {
-        "list_score": 0.651898,
+        "list_score": 0.633611,
         "list_rows": 12,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.938736,
-        "cost": 0.098966
+        "weighted_accuracy": 0.935806,
+        "cost": 0.110253
       },
       "f07820a290eb3f3ff606b0153c9f38f1.pdf": {
         "list_score": 0.6,
@@ -7085,39 +7132,39 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.957447,
-        "cost": 0.016399
+        "cost": 0.016231
       },
       "f3eb65041a1a9704ee706cd259765ddf.pdf": {
-        "list_score": 0.870068,
+        "list_score": 0.879367,
         "list_rows": 25,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.986177,
-        "cost": 0.083025
+        "weighted_accuracy": 0.987167,
+        "cost": 0.083216
       },
       "f6317ae6a3c9975c6a9e65acc6672736.pdf": {
-        "list_score": 0.687561,
+        "list_score": 0.712313,
         "list_rows": 11,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.945485,
-        "cost": 0.079283
+        "weighted_accuracy": 0.948118,
+        "cost": 0.079761
       },
       "fa1d6b17927c2218ccd0abc33e001c3f.pdf": {
-        "list_score": 0.4,
+        "list_score": 0.533333,
         "list_rows": 8,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.93617,
-        "cost": 0.034002
+        "weighted_accuracy": 0.950355,
+        "cost": 0.033804
       },
       "fa565ac45dba24366c6da8b86c775691.pdf": {
-        "list_score": 0.384498,
+        "list_score": 0.405865,
         "list_rows": 34,
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.721755,
-        "cost": 0.151798
+        "weighted_accuracy": 0.724028,
+        "cost": 0.150684
       }
     }
   },
@@ -7153,602 +7200,10 @@
       }
     },
     "realkie_all|Agentic \u00b7 Claude Haiku 5.5": {
-      "033f718b16cb597c065930410752c294.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 10,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 1,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "08e2649c3291ee569a116260d46e9866.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 0,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 57,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 11,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 20,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "1b238269de30dec67297e7ad8630116e.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 3,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "1b26192b674944e82347df9cfa3288ff.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 80,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 1,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "26372a567adab41e404cab267067d73f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 6,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 11,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 12,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 4,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 22,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 0,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 17,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 4,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "4d96667dff249bbfb513294f95313b71.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 69,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 3,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "536c5c90c803552970cad769b6caef45.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 16,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "5b79d718c8ac073a5b3c3ba2162173cb.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 85,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "5cca3cc07f830f202928faa5a8f316af.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 43,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "64e40cb2f126bad63679f19505e8b0bf.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 3,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "7429ba503d96718740c2f714598b40a4.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 58,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "74c8d84d79f73e08eb87fdd673193ba8.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 182,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "75986ca8ed4b97420672b7782390c742.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 4,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "77e4c8dfae992bc561e181c9a0fb4251.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 2,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "796ff0059c7e2d3310f3d4e6afc66516.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 83,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "7bc4cc14d20c04204f81948012da50c9.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 16,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "7c4e113ac908349db24caff741a89313.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 6,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "7ec895784100dd7287978ab5cac9f283.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 0,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "8064c51e90f5e7bb8b36c1dcf68f9feb.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 99,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "8ecb95435a6eeb3dd384d6eb2f007c3c.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 0,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "99bcbdbef0480727179f27eb4899b8f8.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 16,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "9a5b4d80b3d2fa19526ec0f1fafa1b24.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 19,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "9bb60d3c7732561e0576613f0ea97ea2.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 392,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "9e977067f404eaf0840ff4d8c87edf60.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 8,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "a501c2b139c99cc56e6d41a8f9df17a1.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 2,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "aac03825090fe7c0a55c2dffce4605cc.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 46,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "acd999ab74841ff7c9b8f3e2fb00df9f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 77,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "ad34d418249cfeb23d1986824160016d.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 22,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "b55d327a4141362f2b2c9a3eab1a6ba2.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 3,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "b798ae73d6da562122e7d2f94e29571e.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 67,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "b839a844556a9c3414f0cc8c3f386ebd.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 24,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "b9c03770cf700075de53e44c70b20f4f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 13,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "bd6cfc5de633f9ded20312a2b2169b3f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 1,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "beedfe6996eb6c310858b05c7df6bea3.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 247,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "c179dadf6e00d237dbd773f2625979ca.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 21,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "c2c347be879f649389d51e143c7d2b90.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 22,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "c37905bd2051f90731a3cfbbd6214119.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 11,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "c840a967e02f2119ff0ec15a7b782b7e.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 16,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "c86d3402da034360ee3b62f8183c3e17.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 22,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "c904ae14f36aceb1151d976d74e39e9a.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 12,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "caa7473ca2633d4a48445cd1d0ef2881.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 15,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "cb4e0286d5b42a83c5d505d29d8a775b.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 72,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "cd3fc7791eda2953c2ef8364bd17418c.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 23,
-        "status": [
-          "COMPLETED"
-        ]
-      },
       "cee75ca6adb0224732696bff7ee5dc32.pdf": {
         "runs": 3,
         "of": 3,
         "list_rows": 1490,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "cfa6bc56d5a21930a89f42b31ce5de4a.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 6,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "d1a83bbb1eeb256a325dab9e0ce6235b.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 309,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "d5db82c9c27ffcb1fcf25583fab2feaa.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 54,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "d6523f5ba0b04167641f296bd3991e7f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 1,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "d66e599a539fd5f8061a85e5e8c61003.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 36,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "dbaedc3226690f4dfc19f401c9b6db2a.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 60,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "dc1df85e4e29cc5406286fc8d909f17c.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 1,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "e0e8f4257b2fc8144b5d1d30d7bfb2ae.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 8,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "e519085a4bfc0211f4139c332bc3d60c.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 15,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "e8dcdc39047de03f648321f61583b10f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 16,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "e8dda1aad4be9ddf95ced75e544fec69.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 61,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "ea99cd29b83332f41d8bc16511f4bd6d.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 10,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "ef3f9ec55c8438337f6f45d65b57ceef.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 12,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "f07820a290eb3f3ff606b0153c9f38f1.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 1,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "f3eb65041a1a9704ee706cd259765ddf.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 25,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "f6317ae6a3c9975c6a9e65acc6672736.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 11,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "fa1d6b17927c2218ccd0abc33e001c3f.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 8,
-        "status": [
-          "COMPLETED"
-        ]
-      },
-      "fa565ac45dba24366c6da8b86c775691.pdf": {
-        "runs": 1,
-        "of": 3,
-        "list_rows": 34,
         "status": [
           "COMPLETED"
         ]

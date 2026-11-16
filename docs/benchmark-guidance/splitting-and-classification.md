@@ -103,25 +103,21 @@ find where a document starts.
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
-![Section accuracy against cost per 1,000 documents (USD) for each Granularity and strategy, by classification model](../../images/benchmark-guidance/SC-11-packet.svg)
-
-*Section accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
 ### Do I need page images in the classification prompt?
 
 **Answer:** On these packets, page images alone did best. Classifying page by page with Amazon Nova 2 Lite, images alone gave more pages the right class (0.84, against 0.82 with text and images) and got more sections exactly right (0.57, against 0.50), with 25% fewer classification tokens. Text alone scored lowest (0.79 and 0.46). DocSplit's pages are scans with noisy OCR text; on clean digital documents the text may count for more, so test on your own files before you turn it off. [Details: SC-02](#sc-02-do-i-need-page-images-in-the-classification-prompt)
 
-![Page accuracy against cost per 1,000 documents (USD) for each What the classification model reads](../../images/benchmark-guidance/SC-02-packet.svg)
+![Page images alone classified the most pages correctly: page accuracy against cost per 1,000 packets, one point per classification input](../../images/benchmark-guidance/SC-02-packet.svg)
 
-*Page accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better.* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Page accuracy against cost per 1,000 packets, one point per classification input. Bands show ±2 standard errors.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). [Details: SC-02](#sc-02-do-i-need-page-images-in-the-classification-prompt). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Which classification model should I use?
 
 **Answer:** Claude Haiku 5.5 or Claude Sonnet 5 for packets. On DocSplit both got 0.71 of sections exactly right, against 0.51 for the default, Amazon Nova 2 Lite, and classified more pages correctly (0.86 and 0.89, against 0.82). They used about three times the classification tokens (about 8,800 per page, against 2,850) and about 37% more total tokens. Amazon Nova Pro scored below the default. [Details: SC-03](#sc-03-which-classification-model-should-i-use)
 
-![Section accuracy against cost per 1,000 documents (USD) for each Classification model](../../images/benchmark-guidance/SC-03-packet.svg)
+![Claude Haiku 5.5 matches Claude Sonnet 5 at the default's cost: section accuracy against cost per 1,000 packets, one point per classification model](../../images/benchmark-guidance/SC-03-packet.svg)
 
-*Section accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Section accuracy against cost per 1,000 packets, one point per classification model. Bands show ±2 standard errors.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). [Details: SC-03](#sc-03-which-classification-model-should-i-use). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How long a packet can holistic classification handle?
 
@@ -131,9 +127,9 @@ find where a document starts.
 
 **Answer:** Leave it at 0. One neighboring page got more sections exactly right (0.64 against 0.51) but gave fewer pages the right class (0.78 against 0.82), for 67% more classification tokens; two neighboring pages did no better than none. [Details: SC-05](#sc-05-does-neighboring-page-context-help-page-by-page-classification)
 
-![Boundary accuracy against cost per 1,000 documents (USD) for each `contextPagesCount`](../../images/benchmark-guidance/SC-05-packet.svg)
+![One neighboring page finds more boundaries; two help less: boundary accuracy against cost per 1,000 packets, one point per neighboring pages in the prompt](../../images/benchmark-guidance/SC-05-packet.svg)
 
-*Boundary accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better.* Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 19–20 documents × 3 runs, 1 failed document per run left out. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Boundary accuracy against cost per 1,000 packets, one point per neighboring pages in the prompt. Bands show ±2 standard errors.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). [Details: SC-05](#sc-05-does-neighboring-page-context-help-page-by-page-classification). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Do few-shot examples help classification?
 
@@ -189,6 +185,10 @@ find where a document starts.
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
 | **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
 | **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
+
+![Holistic classification with a Claude model gets the most sections right: section accuracy against cost per 1,000 packets, one point per granularity, strategy and model](../../images/benchmark-guidance/SC-11-packet.svg)
+
+*Section accuracy against cost per 1,000 packets, one point per granularity, strategy and model. Bands show ±2 standard errors. Lines give the [marginal cost of error](marginal-cost-of-error.md) from the cheapest value: the extra cost per error prevented.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 | Dataset | Granularity and strategy, by classification model | Page accuracy | Section accuracy | Grouping score | Boundary accuracy | Label accuracy | Classification tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs Holistic · Amazon Nova 2 Lite (default) |
 |---|---|---|---|---|---|---|---|---|---|---|

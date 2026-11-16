@@ -29,23 +29,27 @@ benchmarks/results/guidance/<ID>.json, its values fill the table; otherwise ever
 A cell is either a string, printed as is, or a mean and standard error over the runs,
 printed as "0.81 ± 0.01" (two standard errors). For each dataset kind, the ablation's
 `plot` metric (or its first metric) is drawn as an SVG under images/benchmark-guidance/
-whenever at least one of its cells has a mean. `plot` may list several metrics: a
-scatter then draws one chart per metric, side by side in the same image. A metric
-with a `baseline` in the registry gets it as a dashed line, and an ablation marked
-`families` colors its points by model family and gives each family its own chart.
+whenever at least one of its cells has a mean: one panel per dataset, each point
+labelled with the value's short name (`short_values`), titled with the ablation's
+`takeaway` and subtitled with the dataset, the sample, what varies and the model held
+fixed. `plot` may list several metrics: a scatter then draws a row of panels per
+metric. A metric with a `baseline` in the registry gets it as a dashed line, and an
+ablation marked `families` colors and shapes its points by model family.
 
-An ablation with a `by_size` key also gets a chart of one per-document score against
-the document's own size, drawn from the results file's `per_doc` block, which leads
-its FAQ entry: a mean over a dataset says which value wins, and this says at what size
-it starts winning.
+Each FAQ entry carries one chart. An ablation with a `by_size` key gets a chart of one
+per-document score against the document's own size, drawn from the results file's
+`per_doc` block, which is that chart: a mean over a dataset says which value wins, and
+this says at what size it starts winning. Its scatter, like the chart of an ablation
+with a `grid` (whose tables answer the question), goes to the details section.
 
-`models` is optional: the model in force at each step of the pipeline. Every chart,
-caption and details table states it, and a step whose model differs across the values
-on the chart reads "varies (the setting under test)".
+`models` is optional: the model in force at each step of the pipeline. Each details
+table states it in full, and a step whose model differs across the values reads
+"varies (the setting under test)"; a chart names only the model held fixed.
 
 `sample` is optional: the documents each run scored and the number of runs, which
-every chart, caption and details table states as "N = 20 documents x 3 runs". A
-document that failed was not scored, so the caption says how many were left out.
+every chart, caption and details table states ("20 × 3 runs", "N = 20 documents x 3
+runs"). A document that failed was not scored, so the caption says how many were
+left out.
 
 `usage` is optional: each run's Bedrock and Textract usage per document. The renderer
 prices it with config_library/pricing.yaml and adds a "Cost per 1,000 documents"
@@ -79,15 +83,16 @@ from typing import Any
 import yaml
 from guidance_plots import (
     ERROR_RATE_METRICS,
-    MAX_LABELLED,
+    LOWER_IS_BETTER,
+    SHARE_METRICS,
     draw_by_size,
     draw_plot,
     draw_scatter,
-    family,
     fmt,
     lower_name,
     marginal_cost_of_error,
     money,
+    x_axes_differ,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -103,15 +108,11 @@ COLD_NOTE = (
     "cache the first run wrote, which a document processed once would not.*"
 )
 MCOE_CAPTION = (
-    " Lines run from the cheapest value to each more accurate one, labeled with the "
-    "marginal cost of error: the extra cost per error prevented "
-    f"([Marginal Cost of Error]({MCOE_PAGE}))."
+    f" Lines give the [marginal cost of error]({MCOE_PAGE}) from the cheapest value: "
+    "the extra cost per error prevented."
 )
-FAMILY_CAPTION = " Color and shape mark the model family"
-FAMILY_SPLIT_CAPTION = (
-    ", and each family has its own chart on the same axes, with the other families' "
-    "values as gray dots"
-)
+BANDS_CAPTION = "Bands show ±2 standard errors."
+DIFFER_CAPTION = " Cost axes differ by dataset."
 PAGES = REPO / "docs" / "benchmark-guidance"
 #: Generated regions of a page. ABLATIONS is required; the others are optional.
 REGIONS = ("FAQ", "ABLATIONS")
@@ -122,10 +123,6 @@ PLOTS_FROM_PAGES = "../../images/benchmark-guidance"
 EMPTY = "—"
 CAPTION = (
     "Dots are the mean of the runs; shaded bands span two standard errors either side."
-)
-SCATTER_CAPTION = (
-    "Each point is one value of the setting; shaded bands span two standard errors "
-    "either side. Up and to the left is better."
 )
 #: Pipeline steps named on every chart, in order.
 MODEL_STEPS = ("OCR", "Classification", "Extraction", "Confidence")
@@ -484,6 +481,107 @@ def panel_subtitle(
     return lead, " · ".join(p for p in parts if p)
 
 
+#: How a chart's subtitle names a step: "Fixed: extraction on Claude Sonnet 5".
+STEP_WORDS = {
+    "OCR": "OCR",
+    "Classification": "classification",
+    "Extraction": "extraction",
+    "Confidence": "scoring",
+}
+#: A model's vendor, which a point's label leaves out: the legend carries the family.
+VENDOR = re.compile(
+    r"\b(?:Amazon|Claude|OpenAI|xAI) (?=(?:Nova|Haiku|Sonnet|Opus|GPT|Grok)\b)"
+)
+DEFAULT_MARK = re.compile(r"\s*\((?:[^()]*,\s*)?default\)", re.IGNORECASE)
+
+
+def default_value(ab: dict[str, Any]) -> str | None:
+    """The ablation's default: the first value that names itself the default."""
+    return next((v for v in ab["values"] if "default" in v.lower()), None)
+
+
+def short_label(value: str, ab: dict[str, Any]) -> str:
+    """The name a point is labelled with: "Holistic · Haiku 5.5 (default)".
+
+    `short_values` in the registry maps a value, or one " · " part of it (a grid row),
+    to a short form; a model name drops its vendor. The default value is marked.
+    """
+    shorts: dict[str, str] = ab.get("short_values") or {}
+    if value in shorts:
+        text = shorts[value]
+    else:
+        parts = [DEFAULT_MARK.sub("", p).strip() for p in value.split(" · ")]
+        text = " · ".join(shorts.get(p, VENDOR.sub("", p)) for p in parts)
+    text = DEFAULT_MARK.sub("", text).strip()
+    if value == default_value(ab) and "default" not in text.lower():
+        text += " (default)"
+    return text
+
+
+def plain(text: str) -> str:
+    """A registry phrase without its code: "Schema enforcement (`x.y`)" to the words."""
+    text = re.sub(r"\s*\([^()]*`[^()]*\)", "", text)
+    return text.replace("`", "")
+
+
+def varies_text(ab: dict[str, Any]) -> str:
+    """What changes between the points, in plain words for a chart's subtitle."""
+    return str(ab.get("varies") or lower_name(plain(ab["changes"])))
+
+
+def fixed_model(
+    ab: dict[str, Any], models: dict[str, dict[str, Any]], ds_key: str
+) -> str:
+    """The model held fixed that a reader of the page needs: "extraction on X".
+
+    The page's own step when it ran the same way for every value; otherwise (its
+    model or a setting of it is what varies) the extraction model, when that is the
+    same for every value; otherwise nothing. The registry's `fixed` names the step
+    instead, for a setting the step's line does not record.
+    """
+    values: list[str] = ab["values"]
+    step = str(ab.get("fixed") or PAGE_STEPS.get(ab["page"], ("", ""))[0])
+
+    def texts(s: str) -> set[str]:
+        return {
+            str(text)
+            for value in values
+            if (text := (models.get(f"{ds_key}|{value}") or {}).get(s))
+            and ran(str(text))
+        }
+
+    own = texts(step) if step else set()
+    if len(own) == 1 and step != "Extraction":
+        return f"{STEP_WORDS[step]} on {own.pop()}"
+    extraction = {short_model(t) for t in texts("Extraction")}
+    if len(extraction) == 1:
+        return f"extraction on {extraction.pop()}"
+    return ""
+
+
+def chart_name(key: str, datasets: dict[str, Any]) -> str:
+    """A dataset as a chart names it: "RealKIE invoices"."""
+    ds = datasets[key]
+    return str(ds.get("chart") or ds.get("short") or ds["name"])
+
+
+def per_unit(kind: str) -> str:
+    """What a cost is counted per: a DocSplit packet is one document of pages."""
+    return "packets" if kind.startswith("packet") else "documents"
+
+
+def axis_title(key: str, metrics: dict[str, Any]) -> str:
+    """A y axis in plain words, with its unit and the direction that is better."""
+    m = metrics[key]
+    text = m.get("axis") or (f"{m['name']} (%)" if key in SHARE_METRICS else m["name"])
+    return f"{text} {'↓' if key in LOWER_IS_BETTER else '↑'}"
+
+
+def n_chart(entry: tuple[str, str, int]) -> str:
+    docs, runs, _ = entry
+    return f"{docs} × {runs} runs"
+
+
 def cell_text(cell: Cell | None, metric: str = "") -> str:
     if cell is None:
         return EMPTY
@@ -523,10 +621,6 @@ def dataset_label(key: str, datasets: dict[str, Any], short: bool = False) -> st
 LIST_SCORE_CAPTION = (
     "A list score is Stickler's score for the list: matched rows over the larger of "
     "the true and returned row counts."
-)
-BY_SIZE_CAPTION = (
-    "One point per document per {changes}, on a log scale; the line is that value's "
-    "running median over log-spaced bins of the x axis."
 )
 
 
@@ -685,7 +779,6 @@ def render_by_size(
             continue
         used = sorted(set(owner.values()), key=sources.index)
         drawn = sorted({doc for _, pts in series for doc, _, _ in pts})
-        steps = model_steps(models, used, ab["values"])
         runs = span(
             [
                 int((sample.get(f"{k}|{v}") or {}).get("runs") or 0)
@@ -697,52 +790,54 @@ def render_by_size(
         )
         n_text = f"N = {len(drawn)} documents × {runs} runs"
         y_name = metrics[metric]["name"]
-        x_name = f"{metrics[x_metric]['name']}, log scale"
+        strata = ab.get("strata") or {}
+        things = str(strata.get("documents") or "documents")
+        thing = things.removesuffix("s")
+        x_title = (
+            f"{str(strata['noun'])[:1].upper()}{str(strata['noun'])[1:]} per {thing} "
+            "(log scale)"
+            if strata.get("noun")
+            else f"{metrics[x_metric].get('axis') or metrics[x_metric]['name']} "
+            "(log scale)"
+        )
         modes = value_modes(models, used, ab["values"])
         slots = series_slots([v for v, _ in series], modes)
-        if slots:
-            series = [(mode_label(v, modes), pts) for v, pts in series]
+        series = [(short_label(v, ab), pts) for v, pts in series]
+        fixed = fixed_model(ab, models, used[0])
+        subtitle = (
+            f"{chart_name(pool[0], datasets)}, {len(drawn)} × {runs} runs · "
+            f"Varies: {varies_text(ab)}" + (f" · Fixed: {fixed}" if fixed else "")
+        )
+        title = str(ab.get("takeaway") or ab["question"])
         name = f"{ab['id']}-by-size-{pool[0].replace('_', '-')}.svg"
         plots[name] = draw_by_size(
-            x_name,
-            y_name,
+            x_title,
+            axis_title(metric, metrics),
             series,
-            title=" · ".join(
-                datasets[k].get("short", datasets[k]["name"]) for k in used
-            ),
-            models=(
-                lead_line(ab["page"], models, used[0], ab["values"]),
-                " · ".join(
-                    p for p in (models_text(steps.get(used[0], {})), n_text) if p
-                ),
-            ),
+            title=title,
+            subtitle=subtitle,
             slots=slots,
+            y_name=y_name,
         )
         alt = (
-            f"{y_name} against {lower_first(metrics[x_metric]['name'])} "
-            f"for each {ab['changes']}"
+            f"{title}: {lower_name(y_name)} per {thing} against "
+            f"{lower_first(x_title.removesuffix(' (log scale)'))}"
         )
         caption = (
-            f"*{y_name} per document, against {lower_first(metrics[x_metric]['name'])}. "
-            + BY_SIZE_CAPTION.format(changes=lower_first(ab["changes"]))
-            + (f" {SLOTS_CAPTION}" if slots else "")
+            f"*{y_name} per {thing}, against "
+            f"{lower_first(x_title.removesuffix(' (log scale)'))} on a log scale: one "
+            f"point per {thing} per {varies_text(ab)}, and a line through each one's "
+            "running median."
             + (f" {LIST_SCORE_CAPTION}" if metric == "list_score" else "")
             + "*"
-            + " Datasets: "
+            + f" {n_text}. Datasets: "
             + ", ".join(dataset_label(k, datasets, short=True) for k in used)
             + "."
         )
-        plot_models = models_sentence(steps, used, datasets)
-        if plot_models:
-            caption += f" {plot_models}"
-        caption += f" {n_text}."
         md += [f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""]
         if ab.get("strata"):
             md += render_strata(ab, reg, results, sources)
     return md, plots
-
-
-SLOTS_CAPTION = "Color marks the extraction mode, and shape and line style the model."
 
 
 def band_labels(bands: list[int], noun: str) -> list[str]:
@@ -859,7 +954,7 @@ def strata_table(
     `score`, weighted accuracy and cost per 1,000 documents over the band's documents
     (only documents every value here scored); and, for each model with both modes,
     what agentic costs against single-pass. The best score in each row is bold. A
-    document a value did not finish is named in a note rather than dropped silently.
+    document a value has no score for is named in a note rather than dropped silently.
     """
     spec = ab["strata"]
     datasets: dict[str, Any] = reg["datasets"]
@@ -974,7 +1069,9 @@ def strata_table(
     )
     out += [note, ""]
 
-    # Documents a value did not finish: counted, named by size, never hidden.
+    # Documents a value has no score for: counted, named by size, never hidden. One
+    # whose every run COMPLETED was extracted but not scored, because Test Studio's
+    # evaluation step timed out; any other failed in the pipeline.
     unfinished = results.get("unfinished") or {}
     for v in values:
         late: dict[str, dict[str, Any]] = {}
@@ -1001,17 +1098,19 @@ def strata_table(
                 parts.append(f"{size}, {e['runs']} of {e['of']} runs")
             return "; ".join(parts)
 
-        for group, verb in (
-            (timed_out, "did not finish"),
-            (failed, "failed on"),
-        ):
-            if not group:
-                continue
-            n = len(group)
-            word = thing if n == 1 else things
-            limit = " in Test Studio's time limit" if verb == "did not finish" else ""
+        if timed_out:
+            n = len(timed_out)
             out += [
-                f"{labels[v]} {verb} {n} {word}{limit} ({described(group)}). "
+                f"Test Studio could not score {n} {thing if n == 1 else things} for "
+                f"{labels[v]}: its evaluation step timed out, although extraction "
+                f"finished ({described(timed_out)}). Left out of every column.",
+                "",
+            ]
+        if failed:
+            n = len(failed)
+            out += [
+                f"{labels[v]} failed on {n} {thing if n == 1 else things} "
+                f"({described(failed)}). "
                 f"{'It is' if n == 1 else 'They are'} left out of every column.",
                 "",
             ]
@@ -1107,6 +1206,11 @@ def render_ablation(
         if datasets[ds_key]["kind"] not in kinds:
             kinds.append(datasets[ds_key]["kind"])
     headline: list[str] = []
+    # One chart per question in the FAQ entry. Where a by-size chart or a grid of
+    # tables answers the question, every other chart goes to the details.
+    by_size_first = bool(results and ab.get("by_size") and results.get("per_doc"))
+    charts_in_details = by_size_first or bool(results and ab.get("grid"))
+    drawn_any = False
     for kind in kinds:
         cols = [m for m in ab["metrics"] if kind in metrics[m]["kinds"]]
         if not cols:
@@ -1173,8 +1277,8 @@ def render_ablation(
         )
         table_mcoe = next((m for m in plot_metrics if m in mcoe_metrics), None)
         mcoe: dict[str, tuple[str, dict[str, float | None]]] = {}
-        scatter = []
-        baseline_specs: dict[str, dict[str, str]] = {}
+        scatter: list[tuple[str, list[Any], dict[str, tuple[float, str]]]] = []
+        baseline_specs: dict[str, dict[str, Any]] = {}
         if x_metric and not plot_metric.endswith("_tokens"):
             for ds_key in kind_sets:
                 pts = []
@@ -1194,29 +1298,22 @@ def render_ablation(
                     spec = metrics[m].get("baseline")
                     if not spec:
                         continue
-                    found = [
-                        cell["mean"]
-                        for value in ab["values"]
-                        if isinstance(
-                            cell := cells.get(f"{ds_key}|{value}|{spec['metric']}"),
-                            dict,
-                        )
-                    ]
-                    if found:
+                    found = (
+                        [float(spec["value"])]
+                        if "value" in spec
+                        else [
+                            cell["mean"]
+                            for value in ab["values"]
+                            if isinstance(
+                                cell := cells.get(f"{ds_key}|{value}|{spec['metric']}"),
+                                dict,
+                            )
+                        ]
+                    )
+                    if found and any(m in ys for _, _, ys in pts):
                         baselines[m] = (statistics.fmean(found), spec["name"])
                         baseline_specs[m] = spec
-                scatter.append(
-                    (
-                        datasets[ds_key].get("short", datasets[ds_key]["name"]),
-                        panel_subtitle(
-                            steps.get(ds_key, {}),
-                            sizes.get(ds_key),
-                            lead_line(ab["page"], models, ds_key, ab["values"]),
-                        ),
-                        pts,
-                        baselines,
-                    )
-                )
+                scatter.append((ds_key, pts, baselines))
                 if table_mcoe:
                     mcoe[ds_key] = marginal_cost_of_error(
                         [(v, x, ys[table_mcoe]) for v, x, ys in pts if table_mcoe in ys]
@@ -1231,61 +1328,107 @@ def render_ablation(
             metric_name = metrics[plot_metric]["name"]
             on_cost = x_metric == COST or plot_metric == COST
             prices = price_caveat_svg(region) if on_cost else ""
+            unit = per_unit(kind)
+            # The first chart carries the takeaway. Under a by-size chart, which
+            # carries it already, it carries its own (`details_takeaway`).
+            first = not headline and not charts_in_details
+            title = (
+                str(
+                    ab.get("details_takeaway" if by_size_first else "takeaway")
+                    or ab["question"]
+                )
+                if not drawn_any
+                else ab["question"]
+            )
+            drawn_any = True
             if scatter and x_metric:
                 x_name = metrics[x_metric]["name"]
                 drawn = [
                     m
                     for m in plot_metrics
-                    if any(m in ys for *_, pts, _ in scatter for _, _, ys in pts)
+                    if any(m in ys for _, pts, _ in scatter for _, _, ys in pts)
                 ]
                 metric_name = " and ".join(
                     metrics[m]["name"] if i == 0 else lower_name(metrics[m]["name"])
                     for i, m in enumerate(drawn)
                 )
-                out.plots[name] = draw_scatter(
+                shown_keys = [k for k, _, _ in scatter]
+                fixed = {k: fixed_model(ab, models, k) for k in shown_keys}
+                same_fixed = len(set(fixed.values())) == 1
+                varies = f"Varies: {varies_text(ab)}"
+                if same_fixed and fixed[shown_keys[0]]:
+                    varies += f" · Fixed: {fixed[shown_keys[0]]}"
+                if len(shown_keys) == 1:
+                    k = shown_keys[0]
+                    lead = chart_name(k, datasets)
+                    if k in sizes:
+                        lead += f", {n_chart(sizes[k])}"
+                    subtitle = f"{lead} · {varies}"
+                else:
+                    subtitle = varies
+                groups = [
+                    (
+                        chart_name(k, datasets)
+                        + (f", {n_chart(sizes[k])}" if k in sizes else ""),
+                        "" if same_fixed or not fixed[k] else f"Fixed: {fixed[k]}",
+                        pts,
+                        baselines,
+                    )
+                    for k, pts, baselines in scatter
+                ]
+                svg = draw_scatter(
                     x_name,
                     [
                         (
                             m,
                             metrics[m]["name"],
-                            metrics[m].get("short", metrics[m]["name"]),
+                            axis_title(m, metrics),
+                            m in SHARE_METRICS,
                         )
                         for m in drawn
                     ],
-                    scatter,
+                    groups,
                     ab.get("runs", 0),
+                    title=title,
+                    subtitle=subtitle,
+                    labels={v: short_label(v, ab) for v in ab["values"]},
+                    default=default_value(ab),
                     x_money=x_metric == COST,
+                    unit=unit,
                     mcoe=mcoe_metrics,
                     prices=prices,
                     families=bool(ab.get("families")),
                 )
-                x_lower = lower_first(x_name)
-                alt = f"{metric_name} against {x_lower} for each {ab['changes']}"
-                caption = f"*{metric_name} against {x_lower}"
-                if len(drawn) > 1:
-                    caption += ", one chart each"
-                caption += f". {SCATTER_CAPTION}"
-                if ab.get("families"):
-                    split = any(
-                        len({family(v) for v, _, _ in pts}) > 1
-                        for _, _, pts, _ in scatter
-                    )
-                    caption += FAMILY_CAPTION + (FAMILY_SPLIT_CAPTION if split else "")
-                    caption += "."
-                # A chart whose dots are numbered lists every value in its key.
-                numbered = 'class="keyhead"' in out.plots[name]
-                if (
-                    not numbered
-                    and max(len(p) for _, _, p, _ in scatter) > MAX_LABELLED
-                ):
-                    caption += (
-                        " Labels mark the default and the values no other value "
-                        "beats on both axes; hover a point for the rest."
-                    )
-                if any(gains for _, gains in mcoe.values()):
+                out.plots[name] = svg
+                x_words = (
+                    f"cost per 1,000 {unit}"
+                    if x_metric == COST
+                    else lower_first(x_name)
+                )
+                alt = (
+                    f"{title}: {lower_name(metric_name)} against {x_words}, one point "
+                    f"per {varies_text(ab)}"
+                )
+                caption = (
+                    f"*{metric_name} against {x_words}, one point per "
+                    f"{varies_text(ab)}. {BANDS_CAPTION}"
+                )
+                if 'class="mcoe"' in svg:
                     caption += MCOE_CAPTION
-                for spec in baseline_specs.values():
-                    caption += f" The dashed line is {spec['name']}: {spec['caption']}."
+                marks = [
+                    f"{spec['name']} ({spec['caption']})"
+                    for spec in baseline_specs.values()
+                ]
+                if marks:
+                    caption += (
+                        f" Dashed lines mark {' and '.join(marks)}."
+                        if len(marks) > 1
+                        else f" The dashed line marks {marks[0]}."
+                    )
+                if x_axes_differ(
+                    [[x["mean"] for _, x, _ in pts] for _, pts, _ in scatter]
+                ):
+                    caption += DIFFER_CAPTION
                 caption += "*"
             else:
                 out.plots[name] = draw_plot(
@@ -1293,21 +1436,20 @@ def render_ablation(
                 )
                 alt = f"{metric_name} for each value of {ab['changes']}"
                 caption = f"*{metric_name}. {CAPTION}*"
+            plot_n = sample_sentence(sizes, plotted, datasets)
+            if plot_n:
+                caption += f" {plot_n}"
             caption += (
                 " Datasets: "
                 + ", ".join(dataset_label(k, datasets, short=True) for k in plotted)
                 + "."
             )
-            plot_models = models_sentence(steps, plotted, datasets)
-            if plot_models:
-                caption += f" {plot_models}"
-            plot_n = sample_sentence(sizes, plotted, datasets)
-            if plot_n:
-                caption += f" {plot_n}"
+            if first:
+                caption += f" {details_link}."
             if on_cost:
                 caption += f" {price_caveat(region)}"
             plot_md = [f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""]
-            if headline:
+            if headline or charts_in_details:
                 d += plot_md
             else:
                 headline = plot_md

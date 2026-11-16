@@ -1,6 +1,6 @@
 {
   "ablation": "CF-02",
-  "verdict": "Claude Haiku 5.5. It separated right values from wrong ones on both datasets (AUROC 0.98 on W-2 forms and 0.81 on RealKIE invoices) at the same cost as the default, Amazon Nova Lite, which scored 0.47 and 0.42: no better than a coin flip. Claude Sonnet 5 scored about the same as Claude Haiku 5.5 for about twice the cost on W-2s and $110 more per 1,000 invoices.",
+  "verdict": "Claude Haiku 5.5, or Claude Sonnet 5.5 for the most accuracy on invoices. On W-2 forms both caught every error when a reviewer checks the 30% of values with the lowest confidence (AUROC 0.98 and 0.99), at about the default's cost for Claude Haiku 5.5. On RealKIE invoices Claude Sonnet 5.5 caught 87% of errors that way (AUROC 0.92) against 66% for Claude Haiku 5.5 (0.81), for about $104 more per 1,000 invoices. The default, Amazon Nova Lite, caught 14% to 19%: fewer than reviewing values at random (30%).",
   "runs": {
     "realkie": {
       "Amazon Nova Lite (default)": [

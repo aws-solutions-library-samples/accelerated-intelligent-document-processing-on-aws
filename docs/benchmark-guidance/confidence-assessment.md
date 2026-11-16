@@ -44,19 +44,19 @@ which adds scan noise to real invoices.
 
 ### Which scoring model should I use?
 
-**Answer:** Claude Haiku 5.5. It separated right values from wrong ones on both datasets (AUROC 0.98 on W-2 forms and 0.81 on RealKIE invoices) at the same cost as the default, Amazon Nova Lite, which scored 0.47 and 0.42: no better than a coin flip. Claude Sonnet 5 scored about the same as Claude Haiku 5.5 for about twice the cost on W-2s and $110 more per 1,000 invoices. [Details: CF-02](#cf-02-which-scoring-model-should-i-use)
+**Answer:** Claude Haiku 5.5, or Claude Sonnet 5.5 for the most accuracy on invoices. On W-2 forms both caught every error when a reviewer checks the 30% of values with the lowest confidence (AUROC 0.98 and 0.99), at about the default's cost for Claude Haiku 5.5. On RealKIE invoices Claude Sonnet 5.5 caught 87% of errors that way (AUROC 0.92) against 66% for Claude Haiku 5.5 (0.81), for about $104 more per 1,000 invoices. The default, Amazon Nova Lite, caught 14% to 19%: fewer than reviewing values at random (30%). [Details: CF-02](#cf-02-which-scoring-model-should-i-use)
 
-![AUROC and errors caught reviewing 30% of values against cost per 1,000 documents (USD) for each Scoring model](../../images/benchmark-guidance/CF-02-fields.svg)
+![Claude Haiku 5.5 catches errors; the default doesn't: AUROC and errors caught reviewing 30% of values against cost per 1,000 documents, one point per scoring model](../../images/benchmark-guidance/CF-02-fields.svg)
 
-*AUROC and errors caught reviewing 30% of values against cost per 1,000 documents (USD), one chart each. Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Color and shape mark the model family, and each family has its own chart on the same axes, with the other families' values as gray dots. The dashed line is random review: the share of wrong values a review of 30% of values finds when it picks them at random.* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: varies (the setting under test). N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*AUROC and errors caught reviewing 30% of values against cost per 1,000 documents, one point per scoring model. Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (what a review of a random 30% of values catches).* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: CF-02](#cf-02-which-scoring-model-should-i-use). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Separate scoring pass or integrated into extraction?
 
 **Answer:** Separate, with a scoring model that works, or off. On W-2 forms integrated scoring separated right from wrong values better than the default separate pass with Amazon Nova Lite (AUROC 0.76 against 0.47) and used 36% fewer tokens per page, but it lowered extraction accuracy from 0.96 to 0.92. Turning confidence off changed no extracted value and cut tokens per page by 55% to 65%. On RealKIE invoices integrated ran as a separate pass, because in single-pass extraction the accelerator scores a class with list fields separately. For confidence you can act on, use a separate pass with Claude Haiku 5.5 or Claude Sonnet 5 (see CF-02). [Details: CF-03](#cf-03-separate-scoring-pass-or-integrated-into-extraction)
 
-![Weighted accuracy and errors caught reviewing 30% of values against cost per 1,000 documents (USD) for each Confidence mode](../../images/benchmark-guidance/CF-03-fields.svg)
+![Integrated scoring catches more W-2 errors but lowers accuracy: weighted accuracy and errors caught reviewing 30% of values against cost per 1,000 documents, one point per confidence mode](../../images/benchmark-guidance/CF-03-fields.svg)
 
-*Weighted accuracy and errors caught reviewing 30% of values against cost per 1,000 documents (USD), one chart each. Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)). The dashed line is random review: the share of wrong values a review of 30% of values finds when it picks them at random.* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: varies (the setting under test). N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy and errors caught reviewing 30% of values against cost per 1,000 documents, one point per confidence mode. Bands show ±2 standard errors. The dashed line marks random review (what a review of a random 30% of values catches).* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: CF-03](#cf-03-separate-scoring-pass-or-integrated-into-extraction). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### What confidence threshold should I set?
 
@@ -118,9 +118,9 @@ which adds scan noise to real invoices.
 
 #### CF-02: Which scoring model should I use?
 
-**Answer:** Claude Haiku 5.5. It separated right values from wrong ones on both datasets (AUROC 0.98 on W-2 forms and 0.81 on RealKIE invoices) at the same cost as the default, Amazon Nova Lite, which scored 0.47 and 0.42: no better than a coin flip. Claude Sonnet 5 scored about the same as Claude Haiku 5.5 for about twice the cost on W-2s and $110 more per 1,000 invoices.
+**Answer:** Claude Haiku 5.5, or Claude Sonnet 5.5 for the most accuracy on invoices. On W-2 forms both caught every error when a reviewer checks the 30% of values with the lowest confidence (AUROC 0.98 and 0.99), at about the default's cost for Claude Haiku 5.5. On RealKIE invoices Claude Sonnet 5.5 caught 87% of errors that way (AUROC 0.92) against 66% for Claude Haiku 5.5 (0.81), for about $104 more per 1,000 invoices. The default, Amazon Nova Lite, caught 14% to 19%: fewer than reviewing values at random (30%).
 
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-181724, RealKIE-FCC-Verified-20261113-181722, RealKIE-FCC-Verified-20261113-181723, RealKIE-FCC-Verified-20261113-182034, RealKIE-FCC-Verified-20261113-182041, RealKIE-FCC-Verified-20261113-182113, RealKIE-FCC-Verified-20261113-182352, RealKIE-FCC-Verified-20261113-182430, RealKIE-FCC-Verified-20261113-182432, RealKIE-FCC-Verified-20261113-182712, RealKIE-FCC-Verified-20261113-182736, RealKIE-FCC-Verified-20261113-182750, Fake-W2-Tax-Forms-20261113-213105, Fake-W2-Tax-Forms-20261113-213106, Fake-W2-Tax-Forms-20261113-213107, Fake-W2-Tax-Forms-20261113-213108, Fake-W2-Tax-Forms-20261113-213109, Fake-W2-Tax-Forms-20261113-213110, Fake-W2-Tax-Forms-20261113-213111, Fake-W2-Tax-Forms-20261113-213117, Fake-W2-Tax-Forms-20261113-213119, Fake-W2-Tax-Forms-20261113-213118, Fake-W2-Tax-Forms-20261113-213120, Fake-W2-Tax-Forms-20261113-213121`.*
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-181724, RealKIE-FCC-Verified-20261113-181722, RealKIE-FCC-Verified-20261113-181723, RealKIE-FCC-Verified-20261113-182034, RealKIE-FCC-Verified-20261113-182041, RealKIE-FCC-Verified-20261113-182113, RealKIE-FCC-Verified-20261113-182352, RealKIE-FCC-Verified-20261113-182430, RealKIE-FCC-Verified-20261113-182432, RealKIE-FCC-Verified-20261113-182712, RealKIE-FCC-Verified-20261113-182736, RealKIE-FCC-Verified-20261113-182750, RealKIE-FCC-Verified-20261116-145733, RealKIE-FCC-Verified-20261116-145735, RealKIE-FCC-Verified-20261116-145734, Fake-W2-Tax-Forms-20261113-213105, Fake-W2-Tax-Forms-20261113-213106, Fake-W2-Tax-Forms-20261113-213107, Fake-W2-Tax-Forms-20261113-213108, Fake-W2-Tax-Forms-20261113-213109, Fake-W2-Tax-Forms-20261113-213110, Fake-W2-Tax-Forms-20261113-213111, Fake-W2-Tax-Forms-20261113-213117, Fake-W2-Tax-Forms-20261113-213119, Fake-W2-Tax-Forms-20261113-213118, Fake-W2-Tax-Forms-20261113-213120, Fake-W2-Tax-Forms-20261113-213121, Fake-W2-Tax-Forms-20261116-145735, Fake-W2-Tax-Forms-20261116-145733, Fake-W2-Tax-Forms-20261116-145734`.*
 
 | | |
 |---|---|
@@ -135,15 +135,15 @@ which adds scan noise to real invoices.
 | ConfBench | Amazon Nova Lite (default) | — | — | — | — | — | — | — |
 | ConfBench | Amazon Nova 2 Lite | — | — | — | — | — | — | — |
 | ConfBench | Claude Haiku 5.5 | — | — | — | — | — | — | — |
-| ConfBench | Claude Sonnet 5 | — | — | — | — | — | — | — |
+| ConfBench | Claude Sonnet 5.5 | — | — | — | — | — | — | — |
 | RealKIE | Amazon Nova Lite (default) | 0.42 ± 0.07 | 0.14 ± 0.11 | 0.17 ± 0.02 | — | — | 14,079 ± 166 | $143 |
 | RealKIE | Amazon Nova 2 Lite | 0.61 ± 0.13 | 0.46 ± 0.13 | 0.18 ± 0.05 | — | — | 5,290 ± 331 | $139 |
 | RealKIE | Claude Haiku 5.5 | 0.81 ± 0.07 | 0.66 ± 0.19 | 0.1 ± 0.03 | — | — | 13,193 ± 1,006 | $140 |
-| RealKIE | Claude Sonnet 5 | 0.83 ± 0.03 | 0.76 ± 0.08 | 0.09 ± 0.05 | — | — | 12,025 ± 93 | $254 |
+| RealKIE | Claude Sonnet 5.5 | 0.92 ± 0.01 | 0.87 ± 0.06 | 0.11 ± 0.04 | — | — | 12,244 ± 318 | $245 ± $0.92 |
 | Fake-W2 | Amazon Nova Lite (default) | 0.47 ± 0.06 | 0.18 ± 0.07 | 0.04 ± 0.01 | — | — | 61,579 ± 106,479 | $32.3 ± $0.10 |
 | Fake-W2 | Amazon Nova 2 Lite | 0.88 ± 0.09 | 0.78 ± 0.19 | 0.02 ± 0.01 | — | — | 83,245 ± 77,145 | $34.9 ± $0.07 |
 | Fake-W2 | Claude Haiku 5.5 | 0.98 ± 0 | 1 ± 0 | 0.06 ± 0 | — | — | 215,723 ± 1,227 | $34.1 ± $0.30 |
-| Fake-W2 | Claude Sonnet 5 | 0.98 ± 0 | 1 ± 0 | 0.04 ± 0.01 | — | — | 185,065 ± 1,227 | $69.8 ± $0.70 |
+| Fake-W2 | Claude Sonnet 5.5 | 0.99 ± 0 | 1 ± 0 | 0.02 ± 0.01 | — | — | 8,720 ± 25 | $61.9 ± $0.29 |
 
 *Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 

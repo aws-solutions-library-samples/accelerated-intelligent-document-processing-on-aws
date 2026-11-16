@@ -1,6 +1,6 @@
 {
   "ablation": "EX-12",
-  "verdict": "Structured output, or leave it off; avoid the forced tool. Structured output scored the same as the default on W-2 forms (0.96) and slightly higher on RealKIE invoices (0.84 against 0.81, at the edge of the noise), and it was a little cheaper and faster. The forced tool lowered accuracy on W-2 forms (0.89 against 0.96) and got no W-2 fully right.",
+  "verdict": "Either; structured output guarantees valid JSON at no cost. With Claude Sonnet 5.5, structured output scored the same as the schema in the prompt on RealKIE invoices (0.82 against 0.80, within the noise) and on W-2 forms (0.92 both), at the same cost. With Claude Sonnet 5 the forced tool lowered W-2 accuracy, and it is not available on Claude Sonnet 5.5.",
   "runs": {
     "realkie": {
       "Off: schema in the prompt (default)": [
@@ -18,12 +18,12 @@
         "RealKIE-FCC-Verified-20261113-211839",
         "RealKIE-FCC-Verified-20261113-211824"
       ],
-      "Off: schema in the prompt \u00b7 Claude Sonnet 5.5": [
+      "Off: schema in the prompt · Claude Sonnet 5.5": [
         "RealKIE-FCC-Verified-20261116-145708",
         "RealKIE-FCC-Verified-20261116-145709",
         "RealKIE-FCC-Verified-20261116-145710"
       ],
-      "Structured output \u00b7 Claude Sonnet 5.5": [
+      "Structured output · Claude Sonnet 5.5": [
         "RealKIE-FCC-Verified-20261116-145719",
         "RealKIE-FCC-Verified-20261116-145720",
         "RealKIE-FCC-Verified-20261116-145721"
@@ -45,12 +45,12 @@
         "Fake-W2-Tax-Forms-20261113-212441",
         "Fake-W2-Tax-Forms-20261113-212442"
       ],
-      "Off: schema in the prompt \u00b7 Claude Sonnet 5.5": [
+      "Off: schema in the prompt · Claude Sonnet 5.5": [
         "Fake-W2-Tax-Forms-20261116-145709",
         "Fake-W2-Tax-Forms-20261116-145719",
         "Fake-W2-Tax-Forms-20261116-145721"
       ],
-      "Structured output \u00b7 Claude Sonnet 5.5": [
+      "Structured output · Claude Sonnet 5.5": [
         "Fake-W2-Tax-Forms-20261116-145720",
         "Fake-W2-Tax-Forms-20261116-145722",
         "Fake-W2-Tax-Forms-20261116-145723"

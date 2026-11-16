@@ -53,9 +53,9 @@ Some benchmarks here reuse runs from other pages.
 
 **Answer:** Claude Haiku 5.5 for extraction, Amazon Textract with Layout only, and confidence off or scored by Claude Haiku 5.5. On RealKIE invoices it cost $21 per 1,000 documents against $135 for the default, and scored the same (0.83 against 0.82); on W-2 forms it cost $5 against $32 and scored higher (0.998 against 0.966). Scoring with Claude Haiku 5.5 added $7 per 1,000 invoices and gave confidence that separates right from wrong (AUROC 0.84, against 0.51 for the default). [Details: TU-04](#tu-04-what-is-the-cheapest-configuration-that-keeps-accuracy)
 
-![Weighted accuracy against cost per 1,000 documents (USD) for each Configuration](../../images/benchmark-guidance/TU-04-fields.svg)
+![Claude Haiku 5.5 and Layout only: same accuracy, a sixth the cost: weighted accuracy against cost per 1,000 documents, one point per configuration](../../images/benchmark-guidance/TU-04-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: varies (the setting under test) · Extraction: varies (the setting under test) · Confidence: varies (the setting under test). N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents, one point per configuration. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: TU-04](#tu-04-what-is-the-cheapest-configuration-that-keeps-accuracy). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How many tokens does each extraction model use for the same document?
 

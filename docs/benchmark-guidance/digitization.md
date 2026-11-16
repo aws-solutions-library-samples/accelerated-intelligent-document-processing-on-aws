@@ -42,9 +42,9 @@ right in the page text, the fix is in your classification or extraction definiti
 
 **Answer:** Keep Textract. On RealKIE invoices the three readers scored within the noise of each other (0.81, 0.80 and 0.81). On bank checks the Bedrock vision model scored lower than Textract (0.90 against 0.94), a gap near the edge of the noise. The vision model's shorter page text cut total tokens per page on invoices (16,400 against 19,600), but it returns no word confidence for the scoring model to use. [Details: DG-01](#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy)
 
-![Weighted accuracy against cost per 1,000 documents (USD) for each OCR reader](../../images/benchmark-guidance/DG-01-fields.svg)
+![Keep Textract: the other readers scored no better: weighted accuracy against cost per 1,000 documents, one point per OCR reader](../../images/benchmark-guidance/DG-01-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [OmniAI, bank checks](datasets.md#omniai-ocr-benchmark-bank-checks-20). Models: OCR: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. Classification by dataset: OmniAI, bank checks — Amazon Nova 2 Lite, page by page. Extraction by dataset: RealKIE — Claude Sonnet 5, single-pass; OmniAI, bank checks — Amazon Nova 2 Lite, single-pass. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents, one point per OCR reader. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [OmniAI, bank checks](datasets.md#omniai-ocr-benchmark-bank-checks-20). [Details: DG-01](#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### If I read pages with a vision model, which model?
 
@@ -58,9 +58,9 @@ right in the page text, the fix is in your classification or extraction definiti
 
 **Answer:** Keep 300 DPI unless tokens matter more than a small accuracy risk. On RealKIE invoices 200 DPI scored the same as 300 (0.82 against 0.81) with 7% fewer tokens per page; 150 DPI scored 0.79, a drop within the noise, with 12% fewer. Below about 200 DPI Textract starts to drop small and faint characters, so test a lower resolution on your own scans first. [Details: DG-04](#dg-04-what-resolution-should-pages-be-rendered-at)
 
-![Weighted accuracy against cost per 1,000 documents (USD) for each `ocr.image.dpi`](../../images/benchmark-guidance/DG-04-fields.svg)
+![200 DPI scored like 300 DPI; 150 DPI slipped slightly: weighted accuracy against cost per 1,000 documents, one point per page resolution](../../images/benchmark-guidance/DG-04-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices). Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents, one point per page resolution. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices). [Details: DG-04](#dg-04-what-resolution-should-pages-be-rendered-at). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### Does image preprocessing help on poor scans?
 
@@ -70,9 +70,9 @@ right in the page text, the fix is in your classification or extraction definiti
 
 **Answer:** Pick the features your documents need; none of the combinations we tried changed accuracy measurably. On RealKIE invoices and W-2 forms every combination scored within the noise of the default, and LAYOUT alone used about 3% fewer total tokens per page because it sends less page text. Textract prices each page by the features you select, so dropping a feature your documents do not need saves Textract charges rather than tokens. [Details: DG-06](#dg-06-which-textract-features-do-i-need)
 
-![Weighted accuracy against cost per 1,000 documents (USD) for each `ocr.features`](../../images/benchmark-guidance/DG-06-fields.svg)
+![No Textract feature combination changed accuracy measurably: weighted accuracy against cost per 1,000 documents, one point per Textract features](../../images/benchmark-guidance/DG-06-fields.svg)
 
-*Weighted accuracy against cost per 1,000 documents (USD). Each point is one value of the setting; shaded bands span two standard errors either side. Up and to the left is better. Lines run from the cheapest value to each more accurate one, labeled with the marginal cost of error: the extra cost per error prevented ([Marginal Cost of Error](marginal-cost-of-error.md)).* Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). Models: OCR: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. N = 20 documents × 3 runs. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+*Weighted accuracy against cost per 1,000 documents, one point per Textract features. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: DG-06](#dg-06-which-textract-features-do-i-need). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
 
 ### How much accuracy does scan quality cost?
 
