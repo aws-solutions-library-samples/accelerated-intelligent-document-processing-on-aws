@@ -1666,6 +1666,13 @@ class Run:
 
     # Snapshot -----------------------------------------------------------------------
 
+    def snapshot_pool(self) -> str:
+        """The user pool :meth:`snapshot` reads. Here it is the old deployment's,
+        which the new one adopts; the upgrade test
+        (``scripts/sdlc/terraform_upgrade_test.py``), which reuses this snapshot,
+        reads its one deployment's instead."""
+        return self.ctx["old"]["user_pool_id"]
+
     def snapshot(self, label: str) -> Dict[str, Any]:
         """Objects, items, users and groups of every bucket and table the old
         state holds that REQUIRED_KEPT or the plan keeps."""
@@ -1694,7 +1701,7 @@ class Run:
                 for item in page.get("Items", []):
                     items[item_key(item, keys)] = item
             snap["tables"][table] = items
-        pool = self.ctx["old"]["user_pool_id"]
+        pool = self.snapshot_pool()
         for page in cognito.get_paginator("list_users").paginate(UserPoolId=pool):
             for u in page["Users"]:
                 sub = next(
