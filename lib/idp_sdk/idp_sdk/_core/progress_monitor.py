@@ -114,7 +114,7 @@ class ProgressMonitor:
             "failed": [],
             # Processing has stopped and a person has to act (HITL_IN_PROGRESS).
             # Settled for `all_complete`, never cached: it changes once reviewed.
-            DocumentBucket.AWAITING_REVIEW.value: [],
+            "awaiting_review": [],
             "all_complete": False,
             "total": len(document_ids),
         }
@@ -201,7 +201,7 @@ class ProgressMonitor:
         settled = (
             len(status_summary["completed"])
             + len(status_summary["failed"])
-            + len(status_summary.get(DocumentBucket.AWAITING_REVIEW.value, []))
+            + len(status_summary["awaiting_review"])
         )
         return settled == total
 
@@ -453,7 +453,9 @@ class ProgressMonitor:
         failed = len(status_data["failed"])
         running = len(status_data["running"])
         queued = len(status_data["queued"])
-        awaiting_review = len(status_data.get(DocumentBucket.AWAITING_REVIEW.value, []))
+        # `.get`: this is a public method over a caller-supplied dict, and
+        # summaries built before the bucket existed do not carry the key.
+        awaiting_review = len(status_data.get("awaiting_review", []))
 
         # Calculate average duration for completed documents
         durations = [

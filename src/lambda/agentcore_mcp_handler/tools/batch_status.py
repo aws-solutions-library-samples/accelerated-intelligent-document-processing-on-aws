@@ -67,7 +67,7 @@ class BatchStatusTool(IDPTool):
                 "in_progress": status.in_progress,
                 "failed": status.failed,
                 "queued": status.queued,
-                "awaiting_review": getattr(status, "awaiting_review", 0),
+                "awaiting_review": status.awaiting_review,
             }
             all_complete = status.all_complete
 
@@ -120,6 +120,15 @@ class BatchStatusTool(IDPTool):
                 },
                 "all_complete": all_complete,
             }
+            if counts["awaiting_review"]:
+                # Say in words that a person is the blocker: `all_complete` is
+                # true and `percentage` stays below 100, which an agent reading
+                # only those two fields cannot reconcile (#2022).
+                response["message"] = (
+                    f"Processing finished; {counts['awaiting_review']} document(s) "
+                    "awaiting human review in the web UI's review queues. They have "
+                    "no final result until a reviewer completes or rejects them."
+                )
 
             # Add detailed info if requested
             if options.get("detailed"):

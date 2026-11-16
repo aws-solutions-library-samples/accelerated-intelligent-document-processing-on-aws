@@ -220,6 +220,7 @@ class FakeBatch:
             in_progress=0,
             failed=0,
             queued=0,
+            awaiting_review=0,
             all_complete=True,
         )
 
@@ -543,3 +544,12 @@ def test_scoped_status_counts_documents_awaiting_review_as_settled(
     assert out["status"]["total"] == 2
     assert out["status"]["awaiting_review"] == 1
     assert out["all_complete"] is True
+    # A person is the blocker, and the response says so in words.
+    assert "1 document(s) awaiting human review" in out["message"]
+
+
+def test_status_without_documents_in_review_carries_no_review_message(sdk, lookup):
+    tool = tool_module("batch_status").BatchStatusTool()
+    out = tool.execute(batch_id="x", caller=caller())
+    assert out["status"]["awaiting_review"] == 0
+    assert "message" not in out
