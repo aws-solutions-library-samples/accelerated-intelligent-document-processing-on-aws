@@ -271,11 +271,34 @@ forever, the rule is run as a measurement and ratcheted: per file, the count may
   re-records the smaller count (or removes the entry at zero). `--summary` prints totals and the
   top offenders. `--write` refuses to add a path or raise a count unless given
   `--allow-new-debt "<reason>"`, which it records in `newDebtReasons` so the growth stays
-  reviewable; the justified case is upstream code merged before the gate existed, as the two
-  `chore(ui): absorb upstream ...` commits of the foundation PR show. Export builders whose text
-  is English by design (CSV and markdown with `\n`) stay in the baseline until the conversion PR
-  that touches the file adds a file-local `/* eslint-disable i18next/no-literal-string -- export
-  content stays English */` block.
+  reviewable; the justified cases are upstream code merged before the gate existed, as the two
+  `chore(ui): absorb upstream ...` commits of the foundation PR show, and an export module whose
+  text is English by design (below). Export builders whose text is English by design (CSV column
+  headers, generated report headings) stay counted: the gate does not tell text a user reads on
+  screen from text a user reads in a download, and an exemption by file name would take whatever
+  is written under that name out of the count unseen. Once the conversion PR that touches the
+  screen has declared everything else, the file's entry shrinks to the export text and `--write`
+  records it. To make the remaining entry self-explanatory, move the export text and the function
+  that assembles it into a sibling `<name>.export.ts` module and record the new path once with
+  `--write --allow-new-debt "<path>: <what it exports>, English by design"`: the pinned count is
+  the record, an increase needs another reason, and renaming an existing counted module into the
+  suffix meets the same refusal. Never write an `eslint-disable i18next/no-literal-string`
+  comment: `npm run lint` does not register the plugin and rejects the directive as an unknown
+  rule, and registering it without the rule only turns the error into an unused-directive warning
+  that `--max-warnings 0` rejects.
+
+```ts
+// test-results.export.ts — the CSV a screen offers for download, English by design
+export const csvHeader = ['Test Run ID', 'Test Set', 'Status'];
+
+export function toCsv(rows: string[][]): string {
+  return [csvHeader, ...rows].map((row) => row.join(',')).join('\n');
+}
+```
+
+`src/ui/src/i18n/__tests__/eslint-i18n-config.test.ts` lints this example through both
+configurations: counted by the counting configuration on its own `.export.ts` path, clean under
+`npm run lint`, and the file-local `eslint-disable` comment rejected there as an unknown rule.
 
 **Known gaps, stated with numbers** (measured 2026-11-05 on the tree the baseline was written
 against; nothing re-measures them until the follow-up gate below, so each comes with the way to
