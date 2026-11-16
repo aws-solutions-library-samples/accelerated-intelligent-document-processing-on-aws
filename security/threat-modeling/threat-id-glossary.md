@@ -124,10 +124,9 @@ Threat IDs follow the pattern: `{CATEGORY}.T{NN}`
 
 > **`AUTH.T14` and `AUTH.T16` are not in sequence with the rest, on purpose.**
 > `AUTH.T14` is the alternate-entry-path threat on the streaming Function URL;
-> its code-level residual is named `GAP-07` in
-> `scripts/api_rbac_expectations.yaml` and in `.claude/skills/api-rbac-test.md`,
-> and the *code* comments cite `GAP-07` rather than the threat id, so do not
-> expect to find `AUTH.T14` there. `AUTH.T16` — per-object authorization being opt-in
+> its code-level residual was named `GAP-07`, which is resolved and recorded as
+> such in `scripts/api_rbac_expectations.yaml`, so do not expect to find
+> `AUTH.T14` in the code. `AUTH.T16` — per-object authorization being opt-in
 > per resolver — was drafted as `AUTH.T14` and
 > renumbered, because a concurrent change had already assigned that identifier to
 > the threat above. A threat identifier is this model's primary key; two threats

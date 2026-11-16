@@ -6,6 +6,7 @@ import { Box, Button, Container, Header, SpaceBetween, Link } from '@cloudscape-
 import { DOCUMENTS_PATH, MY_TASKS_PATH, CONFIGURATION_PATH, UPLOAD_DOCUMENT_PATH, WELCOME_DISMISSED_KEY } from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
+import { isQuickStartEnabled } from '../../utils/quick-start-flag';
 
 interface WelcomeContentProps {
   // When true, shows the "Don't show this again" dismissal (landing-page variant).
@@ -17,6 +18,7 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
   const { isAnnotatorOnly } = useUserRole();
+  const quickStart = isQuickStartEnabled();
 
   const openQuickStart = useCallback(() => {
     navigate(DOCUMENTS_PATH);
@@ -54,9 +56,11 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
         <SpaceBetween direction="horizontal" size="s">
           {!isAnnotatorOnly && (
             <>
-              <Button variant="primary" iconName="gen-ai" onClick={openQuickStart}>
-                Quick Start
-              </Button>
+              {quickStart && (
+                <Button variant="primary" iconName="gen-ai" onClick={openQuickStart}>
+                  Quick Start
+                </Button>
+              )}
               <Button iconName="status-info" onClick={startTour}>
                 Take the tour
               </Button>
@@ -71,17 +75,19 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
           <Box>
             <Box variant="h3">Not sure where to begin?</Box>
             <SpaceBetween size="xs">
-              <Box variant="p">
-                <b>No configuration yet?</b> Use <Link onFollow={openQuickStart}>Quick Start</Link> to describe your document type (or
-                upload an example) and we&apos;ll build a config for you.
-              </Box>
+              {quickStart && (
+                <Box variant="p">
+                  <b>No configuration yet?</b> Use <Link onFollow={openQuickStart}>Quick Start</Link> to describe your document type (or
+                  upload an example) and we&apos;ll build a config for you.
+                </Box>
+              )}
               <Box variant="p">
                 <b>Already have a config?</b> Go to{' '}
                 <Link onFollow={() => navigate(CONFIGURATION_PATH)}>Configuration &gt; View/Edit Configuration</Link> to review or update
                 it.
               </Box>
               <Box variant="p">
-                <b>Want to test a document?</b> Head to <Link onFollow={() => navigate(UPLOAD_DOCUMENT_PATH)}>Upload Document</Link> to run
+                <b>Want to test a document?</b> Head to <Link onFollow={() => navigate(UPLOAD_DOCUMENT_PATH)}>Upload Documents</Link> to run
                 one through your active configuration.
               </Box>
             </SpaceBetween>

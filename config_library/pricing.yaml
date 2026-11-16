@@ -552,27 +552,26 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
-  # ⚠️ KNOWN DISCREPANCY, left as-is deliberately and tracked separately: these
-  # Sonnet 5 rows carry Sonnet 4.6's rates. The AWS price list gives Sonnet 5
-  # $2.20 in / $11.00 out per 1M on us./eu. and $2.00 / $10.00 on global. (offer
-  # 20261008165109), and the header of this file already states those figures, so
-  # the six Sonnet 5 rows below — us., eu., global. and each one's ":1m" twin —
-  # read a uniform 1.50x high on every unit. Correcting them is a clean multiply
-  # rather than a re-derivation, but it moves every Sonnet 5 cost figure this
-  # repository has published, so it belongs in its own change with the benchmark
-  # baselines restated alongside it. Until then: a cost REPORT from this file
-  # overstates Sonnet 5 by 50%, while a per-token ratio against another model
-  # quoted in the docs is computed from the price list, not from here.
+  # Claude Sonnet 5, US regional / geo-CRIS band, read from the AWS price list
+  # offer file for AmazonBedrockFoundationModels version 20261109224312 (published
+  # 2026-11-09, retrieved 2026-11-12), serviceName "Claude Sonnet 5 (Amazon Bedrock
+  # Edition)": $2.20 input / $11.00 output / $0.22 cache read / $2.75 5-minute cache
+  # write per 1M tokens, each over a single 0-to-Inf range. The eu. rows carry the
+  # same band; global. is $2.00 / $10.00 / $0.20 / $2.50. A 1-hour-TTL cache write
+  # ($4.40, $4.00 global) has no unit in this file; IDP writes 5-minute cache points
+  # only. These six rows (us., eu., global. and each one's ":1m" twin) carried Sonnet
+  # 4.6's rates — exactly 1.5x on every unit — until issue #1830, so a Sonnet 5 cost
+  # figure produced before that correction is 1.5x the true Bedrock-token cost.
   - name: bedrock/us.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
-        price: "3.3E-6"
+        price: "2.2E-6"
       - name: outputTokens
-        price: "1.65E-5"
+        price: "1.1E-5"
       - name: cacheReadInputTokens
-        price: "3.3E-7"
+        price: "2.2E-7"
       - name: cacheWriteInputTokens
-        price: "4.125E-6"
+        price: "2.75E-6"
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
@@ -589,19 +588,17 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
-  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
-  # Sonnet 5 rows. The full explanation and the correct figures are on the
-  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
+  # Sonnet 5 rates are explained on the us.anthropic.claude-sonnet-5 block above.
   - name: bedrock/us.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
-        price: "3.3E-6"
+        price: "2.2E-6"
       - name: outputTokens
-        price: "1.65E-5"
+        price: "1.1E-5"
       - name: cacheReadInputTokens
-        price: "3.3E-7"
+        price: "2.2E-7"
       - name: cacheWriteInputTokens
-        price: "4.125E-6"
+        price: "2.75E-6"
   
   # Claude Sonnet 5.5. Rates are the US regional / geo-CRIS band, read from the AWS
   # price list offer file for AmazonBedrockFoundationModels version 20261012084008
@@ -611,17 +608,9 @@ pricing:
   # 5-minute cache points only. There is no ':1m' twin to add — the 1M window is
   # this model's default and there is no such model id (see model_config_limits.yaml).
   #
-  # ⚠️ DO NOT read a cost report as saying Sonnet 5.5 is cheaper than Sonnet 5 per
-  # token on input or output. The price list gives the two models the IDENTICAL
-  # $2.20/$11.00 band; the one real difference is cache read, where 5.5 is half the
-  # price ($0.11 against $0.22). The rows below are the measured rates and the six
-  # Sonnet 5 rows are knowingly 1.50x high (the ⚠️ block on
-  # us.anthropic.claude-sonnet-5 above explains why they are left alone), so a
-  # report comparing the two is reading that discrepancy, not a price difference.
-  # Correcting the Sonnet 5 rows removes the artefact; until then, compare the two
-  # from the price list rather than from a report generated out of this file.
-  # These rows are deliberately NOT inflated to match: a second known-wrong figure
-  # is not consistency, and it would have to be un-done by whoever fixes the first.
+  # The price list gives Sonnet 5.5 and Sonnet 5 the IDENTICAL $2.20/$11.00 band on
+  # input and output; the one real difference is cache read, where 5.5 is half the
+  # price ($0.11 against $0.22).
   - name: bedrock/us.anthropic.claude-sonnet-5-5
     units:
       - name: inputTokens
@@ -1124,19 +1113,17 @@ pricing:
       - name: cacheWriteInputTokens
         price: "4.125E-6"
 
-  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
-  # Sonnet 5 rows. The full explanation and the correct figures are on the
-  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
+  # Sonnet 5 rates are explained on the us.anthropic.claude-sonnet-5 block above.
   - name: bedrock/eu.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
-        price: "3.3E-6"
+        price: "2.2E-6"
       - name: outputTokens
-        price: "1.65E-5"
+        price: "1.1E-5"
       - name: cacheReadInputTokens
-        price: "3.3E-7"
+        price: "2.2E-7"
       - name: cacheWriteInputTokens
-        price: "4.125E-6"
+        price: "2.75E-6"
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
@@ -1153,25 +1140,21 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
-  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
-  # Sonnet 5 rows. The full explanation and the correct figures are on the
-  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
+  # Sonnet 5 rates are explained on the us.anthropic.claude-sonnet-5 block above.
   - name: bedrock/eu.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
-        price: "3.3E-6"
+        price: "2.2E-6"
       - name: outputTokens
-        price: "1.65E-5"
+        price: "1.1E-5"
       - name: cacheReadInputTokens
-        price: "3.3E-7"
+        price: "2.2E-7"
       - name: cacheWriteInputTokens
-        price: "4.125E-6"
+        price: "2.75E-6"
   
   # Claude Sonnet 5.5, EU regional / geo-CRIS band. Identical to the us. band in the
   # price list (offer 20261012084008, retrieved 2026-10-14) — $2.20 / $11.00 / $0.11
   # / $2.75 — which is the normal shape for this file: only the global. band differs.
-  # Read the ⚠️ note on the us.anthropic.claude-sonnet-5-5 block before comparing a
-  # cost report for this model against one for Sonnet 5.
   - name: bedrock/eu.anthropic.claude-sonnet-5-5
     units:
       - name: inputTokens
@@ -1453,19 +1436,17 @@ pricing:
       - name: cacheWriteInputTokens
         price: "3.75E-6"
 
-  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
-  # Sonnet 5 rows. The full explanation and the correct figures are on the
-  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
+  # Sonnet 5 rates are explained on the us.anthropic.claude-sonnet-5 block above.
   - name: bedrock/global.anthropic.claude-sonnet-5
     units:
       - name: inputTokens
-        price: "3.0E-6"
+        price: "2.0E-6"
       - name: outputTokens
-        price: "1.5E-5"
+        price: "1.0E-5"
       - name: cacheReadInputTokens
-        price: "3.0E-7"
+        price: "2.0E-7"
       - name: cacheWriteInputTokens
-        price: "3.75E-6"
+        price: "2.5E-6"
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
@@ -1482,25 +1463,22 @@ pricing:
 
   # ":1m" long-context variant — same rates as the base entry above. The 1M
   # context window carries no price premium; see the header note.
-  # ⚠️ Carries Sonnet 4.6's rates, a uniform 1.50x high, like the other five
-  # Sonnet 5 rows. The full explanation and the correct figures are on the
-  # us.anthropic.claude-sonnet-5 block above; fix all six together or none.
+  # Sonnet 5 rates are explained on the us.anthropic.claude-sonnet-5 block above.
   - name: bedrock/global.anthropic.claude-sonnet-5:1m
     units:
       - name: inputTokens
-        price: "3.0E-6"
+        price: "2.0E-6"
       - name: outputTokens
-        price: "1.5E-5"
+        price: "1.0E-5"
       - name: cacheReadInputTokens
-        price: "3.0E-7"
+        price: "2.0E-7"
       - name: cacheWriteInputTokens
-        price: "3.75E-6"
+        price: "2.5E-6"
   
   # Claude Sonnet 5.5, global. band — the 1/1.1 of the us./eu. rates this file's
   # header describes: $2.00 input / $10.00 output / $0.10 cache read / $2.50
   # 5-minute cache write per 1M tokens (offer 20261012084008, retrieved
-  # 2026-10-14). Read the ⚠️ note on the us.anthropic.claude-sonnet-5-5 block before
-  # comparing a cost report for this model against one for Sonnet 5.
+  # 2026-10-14).
   - name: bedrock/global.anthropic.claude-sonnet-5-5
     units:
       - name: inputTokens

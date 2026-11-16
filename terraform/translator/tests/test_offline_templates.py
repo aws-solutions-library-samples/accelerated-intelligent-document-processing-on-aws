@@ -317,6 +317,57 @@ def test_every_role_is_named_after_the_stack_and_takes_the_boundary(standard_mod
     assert not problems, problems[:20]
 
 
+def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
+    standard_module,
+):
+    """The bridge mirrors the template: its log group is encrypted with the key
+    the template's log groups use, and its bucket's access logs go to the
+    template's logging bucket. Nested templates have no logging bucket, so
+    theirs arrive from the root through the translator's own variables, and
+    the root's key needs its DependsOn on the stack-name check left out, or the
+    bridge waits for a custom resource it has to run itself (a cycle that
+    `terraform validate` reports)."""
+    bridges = sorted(standard_module.rglob("bridge.tf"))
+    assert len(bridges) > 1, bridges
+    root_key = "awscc_kms_key.customer_managed_encryption_key.arn"
+    for bridge in bridges:
+        text = bridge.read_text()
+        where = bridge.relative_to(standard_module)
+        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S+)$", text, re.M)
+        assert kms, f"{where}: the bridge log group is not encrypted"
+        target = re.search(r"^\s*target_bucket\s*=\s*(\S+)$", text, re.M)
+        assert target, f"{where}: the bridge bucket has no access logging"
+        # The bridge bucket takes the same key as the bridge log group.
+        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S+)$", text, re.M)
+        assert bucket_key, f"{where}: the bridge bucket is not encrypted with a key"
+        assert bucket_key.group(1) == kms.group(1), where
+        if bridge.parent == standard_module:
+            assert kms.group(1) == root_key
+            assert target.group(1) == "aws_s3_bucket.logging_bucket.id"
+        else:
+            assert kms.group(1).startswith("var."), (where, kms.group(1))
+            assert target.group(1) == "var.cfn_bridge_access_log_bucket"
+    main_tf = (standard_module / "main.tf").read_text()
+    # The resource directory is in the bridge bucket, so a function that reads
+    # it must be able to decrypt it.
+    readers = re.findall(
+        r'resource "aws_iam_role_policy" "\w+_tf_directory" \{(.*?)\n\}\n',
+        main_tf,
+        re.S,
+    )
+    assert readers
+    for body in readers:
+        assert '"kms:Decrypt"' in body and root_key in body, body
+    for name in ("cfn_bridge_kms_key_arn", "cfn_bridge_access_log_bucket"):
+        assert re.search(rf"^\s*{name} = (?!null)", main_tf, re.M), name
+    key = re.search(
+        r'resource "awscc_kms_key" "customer_managed_encryption_key" \{(.*?)\n\}\n',
+        main_tf,
+        re.S,
+    )
+    assert key and "is_stackname_length_ok" not in key.group(1)
+
+
 def test_translation_is_deterministic(standard_module, tmp_path):
     """Translating twice gives identical files, so a re-plan after the role
     rename is empty: nothing in a name depends on when it was generated."""

@@ -3,6 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 
+import { toPricingLookup } from '../../pricing-layout/price-format';
 import { calculateTotalCosts, meteringCount, priceMetering } from '../metering-cost';
 import type { NonChargeableUnits, PricingLookup } from '../pricing';
 
@@ -256,5 +257,27 @@ describe('calculateTotalCosts', () => {
     expect(calculateTotalCosts(STORED_WITH_CACHE_DETAILS, 4, null)).toEqual({ totalCost: 0, costPerPage: 0 });
     expect(calculateTotalCosts(STORED_WITH_CACHE_DETAILS, undefined, PRICING).costPerPage).toBeCloseTo(0.2295, 12);
     expect(calculateTotalCosts(STORED_WITH_CACHE_DETAILS, 0, PRICING).costPerPage).toBeCloseTo(0.2295, 12);
+  });
+});
+
+describe('an entry whose every price is invalid', () => {
+  // The same table as test_an_entry_whose_every_price_is_invalid_still_matches in
+  // lib/idp_common_pkg/tests/unit/reporting/test_config_pricing.py, which pins the
+  // cost report to this answer: the entry still matches, so its unit is unpriced,
+  // and the shorter key is not used.
+  it.each(['0x10', 'nan', '1_000', ''])('leaves the unit unpriced for %j', (invalidPrice) => {
+    const lookup = toPricingLookup({
+      pricing: [
+        { name: 'lambda_hook/GENAIIDP-hook', units: [{ name: 'pages', price: invalidPrice }] },
+        { name: 'GENAIIDP-hook', units: [{ name: 'pages', price: '0.01' }] },
+      ],
+    });
+    expect(lookup).not.toBeNull();
+    const { rows } = priceMetering({ 'Hook/lambda_hook/GENAIIDP-hook': { pages: 3 }, 'GENAIIDP-hook': { pages: 3 } }, lookup ?? {});
+    expect(rows.map((r) => [r.serviceApi, r.unitPrice])).toEqual([
+      ['lambda_hook/GENAIIDP-hook', null],
+      // Non-vacuity: the shorter key is live.
+      ['GENAIIDP-hook', 0.01],
+    ]);
   });
 });

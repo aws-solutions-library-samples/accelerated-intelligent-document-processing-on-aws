@@ -759,14 +759,21 @@ class SticklerConfigMapper:
                 # per-field comparator-config. Stickler will pass this to
                 # ``IDPLLMComparator(**config)`` so a per-service config change
                 # takes effect for its own EvaluationService only, instead of
-                # the previous module-level singleton.
+                # the previous module-level singleton. A field that also carries
+                # its own method-config keeps those keys on top, but still gets
+                # the service's model and prompts underneath: replacing the
+                # whole dict instead left such a field judged by the
+                # comparator's fallback model, not the configured one.
                 if (
                     method == EVALUATION_METHOD_LLM
                     and isinstance(llm_config, dict)
                     and llm_config
-                    and "x-aws-stickler-comparator-config" not in schema
                 ):
-                    schema["x-aws-stickler-comparator-config"] = dict(llm_config)
+                    field_config = schema.get("x-aws-stickler-comparator-config")
+                    schema["x-aws-stickler-comparator-config"] = {
+                        **llm_config,
+                        **(field_config if isinstance(field_config, dict) else {}),
+                    }
 
                 # LLM method: also hand the comparator its FIELD CONTEXT. The
                 # shipped prompt interpolates {DOCUMENT_CLASS}, {ATTRIBUTE_NAME}

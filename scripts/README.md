@@ -113,7 +113,10 @@ first-time-user stories below run on the same package, and two of its modules
 serve both: `session.py`, one confined, signed-in browser opened and closed in the
 order confinement needs, with the one check of whether a run's screens may become a
 video, and `artifacts.py`, the redactor every printed line and artifact goes
-through, and the artifact writes.
+through, and the artifact writes. The session's browser server is `review_relay.py`,
+the pinned chrome-devtools-mcp behind the stories' commit guard
+(`story_relay.CommitGuard`), which refuses a click, key or edit that would commit on
+the shared review stack and lists the refusal in the job's `refusals.jsonl`.
 
 In CI it is the advisory `ai_ux_test` job, which runs on non-Draft MRs to `develop`
 that change `src/ui/` and appends its findings and a narrated video to the
@@ -127,8 +130,8 @@ py scripts\ux_runner\run_in_docker.py review --mr <iid>    # Windows, without ma
 
 The unattended contract is [`ux-test-ci.md`](../.claude/skills/ux-test-ci.md).
 Unit tests: `scripts/tests/test_ux_runner_*.py`, `test_ux_test_proxy.py`,
-`test_ux_recorder_mcp.py`, `test_ai_ux_test.py` and, for the two CI jobs' shape,
-`test_ux_test_ci_jobs.py`.
+`test_ux_recorder_mcp.py`, `test_ux_review_relay.py`, `test_ai_ux_test.py` and, for
+the two CI jobs' shape, `test_ux_test_ci_jobs.py`.
 
 ### First-time-user stories (`ux_stories.toml`, `ux_story_mcp.py`)
 

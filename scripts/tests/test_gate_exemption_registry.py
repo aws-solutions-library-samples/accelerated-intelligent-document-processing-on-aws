@@ -119,7 +119,7 @@ RATCHETS = {
 #: ``ALLOW``. Each of the twelve names what is unprotected in its own ``ratchetGap``; that
 #: is the state the tree was already in, now written down. What this budget still refuses
 #: is a NEW exemption arriving with `ratchet: none` and no such reason beside it.
-MAX_UNRATCHETED = 70
+MAX_UNRATCHETED = 69
 
 #: Entries whose premise is computable but whose gate does not yet call the predicate.
 #: Same ratchet direction, same reason: this state must not become a comfortable place

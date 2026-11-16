@@ -11,6 +11,7 @@ import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
 import {
   DOCUMENTS_PATH,
   INBOX_PATH,
+  JOBS_PATH,
   MY_QUEUES_PATH,
   MY_TASKS_PATH,
   REVIEW_QUEUES_PATH,
@@ -27,6 +28,7 @@ type Crumb = BreadcrumbGroupProps.Item;
 export const HOME_CRUMB: Crumb = { text: 'Home', href: '#/' };
 export const TASKS_CRUMB: Crumb = { text: 'Tasks', href: `#${MY_TASKS_PATH}` };
 export const MY_QUEUES_CRUMB: Crumb = { text: 'Queues', href: `#${MY_QUEUES_PATH}` };
+export const JOBS_CRUMB: Crumb = { text: 'Jobs', href: `#${JOBS_PATH}` };
 const INBOX_CRUMB: Crumb = { text: 'Inbox', href: inboxHref() };
 const TEST_STUDIO_CRUMB: Crumb = { text: 'Test Studio', href: `#${TEST_STUDIO_PATH}?tab=sets` };
 

@@ -44,6 +44,9 @@ definitions and the example IAM roles. Rules specific to feature stacks are in
 - When you add, remove or re-scope an IAM role or AWS service, update
   `docs/aws-services-and-roles.md` and `iam-roles/cloudformation-management/` in
   the same change.
+- When you change the `EnableQuickStartWidget` parameter or the
+  `VITE_ENABLE_QUICK_START_WIDGET` value it sets, follow
+  [quick-start.md](quick-start.md).
 - Keep the IAM half of the example service role scoped:
   - no IAM write on `Resource: "*"` without a permissions-boundary condition
   - `iam:PassRole` always carries `iam:PassedToService`

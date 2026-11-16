@@ -63,7 +63,10 @@ the complete answer rather than token-by-token output.
 - **Purpose**: Processes messages and generates responses
 - **Location**: `src/lambda/agent_chat_processor/`
 - **Responsibilities**:
-  - Creates conversational orchestrator with all agents
+  - Refuses a turn on a session id another user owns, before any memory loads
+    (`idp_common.chat_session_owner`; the entry paths check first)
+  - Creates conversational orchestrator with all agents, keyed on the verified
+    caller's Cognito `sub` from the event's `identity`, never on a request-body value
   - Loads conversation history from memory
   - Streams responses in real-time
   - Stores responses in memory
@@ -79,12 +82,15 @@ create_conversational_orchestrator(
     agent_ids: List[str],
     session_id: str,
     config: Dict[str, Any],
-    session: Any
+    session: Any,
+    user_id: str = "",
 ) -> Agent
 ```
 
 Creates an orchestrator with:
-- Memory hooks for conversation history
+- Memory hooks for conversation history, keyed on `user_id` and `session_id`. With
+  no `user_id` the orchestrator is built without memory: it neither loads nor stores
+  an earlier turn. `create_conversational_agent` takes the same argument.
 - Conversation manager for context optimization
 - All specified agents as tools
 
@@ -92,6 +98,9 @@ Creates an orchestrator with:
 Manages conversation history persistence in DynamoDB.
 
 **Features**:
+- Stores each conversation under the user and the session it belongs to, so two
+  users who send the same session id never see each other's history. `user_id` is
+  required and must not contain `#`.
 - Stores messages in JSON arrays within DynamoDB items
 - Automatically loads recent conversation history
 - Groups messages into turns for efficient context
@@ -105,6 +114,7 @@ from idp_common.agents.utils.memory_provider import DynamoDBMemoryHookProvider
 memory_provider = DynamoDBMemoryHookProvider(
     table_name="IdpHelperChatMemoryTable",
     session_id="user-session-123",
+    user_id="<cognito sub of the signed-in user>",
     region_name="us-east-2",
     max_history_turns=20
 )
@@ -147,14 +157,39 @@ Stores all chat messages for display and retrieval.
 - **SK**: `timestamp` (ISO-8601 format)
 - **Attributes**: role, content, isProcessing, ExpiresAfter
 
+The key carries no user, so every read and delete of it is preceded by an ownership
+check against `ChatSessionOwnersTable` below.
+
+#### ChatSessionOwnersTable (DynamoDB)
+Records which signed-in user each chat session id belongs to. Written and read by
+`idp_common.chat_session_owner` (vendored verbatim into the chat resolvers, which
+ship without the layer).
+
+**Schema**:
+- **PK**: `sessionId`
+- **Attributes**: `ownerSub` (the owner's Cognito `sub`), `ExpiresAfter`, and
+  `dataResultsAt` (epoch seconds; present once the session holds Analytics or Error
+  Analyzer results, see [Opt-in agents per session](#opt-in-agents-per-session))
+
+The first user to use an id registers it with a conditional write; a second user can
+neither register it nor read its history. A path that writes a turn registers an
+unused id; `getChatMessages` and `deleteChatSession` never do. An id that already has
+stored messages and no owner predates the table, and is registered only to the caller
+holding the earlier record of using it (their `ChatSessionsTable` row, or the
+Chat-with-Document ownership row). The expiry moves forward on every turn, so the row
+outlives the messages written under it.
+
 #### IdHelperChatMemoryTable (DynamoDB)
 Stores conversation history for agent memory.
 
 **Schema**:
-- **PK**: `conversation#{session_id}`
+- **PK**: `conversation#{user_id}#{session_id}`, where `user_id` is the caller's
+  Cognito `sub` from verified claims. Memory written under the earlier
+  `conversation#{session_id}` key is not read.
 - **SK**: `timestamp` (ISO-8601 format)
 - **Attributes**: conversation_history (JSON), message_count, last_updated,
-  conversation_version
+  conversation_version, ExpiresAfter (the retention period after the item's last
+  write, when `DATA_RETENTION_DAYS` is set)
 
 Appending a message rewrites the whole newest item, so `conversation_version`
 guards it: the write is conditional on the value that was read and advances it in
@@ -303,7 +338,7 @@ true token-by-token path.
 
 ```
 POST <streamUrl>/chat/agent        (SigV4, IAM-authed)
-body: { prompt, sessionId, method, enableCodeIntelligence, callerSub }
+body: { prompt, sessionId, method, enableCodeIntelligence, enableExternalMcpAgents }
 
 → text/event-stream; one event per chunk, terminal event marks completion
 ```
@@ -346,8 +381,115 @@ The system includes several specialized agents:
 3. **Error Analyzer Agent**: Diagnoses errors in CloudWatch logs
 4. **Sample Calculator Agent**: Performs calculations and data analysis
 5. **External MCP Agents**: Connects to external MCP servers
+6. **Quick Start Agent** (`quick_start/`): Drafts a document-class schema from a
+   description, saves it as a configuration profile and activates it; see
+   [Quick Start](../../../../docs/quick-start.md)
 
-All agents are automatically available to the orchestrator - no manual selection needed.
+Every agent is available to the orchestrator except Quick Start, which runs on its own
+surface (below), and the opt-in ones below.
+
+### Opt-in agents per session
+
+`idp_common.chat_session_agents` decides which agents a chat orchestrator is built
+with. An agent registered with `opt_in` (`register_agent(..., opt_in=...)`, reported
+by `list_available_agents()`) sends its query to a service outside the deployment:
+the Code Intelligence Agent (`opt_in="code_intelligence"`) and every External MCP
+agent (`opt_in="external_mcp"`). Each is included only when the request opts in to
+its kind (`enableCodeIntelligence`, `enableExternalMcpAgents`, both literal `true`,
+both off by default).
+
+The data agents (`DATA_AGENT_IDS`: Analytics, Error Analyzer) read the deployment's
+own data, and their results reach later turns through memory. The two never share a
+session:
+
+- The processor hands the orchestrator a per-turn `SessionAgentGate` as
+  `session_gate` (popped by `create_orchestrator_agent`, never forwarded to a
+  sub-agent). A data agent's tool calls `note_data_result` before it yields its
+  result — also when its stream ends without a `result` event — and the first call
+  in a session records `dataResultsAt` on the owner row
+  (`chat_session_owner.record_data_results`, conditional on `#owner = :owner`,
+  first time kept). If the record cannot be written, the tool yields an error in
+  place of the result. From then on an opt-in agent's tool answers
+  `UNAVAILABLE_MESSAGE` without building its sub-agent.
+- On every later turn the processor reads the flag
+  (`chat_session_owner.holds_data_results`; a failed read counts as set) and
+  `select_orchestrator_agent_ids` leaves every opt-in agent out.
+- A turn that opts in on a flagged session (`needs_new_session`) runs in a new
+  session id instead, which has no memory: the agent_chat resolver does this before
+  it stores the user message and returns the new id, and on the streaming path the
+  processor does it and sends a `session_replaced` event. When the processor is
+  invoked with `persistUserMessage: false` it cannot move the turn, so it only
+  leaves the agents out. It also sends `session_data_results` whenever the session
+  is flagged, which the web UI uses to start a new session when an opt-in is turned
+  on.
+
+An opt-in agent's tool also re-reads the flag (`SessionAgentGate(recheck=...)`, a
+failed read counting as set) before it runs, which covers a second turn on the same
+session recording a data result after this turn's first read and before it loaded
+memory: the flag is always written before the result reaches memory.
+
+The flag lives as long as the owner row, whose expiry is the retention period plus
+an hour after the last turn. Memory items carry `ExpiresAfter` set to the
+retention period (`DATA_RETENTION_DAYS`) after their last write
+(`DynamoDBMemoryHookProvider(expires_after_seconds=...)`), so memory expires
+before the flag that describes it. An item past its `ExpiresAfter` is not read,
+since DynamoDB deletes expired items some time later and per table. Items written
+before the expiry existed carry none and are still read.
+
+### What the analytics agent's tools read
+
+The analytics agent writes its own SQL and its own Python, so both tools that move
+data are bounded in code rather than by the prompt:
+
+- **`run_athena_query`** runs exactly one read-only statement: a `SELECT` (optionally
+  opening with `WITH` or parentheses), or a `SHOW` or `DESCRIBE` statement.
+  `analytics/query_validation.py` checks the statement before Athena is called and
+  refuses more than one statement, any other leading keyword, and the keywords in
+  `REFUSED_KEYWORDS` (writes, DDL, `UNLOAD`, `PREPARE`/`EXECUTE`, external and
+  inline functions, table functions, session statements) anywhere outside string
+  literals, quoted identifiers and comments. A refused query returns
+  `{"success": False, "state": "NOT_RUN", "error": ...}` and is not sent.
+- **`write_query_results_to_code_sandbox`** takes no arguments. It copies the result
+  object of the agent's most recent successful query, at the location Athena
+  reported for it, into the Code Interpreter session as `query_results.csv`. The
+  agent's Athena tool clears that location before every query and sets it only when
+  one succeeds, so a failed or refused query leaves nothing to copy, and the tool
+  refuses when no query has succeeded. Its reply names the query whose results it
+  wrote. The query validator also refuses a quoted `"lambda:<function>"` catalog and a
+  backslash in `SHOW`/`DESCRIBE` (run on Athena's Hive engine).
+
+- **`execute_python`** runs the agent's code only if `analytics/sandbox_code_checks.py`
+  accepts it: the code must parse, import only `IMPORTABLE_MODULES` (data, charting
+  and standard-library computation), avoid `DYNAMIC_NAMES`, attributes starting with
+  `_` and attributes named like a refused module (`MODULE_ATTRIBUTES`), carry no `://`
+  literal, and call `read_*`, `PATH_OPENERS` and `PATH_WRITERS` only directly, without
+  unpacked arguments, and with a literal file name in the working directory (a writer
+  may also target an empty `io.BytesIO()`/`StringIO()`). Refused code is returned to the agent
+  as `{"isError": true, "error": ...}`. The check reads text and syntax only, so it is
+  not a boundary; it is checked after the optional description is prepended, so the
+  text checked is the text that runs.
+
+Tests: `tests/unit/agents/analytics/test_query_validation.py` (the accepted and
+refused statement corpus), `test_code_interpreter_tools.py` and
+`test_sandbox_code_checks.py`. The repository gate
+`scripts/tests/test_tool_resource_arguments.py` requires a Strands tool parameter that
+names a resource (`query`, `*_uri`, `*_key`, `path`, ...) to be passed to a registered
+validator before any other use.
+
+### Quick Start runs outside the orchestrator
+
+The web UI's Quick Start panel sends its messages with `method: "quick_start"`.
+For that method the processor runs `Quick-Start-Agent` directly through
+`agent_factory.create_conversational_agent`, with the same DynamoDB memory keyed by
+session id, and records the session under the `quick_start` surface so its history
+lists apart from Agent Chat's. Every other method removes `Quick-Start-Agent` from
+the orchestrator's agent list. Its tools (`quick_start/tools/bootstrap_tools.py`)
+write the Configuration table and, when the Test Set Generator extension is
+installed, enqueue generation on that extension's queue.
+
+Its system prompt names screens and navigation paths (Upload Documents,
+Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a
+change that renames one of them updates the prompt in the same change.
 
 ### A system prompt names only tools its agent registers
 

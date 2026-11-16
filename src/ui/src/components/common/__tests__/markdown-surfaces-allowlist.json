@@ -1,0 +1,25 @@
+{
+  "$comment": "Modules allowed to hold a markdown renderer import or a raw-HTML DOM write, read by markdown-surfaces.test.ts. Each entry names one file, the capability it is allowed and the exact number of sites it holds; the test fails when a file outside this list holds one, when a listed file holds a different number, or when a listed file holds none. Paths are relative to the repository root.",
+  "entries": {
+    "src/ui/src/components/common/SafeMarkdown.tsx": {
+      "capability": "renderer",
+      "sites": 2,
+      "reason": "The renderer itself: react-markdown and rehype-raw, run behind rehype-sanitize and the image rule in safe-markdown-policy.ts. Every other module renders markdown through this component."
+    },
+    "src/ui/src/components/document-viewer/MarkdownViewer.tsx": {
+      "capability": "html-write",
+      "sites": 1,
+      "reason": "Print: writes the innerHTML of the already-rendered SafeMarkdown output into the print window with document.write. The HTML is what SafeMarkdown produced on this page, not a string from the backend, and the print window is an about:blank child that inherits this page's CSP."
+    },
+    "src/ui/src/components/document-viewer/FileViewer.tsx": {
+      "capability": "renderer",
+      "sites": 1,
+      "reason": "Imports DOMPurify to show an HTML input document: the sanitized HTML is put in a data: URL and shown in a sandboxed iframe (no allow-scripts). A data: document inherits this page's CSP, so its images are limited by img-src like the rest of the page."
+    },
+    "src/ui/src/components/test-studio/PrintUtils.ts": {
+      "capability": "html-write",
+      "sites": 1,
+      "reason": "Assigns innerHTML on a <style> element it creates, with a CSS string literal defined in the same function. No data reaches it."
+    }
+  }
+}

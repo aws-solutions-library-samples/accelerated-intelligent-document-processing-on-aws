@@ -22,8 +22,10 @@ Cline/Kiro ←─stdio (MCP)─→ idp_mcp_connector ←─HTTPS + OAuth─→ A
 - The following values from your CloudFormation stack outputs:
   - `MCPServerEndpoint`
   - `MCPTokenURL`
-  - `MCPClientId`
-  - `MCPClientSecret`
+- A service credential from the IDP **MCP Configuration** page (client ID and
+  secret, shown once), or the stack-created client: `MCPConnectorClientId` and the
+  secret at `MCPConnectorClientSecretArn`
+  (`aws secretsmanager get-secret-value --secret-id <MCPConnectorClientSecretArn>`)
 
 ## Installation
 
@@ -59,8 +61,8 @@ On macOS this expands to `/Users/<your-username>/.cline/data/settings/cline_mcp_
       "env": {
         "IDP_MCP_ENDPOINT": "<MCPServerEndpoint>",
         "IDP_MCP_TOKEN_URL": "<MCPTokenURL>",
-        "IDP_MCP_CLIENT_ID": "<MCPClientId>",
-        "IDP_MCP_CLIENT_SECRET": "<MCPClientSecret>"
+        "IDP_MCP_CLIENT_ID": "<service credential client ID>",
+        "IDP_MCP_CLIENT_SECRET": "<service credential client secret>"
       }
     }
   }
@@ -102,8 +104,8 @@ All configuration is via environment variables:
 |----------|----------|----------------------|-------------|
 | `IDP_MCP_ENDPOINT` | ✅ | `MCPServerEndpoint` | AgentCore Gateway URL |
 | `IDP_MCP_TOKEN_URL` | ✅ | `MCPTokenURL` | Cognito token endpoint |
-| `IDP_MCP_CLIENT_ID` | ✅ | `MCPClientId` | Cognito client ID |
-| `IDP_MCP_CLIENT_SECRET` | ✅ | `MCPClientSecret` | Cognito client secret |
+| `IDP_MCP_CLIENT_ID` | ✅ | a service credential, or `MCPConnectorClientId` | Cognito client ID (client-credentials flow) |
+| `IDP_MCP_CLIENT_SECRET` | ✅ | a service credential, or the secret at `MCPConnectorClientSecretArn` | Cognito client secret |
 
 ## Available Tools
 

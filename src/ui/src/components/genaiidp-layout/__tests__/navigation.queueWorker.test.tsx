@@ -12,6 +12,7 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import type { SideNavigationProps } from '@cloudscape-design/components';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -65,9 +66,11 @@ const QUEUE_WORKERS: Array<[string, Record<string, unknown>]> = [
 
 const renderNav = () => {
   render(
-    <MemoryRouter initialEntries={['/my-work']}>
-      <Navigation />
-    </MemoryRouter>,
+    <IntlProvider locale="en" defaultLocale="en">
+      <MemoryRouter initialEntries={['/my-work']}>
+        <Navigation />
+      </MemoryRouter>
+    </IntlProvider>,
   );
   if (!state.nav) throw new Error('SideNavigation was not rendered');
   return state.nav;

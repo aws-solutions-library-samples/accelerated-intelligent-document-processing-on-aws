@@ -49,7 +49,7 @@ Concierge support for customization, deployment, and integration of production u
 
 **Prefer AWS CDK?** This solution is also available as [GenAI IDP Accelerator for AWS CDK](https://github.com/cdklabs/genai-idp), providing the same functional capabilities through AWS CDK constructs for customers who prefer Infrastructure-as-Code with CDK.
 
-**Prefer Terraform?** This solution is also available as [GenAI IDP Terraform](https://github.com/awslabs/genai-idp-terraform), providing the same functional capabilities as a Terraform module that integrates with existing infrastructure and supports customization through module variables.
+**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating to the built-in Terraform module](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
 
 ## Key Features
 
@@ -100,8 +100,6 @@ To quickly deploy the GenAI-IDP solution in your AWS account:
 | US East (N.Virginia)      | us-east-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | EU Central (Frankfurt)      | eu-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | Canada (Central)      | ca-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
-
-> ⚠️ The **Canada (Central)** button serves artifacts from v0.6.12 onward. Until that release is published it answers a CloudFormation "template not found" error; deploy an earlier release from source instead (see [Canada (Central) Region Model Support](./docs/canada-region-model-support.md)).
 
 3. When the stack deploys for the first time, you'll receive an email with a temporary password to access the web UI
 4. Use this temporary password for your first login to set up a permanent password
@@ -300,7 +298,7 @@ issue or a pull request before you open one:
 
 - **[GOVERNANCE.md](./GOVERNANCE.md)** — who decides, how a change gets accepted,
   the `develop`/`main` branch and release model, and this repository's relationship
-  to the CDK and Terraform ports.
+  to the CDK port.
 - **[.github/CODEOWNERS](./.github/CODEOWNERS)** — who reviews what, and what
   routes review requests.
 - **[ROADMAP.md](./ROADMAP.md)** — direction, priorities and explicit non-goals.

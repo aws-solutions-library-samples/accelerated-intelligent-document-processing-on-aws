@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Implementation: Versioned Test-Set Object
 
 Second slice. Makes a test set a first-class, versioned object. Additive and

@@ -42,9 +42,9 @@ from rich.console import Console, RenderableType
 
 from idp_cli import display
 
-# Nine statuses the SDK buckets as running. `format_status_json` consults no status
+# Eight statuses the SDK buckets as running. `format_status_json` consults no status
 # list -- `current_step` follows the `running` bucket, whose membership is
-# `idp_sdk.models.base.IN_FLIGHT_DOCUMENT_STATES` and is wider than these nine -- so
+# `idp_sdk.models.base.IN_FLIGHT_DOCUMENT_STATES` and is wider than these eight -- so
 # this tuple is a sample of that bucket for the per-status assertions below, not a
 # definition of anything. The capability tests at the end of the file are what cover
 # the bucket as a whole, from the enum.
@@ -56,7 +56,6 @@ IN_PROGRESS_STATUSES = (
     "RULE_VALIDATION",
     "RULE_VALIDATION_ORCHESTRATOR",
     "SUMMARIZING",
-    "HITL_IN_PROGRESS",
     "EVALUATING",
 )
 
@@ -103,13 +102,16 @@ def _doc(**overrides) -> dict:
     return doc
 
 
-def _status_data(total=0, completed=(), running=(), queued=(), failed=()) -> dict:
+def _status_data(
+    total=0, completed=(), running=(), queued=(), failed=(), awaiting_review=()
+) -> dict:
     return {
         "total": total,
         "completed": list(completed),
         "running": list(running),
         "queued": list(queued),
         "failed": list(failed),
+        "awaiting_review": list(awaiting_review),
     }
 
 
@@ -123,6 +125,7 @@ def _stats(
     success_rate=0.0,
     avg_duration_seconds=0.0,
     all_complete=False,
+    awaiting_review=0,
 ) -> dict:
     return {
         "total": total,
@@ -130,6 +133,7 @@ def _stats(
         "failed": failed,
         "running": running,
         "queued": queued,
+        "awaiting_review": awaiting_review,
         "completion_percentage": completion_percentage,
         "success_rate": success_rate,
         "avg_duration_seconds": avg_duration_seconds,
@@ -203,9 +207,10 @@ def test_status_table_percentages_are_shares_of_the_total():
         "⟳ Running",
         "⏸ Queued",
         "✗ Failed",
+        "◐ Awaiting Review",
     ]
-    assert _cells(table, 1) == ["4", "2", "1", "1"]
-    assert _cells(table, 2) == ["50.0%", "25.0%", "12.5%", "12.5%"]
+    assert _cells(table, 1) == ["4", "2", "1", "1", "0"]
+    assert _cells(table, 2) == ["50.0%", "25.0%", "12.5%", "12.5%", "0.0%"]
 
 
 @pytest.mark.unit
@@ -813,7 +818,7 @@ def test_json_a_document_the_producer_queued_exits_two_with_no_extra_field(statu
 
 
 @pytest.mark.unit
-def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queued():
+def test_json_bucket_precedence_is_completed_failed_awaiting_running_queued():
     """
     Only one bucket is read, so which one is checked first decides the answer.
 
@@ -829,6 +834,7 @@ def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queue
         running=[_doc(document_id="from-running", status="RUNNING")],
         failed=[_doc(document_id="from-failed", status="FAILED")],
         queued=[_doc(document_id="from-queued", status="QUEUED")],
+        awaiting_review=[_doc(document_id="from-awaiting", status="HITL_IN_PROGRESS")],
     )
     stats = _stats(total=1)
 
@@ -839,6 +845,8 @@ def test_json_bucket_precedence_is_completed_then_failed_then_running_then_queue
     everywhere["completed"] = []
     assert picked(everywhere) == "from-failed"
     everywhere["failed"] = []
+    assert picked(everywhere) == "from-awaiting"
+    everywhere["awaiting_review"] = []
     assert picked(everywhere) == "from-running"
     everywhere["running"] = []
     assert picked(everywhere) == "from-queued"
@@ -900,6 +908,7 @@ def test_json_batch_that_finished_cleanly_exits_zero():
         "failed": 0,
         "running": 0,
         "queued": 0,
+        "awaiting_review": 0,
         "completion_percentage": 100.0,
         "success_rate": 100.0,
         "avg_duration_seconds": 11.0,
@@ -1095,7 +1104,7 @@ def _both_codes(status_data, stats) -> tuple[int, int]:
         ("completed", "COMPLETED", 0),
         ("failed", "FAILED", 1),
         ("running", "RUNNING", 2),
-        ("running", "HITL_IN_PROGRESS", 2),
+        ("awaiting_review", "HITL_IN_PROGRESS", 2),
         ("queued", "QUEUED", 2),
     ],
 )
@@ -1109,7 +1118,9 @@ def test_both_exit_code_paths_agree_on_the_ordinary_single_document_states(
     """
     status_data = _status_data(total=1)
     status_data[bucket] = [_doc(status=status)]
-    stats = _stats(total=1, all_complete=bucket in ("completed", "failed"))
+    stats = _stats(
+        total=1, all_complete=bucket in ("completed", "failed", "awaiting_review")
+    )
 
     from_json, from_summary = _both_codes(status_data, stats)
 
@@ -1233,14 +1244,16 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
     rule is how the polled and waited forms of `status` came to disagree (#1230).
 
     So this is exhaustive over the space the rule reads rather than a sample: every
-    combination of the four buckets being empty or not, crossed with `total` in
-    {0, 1, 2}, `all_complete` in {True, False} and `failed` in {0, 1}. A table of
-    hand-picked cases is what let the original divergence sit unnoticed.
+    combination of the five buckets being empty or not, crossed with `total` in
+    {0, 1, 2}, `all_complete` in {True, False} and `failed` in {0, 1}. The
+    awaiting-review count in `stats` follows its bucket, which is the input the
+    batch arm's review-pending branch reads. A table of hand-picked cases is what
+    let the original divergence sit unnoticed.
     """
     import itertools
 
     checked = 0
-    for pattern in itertools.product([0, 1], repeat=4):
+    for pattern in itertools.product([0, 1], repeat=5):
         for total in (0, 1, 2):
             for all_complete in (True, False):
                 for failed_count in (0, 1):
@@ -1250,6 +1263,8 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
                         "running": [_doc(status="RUNNING")] * pattern[1],
                         "failed": [_doc(status="FAILED")] * pattern[2],
                         "queued": [_doc(status="QUEUED")] * pattern[3],
+                        "awaiting_review": [_doc(status="HITL_IN_PROGRESS")]
+                        * pattern[4],
                     }
                     stats = _stats(
                         total=total,
@@ -1257,6 +1272,7 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
                         failed=failed_count,
                         running=pattern[1],
                         queued=pattern[3],
+                        awaiting_review=pattern[4],
                         all_complete=all_complete,
                     )
                     checked += 1
@@ -1268,7 +1284,7 @@ def test_derive_exit_code_equals_show_final_status_summary_over_the_whole_input_
                     )
 
     # The loop has to have run; a generator that produced nothing would pass.
-    assert checked == 192
+    assert checked == 384
 
 
 # ---------------------------------------------------------------------------
@@ -1312,7 +1328,7 @@ def test_the_status_and_bucket_universes_are_not_empty():
     moved or the enums were renamed.
     """
     assert len(_document_states()) >= 20, _document_states()
-    assert len(_bucket_names()) == 4, _bucket_names()
+    assert len(_bucket_names()) == 5, _bucket_names()
     # The statuses whose bucket is not a function of the string, named so that a
     # rename of any of them fails here rather than quietly leaving the sweep
     # below covering a smaller universe than it claims.
@@ -1322,7 +1338,7 @@ def test_the_status_and_bucket_universes_are_not_empty():
 
 @pytest.mark.unit
 def test_the_display_bucket_order_names_exactly_the_sdk_buckets():
-    """`display.py` spells the four bucket keys; a typo would skip a bucket.
+    """`display.py` spells the bucket keys; a typo would skip a bucket.
 
     `_single_document` walks `_BUCKETS_IN_PRECEDENCE_ORDER` and reads
     `status_data.get(name)`, so a misspelled entry is not an error -- it makes
@@ -1331,9 +1347,14 @@ def test_the_display_bucket_order_names_exactly_the_sdk_buckets():
     the agreement is asserted instead.
     """
     assert set(display._BUCKETS_IN_PRECEDENCE_ORDER) == set(_bucket_names())
-    assert len(display._BUCKETS_IN_PRECEDENCE_ORDER) == 4
-    # Precedence, not just membership: a completed document outranks a failed one.
-    assert display._BUCKETS_IN_PRECEDENCE_ORDER[:2] == ("completed", "failed")
+    assert len(display._BUCKETS_IN_PRECEDENCE_ORDER) == 5
+    # Precedence, not just membership: a completed document outranks a failed one,
+    # and an outcome outranks a document still waiting for a reviewer.
+    assert display._BUCKETS_IN_PRECEDENCE_ORDER[:3] == (
+        "completed",
+        "failed",
+        "awaiting_review",
+    )
 
 
 @pytest.mark.unit
@@ -1528,3 +1549,97 @@ def test_failures_table_title_names_rejections():
     )
 
     assert "Rejected / Failed Documents" in _render(table)
+
+
+# ---------------------------------------------------------------------------
+# Documents awaiting human review (#2022)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("failed", "awaiting", "expected"),
+    [
+        (0, 0, 0),
+        (0, 2, 2),
+        (1, 2, 1),
+        (1, 0, 1),
+    ],
+)
+def test_a_settled_batch_with_documents_in_review_does_not_exit_zero(
+    failed, awaiting, expected
+):
+    """0 means every document completed, which a document in review has not.
+
+    A failure is an established outcome whatever the reviewers decide, so it
+    still answers 1; otherwise review pending answers 2, "not established".
+    """
+    total = 4
+    stats = _stats(
+        total=total,
+        completed=total - failed - awaiting,
+        failed=failed,
+        awaiting_review=awaiting,
+        all_complete=True,
+    )
+    status_data = _status_data(total=total)
+
+    assert display.derive_exit_code(status_data, stats) == expected
+    assert _both_codes(status_data, stats) == (expected, expected)
+
+
+@pytest.mark.unit
+def test_the_final_status_line_names_documents_awaiting_review(
+    pinned_display_console,
+):
+    stats = _stats(total=3, completed=1, awaiting_review=2, all_complete=True)
+
+    with pinned_display_console.capture() as capture:
+        display.show_final_status_summary(_status_data(total=3), stats)
+
+    assert "AWAITING REVIEW (2 awaiting review)" in capture.get()
+
+
+@pytest.mark.unit
+def test_the_batch_json_reports_the_awaiting_review_count():
+    stats = _stats(total=3, completed=1, awaiting_review=2, all_complete=True)
+
+    payload = json.loads(display.format_status_json(_status_data(total=3), stats))
+
+    assert payload["awaiting_review"] == 2
+    assert payload["exit_code"] == 2
+
+
+@pytest.mark.unit
+def test_the_status_table_lists_documents_awaiting_review_and_where_to_work_them(
+    pinned_display_console,
+):
+    status_data = _status_data(
+        total=2,
+        completed=[_doc(document_id="a.pdf")],
+        awaiting_review=[_doc(document_id="held.pdf", status="HITL_IN_PROGRESS")],
+    )
+
+    with pinned_display_console.capture() as capture:
+        display.display_status_table(status_data)
+    out = capture.get()
+
+    assert "◐ Awaiting Review" in out
+    assert "1 document(s) awaiting human review" in out
+    assert "held.pdf" in out
+    assert "review queues" in out
+
+
+@pytest.mark.unit
+def test_json_for_a_single_held_document_keeps_current_step():
+    """A held document read as running before its bucket existed, and carried
+    `current_step`; a script reading that key must not start raising KeyError."""
+    status_data = _status_data(
+        total=1,
+        awaiting_review=[_doc(document_id="held.pdf", status="HITL_IN_PROGRESS")],
+    )
+
+    payload = json.loads(display.format_status_json(status_data, _stats(total=1)))
+
+    assert payload["current_step"] == "HITL_IN_PROGRESS"
+    assert payload["exit_code"] == 2

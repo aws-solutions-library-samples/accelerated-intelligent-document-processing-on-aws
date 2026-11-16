@@ -752,6 +752,12 @@ _DECLARED_RESOURCE_REFUSALS = (
     ("get_file_contents_resolver/document_scope.py", "assert_document_in_scope"),
     ("get_file_contents_resolver/index.py", "_budget_refusal"),
     ("get_file_contents_resolver/key_scope.py", "_assert_config_profile_allowed"),
+    ("discovery_upload_resolver/index.py", "_assert_profile_in_scope"),
+    ("test_set_resolver/index.py", "_assert_named_profile_in_scope"),
+    (
+        "process_changes_resolver/index.py",
+        "_assert_production_document_in_profile_scope",
+    ),
 )
 
 

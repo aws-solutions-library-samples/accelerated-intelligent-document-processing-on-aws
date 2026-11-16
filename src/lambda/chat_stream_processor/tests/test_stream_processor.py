@@ -5,11 +5,10 @@
 These cover the parts that are independent of FastAPI/Bedrock:
 
 1. ``sse`` emits a well-formed SSE frame (``data: {json}\\n\\n``) that round-trips.
-2. ``caller_sub_from_request_context`` extracts the Cognito sub from the
-   Function URL request context.
-3. ``resolve_caller_sub`` prefers the transport-verified caller identity and
-   refuses a request-body identity that contradicts it.
-4. The doc-chat processor's ``set_sink`` redirects emission away from AppSync
+2. Every chat route takes the caller from the verified ID token, once, and refuses
+   before the stream opens (asserted on ``app.py``'s structure; the behaviour is
+   driven end to end in ``test_route_identity.py``).
+3. The doc-chat processor's ``set_sink`` redirects emission away from AppSync
    (skipped when ``idp_common`` is not importable in the test environment).
 """
 
@@ -36,14 +35,7 @@ if _HERE not in sys.path:
 # token in place and at the same offset. app.py imports FastAPI, which is not
 # installed in this environment, so it is parsed rather than imported.
 
-# How the handler can name the identity the TRANSPORT verified. Mirrors
-# VERIFIED_IDENTITY_TOKENS in scripts/sdlc/scan_api_rbac.py.
-_RESOLVER_NAMES = (
-    "_resolve_caller_sub",
-    "resolve_caller_sub",
-    "_caller_sub",
-    "caller_sub_from_request_context",
-)
+_ROUTES = ("POST /chat/document", "POST /chat/agent")
 
 
 def _app_ast():
@@ -161,359 +153,6 @@ def test_sse_frame_has_single_blank_line_separator():
 
 
 @pytest.mark.unit
-def test_caller_sub_from_assumed_role_arn():
-    """The trailing ARN segment is returned verbatim, whatever it is.
-
-    The session name is deliberately the MEASURED one rather than a placeholder
-    like ``the-cognito-sub``: an earlier version of this fixture used that
-    placeholder, which reads as though the segment were a per-user Cognito
-    ``sub``. It is not — on a live deployment it is the pool-wide constant below
-    (499 CloudTrail ``AssumeRoleWithWebIdentity`` events, zero counter-examples).
-    A placeholder passes identically under either assumption, which is exactly
-    why the misconception survived.
-    """
-    from sse import caller_sub_from_request_context
-
-    ctx = {
-        "authorizer": {
-            "iam": {
-                "userArn": (
-                    "arn:aws:sts::123456789012:assumed-role/"
-                    "MyAuthRole/CognitoIdentityCredentials"
-                ),
-            }
-        }
-    }
-    assert (
-        caller_sub_from_request_context(json.dumps(ctx))
-        == "CognitoIdentityCredentials"
-    )
-
-
-@pytest.mark.unit
-def test_caller_sub_userid_fallback_is_also_pool_wide():
-    """The ``userId`` fallback is no more per-user than the ARN is.
-
-    For an assumed role ``userId`` is ``<role-unique-id>:<session-name>``, so on
-    this transport it carries the same pool-wide constant with a role id glued to
-    the front. It is extracted (it is all there is) but must not be mistaken for
-    an identity to compare a client claim against.
-    """
-    from sse import caller_sub_from_request_context, is_user_specific_identity
-
-    ctx = {
-        "authorizer": {"iam": {"userId": "AROAEXAMPLEID:CognitoIdentityCredentials"}}
-    }
-    extracted = caller_sub_from_request_context(json.dumps(ctx))
-    assert extracted == "AROAEXAMPLEID:CognitoIdentityCredentials"
-    assert is_user_specific_identity(extracted) is False
-
-
-@pytest.mark.unit
-def test_caller_sub_ignores_cognito_identity_key_entirely():
-    """Function URLs may set ``cognitoIdentity`` to null OR omit it.
-
-    AWS documents both outcomes ("Lambda sets this to null or excludes this from
-    the JSON"), so a reader must not be able to assume one. Nothing here reads
-    the key, which is why the two cases cannot be distinguished incorrectly —
-    pinned so that a future change reading it has to face the question.
-    """
-    from sse import caller_sub_from_request_context
-
-    arn = "arn:aws:sts::123456789012:assumed-role/R/CognitoIdentityCredentials"
-    absent = {"authorizer": {"iam": {"userArn": arn}}}
-    explicit_null = {"authorizer": {"iam": {"userArn": arn, "cognitoIdentity": None}}}
-    assert caller_sub_from_request_context(
-        json.dumps(absent)
-    ) == caller_sub_from_request_context(json.dumps(explicit_null))
-
-
-@pytest.mark.unit
-def test_caller_sub_missing_or_bad_context_is_empty():
-    from sse import caller_sub_from_request_context
-
-    assert caller_sub_from_request_context(None) == ""
-    assert caller_sub_from_request_context("") == ""
-    assert caller_sub_from_request_context("not-json") == ""
-
-
-# --- caller identity resolution ---------------------------------------------
-#
-# The Function URL authenticates the caller with SigV4, and the browser also
-# sends a `callerSub` in the request body (it is the chat-history key). Which of
-# the two wins decides who a chat turn is attributed to and whose history it is
-# written against, so the precedence is a security property, not a detail.
-#
-# These live here rather than against app.py because app.py imports FastAPI and
-# the two processor modules; sse.py is the dependency-free half by design.
-
-
-# Realistic per-user values. A Cognito User Pool `sub` is a UUID and an Identity
-# Pool identity id is `<region>:<uuid>`; the predicate under test recognises those
-# shapes and only those, so placeholders like "verified-sub" would exercise the
-# wrong branch.
-_SUB_A = "d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
-_SUB_B = "9f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a"
-_IDENTITY_ID = "us-west-2:d47cb94a-1c2e-4f3a-9b8d-0e1f2a3b4c5d"
-
-
-@pytest.mark.unit
-def test_resolve_caller_sub_prefers_the_verified_identity():
-    """A body value equal to nothing does not displace the verified identity."""
-    from sse import resolve_caller_sub
-
-    assert resolve_caller_sub(_SUB_A, "") == _SUB_A
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize("verified", [_SUB_A, _IDENTITY_ID])
-def test_resolve_caller_sub_rejects_a_contradicting_body_identity(verified):
-    """A body identity that disagrees with the verified one is refused.
-
-    Not "the verified one silently wins": a client asserting an identity that
-    contradicts the one the transport proved is never legitimate, so the request
-    does not proceed at all. Both per-user shapes are covered.
-    """
-    from sse import CallerIdentityConflict, resolve_caller_sub
-
-    with pytest.raises(CallerIdentityConflict):
-        resolve_caller_sub(verified, _SUB_B)
-
-
-@pytest.mark.unit
-def test_resolve_caller_sub_discards_a_body_value_of_another_kind():
-    """A claim that is not a Cognito identifier is discarded, not treated as conflict.
-
-    The web UI sends an email, which can never equal a session name or a `sub`.
-    If AWS ever made the transport principal per-user, comparing the two as
-    though they were the same kind of name would 403 every single agent-chat
-    turn — a fail-closed outage caused by an upstream change with no code change
-    here. The proven identity wins instead; the client value is dropped, so this
-    is strictly no more permissive than refusing.
-    """
-    from sse import resolve_caller_sub
-
-    assert resolve_caller_sub(_SUB_A, "user@example.com") == _SUB_A
-
-
-@pytest.mark.unit
-def test_resolve_caller_sub_accepts_an_agreeing_body_identity():
-    from sse import resolve_caller_sub
-
-    assert resolve_caller_sub(_SUB_A, _SUB_A) == _SUB_A
-
-
-@pytest.mark.unit
-def test_resolve_caller_sub_falls_back_when_transport_has_no_user_identity():
-    """A pool-wide session name is not a claim about WHICH user is calling.
-
-    Under the Cognito Identity Pool enhanced flow the assumed-role session name
-    is the same constant for every user of the pool, so it must not be compared
-    against the per-user value in the body — doing so would refuse every
-    legitimate request. The body value is the fallback in that case.
-    """
-    from sse import resolve_caller_sub
-
-    assert (
-        resolve_caller_sub("CognitoIdentityCredentials", "user@example.com")
-        == "user@example.com"
-    )
-
-
-@pytest.mark.unit
-def test_resolve_caller_sub_keeps_the_transport_value_when_body_is_silent():
-    """No behaviour change for a client that sends no identity of its own.
-
-    Chat-with-Document does not send one, so it must keep receiving exactly what
-    it received before: whatever the transport yielded.
-    """
-    from sse import resolve_caller_sub
-
-    assert (
-        resolve_caller_sub("CognitoIdentityCredentials", "")
-        == "CognitoIdentityCredentials"
-    )
-
-
-@pytest.mark.unit
-def test_resolve_caller_sub_with_no_identity_at_all_is_empty():
-    """Both processors treat an empty caller as unattributable and refuse work."""
-    from sse import resolve_caller_sub
-
-    assert resolve_caller_sub("", "") == ""
-
-
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    ("caller_sub", "expected"),
-    [
-        # The two shapes Cognito uses for a per-user identifier.
-        (_SUB_A, True),
-        (_IDENTITY_ID, True),
-        ("D47CB94A-1C2E-4F3A-9B8D-0E1F2A3B4C5D", True),  # case-insensitive
-        # The measured value on the live commercial transport, and its
-        # unauthenticated sibling.
-        ("CognitoIdentityCredentials", False),
-        ("CognitoIdentityCredentialsUnauthenticated", False),
-        # The `userId` fallback shape — a role id plus the same constant.
-        ("AROAEXAMPLEID:CognitoIdentityCredentials", False),
-        ("", False),
-        # Anything that is not one of the recognised per-user shapes is NOT
-        # treated as per-user. This is the deliberate direction: the session name
-        # is undocumented, so an unrecognised future value must fall through to
-        # the body-supplied fallback rather than 403 every request.
-        ("SomeFutureSessionName", False),
-        ("user@example.com", False),
-        ("d47cb94a-1c2e-4f3a-9b8d", False),  # truncated UUID
-    ],
-)
-def test_is_user_specific_identity(caller_sub, expected):
-    from sse import is_user_specific_identity
-
-    assert is_user_specific_identity(caller_sub) is expected
-
-
-@pytest.mark.unit
-def test_an_unrecognised_transport_principal_does_not_deny_the_request():
-    """The whole point of the positive shape test, stated as behaviour.
-
-    If AWS substituted some other opaque string for the session name, the old
-    denylist-based predicate would have classed it as a per-user identity and
-    `resolve_caller_sub` would have raised on every turn, because the browser
-    sends an email. It must fall back instead.
-    """
-    from sse import resolve_caller_sub
-
-    assert (
-        resolve_caller_sub("SomeFutureOpaqueSessionName", "user@example.com")
-        == "user@example.com"
-    )
-
-
-@pytest.mark.unit
-def test_both_routes_share_one_identity_resolution():
-    """Neither route may resolve the caller identity its own way.
-
-    The defect this guards against was precedence drift between the two routes:
-    /chat/document read the verified identity first, /chat/agent read the body
-    first. Asserting on the source keeps the check meaningful without importing
-    FastAPI (not installed in the unit environment).
-    """
-    app_src = open(os.path.join(_HERE, "app.py")).read()
-    for route in ("/chat/document", "/chat/agent"):
-        start = app_src.index(f'@app.post("{route}")')
-        end = app_src.find("@app.", start + 1)
-        body = app_src[start : end if end > 0 else len(app_src)]
-        assert "_resolve_caller_sub(request, body.callerSub)" in body, route
-        # No route may reach for the body value on its own.
-        assert body.count("body.callerSub") == 1, route
-
-
-@pytest.mark.unit
-def test_neither_route_rebinds_the_caller_identity_after_resolving_it():
-    """The resolved caller identity must be assigned exactly once per route.
-
-    ``test_both_routes_share_one_identity_resolution`` above counts the literal
-    ``body.callerSub``, so it cannot see a body value re-admitted under another
-    spelling. This mutation defeats it while restoring the original defect from
-    issue #920 -- the client's claimed identity wins unconditionally::
-
-        _claimed = body.model_dump().get('callerSub') or ''
-        if _claimed:
-            caller_sub = _claimed
-
-    Every token the textual check looks for is still present and still in the
-    same order. What actually changed is that the name holding the verified
-    identity is bound twice. So assert the single binding, which is the property
-    that matters and is independent of how the second value is spelled.
-    """
-    routes = _route_functions(_app_ast())
-    for route in ("POST /chat/document", "POST /chat/agent"):
-        fn = routes.get(route)
-        assert fn is not None, f"{route} not found in app.py"
-
-        # The resolution must happen exactly once, and where its refusal can
-        # escape: `_resolve_caller_sub` raises a 403 for a body identity that
-        # contradicts the verified one, and a call nested in a `try` or an `if`
-        # could swallow or skip that.
-        calls = _calls_named(fn, "_resolve_caller_sub")
-        assert len(calls) == 1, (
-            f"{route}: expected exactly one _resolve_caller_sub call, found "
-            f"{len(calls)}"
-        )
-        guard = _enclosing(fn, calls[0])
-        assert guard is fn, (
-            f"{route}: the caller-identity resolution is nested inside a "
-            f"{type(guard).__name__} at app.py line {calls[0].lineno}, where its "
-            f"403 can be skipped or swallowed"
-        )
-
-        # The name(s) that receive a transport-verified identity resolution. A
-        # route may bind none — /chat/document calls the resolver for its refusal
-        # and reads the caller from `identity` instead of a body field — but one
-        # that binds a name must bind it once, or a later assignment can put a
-        # client-supplied value where the verified one was.
-        resolved: set[str] = set()
-        for st in _own_scope_statements(fn):
-            if not isinstance(st, ast.Assign):
-                continue
-            if not any(_calls_named(st.value, n) for n in _RESOLVER_NAMES):
-                continue
-            for tgt in st.targets:
-                if isinstance(tgt, ast.Name):
-                    resolved.add(tgt.id)
-
-        assert len(resolved) <= 1, (
-            f"{route}: more than one variable receives the transport-verified "
-            f"caller identity ({sorted(resolved)}) — resolve it once"
-        )
-        for name in resolved:
-            bindings = _bindings_of(fn, name)
-            lines = sorted(st.lineno for st in bindings)
-            assert len(bindings) == 1, (
-                f"{route}: '{name}' holds the transport-verified caller identity "
-                f"but is bound {len(bindings)} times (app.py lines {lines}). A "
-                f"second binding lets a client-supplied value overwrite the "
-                f"verified one regardless of how it is spelled."
-            )
-
-
-@pytest.mark.unit
-def test_doc_route_forwards_an_identity_key_to_the_processor():
-    """The doc processor denies a turn whose event carries no ``identity`` key.
-
-    That is deliberate: it is how a producer that stops forwarding the caller
-    fails closed instead of silently switching the config-version scope check
-    off. So this transport must always include the key — today with the value
-    ``None``, because it can verify no caller identity (GAP-07) — and it must take
-    it from ``_caller_identity()`` rather than from anything in the request body,
-    which the caller chooses.
-    """
-    routes = _route_functions(_app_ast())
-    fn = routes.get("POST /chat/document")
-    assert fn is not None, "POST /chat/document not found in app.py"
-
-    identity_values = []
-    for node in ast.walk(fn):
-        if not isinstance(node, ast.Dict):
-            continue
-        for key, value in zip(node.keys, node.values):
-            if isinstance(key, ast.Constant) and key.value == "identity":
-                identity_values.append(value)
-    assert len(identity_values) == 1, (
-        "the processor event built by POST /chat/document must carry exactly one "
-        f"'identity' key, found {len(identity_values)}"
-    )
-    value = identity_values[0]
-    assert isinstance(value, ast.Call) and getattr(value.func, "id", None) == (
-        "_caller_identity"
-    ), (
-        "'identity' must come from _caller_identity() — the one place a verified "
-        "claims source plugs in — not from the request body"
-    )
-
-
-@pytest.mark.unit
 def test_agent_route_denies_before_the_stream_opens():
     """The group gate must run BEFORE StreamingResponse is constructed.
 
@@ -534,7 +173,7 @@ def test_agent_route_denies_before_the_stream_opens():
     # not a re-implementation of the group policy in this file.
     gate_src = app_src[
         app_src.index("def _enforce_groups_or_403(") : app_src.index(
-            'def _run_in_thread('
+            "def _require_a_group_or_403("
         )
     ]
     assert "_enforce_agent_chat_groups(" in gate_src
@@ -552,7 +191,7 @@ def test_agent_route_gate_is_an_unguarded_top_level_statement():
     check passes unchanged against a mutation which keeps the call, and its
     position, but swallows the denial::
 
-        identity = _caller_identity()
+        identity = _caller_identity(claims)
         try:
             _enforce_groups_or_403(identity)
         except HTTPException:
@@ -664,38 +303,66 @@ def test_doc_processor_set_sink_redirects_emission():
     assert doc_proc._active_sink is None
     del sys.modules["index"]
 
-@pytest.mark.unit
-@pytest.mark.parametrize("route", ["POST /chat/document", "POST /chat/agent"])
-def test_tenant_isolation_refuses_an_unattributed_turn_before_the_stream(route):
-    """Under ``TenantIsolationMode=Strict``, or an external ``TenantGrantSource``
-    (``IdpClaim`` or ``Api``), a turn this transport cannot attribute
-    (GAP-07) must be refused with a 403, on BOTH routes.
 
-    Asserted structurally for the reason the group-gate tests above give: the
-    call has to be a bare top-level statement ahead of ``StreamingResponse`` or
-    its 403 is either swallowed or downgraded to an error frame on a 200.
+def _top_level_index(fn, call) -> int | None:
+    """Index in ``fn.body`` of the bare statement holding ``call``, else None.
+
+    "Bare" means an expression statement or a plain assignment directly in the
+    route body, so nothing between it and the function can swallow or skip what
+    it raises.
+    """
+    for i, st in enumerate(fn.body):
+        if isinstance(st, ast.Expr) and st.value is call:
+            return i
+        if isinstance(st, ast.Assign) and st.value is call:
+            return i
+    return None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("route", _ROUTES)
+def test_every_route_verifies_the_caller_once_before_anything_else(route):
+    """The verified token is the only identity source, read once, read first.
+
+    ``_verified_caller`` raises the 401. It has to be a bare top-level statement
+    ahead of the response (or a 401 becomes an error frame on a 200), ahead of
+    the session claim (which needs the verified ``sub``), and the name it binds
+    must be bound once, or a later statement could put another value there.
     """
     fn = _route_functions(_app_ast())[route]
-    calls = _calls_named(fn, "_refuse_unverified_when_unscoped_is_denied_or_403")
-    assert len(calls) == 1, f"{route} must apply the tenant-isolation refusal once"
-    idx = next(
-        i
-        for i, st in enumerate(fn.body)
-        if isinstance(st, ast.Expr) and st.value is calls[0]
+    calls = _calls_named(fn, "_verified_caller")
+    assert len(calls) == 1, f"{route}: expected one _verified_caller call"
+    idx = _top_level_index(fn, calls[0])
+    assert idx is not None, f"{route}: _verified_caller is nested where it can be skipped"
+    target = fn.body[idx].targets[0]
+    assert isinstance(target, ast.Name)
+    assert len(_bindings_of(fn, target.id)) == 1, (
+        f"{route}: '{target.id}' holds the verified claims and is bound more than once"
     )
-    streams = [
-        i for i, st in enumerate(fn.body) if _calls_named(st, "StreamingResponse")
-    ]
-    assert idx < min(streams)
+    claim = _calls_named(fn, "_claim_session_or_403")
+    assert len(claim) == 1, f"{route}: the session claim must run once"
+    claim_idx = _top_level_index(fn, claim[0])
+    assert claim_idx is not None and claim_idx > idx, (
+        f"{route}: the session claim must be a bare statement after verification"
+    )
+    streams = [i for i, st in enumerate(fn.body) if _calls_named(st, "StreamingResponse")]
+    assert streams and max(idx, claim_idx) < min(streams), (
+        f"{route}: verification and the session claim must precede the response"
+    )
 
 
 @pytest.mark.unit
-def test_the_refusal_is_conditional_on_unscoped_is_denied_and_a_403():
-    src = open(os.path.join(_HERE, "app.py")).read()
-    body = src[
-        src.index("def _refuse_unverified_when_unscoped_is_denied_or_403(") : src.index(
-            "def _resolve_caller_sub("
-        )
-    ]
-    assert "identity is None and unscoped_is_denied()" in body
-    assert "status_code=403" in body
+def test_nothing_reads_an_identity_from_the_request_body():
+    """No ``callerSub`` field on the request models and no read of one anywhere.
+
+    Earlier UI builds still send ``callerSub``; with no field declared it is an
+    unknown key and is dropped by the model before any route code sees it.
+    """
+    tree = _app_ast()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            assert node.attr != "callerSub", f"app.py line {node.lineno} reads callerSub"
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            assert node.target.id != "callerSub", (
+                f"app.py line {node.lineno} declares a callerSub request field"
+            )

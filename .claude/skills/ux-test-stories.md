@@ -486,15 +486,37 @@ of its earlier story jobs whether they posted or not, and past that one reply po
 `make ai-ux-test-stories-local MR=<iid>`. The `ai_ux_test_stories_nightly`
 shards run the nightly set against `idp-ux-nightly` after the deploy, and
 `ai_ux_test_stories_digest` writes a digest and, in the scheduled pipeline, compares the
-night with the scheduled nights before it and posts a one-line summary to Slack, as
-`🧭 UX STORIES · …`, when `UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set: a Workflow
-Builder webhook of its own, never the integration build's `SLACK_WEBHOOK_URL`. A bad result counts as a regression when a
-second attempt confirms it; one whose confirming re-run did not fit in the night's
-budget or time is listed too, marked unconfirmed in the digest and on Slack, and the
-record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
+night with the scheduled nights before it and posts it to Slack when
+`UX_TEST_STORIES_SLACK_WEBHOOK_URL` is set: a Workflow Builder webhook of its own, never
+the integration build's `SLACK_WEBHOOK_URL`. The shards read the review stack's state
+from the integration build's `codebuild_logs.txt`, the row under the last review-stack
+header in its final MiB before the line that starts the build's Bedrock narrative, which
+is model output and never read, and a night is compared only when that row says the
+stack was updated or already up to date and every audit was clean. A bad result counts
+as a regression when a second attempt confirms it; one whose confirming re-run did not
+fit in the night's budget or time is listed too, marked unconfirmed in the digest and on
+Slack, and the record's `reruns_not_run` names it. `UX_TEST_STORIES` set to `mr` or
 `nightly` keeps only that kind, and any other value, `off` among them, turns all three
-off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly
-set. Every job is `allow_failure` and none is a gate.
+off; a manual pipeline on `develop` with `UX_TEST_STORIES_RUN=all` runs the nightly set.
+Every job is `allow_failure` and none is a gate.
+
+**Reading the Slack post.** The status is the night's outcome from its stories:
+`✅ 13 of 13 passed`; `❌ 2 regressions`, for confirmed regressions only;
+`⚠️ harness problem`, for a harness error or an unclean audit; `⚠️ 11 of 13 passed`,
+when a flow did not pass and none is a confirmed regression; or `⏭️ not run`. Once no
+night has been compared for four nights in a row, tonight included and a night with no
+readable digest counted as not compared, the tally carries a warning instead, as
+`⚠️ 13 of 13 passed, not compared for 4 nights`, because in such a run no regression can
+be flagged. The summary lists every flow by its catalogue title and persona, one icon
+per outcome (✅ done, 🚫 refused as the docs say, ❌ missed the docs' expectation, ⚠️ did
+not finish, 🛠️ harness error, ⏭️ not run): confirmed regressions first, then the other
+flows that did not pass, each saying why in a few words, then the passes with their
+steps. A night that could not be compared, in a shorter run, keeps its ✅ when every
+story passed and says why on its own line, such as "Not compared with earlier nights:
+the review stack's update could not be confirmed." It closes with what the night was
+compared with, its hesitations and dead ends, and its spend against the night's cap, and
+stays within 2,000 characters of plain text by folding passes into "and N more passed"
+before any failure is cut.
 
 ## Writing a story
 
@@ -542,15 +564,21 @@ and never fewer than 30; looks are free up to twice the budget.
 **Personas and expectations (`as`).** Contrast roles only where the permission
 matrix in [`docs/rbac.md`](../../docs/rbac.md#permission-matrix) differs between their
 groups, and name that row in `rbac`: a ratchet checks every persona's cell against
-its expectation (✅ is `allowed`, ❌ is `refused` or `not_offered`). The intent of a
-`refused` or `not_offered` persona must not be completable through any row its group
-is allowed, because a `not_refused` result is a blocker finding and the ratchet
-reads only the named row. Keep one story every role is allowed
+its expectation (✅ is `allowed` with or without its footnote marks `*`, `†` and `‡`,
+❌ is `refused` or `not_offered`). The intent of a `refused` or `not_offered` persona
+must not be completable through any row its group is allowed, because a
+`not_refused` result is a blocker finding and the ratchet reads only the named row.
+Keep one story every role is allowed
 (`read-a-processed-document`): when it fails, the stack is at fault, not a role. A
 correct refusal is not a defect; `refused_as_expected` is that persona's good
 verdict. `mr_as` names the personas an MR tries first; it defaults to the first in
-`as`. A group the matrix has no column for, Annotator today, can only be `allowed`
-until the column is added, and the ratchet says so.
+`as`. The matrix has a column for every group a persona can sign in as, Annotator
+included, and the ratchet holds every persona to its group's cell alike. Its
+Annotator cells say what the REST API admits of the feature as a whole, and an
+Annotator-only console offers less, as the matrix's row notes say: a row such as
+**List documents** is ✅ for an Annotator and has no page in that console, so it is
+the wrong row for an Annotator story, which the ratchet would hold to `allowed`. The
+review stories name **Work Production queues** or **Work Test Studio queues**.
 
 **A persona's own account (`credentials`).** A persona signs in with its group's
 `UX_TEST_PERSONAS` entry unless it names another, as the profile-limited Annotator
@@ -636,9 +664,13 @@ link, breadcrumbs included, and one with no address, with `#`, to the page it is
 or in a dialog, is judged by its name like any control. On a page whose editor
 may save its own edits, which the review workspace marks with Discard Changes while
 it is editable (and an older deployment with Save draft), it refuses every edit:
-typing, filling, dragging and ticking. Every annotation frame and the configuration
-editor show Discard Changes too, so edits are refused there as well, though nothing
-there is saved without a Save the guard already refuses. It cannot see an unnamed
+typing, filling, dragging and ticking. On such a page it also refuses Edit Page
+Grouping, because on the edit screen of a review-queue item nobody holds, opening
+the grouping board claims the item for the Admin first, as a first save does; from
+a document page's More Actions it opens the board and is let through. Every
+annotation frame and the configuration editor show Discard Changes too, so edits
+are refused there as well, though nothing there is saved without a Save the guard
+already refuses. It cannot see an unnamed
 control anywhere else, a save an edit sets off on a page without that control, a
 full-page form submitted by a Create, Add, New, Assign or Move button (those words
 are refused only inside a dialog, because outside one they open a form or a
@@ -653,7 +685,13 @@ through, because it changes nothing but that persona's own read state. A
 and does not join a tier.
 `scripts/tests/test_ux_story_relay.py` maps every mutation the web UI declares to
 the controls that send it and checks the guard refuses each, so a UI change that
-adds one fails there until its control is accounted for.
+adds one fails there until its control is accounted for. It also finds every call
+in the web UI that claims an item, a callback such as the grouping board's
+`beforeOpen` included, and fails on one that is not mapped to the controls that
+reach it; which control reaches a call is written by hand, since the suite cannot
+follow a handler through the props it is passed down. The MR UX test's review
+runs behind the same guard (`scripts/ux_runner/review_relay.py`), so that one check
+covers both.
 
 ## The review stack (once, by its operator)
 

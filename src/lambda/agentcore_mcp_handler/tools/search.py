@@ -10,7 +10,7 @@ from typing import Any, Dict
 import boto3
 from botocore.exceptions import ClientError, EventStreamError
 
-from .base import IDPTool
+from .base import NO_CALLER, IDPTool
 
 # NOTE: the analytics agent stack (idp_common.agents.analytics -> strands) is
 # imported inside execute(), not here. This module is imported for every tool
@@ -33,8 +33,10 @@ def log_analytics_events(context_msg: str = ""):
 class SearchTool(IDPTool):
     """Natural language search and analytics for IDP"""
 
-    def execute(self, query: str, **kwargs) -> Dict[str, Any]:
+    def execute(self, query: str, caller: Any = None, **kwargs) -> Dict[str, Any]:
         """Execute search query using analytics agent"""
+        if caller is None:
+            return dict(NO_CALLER)
         if not query:
             return {"error": "No query provided"}
 

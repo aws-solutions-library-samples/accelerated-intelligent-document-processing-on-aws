@@ -37,3 +37,18 @@ class ReviewValidationError(ReviewQueueError):
 
 class ReviewItemNotFound(ReviewQueueError):
     """The queue item, or the document behind it, doesn't exist."""
+
+
+class ReviewHeldByOther(ReviewAccessDenied):
+    """Another reviewer holds this review; only an Admin may skip it."""
+
+    def __init__(self, message: str = "another reviewer holds this review"):
+        super().__init__("HELD_BY_OTHER", message)
+
+
+class ResubmitError(Exception):
+    """A document could not be put back on the processing queue."""
+
+
+class ResubmitNotConfigured(ResubmitError):
+    """No processing queue is configured (``QUEUE_URL`` unset)."""

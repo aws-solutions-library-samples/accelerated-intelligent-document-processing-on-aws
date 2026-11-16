@@ -2,6 +2,9 @@
 title: "Development Environment Setup Guide on Windows using WSL"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Development Environment Setup Guide on Windows using WSL
 
 ## Introduction  

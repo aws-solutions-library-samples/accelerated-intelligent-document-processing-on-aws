@@ -316,3 +316,52 @@ class TestWritePathsAreGranted:
             "cannot clear a reaped job's test set off GENERATING — the spinner then "
             "waits for the host resolver's much longer window instead."
         )
+
+
+def _import_with(monkeypatch, **env):
+    for name in ("SUGGEST_MODEL_ID", "AWS_REGION", "AWS_DEFAULT_REGION"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("AWS_DEFAULT_REGION", env.get("AWS_DEFAULT_REGION", "us-west-2"))
+    sys.path.insert(0, str(_HANDLER_DIR))
+    sys.modules.pop("handler", None)
+    try:
+        return importlib.import_module("handler")
+    finally:
+        sys.path.remove(str(_HANDLER_DIR))
+        sys.modules.pop("handler", None)
+
+
+_HAIKU = "anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", f"us.{_HAIKU}"),
+        ("us-west-2", f"us.{_HAIKU}"),
+        ("eu-central-1", f"eu.{_HAIKU}"),
+        ("eu-west-1", f"eu.{_HAIKU}"),
+        # The deploy-time swap leaves Haiku 4.5 alone in Canada: its us. profile
+        # is callable there.
+        ("ca-central-1", f"us.{_HAIKU}"),
+    ],
+)
+def test_the_suggest_fallback_is_callable_from_the_region(
+    monkeypatch, region, expected
+):
+    """The template always sets SUGGEST_MODEL_ID; this is the path without it."""
+    assert _import_with(monkeypatch, AWS_REGION=region)._SUGGEST_MODEL_ID == expected
+
+
+def test_the_suggest_fallback_reads_the_session_region(monkeypatch):
+    mod = _import_with(monkeypatch, AWS_DEFAULT_REGION="eu-west-3")
+    assert mod._SUGGEST_MODEL_ID == f"eu.{_HAIKU}"
+
+
+def test_a_configured_suggest_model_is_used_as_given(monkeypatch):
+    mod = _import_with(
+        monkeypatch, AWS_REGION="eu-west-1", SUGGEST_MODEL_ID=f"us.{_HAIKU}"
+    )
+    assert mod._SUGGEST_MODEL_ID == f"us.{_HAIKU}"

@@ -699,14 +699,18 @@ class AssessmentService:
         Returns:
             List of content items with text and image content properly ordered
         """
-        # Split the prompt at the DOCUMENT_IMAGE placeholder
-        parts = prompt_template.split("{DOCUMENT_IMAGE}")
+        from idp_common.extraction.prompt_assembly import (
+            DOCUMENT_IMAGE_PLACEHOLDER,
+            document_image_placeholder_error,
+        )
 
-        if len(parts) != 2:
-            raise ValueError(
-                f"Invalid DOCUMENT_IMAGE placeholder usage: found {len(parts) - 1} occurrences, "
-                f"but exactly 1 is required. The DOCUMENT_IMAGE placeholder must appear exactly once in the template."
-            )
+        # The rule validate_config applies to the same prompt.
+        placeholder_error = document_image_placeholder_error(prompt_template)
+        if placeholder_error:
+            raise ValueError(placeholder_error)
+
+        # Split the prompt at the DOCUMENT_IMAGE placeholder
+        parts = prompt_template.split(DOCUMENT_IMAGE_PLACEHOLDER)
 
         # Process the parts before and after the image placeholder
         before_image = self._prepare_prompt_from_template(

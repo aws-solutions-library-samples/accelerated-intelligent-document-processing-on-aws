@@ -8,6 +8,7 @@ Requires the real strands package so the service binds `structured_output`
 Run with: pytest -m agentic tests/unit/extraction/agentic_idp/
 """
 
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import patch
 
@@ -222,6 +223,49 @@ def test_escalation_failure_reason_is_one_bounded_line_without_document_text():
     assert "\n" not in decision and "SSN" not in decision and len(decision) < 220
 
 
+def test_an_openai_responses_escalation_model_is_reported_as_not_run():
+    """#1911: agentic escalation calls the same Strands loop, which refuses an
+    OpenAI GPT-5.x model. Nothing is faked between the service and that refusal:
+    the real ``structured_output`` raises before any network call, the service
+    keeps the original result, and the Processing Issue built from the resulting
+    metadata says the escalation failed, and why. It used to say the escalation
+    model "did not resolve" the violation, which described a model whose answer
+    was judged."""
+    svc = _service(escalation_model="openai.gpt-5.5")
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+    with patch(
+        "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+        return_value=StatusOnlyModel,
+    ):
+        fields, _data, meta, metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+    assert fields == bad
+    assert metering == {}
+    assert meta["escalation_model"] == "openai.gpt-5.5"
+    assert meta["escalation_decision"].startswith(
+        "escalation call failed: ValueError: OpenAI Responses-API models"
+    )
+
+    issues = svc._build_extraction_issues(
+        extracted_fields=fields, metadata={"validation": meta}, section_id="1"
+    )
+    issue = next(i for i in issues if i.code == "extraction_validation_failed")
+    assert "did not resolve" not in issue.message
+    assert "Escalation to openai.gpt-5.5 failed (" in issue.message
+    assert "nothing from it was kept" in issue.message
+    assert "agentic/Strands" in issue.message
+    assert issue.details["escalation_decision"] == meta["escalation_decision"]
+
+
 def test_escalation_seed_is_none_when_every_failing_field_is_null():
     """An all-null seed must not construct: a truthy existing_data triggers the
     'RESUME FROM CHECKPOINT — do NOT call extraction_tool again' prompt, telling
@@ -259,3 +303,108 @@ def test_escalation_seed_is_none_when_every_failing_field_is_null():
                 parsing_succeeded=True,
             )
         assert (captured["existing_data"] is not None) is expect_seed, status
+
+
+class _UnserialisableStatus(BaseModel):
+    """A re-extraction that returns, then fails to serialise in the merge step."""
+
+    status: str | None = None
+
+    def model_dump(self, *args, **kwargs):  # type: ignore[override]
+        raise ValueError("cannot serialise the re-extracted value")
+
+
+def test_a_reextraction_that_returned_keeps_its_metering_when_a_later_step_raises():
+    """#1914: the re-extraction ran and was billed before the merge step raised;
+    the failure handler returned `{}` in place of its metering."""
+    svc = _service()
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+    billed = {"ExtractionEscalation/bedrock/strong": {"inputTokens": 10}}
+
+    def returns_then_merge_fails(*args, **kwargs):
+        return _UnserialisableStatus(status="void"), {
+            "metering": {**billed, "_table_parsing_stats": {"tables": 1}}
+        }
+
+    with (
+        patch(
+            "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+            return_value=StatusOnlyModel,
+        ),
+        patch(
+            "idp_common.extraction.service.structured_output",
+            returns_then_merge_fails,
+        ),
+    ):
+        fields, _data, meta, metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+
+    assert fields["status"] == "pending"
+    assert meta["escalation_kept"] is False
+    assert meta["escalation_decision"].startswith("escalation call failed: ")
+    assert metering == billed
+
+
+@pytest.mark.parametrize("scope", ["field-subset", "full-section"])
+def test_both_escalation_scopes_meter_under_the_shared_context(scope):
+    """Both Advanced-mode re-extractions name the escalation metering context.
+
+    The fakes elsewhere in this file return their own metering, so they cannot
+    see which context the service passed. This reads the argument itself. The
+    literal is the one Simple mode's escalation is held to in
+    ``test_escalation_metering.py``: one name for both modes keeps escalation on
+    one cost-report row.
+    """
+    svc = _service()
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+    contexts: list[str] = []
+
+    def fake_so(*args, **kwargs):
+        contexts.append(kwargs["context"])
+        if scope == "field-subset":
+            return StatusOnlyModel(status="void"), {"metering": {}}
+        return FullModel(invoice_id="INV-9", status="void", notes="keep me"), {
+            "metering": {}
+        }
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+                return_value=StatusOnlyModel,
+            )
+        )
+        stack.enter_context(
+            patch("idp_common.extraction.service.structured_output", fake_so)
+        )
+        if scope == "full-section":
+            # No usable subset schema: the service falls back to the whole section.
+            stack.enter_context(
+                patch(
+                    "idp_common.extraction.service.build_subset_schema",
+                    lambda schema, _fields: schema,
+                )
+            )
+        _fields, _data, meta, _metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+
+    assert meta["escalation_scope"] == scope
+    assert contexts == ["ExtractionEscalation"]

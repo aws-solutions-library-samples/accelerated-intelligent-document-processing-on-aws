@@ -160,16 +160,17 @@ The check that actually distinguishes them is the **summary line**:
 So: read the totals, and treat a run that printed no summary line as not having run.
 Budget for the **range** rather than one sample: `scripts/tests/` has been measured
 between **5.8 and 11.6 minutes** on this machine (347 s on a quiet one, 696 s loaded),
-and `test-packages-cicd` at about 12. A 600-second timeout is therefore too small for
+and `test-packages-cicd` at about 5 on 4 CPUs (305 s on 2026-11-12, since it stopped
+running the suites a coverage tree measures). A 600-second timeout is therefore too small for
 either whenever anything else is running, which on a shared machine is most of the
 time.
 
-**`make test-packages-cicd` already runs `pytest scripts/tests/`** as one of its
-closing steps. Running both repeats the whole of that suite, and — more misleading than
-the cost — two passes of one suite read as independent evidence when they are a single
-measurement. If you want a readable failure list, run `scripts/tests/` on its own with
-`-q --tb=no -rf`; if you want the gate signal, it is already inside
-`test-packages-cicd`. Do not run the two concurrently over one worktree either: two
+**`make test-packages-cicd` does not run `scripts/tests/`**, nor `idp_sdk`, `idp_cli`,
+`idp_feature_sdk`, `main-stack-extensions`, the seller service or the pii-anonymizer
+hook and feature API. In CI those run once, under coverage, in `make coverage-all-cicd`,
+and the recipe leaves them out so they are not run twice. Locally, run them through
+`python3 scripts/coverage_all.py --only <tree>` for the gate signal with coverage, or
+`pytest scripts/tests/ -q --tb=no -rf` for a readable failure list. Do not run the two concurrently over one worktree either: two
 pytest processes sharing a rootdir contend on its cache, which produces failures
 belonging to neither run. (`-p no:cacheprovider` removes that particular contention;
 the duplication argument stands regardless.)

@@ -284,6 +284,41 @@ type UserList @aws_cognito_user_pools {
   users: [User]
 }
 
+# An MCP service credential: a client-credentials app with a role, a configuration
+# scope and an expiry. The secret is never part of this type.
+type McpCredential @aws_cognito_user_pools {
+  clientId: ID!
+  name: String
+  role: String
+  allowedConfigVersions: [String]
+  tenant: String
+  writeTools: Boolean
+  enabled: Boolean
+  status: String
+  kind: String
+  createdBy: String
+  createdAt: String
+  updatedBy: String
+  updatedAt: String
+  expiresAt: String
+  lastUsedAt: String
+  rotatedFrom: String
+  replacedBy: String
+  secretArn: String
+}
+
+# Returned once, by createMcpCredential and rotateMcpCredential: the only
+# responses that carry the client secret.
+type McpCredentialIssued @aws_cognito_user_pools {
+  credential: McpCredential
+  clientId: ID!
+  clientSecret: String!
+  tokenUrl: String
+  gatewayUrl: String
+  secretArn: String
+  oauthScopes: [String]
+}
+
 type ValidationError @aws_cognito_user_pools @aws_iam {
   field: String
   message: String
@@ -1663,6 +1698,10 @@ type TestSetSectionGrouping @aws_cognito_user_pools @aws_iam {
   sectionId: String!
   documentClass: String
   pageIndices: [Int!]!
+  # The class this section's fields were extracted under, when a regroup changed its
+  # class and nothing has re-extracted it since; null otherwise. Stored on the section's
+  # baseline as extractedAsClass, which the editor also reads when it opens the section.
+  extractedAsClass: String
 }
 
 input GenerateDraftLabelsInput {
@@ -1887,6 +1926,15 @@ type ReviewItem @aws_cognito_user_pools {
   disposedAt: AWSDateTime
   rejectReason: String
   version: Int!
+  # Set on an item created by Send to review: why, and by whom.
+  sentToReview: ReviewSendInfo
+}
+
+type ReviewSendInfo @aws_cognito_user_pools {
+  reason: String!
+  note: String
+  requestedBy: String!
+  requestedAt: AWSDateTime!
 }
 
 type ReviewItemPage @aws_cognito_user_pools {
@@ -1898,6 +1946,89 @@ type MyReviewQueues @aws_cognito_user_pools {
   queues: [ReviewQueueSummary!]!
   myClaimCount: Int!
   items: ReviewItemPage!
+  # Whether the Default review queue exists and is enabled (Send to review needs it).
+  defaultQueueEnabled: Boolean!
+  # The bulk Skip All Reviews inline limit in force (hitl.bulk_skip_sync_limit).
+  bulkSkipSyncLimit: Int!
+}
+
+# Bulk Skip All Reviews (BulkReviewResolverFunction). mode is SELECTED (objectKeys)
+# or PROFILE (profile + submittedFrom/submittedTo, UTC ISO-8601, at most 365 days).
+input BulkSkipAllReviewsInput {
+  mode: String!
+  objectKeys: [String!]
+  profile: String
+  submittedFrom: String
+  submittedTo: String
+  reason: String!
+  note: String
+  resubmit: Boolean
+  dryRun: Boolean
+  clientRequestId: String
+}
+
+type BulkOutcomeCount @aws_cognito_user_pools {
+  outcome: String!
+  count: Int!
+}
+
+type BulkDocumentOutcome @aws_cognito_user_pools {
+  objectKey: String!
+  outcome: String!
+  kind: String!
+  detail: String
+}
+
+type BulkSkipAllReviewsResult @aws_cognito_user_pools {
+  dryRun: Boolean!
+  runMode: String!
+  syncLimit: Int!
+  approximate: Boolean!
+  eligibleCount: Int!
+  limitReached: Boolean!
+  counts: [BulkOutcomeCount!]!
+  results: [BulkDocumentOutcome!]!
+  jobId: String
+}
+
+type BulkReviewJob @aws_cognito_user_pools {
+  jobId: String!
+  jobType: String!
+  kind: String!
+  status: String!
+  mode: String!
+  profile: String
+  submittedFrom: String
+  submittedTo: String
+  reason: String!
+  note: String
+  resubmit: Boolean!
+  requestedBy: String!
+  total: Int!
+  processed: Int!
+  counts: [BulkOutcomeCount!]!
+  limitReached: Boolean!
+  stalled: Boolean!
+  error: String
+  createdAt: String!
+  startedAt: String
+  finishedAt: String
+}
+
+type BulkReviewJobResults @aws_cognito_user_pools {
+  job: BulkReviewJob!
+  results: [BulkDocumentOutcome!]!
+  nextToken: String
+}
+
+type BulkReviewJobPage @aws_cognito_user_pools {
+  jobs: [BulkReviewJob!]!
+  nextToken: String
+}
+
+type SendToReviewResult @aws_cognito_user_pools {
+  counts: [BulkOutcomeCount!]!
+  results: [BulkDocumentOutcome!]!
 }
 
 type ReviewSectionDetail @aws_cognito_user_pools {
@@ -2100,6 +2231,30 @@ type Mutation {
   # Grant a user one tenant (tenantId) or none (null). Only when the stack's
   # TenantGrantSource is Api, for an entitlement system pushing grants.
   setUserTenant(email: String!, tenantId: String): User
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # MCP service credentials (MCP Configuration page). Admin only.
+  createMcpCredential(
+    name: String!
+    role: String!
+    allowedConfigVersions: [String]
+    writeTools: Boolean
+    expiresInDays: Int
+  ): McpCredentialIssued @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  updateMcpCredential(
+    clientId: ID!
+    role: String
+    allowedConfigVersions: [String]
+    clearScope: Boolean
+    writeTools: Boolean
+    enabled: Boolean
+  ): McpCredential @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  rotateMcpCredential(clientId: ID!, overlapDays: Int): McpCredentialIssued
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  revokeMcpCredential(clientId: ID!): McpCredential
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # Grant a credential one tenant (tenantId) or none (null). Only when the stack's
+  # TenantGrantSource is Api, for an entitlement system pushing grants.
+  setMcpCredentialTenant(clientId: ID!, tenantId: String): McpCredential
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   updatePricing(pricingConfig: AWSJSON!): UpdatePricingResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
@@ -2344,7 +2499,18 @@ type Mutation {
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
   completeSectionReview(objectKey: String!, sectionId: String!, editedData: AWSJSON): Document
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer", "Annotator"])
-  skipAllSectionsReview(objectKey: String!, reason: String!, note: String): Document
+  skipAllSectionsReview(objectKey: String!, reason: String!, note: String, resubmit: Boolean): Document
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # Bulk Skip All Reviews and Send to review (BulkReviewResolverFunction).
+  bulkSkipAllReviews(input: BulkSkipAllReviewsInput!): BulkSkipAllReviewsResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  sendToReview(objectKeys: [String!]!, reason: String!, note: String): SendToReviewResult
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  # A queued or running bulk job stops before its next page (the requester's own, or
+  # any for an Admin); a finished one is deleted.
+  cancelBulkReviewJob(jobId: String!): BulkReviewJob
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  deleteBulkReviewJob(jobId: String!): Boolean
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   # Save a reviewer's edits to one section without completing its review: the
   # review stays In Progress until processChanges or skipAllSectionsReview.
@@ -2402,6 +2568,7 @@ type Mutation {
     sessionId: String
     method: String
     enableCodeIntelligence: Boolean
+    enableExternalMcpAgents: Boolean
     toolMetadata: ToolMetadataInput
   ): AgentChatMessage
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author", "Viewer"])
@@ -2520,11 +2687,9 @@ type Mutation {
   # onChatDocumentMessageUpdate.
   #
   # An assigned group is required: this sends document content to a model and
-  # bills inference. ⚠️ The directive and the dispatcher's floor both apply to the
-  # REST route only. The streaming Lambda Function URL (POST /chat/document)
-  # reaches the same processor and forwards no cognito:groups claim at all, so a
-  # caller in no group is refused here and is not refused there — GAP-07 in
-  # scripts/api_rbac_expectations.yaml.
+  # bills inference. The directive and the dispatcher's floor apply to this REST
+  # route; the streaming Lambda Function URL (POST /chat/document) applies the
+  # same floor from the Cognito ID token it verifies.
   sendChatDocumentMessage(
     sessionId: String!
     prompt: String!
@@ -2875,6 +3040,12 @@ type Query @aws_cognito_user_pools @aws_iam {
     @aws_cognito_user_pools(
       cognito_groups: ["Admin", "Annotator", "Author", "Reviewer", "Viewer"]
     )
+  # Bulk Skip All Reviews jobs (BulkReviewResolverFunction): the requester's own,
+  # or any for an Admin.
+  getBulkReviewJob(jobId: String!, outcome: String, limit: Int, nextToken: String): BulkReviewJobResults
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
+  listBulkReviewJobs(limit: Int, nextToken: String): BulkReviewJobPage
+    @aws_cognito_user_pools(cognito_groups: ["Admin", "Reviewer"])
   # HITL review queues (ReviewQueuesResolverFunction).
   getMyReviewQueues(itemLimit: Int): MyReviewQueues
     @aws_cognito_user_pools(
@@ -2999,6 +3170,7 @@ type Query @aws_cognito_user_pools @aws_iam {
 
   # User Management queries
   listUsers: UserList @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  listMcpCredentials: [McpCredential] @aws_cognito_user_pools(cognito_groups: ["Admin"])
   getMyProfile: User @aws_cognito_user_pools
 
   # Fine-Tuning queries

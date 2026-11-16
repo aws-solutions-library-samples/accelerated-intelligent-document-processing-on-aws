@@ -35,8 +35,6 @@ For the full breakdown of AWS services and the IAM permission scopes required fo
 | EU Central (Frankfurt)      | eu-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://eu-central-1.console.aws.amazon.com/cloudformation/home?region=eu-central-1#/stacks/create/review?templateURL=https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 | Canada (Central)      | ca-central-1   | [![Launch Stack](https://cdn.rawgit.com/buildkite/cloudformation-launch-stack-button-svg/master/launch-stack.svg)](https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/idp-main.yaml&stackName=IDP) |
 
-> ⚠️ The **Canada (Central)** button serves artifacts from v0.6.12 onward. Until that release is published it answers a CloudFormation "template not found" error; deploy an earlier release from source instead (see [Canada (Central) Region Model Support](./canada-region-model-support.md)).
-
 2. Review the template parameters and provide values as needed
 3. Check the acknowledgment box and click **Create stack**
 4. Wait for the stack to reach the `CREATE_COMPLETE` state (10-15 minutes)

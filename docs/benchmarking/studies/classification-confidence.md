@@ -2,6 +2,9 @@
 title: "Classification Confidence — Does the Score Carry Signal?"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 > **A focused study, not a release audit.** It answers one question: when
 > classification reports a confidence, is the number worth acting on — and does the
 > answer depend on the classifier? For "which extraction config should I pick?" see

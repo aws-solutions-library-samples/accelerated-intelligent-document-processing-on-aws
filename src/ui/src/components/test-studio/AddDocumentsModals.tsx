@@ -329,7 +329,10 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           )}
 
           {selectedBucket.value === 'input' && (
-            <Alert type="info">Files without matching baseline data in the evaluation bucket will be automatically excluded.</Alert>
+            <Alert type="info">
+              Files without matching baseline data in the evaluation bucket are added unlabeled. If this set is labeled, one of them makes
+              it read as unlabeled until it is draft-labeled; its existing labels are kept.
+            </Alert>
           )}
         </SpaceBetween>
       </Modal>

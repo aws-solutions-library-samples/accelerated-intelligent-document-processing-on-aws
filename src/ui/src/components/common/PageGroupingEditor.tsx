@@ -167,6 +167,14 @@ const MODAL_WIDTH = 1150;
 /** The dialog body's minimum width: three 260px section columns and the gaps between them. */
 const MODAL_MIN_WIDTH = 784;
 
+/**
+ * The id for a section the reviewer adds: one past every id in `sections`.
+ *
+ * Callers pass the sections the board opened with, the caller's current ones and the
+ * draft, so an id deleted in this edit is never handed out again. A save keeps each sent section's stored fields
+ * under the id it was sent with, so a new section that reused a deleted one's id would
+ * silently inherit that section's fields and label source (#1895).
+ */
 const nextSectionId = (sections: GroupedSection[]): string => {
   const numeric = sections.map((s) => Number.parseInt(s.sectionId, 10)).filter((n) => Number.isFinite(n));
   return String((numeric.length > 0 ? Math.max(...numeric) : 0) + 1);
@@ -493,6 +501,9 @@ const PageGroupingEditor = ({
   // Sorted once, on open. NOT re-sorted as the draft changes — see the stable-order note
   // at the top of the file.
   const [draft, setDraft] = useState<GroupedSection[]>(() => sortSectionsByFirstPage(sections));
+  // The sections the board opened with, kept even if the caller's `sections` change while
+  // it is open: an id deleted in this edit must never be handed to an added section.
+  const [openedSections] = useState(sections);
   const [selectedPageIds, setSelectedPageIds] = useState<Set<number>>(new Set());
   const [lastTouchedPageId, setLastTouchedPageId] = useState<number | null>(null);
   const [isExpanded, setIsExpanded] = useState(asModal);
@@ -584,7 +595,11 @@ const PageGroupingEditor = ({
     movePages(pageId, target.sectionId, target.beforePageId);
   };
 
-  const addSection = () => setDraft((prev) => [...prev, { sectionId: nextSectionId(prev), documentClass: null, pageIds: [] }]);
+  const addSection = () =>
+    setDraft((prev) => [
+      ...prev,
+      { sectionId: nextSectionId([...openedSections, ...sections, ...prev]), documentClass: null, pageIds: [] },
+    ]);
   const deleteSection = (sectionId: string) => setDraft((prev) => prev.filter((s) => s.sectionId !== sectionId));
   const changeClass = (sectionId: string, value: string) =>
     setDraft((prev) => prev.map((s) => (s.sectionId === sectionId ? { ...s, documentClass: value } : s)));

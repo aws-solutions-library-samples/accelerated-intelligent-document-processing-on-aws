@@ -1,0 +1,665 @@
+{
+  "description": "One table of price strings for both price rules (#1903). 'save' is the value parse_price/parsePrice give (null: refused on save), 'read' the value read_price/readPrice give (null: unpriced). Read by lib/idp_common_pkg/tests/unit/config/test_pricing_price_validation.py and pricing-layout/__tests__/price-format.test.ts.",
+  "cases": [
+    {
+      "input": "0.0015",
+      "save": 0.0015,
+      "read": 0.0015,
+      "why": "a valid price"
+    },
+    {
+      "input": "6.0E-8",
+      "save": 6e-8,
+      "read": 6e-8,
+      "why": "a valid price"
+    },
+    {
+      "input": "6.0e-8",
+      "save": 6e-8,
+      "read": 6e-8,
+      "why": "a valid price"
+    },
+    {
+      "input": "2.5E+1",
+      "save": 25.0,
+      "read": 25.0,
+      "why": "a valid price"
+    },
+    {
+      "input": "0",
+      "save": 0.0,
+      "read": 0.0,
+      "why": "a valid price"
+    },
+    {
+      "input": "0.0",
+      "save": 0.0,
+      "read": 0.0,
+      "why": "a valid price"
+    },
+    {
+      "input": ".5",
+      "save": 0.5,
+      "read": 0.5,
+      "why": "a valid price"
+    },
+    {
+      "input": "5.",
+      "save": 5.0,
+      "read": 5.0,
+      "why": "a valid price"
+    },
+    {
+      "input": "1e-400",
+      "save": 0.0,
+      "read": 0.0,
+      "why": "a valid price"
+    },
+    {
+      "input": "0x10",
+      "save": null,
+      "read": null,
+      "why": "Number() reads 16"
+    },
+    {
+      "input": "0b1",
+      "save": null,
+      "read": null,
+      "why": "Number() reads 1"
+    },
+    {
+      "input": "0o7",
+      "save": null,
+      "read": null,
+      "why": "Number() reads 7"
+    },
+    {
+      "input": "Infinity",
+      "save": null,
+      "read": null,
+      "why": "Number() reads Infinity"
+    },
+    {
+      "input": "inf",
+      "save": null,
+      "read": null,
+      "why": "float() reads inf"
+    },
+    {
+      "input": "nan",
+      "save": null,
+      "read": null,
+      "why": "float() reads NaN"
+    },
+    {
+      "input": "NaN",
+      "save": null,
+      "read": null,
+      "why": "both read NaN"
+    },
+    {
+      "input": "1_000",
+      "save": null,
+      "read": null,
+      "why": "float() reads 1000"
+    },
+    {
+      "input": "\u0663",
+      "save": null,
+      "read": null,
+      "why": "float() reads an Arabic-Indic 3"
+    },
+    {
+      "input": "\uff11",
+      "save": null,
+      "read": null,
+      "why": "float() reads a full-width 1"
+    },
+    {
+      "input": "",
+      "save": null,
+      "read": null,
+      "why": "Number() reads 0"
+    },
+    {
+      "input": "-1",
+      "save": null,
+      "read": null,
+      "why": "negative"
+    },
+    {
+      "input": "-0",
+      "save": null,
+      "read": null,
+      "why": "negative zero"
+    },
+    {
+      "input": "+1",
+      "save": null,
+      "read": null,
+      "why": "signed"
+    },
+    {
+      "input": "1e999",
+      "save": null,
+      "read": null,
+      "why": "infinite"
+    },
+    {
+      "input": "1,000",
+      "save": null,
+      "read": null,
+      "why": "both reject"
+    },
+    {
+      "input": "$0.01",
+      "save": null,
+      "read": null,
+      "why": "both reject"
+    },
+    {
+      "input": "1 000",
+      "save": null,
+      "read": null,
+      "why": "internal space"
+    },
+    {
+      "input": "0.5 0.5",
+      "save": null,
+      "read": null,
+      "why": "internal space"
+    },
+    {
+      "input": " 0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+0020: both earlier readers skip it"
+    },
+    {
+      "input": "0.5 ",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+0020: both earlier readers skip it"
+    },
+    {
+      "input": "  0.5 ",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+0020: both earlier readers skip it"
+    },
+    {
+      "input": "\t0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+0009: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\t",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+0009: both earlier readers skip it"
+    },
+    {
+      "input": "\t\t0.5\t",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+0009: both earlier readers skip it"
+    },
+    {
+      "input": "\n0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000A: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\n",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000A: both earlier readers skip it"
+    },
+    {
+      "input": "\n\n0.5\n",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000A: both earlier readers skip it"
+    },
+    {
+      "input": "\r0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000D: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\r",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000D: both earlier readers skip it"
+    },
+    {
+      "input": "\r\r0.5\r",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000D: both earlier readers skip it"
+    },
+    {
+      "input": "\f0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000C: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\f",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000C: both earlier readers skip it"
+    },
+    {
+      "input": "\f\f0.5\f",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000C: both earlier readers skip it"
+    },
+    {
+      "input": "\u000b0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000B: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u000b",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000B: both earlier readers skip it"
+    },
+    {
+      "input": "\u000b\u000b0.5\u000b",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+000B: both earlier readers skip it"
+    },
+    {
+      "input": "\u00a00.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+00A0: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u00a0",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+00A0: both earlier readers skip it"
+    },
+    {
+      "input": "\u00a0\u00a00.5\u00a0",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+00A0: both earlier readers skip it"
+    },
+    {
+      "input": "\u16800.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+1680: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u1680",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+1680: both earlier readers skip it"
+    },
+    {
+      "input": "\u1680\u16800.5\u1680",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+1680: both earlier readers skip it"
+    },
+    {
+      "input": "\u20000.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2000: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2000",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2000: both earlier readers skip it"
+    },
+    {
+      "input": "\u2000\u20000.5\u2000",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2000: both earlier readers skip it"
+    },
+    {
+      "input": "\u20010.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2001: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2001",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2001: both earlier readers skip it"
+    },
+    {
+      "input": "\u2001\u20010.5\u2001",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2001: both earlier readers skip it"
+    },
+    {
+      "input": "\u20020.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2002: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2002",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2002: both earlier readers skip it"
+    },
+    {
+      "input": "\u2002\u20020.5\u2002",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2002: both earlier readers skip it"
+    },
+    {
+      "input": "\u20030.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2003: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2003",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2003: both earlier readers skip it"
+    },
+    {
+      "input": "\u2003\u20030.5\u2003",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2003: both earlier readers skip it"
+    },
+    {
+      "input": "\u20040.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2004: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2004",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2004: both earlier readers skip it"
+    },
+    {
+      "input": "\u2004\u20040.5\u2004",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2004: both earlier readers skip it"
+    },
+    {
+      "input": "\u20050.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2005: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2005",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2005: both earlier readers skip it"
+    },
+    {
+      "input": "\u2005\u20050.5\u2005",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2005: both earlier readers skip it"
+    },
+    {
+      "input": "\u20060.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2006: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2006",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2006: both earlier readers skip it"
+    },
+    {
+      "input": "\u2006\u20060.5\u2006",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2006: both earlier readers skip it"
+    },
+    {
+      "input": "\u20070.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2007: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2007",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2007: both earlier readers skip it"
+    },
+    {
+      "input": "\u2007\u20070.5\u2007",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2007: both earlier readers skip it"
+    },
+    {
+      "input": "\u20080.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2008: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2008",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2008: both earlier readers skip it"
+    },
+    {
+      "input": "\u2008\u20080.5\u2008",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2008: both earlier readers skip it"
+    },
+    {
+      "input": "\u20090.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2009: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2009",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2009: both earlier readers skip it"
+    },
+    {
+      "input": "\u2009\u20090.5\u2009",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2009: both earlier readers skip it"
+    },
+    {
+      "input": "\u200a0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+200A: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u200a",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+200A: both earlier readers skip it"
+    },
+    {
+      "input": "\u200a\u200a0.5\u200a",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+200A: both earlier readers skip it"
+    },
+    {
+      "input": "\u20280.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2028: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2028",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2028: both earlier readers skip it"
+    },
+    {
+      "input": "\u2028\u20280.5\u2028",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2028: both earlier readers skip it"
+    },
+    {
+      "input": "\u20290.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2029: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u2029",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2029: both earlier readers skip it"
+    },
+    {
+      "input": "\u2029\u20290.5\u2029",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+2029: both earlier readers skip it"
+    },
+    {
+      "input": "\u202f0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+202F: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u202f",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+202F: both earlier readers skip it"
+    },
+    {
+      "input": "\u202f\u202f0.5\u202f",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+202F: both earlier readers skip it"
+    },
+    {
+      "input": "\u205f0.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+205F: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u205f",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+205F: both earlier readers skip it"
+    },
+    {
+      "input": "\u205f\u205f0.5\u205f",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+205F: both earlier readers skip it"
+    },
+    {
+      "input": "\u30000.5",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+3000: both earlier readers skip it"
+    },
+    {
+      "input": "0.5\u3000",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+3000: both earlier readers skip it"
+    },
+    {
+      "input": "\u3000\u30000.5\u3000",
+      "save": null,
+      "read": 0.5,
+      "why": "surrounding U+3000: both earlier readers skip it"
+    },
+    {
+      "input": "\ufeff0.5",
+      "save": null,
+      "read": null,
+      "why": "U+FEFF: Number() skips it, float() does not"
+    },
+    {
+      "input": "\u001c0.5",
+      "save": null,
+      "read": null,
+      "why": "U+001C: neither earlier reader skips it"
+    },
+    {
+      "input": "\u001f0.5",
+      "save": null,
+      "read": null,
+      "why": "U+001F: neither earlier reader skips it"
+    },
+    {
+      "input": "\u00850.5",
+      "save": null,
+      "read": null,
+      "why": "U+0085: float() skips it, Number() does not"
+    },
+    {
+      "input": "\u200b0.5",
+      "save": null,
+      "read": null,
+      "why": "U+200B: neither earlier reader skips it"
+    },
+    {
+      "input": "\u180e0.5",
+      "save": null,
+      "read": null,
+      "why": "U+180E: neither earlier reader skips it"
+    },
+    {
+      "input": " ",
+      "save": null,
+      "read": null,
+      "why": "whitespace only"
+    },
+    {
+      "input": "  ",
+      "save": null,
+      "read": null,
+      "why": "whitespace only"
+    },
+    {
+      "input": "\u00a0",
+      "save": null,
+      "read": null,
+      "why": "whitespace only"
+    },
+    {
+      "input": "\u00a0\u00a0",
+      "save": null,
+      "read": null,
+      "why": "whitespace only"
+    }
+  ]
+}

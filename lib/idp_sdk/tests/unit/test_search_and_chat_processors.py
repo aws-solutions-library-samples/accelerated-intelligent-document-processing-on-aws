@@ -594,7 +594,7 @@ class _FakeAgentFactory:
         ]
 
     def create_conversational_orchestrator(
-        self, *, agent_ids, session_id, config, session
+        self, *, agent_ids, session_id, config, session, user_id
     ):
         self.calls.append(
             {
@@ -602,6 +602,7 @@ class _FakeAgentFactory:
                 "session_id": session_id,
                 "config": config,
                 "session": session,
+                "user_id": user_id,
             }
         )
         return self._orchestrator
@@ -835,6 +836,22 @@ class TestOrchestratorComposition:
 
             assert proc.session_id == "my-own-session"
             assert factory.calls[0]["session_id"] == "my-own-session"
+
+    def test_memory_is_kept_under_the_sdks_own_owner(
+        self, aws_credentials, monkeypatch
+    ):
+        """Memory is stored per user and session; the SDK runs as no web user.
+
+        With no ``user_id`` the factory builds the orchestrator without memory,
+        so the SDK passes an owner of its own, which no Cognito sub can equal.
+        """
+        from idp_sdk._core import chat_processor
+
+        with _agent_framework(monkeypatch) as (factory, _):
+            _chat_processor()._ensure_orchestrator(session_id="s")
+
+            assert factory.calls[0]["user_id"] == chat_processor.SDK_MEMORY_OWNER
+            assert chat_processor.SDK_MEMORY_OWNER
 
     def test_the_orchestrator_is_built_once_per_session(
         self, aws_credentials, monkeypatch

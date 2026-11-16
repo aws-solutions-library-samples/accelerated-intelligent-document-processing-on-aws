@@ -1005,7 +1005,12 @@ rather than failing the read.
   shipped one, and the write-back then freezes it into the profile. Set the field
   explicitly on the profile if you want it pinned.
 
-## GraphQL API Reference
+## API Reference
+
+The Web UI calls each operation below through the REST API dispatcher at
+`POST /op/<operation>`. The operation names, parameters and return types are
+declared in `nested/api-resolvers/src/api/schema.graphql`, which is the API
+contract; no GraphQL service runs.
 
 ### Queries
 

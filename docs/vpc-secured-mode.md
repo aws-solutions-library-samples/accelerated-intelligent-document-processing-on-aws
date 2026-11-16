@@ -2,6 +2,9 @@
 title: "VPC Secured Mode Guide"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # VPC Secured Mode Guide
 
 This guide covers whats required for supporting the GenAI IDP solution in a VPC-secured environment for enhanced network isolation and security.

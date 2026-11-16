@@ -95,3 +95,27 @@ class TestMatchCatalog:
             catalog.match_catalog("invoice", self._entries(), bedrock_client=client)
             is None
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("region", "expected"),
+    [
+        ("us-east-1", "us.anthropic.claude-sonnet-4-6"),
+        ("eu-west-1", "eu.anthropic.claude-sonnet-4-6"),
+        ("ca-central-1", "us.anthropic.claude-sonnet-4-6"),
+    ],
+)
+def test_the_default_model_is_callable_from_the_region(region, expected):
+    """With no model given, the call goes to the model the deploy-time swap would
+    write for ``region``: a us. profile is not callable from an EU Region."""
+    client = Mock()
+    client.invoke_model.return_value = {}
+    client.extract_text_from_response.return_value = json.dumps(
+        {"index": 0, "confidence": 0.9, "reason": "invoice"}
+    )
+    entries = [
+        catalog.CatalogEntry(name="Invoice", source="generator", description="inv")
+    ]
+    catalog.match_catalog("an invoice", entries, region=region, bedrock_client=client)
+    assert client.invoke_model.call_args.kwargs["model_id"] == expected

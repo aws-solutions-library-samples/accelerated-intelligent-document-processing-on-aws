@@ -2,8 +2,8 @@
 title: "Should we pad prompts to clear the cache minimum?"
 ---
 
-<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. -->
-<!-- SPDX-License-Identifier: MIT-0 -->
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
 
 # Should we pad prompts to clear the cache minimum?
 

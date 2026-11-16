@@ -114,13 +114,22 @@ def test_list_agents_allows_direct_lambda_invocation(list_agents_index):
 # --- sendAgentChatMessage ---------------------------------------------------
 
 
+def _unused_session_table():
+    """A table double answering for a session id nobody has used yet."""
+    table = MagicMock()
+    table.get_item.return_value = {}
+    table.query.return_value = {"Items": []}
+    return table
+
+
 @pytest.fixture
 def agent_chat_index(monkeypatch):
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "test-messages")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "test-sessions")
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "test-owners")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "")
     with patch("boto3.resource") as mock_resource, patch("boto3.client"):
-        mock_resource.return_value.Table.return_value = MagicMock()
+        mock_resource.return_value.Table.return_value = _unused_session_table()
         module = _load("agent_chat_resolver_index", "agent_chat_resolver/index.py")
         yield module
 
@@ -141,7 +150,7 @@ def test_agent_chat_rejects_reviewer(agent_chat_index):
 def test_agent_chat_allows_permitted_groups(agent_chat_index, group):
     """Admin/Author/Viewer may send Agent Chat messages (no PermissionError)."""
     event = {
-        "identity": {"claims": {"cognito:groups": [group]}},
+        "identity": {"claims": {"cognito:groups": [group]}, "sub": "sub-1"},
         "arguments": {"prompt": "hi", "sessionId": "s1"},
     }
     result = agent_chat_index.handler(event, None)
@@ -158,30 +167,37 @@ def test_agent_chat_allows_direct_lambda_invocation(agent_chat_index):
 
 
 @pytest.mark.unit
-def test_agent_chat_forwards_only_the_group_claim_to_the_processor(monkeypatch):
-    """The resolver must give the processor the groups, and nothing else.
+def test_agent_chat_forwards_only_the_group_claim_and_sub_to_the_processor(
+    monkeypatch,
+):
+    """The resolver must give the processor the groups and the sub, nothing else.
 
-    The processor needs the caller's groups to apply its own check, and it logs
-    its whole event — so the rest of the identity object (email, source IP,
-    token-derived claims) must not be forwarded.
+    The processor needs the caller's groups to apply its own check and the sub to
+    know whose session and memory the turn is. It logs its whole event — so the
+    rest of the identity object (email, source IP, token-derived claims) must not
+    be forwarded.
     """
     monkeypatch.setenv("CHAT_MESSAGES_TABLE", "test-messages")
     monkeypatch.setenv("CHAT_SESSIONS_TABLE", "test-sessions")
+    monkeypatch.setenv("CHAT_SESSION_OWNERS_TABLE", "test-owners")
     monkeypatch.setenv("AGENT_CHAT_PROCESSOR_FUNCTION", "agent-chat-processor")
     with patch("boto3.resource") as mock_resource, patch("boto3.client") as mock_client:
-        mock_resource.return_value.Table.return_value = MagicMock()
+        mock_resource.return_value.Table.return_value = _unused_session_table()
         module = _load("agent_chat_resolver_fwd", "agent_chat_resolver/index.py")
         event = {
             "identity": {
                 "claims": {"cognito:groups": ["Author"], "email": "a@example.com"},
                 "username": "author-user",
+                "sub": "sub-1",
             },
             "arguments": {"prompt": "hi", "sessionId": "s1"},
         }
         module.handler(event, None)
 
     payload = json.loads(mock_client.return_value.invoke.call_args.kwargs["Payload"])
-    assert payload["identity"] == {"claims": {"cognito:groups": ["Author"]}}
+    assert payload["identity"] == {
+        "claims": {"cognito:groups": ["Author"], "sub": "sub-1"}
+    }
     assert "email" not in json.dumps(payload["identity"])
 
 
@@ -326,10 +342,9 @@ def test_processor_accepts_a_single_group_claim_string(
 def test_processor_allows_identity_less_invocation(agent_chat_processor, monkeypatch):
     """An invocation carrying no groups at all is gated by IAM, not by group.
 
-    That covers the backend `lambda:InvokeFunction` path and the streaming
-    Function URL, whose transport forwards no Cognito group claim (GAP-07 in
-    scripts/api_rbac_expectations.yaml). Denying them here would take chat
-    streaming offline for every user rather than restricting it to a group.
+    That is the backend `lambda:InvokeFunction` path. Both web UI paths forward
+    the caller's verified groups (the streaming Function URL from the ID token it
+    verifies), so they are group-checked rather than reaching this branch.
     """
     monkeypatch.setattr(
         agent_chat_processor,

@@ -9,7 +9,7 @@ SPDX-License-Identifier: MIT-0
 
 ## Overview
 
-Pipeline mode supports few-shot example prompting, a powerful feature that allows you to provide concrete document examples with expected outputs to significantly improve model accuracy, consistency, and reduce hallucination for both document classification and attribute extraction tasks.
+Pipeline mode supports few-shot example prompting, a feature that lets you provide concrete document examples with expected outputs, for both document classification and attribute extraction tasks. Examples are meant to make the model's output more accurate and consistent; the size of that effect has not been measured in this repository's benchmarks, so A/B test it on your own documents (see [Performance Considerations](#performance-considerations)).
 
 Few-shot examples apply to **pipeline mode only** — the processing mode that runs
 Amazon Textract or LLM-based OCR, then classification and extraction as separate
@@ -25,12 +25,12 @@ Few-shot learning enhances AI model performance by providing concrete examples a
 
 ## Key Benefits
 
-- **🎯 Improved Accuracy**: Models understand document patterns and expected formats better through concrete examples
+- **🎯 Accuracy**: Concrete examples can help a model recognise document patterns and expected formats
 - **📏 Consistent Output**: Examples establish exact JSON structure and formatting standards
-- **🚫 Reduced Hallucination**: Examples reduce likelihood of made-up classification or attribute values
+- **🚫 Fewer made-up values**: Examples showing the expected output can discourage invented classification or attribute values
 - **🔧 Domain Adaptation**: Examples help models understand domain-specific terminology and conventions
 - **💡 Better Edge Case Handling**: Visual examples clarify ambiguous cases that text descriptions might miss
-- **💰 Cost Effectiveness with Caching**: Using prompt caching with few-shot examples can significantly reduce costs for repeated processing
+- **💰 Cost with Caching**: Prompt caching can lower the cost of the examples when its prefix is read again within five minutes, as it can be when documents with the same configuration are processed close together, and on Claude models raises it when the prefix is written and not read again ([Prompt Caching with Few-Shot Examples](#prompt-caching-with-few-shot-examples))
 
 ## When to Use Few-Shot Examples
 
@@ -70,7 +70,7 @@ classes:
               "RecipientName": "The Honorable Wendell H. Ford",
               "Date": "10/31/1995",
               "Subject": null
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
       - x-aws-idp-class-prompt: "This is an example of the class 'Letter'"
         name: "Letter2"
         x-aws-idp-attributes-prompt: |
@@ -80,7 +80,7 @@ classes:
               "RecipientName": "Mr. Addison Y. Yeaman",
               "Date": "10/14/1970",
               "Subject": "Invitation to the Twelfth Annual Meeting of the TGIC"
-        x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter2.png"
+        x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter2.png"
 ```
 
 ### Example Fields Explained
@@ -156,12 +156,12 @@ The `x-aws-idp-image-path` field supports multiple formats for maximum flexibili
 
 **Single Image File (Original functionality)**:
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/letter1.jpg"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/letter1.jpg"
 ```
 
 **Local Directory with Multiple Images (New)**:
 ```yaml
-x-aws-idp-image-path: "config_library/unified/few_shot_example/example-images/"
+x-aws-idp-image-path: "config_library/unified/rvl-cdip-with-few-shot-examples/example-images/"
 ```
 
 **S3 Prefix with Multiple Images (New)**:
@@ -206,7 +206,7 @@ Few-shot examples support both multimodal and text-only approaches:
 - Include sample document text (OCR output) within `x-aws-idp-class-prompt` or `x-aws-idp-attributes-prompt`
 - Useful when images are not available or for privacy-sensitive scenarios
 - Can demonstrate text patterns and content structure
-- Still provide significant accuracy improvements over no examples
+- Can still help where no images are available
 
 **Example with OCR Text Content**:
 ```yaml
@@ -491,7 +491,7 @@ extraction:
     Extract as JSON:
 ```
 
-**Important**: The `<<CACHEPOINT>>` delimiter separates the static portion of your prompt (classes, few-shot examples) from the dynamic portion (document content). This enables Bedrock prompt caching, significantly reducing costs when processing multiple documents with the same configuration.
+**Important**: The `<<CACHEPOINT>>` delimiter separates the static portion of your prompt (classes, few-shot examples) from the dynamic portion (document content). This lets Bedrock cache the static portion. On Claude models a cached prefix that is read again within five minutes is billed at a tenth of the input price (a twentieth on Claude Sonnet 5.5 and Opus 5.5), but a prefix below the model's minimum is never cached, and a prefix that is written and not read again costs about 25% more than an uncached one ([prompt caching study](./benchmarking/studies/prompt-caching.md)).
 
 ### Step 5: Configure Path Resolution (If Using Images)
 
@@ -509,7 +509,7 @@ export CONFIGURATION_BUCKET=your-config-bucket-name
 
 ## Prompt Caching with Few-Shot Examples
 
-Using prompt caching with few-shot examples provides significant cost and performance benefits:
+Prompt caching can lower the cost of the static part of a prompt that carries few-shot examples. Whether it does depends on the conditions below.
 
 ### How Prompt Caching Works
 
@@ -521,7 +521,7 @@ The static portion is cached by Bedrock and reused across multiple document proc
 
 ### Cost Benefits
 
-With few-shot examples adding significant token count to prompts, caching becomes essential:
+Few-shot examples make the static portion of the prompt larger, and the static portion is the only part caching can discount. How much of the bill that is depends on its size relative to the document text and images after the cache point: on the `ocr-benchmark` corpus the prefix was about 1,000–2,900 of roughly 7,800 input tokens per document ([prompt caching study §6](./benchmarking/studies/prompt-caching.md#6-end-to-end-effect-on-cost)).
 
 ```yaml
 # Example prompt structure for cost optimization
@@ -540,20 +540,20 @@ task_prompt: |
 ```
 
 **Without caching**: Pay full token cost (static + dynamic) for every document
-**With caching**: Pay full cost once, then only dynamic portion for subsequent documents
+**With caching**: Pay the static portion once at a write premium (1.25× its input price on Claude models), then the cache-read price for it on documents that follow within five minutes, plus full cost for the dynamic portion. On Claude models a prefix that is written and not read again inside those five minutes is billed at about 25% more than it would be without caching; how much that adds to a document depends on the prefix's share of its input tokens ([prompt caching study §3](./benchmarking/studies/prompt-caching.md#3-the-cache-write-premium-on-a-document-processed-once))
 
-### Performance Benefits
+**Below the minimum, nothing is cached**: Anthropic publishes a per-model minimum cacheable prefix (1,024 tokens for Claude Sonnet 5 and Sonnet 4.6, 4,096 for Claude Haiku 4.5). A shorter prefix is billed entirely at the full input price, and no error or warning is raised ([prompt caching study §1](./benchmarking/studies/prompt-caching.md#1-the-minimum-cacheable-prefix))
 
-- **Faster Processing**: Cached static content doesn't need to be reprocessed
-- **Reduced Latency**: Less time spent on prompt parsing and understanding
-- **Better Consistency**: Same cached context ensures consistent interpretation
+### Latency and output
+
+Caching changes how the static portion is billed; it does not change the prompt the model receives. No benchmark in this repository has measured its effect on latency, so measure that on your own workload if it matters.
 
 ### Cache Optimization Tips
 
 1. **Group similar documents**: Process documents of the same class together to maximize cache hits
 2. **Stable configurations**: Avoid changing class definitions or examples frequently during processing batches
 3. **Strategic placement**: Put all static content (examples, instructions) before the CACHEPOINT
-4. **Monitor cache effectiveness**: Track cost reductions to verify caching is working
+4. **Monitor cache effectiveness**: Check `cacheReadInputTokens` in the run's token usage. A class whose prefix is below the model's minimum shows 0 on every request
 
 ## Best Practices
 
@@ -667,46 +667,52 @@ task_prompt: |
 
 ## Testing Your Configuration
 
-Use the provided test notebooks to validate your few-shot configuration:
+To check that a configuration's examples load, including their images, build the
+example content the classification and extraction prompts receive. This makes no
+model call. The builders are the functions both services use, and the snippet runs
+as written from the repository root against the `rvl-cdip-with-few-shot-examples`
+preset; substitute your own configuration file and class:
 
-### Classification Testing
 ```python
-# Test classification few-shot examples
-from idp_common.classification.service import ClassificationService
+# Run from the repository root.
+import os
+
 import yaml
 
-# Load your configuration
-with open('path/to/your/config.yaml', 'r') as f:
-    config = yaml.safe_load(f)
+from idp_common.config.models import IDPConfig
+from idp_common.utils.few_shot_example_builder import (
+    build_few_shot_examples_content,
+    build_few_shot_extraction_examples_content,
+)
 
-# Initialize service
-service = ClassificationService(config=config, backend="bedrock")
+# A local x-aws-idp-image-path is resolved against ROOT_DIR (in a deployed stack,
+# against the configuration bucket instead).
+os.environ["ROOT_DIR"] = os.getcwd()
 
-# Test building examples for all classes
-examples = service._build_few_shot_examples_content()
+with open("config_library/unified/rvl-cdip-with-few-shot-examples/config.yaml") as f:
+    config = IDPConfig.model_validate(yaml.safe_load(f))
+
+# Classification: the examples of every class
+examples = build_few_shot_examples_content(config)
 print(f"Loaded {len(examples)} example items for classification")
-```
 
-### Extraction Testing
-```python
-# Test extraction few-shot examples for specific class
-from idp_common.extraction.service import ExtractionService
-
-service = ExtractionService(config=config)
-
-# Test building examples for specific class (e.g., "letter")
-examples = service._build_few_shot_examples_content('letter')
+# Extraction: the examples of one class (here "letter")
+letter = next(c for c in config.classes if c.get("$id") == "letter")
+examples = build_few_shot_extraction_examples_content(letter)
 print(f"Loaded {len(examples)} example items for 'letter' class extraction")
 ```
+
+An example whose image cannot be found is logged as a warning and contributes its
+text only, so compare the number of image items with the images you expect.
 
 ## Performance Considerations
 
 ### Benefits
-- **Higher Accuracy**: Well-crafted examples typically improve accuracy by 10-30%
+- **Accuracy**: Well-crafted examples can improve accuracy. No benchmark in this repository has measured by how much, so compare with and without examples on your own documents
 - **Reduced Prompt Engineering**: Less time spent fine-tuning text descriptions
 - **Consistent Outputs**: Examples establish clear formatting standards
 - **Better Edge Case Handling**: Visual and textual examples help with ambiguous documents
-- **Cost Efficiency with Caching**: Prompt caching can reduce costs by 50-90% for repeated processing
+- **Cost Efficiency with Caching**: Prompt caching bills a cached prefix (examples included) at a tenth of the input price on most Claude models (a twentieth on Claude Sonnet 5.5 and Opus 5.5) when it is read again within five minutes. A prefix below the model's minimum is never cached, and a cached prefix that is not read again is billed at about 25% more than uncached ([prompt caching study](./benchmarking/studies/prompt-caching.md))
 
 ### Trade-offs
 - **Increased Initial Token Usage**: Examples add to prompt length, increasing initial processing costs
@@ -716,7 +722,7 @@ print(f"Loaded {len(examples)} example items for 'letter' class extraction")
 
 ### Cost Optimization Strategies
 
-1. **Use prompt caching**: Always include `<<CACHEPOINT>>` in prompts when using few-shot examples
+1. **Use prompt caching when documents arrive together**: Include `<<CACHEPOINT>>` in prompts that carry few-shot examples when documents with the same configuration are processed within five minutes of each other. On Claude models a prefix that is written and not read again within five minutes pays the write premium for nothing
 2. **Strategic example selection**: Focus on document classes where accuracy improvements justify the cost
 3. **Consider text-only examples**: When images aren't essential, text-only examples reduce processing time
 4. **Optimize image sizes**: If using images, use the smallest size that maintains clarity
@@ -729,7 +735,7 @@ print(f"Loaded {len(examples)} example items for 'letter' class extraction")
 Monitor these metrics to ensure optimal cache usage:
 - **Cache hit rate**: Percentage of requests using cached content
 - **Cost reduction**: Compare costs with and without caching
-- **Processing latency**: Time savings from cached static content
+- **Processing latency**: not measured with and without caching in this repository; compare on your own workload
 - **Token usage patterns**: Distribution of static vs. dynamic tokens
 
 ## Troubleshooting
@@ -767,9 +773,10 @@ Monitor these metrics to ensure optimal cache usage:
 - Ensure `<<CACHEPOINT>>` is properly placed in task prompts
 - Verify static content is before CACHEPOINT and dynamic content is after
 - Check that you're using supported Bedrock models with caching enabled
+- Check that the prefix before CACHEPOINT is longer than the model's minimum cacheable prefix; a shorter one is never cached and raises no error
 
 **High Costs Despite Caching**
-- Verify cache hit rates are high (>80% for batch processing)
+- Compare `cacheReadInputTokens` with `cacheWriteInputTokens`: on Claude models a write that is not read again within five minutes costs more than no caching
 - Ensure you're not changing static content frequently
 - Check that CACHEPOINT placement is optimal
 
@@ -789,9 +796,10 @@ Monitor these metrics to ensure optimal cache usage:
 
 ### Complete Working Example with Caching
 
-See `config_library/unified/few_shot_example/` for a complete working configuration that demonstrates:
+See `config_library/unified/rvl-cdip-with-few-shot-examples/` for a complete working configuration that demonstrates:
 - Letter classification and extraction with 2 examples
 - Email classification and extraction with 1 example
+- Bank statement classification and extraction with 1 example whose images are a directory of pages
 - Proper image path configuration
 - Task prompts with few-shot placeholder integration and optimal CACHEPOINT placement
 
@@ -957,4 +965,4 @@ The few-shot examples feature continues to evolve with planned enhancements:
 - **Hybrid Examples**: Better integration of text and image content within examples
 - **Enhanced Multi-Image Support**: Advanced algorithms for optimal image selection from directories
 
-Few-shot examples with prompt caching represent a significant step forward in making pipeline mode more accurate, cost-effective, and easier to configure for diverse document processing scenarios. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.
+Few-shot examples give pipeline mode concrete examples of each class, and prompt caching can lower the cost of carrying them when documents with the same configuration are processed close together. The flexibility to use images, text, or both, combined with support for multiple images per example, provides comprehensive options for different security, privacy, and performance requirements.

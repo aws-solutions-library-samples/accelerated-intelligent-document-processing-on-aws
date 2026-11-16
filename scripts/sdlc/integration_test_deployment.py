@@ -222,6 +222,43 @@ def iac_requested(environ: dict | None = None) -> str:
     return value
 
 
+#: The weekly Terraform-migration schedule: the build runs
+#: scripts/sdlc/terraform_migration_test.py instead of the primary suite (the same
+#: name codebuild_deployment.py reads in terraform_migration_mode). Reaches the
+#: build in ci_run_options.json as ``terraform_migration``.
+TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+
+
+def terraform_migration_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform-migration run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the same schedule also asks for the variant
+    probes, a region run or a Terraform run: the migration run replaces the primary
+    suite, so any of those would report a result for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() != "true":
+        return False
+    for clash, asked in (
+        (f"{VARIANT_PROBES_VARIABLE}=true", variant_probes_requested(env)),
+        (REGION_RUN_VARIABLE, bool(region_run_requested(env))),
+        (
+            f"{IAC_VARIABLE}=terraform",
+            str(env.get(IAC_VARIABLE, "")).strip().lower() == IAC_TERRAFORM,
+        ),
+    ):
+        if asked:
+            raise ValueError(
+                f"{TERRAFORM_MIGRATION_VARIABLE}=true cannot be combined with "
+                f"{clash}: the migration run replaces the primary suite. Give each "
+                "its own schedule."
+            )
+    return True
+
+
 def upload_to_s3(bucket_name):
     """Upload code package to S3 and return version ID"""
     print(f"Uploading to S3 bucket: {bucket_name}")
@@ -480,7 +517,7 @@ def stream_new_milestones(logs_client, log_stream, next_token, console, max_page
 # before they expire: it re-assumes idp-sdlc-GitLab again (a fresh 1h session —
 # role chaining allows repeated re-assumes, each capped at 1h) and rebuilds its
 # boto3 clients. So MONITOR_HANDOFF_SECONDS can now exceed the 1h cap. It is set
-# below the GitLab job timeout (3h30m) with headroom for before/after_script.
+# below the GitLab job timeout (4h30m) with headroom for before/after_script.
 # If refresh ever fails (e.g. the self-assume permission is missing), the
 # monitor still hands off gracefully to the S3 summary + SNS email.
 MONITOR_HANDOFF_SECONDS = 6600  # 110 min
@@ -489,9 +526,16 @@ MONITOR_HANDOFF_SECONDS = 6600  # 110 min
 # CodeBuild's main() starts, plus the source stage and provisioning before it.
 # Handing off at 110 min would read the INTERIM summary and leave a probe failure
 # to the email alone, so that run watches longer. Both stay below the GitLab job
-# timeout (3h30m) with the same before/after_script headroom as the nightly.
+# timeout (4h30m) with the same before/after_script headroom as the nightly.
 PROBE_RUN_MONITOR_HANDOFF_SECONDS = 10500  # 175 min
 PROBE_RUN_MONITOR_MAX_WAIT_SECONDS = 11700  # 195 min
+# The weekly Terraform-migration run fills the CodeBuild project's 240-minute
+# timeout (TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES in codebuild_deployment.py), so
+# its monitor watches past that, plus the source stage and provisioning in front of
+# it. Both stay below the GitLab job timeout (4h30m) with before/after_script
+# headroom.
+MIGRATION_RUN_MONITOR_HANDOFF_SECONDS = 15000  # 250 min
+MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS = 15600  # 260 min
 # Re-assume this far before the ~1h chained-session expiry.
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
@@ -562,6 +606,7 @@ def write_ci_run_options(
         "variant_probes": variant_probes_requested(env),
         "region_run": region_run_requested(env) or "",
         "iac": iac_requested(env),
+        "terraform_migration": terraform_migration_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -956,9 +1001,15 @@ def main():
         )
     try:
         iac = iac_requested()
+        migration = terraform_migration_requested()
     except ValueError as e:
         print(f"❌ {e}")
         sys.exit(1)
+    if migration:
+        print(
+            "🔀 Weekly Terraform-migration run — migrating a genai-idp-terraform "
+            "deployment onto the built-in module instead of the primary suite"
+        )
     if iac == IAC_TERRAFORM:
         print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
     elif os.environ.get(IAC_VARIABLE, "").strip():
@@ -973,7 +1024,9 @@ def main():
 
     # Execute deployment steps
     write_ci_run_options()
-    if iac == IAC_TERRAFORM and not pathlib.Path(CI_RUN_OPTIONS_FILE).is_file():
+    if (iac == IAC_TERRAFORM or migration) and not pathlib.Path(
+        CI_RUN_OPTIONS_FILE
+    ).is_file():
         # The file is the only way the choice reaches CodeBuild, which reads no
         # file as CloudFormation. Running on would deploy and report the
         # CloudFormation suite under a Terraform schedule.
@@ -985,7 +1038,16 @@ def main():
     create_deployment_package()
     version_id = upload_to_s3(bucket_name)
 
-    if variant_probes_requested():
+    if migration:
+        # Two deployments, two one-hour DynamoDB waits and both teardowns: the
+        # longest run, filling the build's whole timeout.
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    elif variant_probes_requested():
         result = monitor_pipeline(
             pipeline_name,
             version_id,

@@ -2,6 +2,9 @@
 title: "Benchmark Studies"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Benchmark studies — one question each
 
 Everything in this folder was measured with the same harness, on a deployed stack, under

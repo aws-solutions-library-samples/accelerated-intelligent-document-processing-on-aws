@@ -113,6 +113,19 @@ class _Record(BaseModel):
         return to_dynamo(self.model_dump(by_alias=True, exclude_none=True))
 
 
+class ManualRequest(_Record):
+    """Why and by whom a document was sent to review by hand (Send to review)."""
+
+    reason: str
+    note: Optional[str] = None
+    requested_by: str
+    requested_at: str
+    #: The tracking row's ``HITLStatus`` before the send (restored on abandon).
+    prior_hitl_status: Optional[str] = None
+    #: The tracking row's ``HITLCompleted`` before the send (restored on abandon).
+    prior_hitl_completed: Optional[bool] = None
+
+
 class ReviewItemRecord(_Record):
     """The queue item of a document's current review cycle."""
 
@@ -179,6 +192,12 @@ class ReviewItemRecord(_Record):
     final_run_id: Optional[str] = None
     final_manifest_uri: Optional[str] = None
     finalized_at: Optional[str] = None
+    # Manual send and bulk skip
+    #: ``"manual"`` for an item created by Send to review (no phase-1 run).
+    origin: Optional[Literal["manual"]] = None
+    manual_request: Optional[ManualRequest] = None
+    #: The bulk Skip All Reviews job that skipped the item, if any.
+    skip_job_id: Optional[str] = None
     # Other
     withdrawn_reason: Optional[str] = None
     withdrawn_at: Optional[str] = None

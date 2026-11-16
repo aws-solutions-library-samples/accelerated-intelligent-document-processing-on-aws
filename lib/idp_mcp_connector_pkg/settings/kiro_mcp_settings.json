@@ -7,8 +7,8 @@
       "env": {
         "IDP_MCP_ENDPOINT": "<MCPServerEndpoint from CloudFormation outputs>",
         "IDP_MCP_TOKEN_URL": "<MCPTokenURL from CloudFormation outputs>",
-        "IDP_MCP_CLIENT_ID": "<MCPConnectorClientId from CloudFormation outputs>",
-        "IDP_MCP_CLIENT_SECRET": "<MCPConnectorClientSecret from CloudFormation outputs>"
+        "IDP_MCP_CLIENT_ID": "<client ID of a service credential (MCP Configuration page)>",
+        "IDP_MCP_CLIENT_SECRET": "<its client secret, shown once when created>"
       }
     }
   }

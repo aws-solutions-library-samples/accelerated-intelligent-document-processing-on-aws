@@ -406,7 +406,11 @@ def test_the_terraform_command_parses_as_a_terraform_deploy(cbd, faked_deploy, r
     assert faked_deploy["staged"] == [
         (
             TF_ROLE_ARN,
-            [f"PermissionsBoundaryArn={BOUNDARY_ARN}", "MalwareScanning=CREATE_PLAN"],
+            [
+                f"PermissionsBoundaryArn={BOUNDARY_ARN}",
+                "MalwareScanning=CREATE_PLAN",
+                "EnableMCP=true",
+            ],
         )
     ]
 
@@ -1503,7 +1507,7 @@ def test_main_runs_the_reaper_first_and_hands_its_runs_to_the_stack_sweep(
         "cleanup_stale_idp_stacks"
     )
     (_, _, kwargs) = calls[names.index("cleanup_stale_idp_stacks")]
-    assert kwargs == {"terraform_runs": {"idp-0101-000000"}}
+    assert kwargs == {"terraform_runs": {"idp-0101-000000"}, "abandoned": []}
 
 
 def test_a_failed_state_listing_reaches_the_stack_sweep_as_unknown(cbd, monkeypatch):
@@ -1527,7 +1531,7 @@ def test_a_failed_state_listing_reaches_the_stack_sweep_as_unknown(cbd, monkeypa
     monkeypatch.setattr(cbd, "publish_artifacts", _stop)
     with pytest.raises(_StopAfterTheSweeps):
         cbd.main()
-    assert seen == {"terraform_runs": None}
+    assert seen == {"terraform_runs": None, "abandoned": []}
 
 
 def test_a_dead_run_is_destroyed_from_its_saved_configuration(cbd, monkeypatch):
@@ -1779,3 +1783,19 @@ def test_the_options_write_is_fatal_on_a_terraform_schedule(itd, monkeypatch, tm
     with pytest.raises(SystemExit) as excinfo:
         itd.main()
     assert excinfo.value.code == 1
+
+
+def test_retained_iam_roles_of_the_run_are_swept_and_no_others(cbd):
+    retained = {
+        "other": [
+            {
+                "type": "aws_iam_role",
+                "physical_id": "idp-1113-051052-DOCUMENTKB-StartIngestionJob-891d5ee",
+            },
+            {"type": "aws_iam_role", "physical_id": "idp-9999-000000-SomeoneElse"},
+            {"type": "aws_kms_alias", "physical_id": "idp-1113-051052-alias"},
+        ]
+    }
+    assert cbd.retained_iam_roles("idp-1113-051052", retained) == [
+        "idp-1113-051052-DOCUMENTKB-StartIngestionJob-891d5ee"
+    ]

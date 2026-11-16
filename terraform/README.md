@@ -411,6 +411,16 @@ reason. `STABLE_CUSTOM_OUTPUTS` and `PASS_THROUGH_ATTRS` are described under
   resource rewrites at deploy time. An entry naming a resource the standard template
   no longer has is reported, and `tests/test_upgrade_safety.py` fails on it, so an
   override cannot outlive what it described.
+- **A hand mapper's `ignore_changes`** (`SpecMapper.ignore_changes` in
+  `aws_mappers.py`, which the pool user's mapper in `aws_mappers_storage.py` also
+  subclasses), for a property the service cannot change after creation.
+  `tests/test_upgrade_safety.py` pins the set and scans the generated HCL of the
+  standard template, so an `ignore_changes` that no declaration accounts for fails. Today: a Cognito user pool's
+  `username_configuration`, which Cognito fixes at creation and CloudFormation never
+  updates, and a pool user's attributes, delivery mediums and message action, which are
+  create-only. The second differs from CloudFormation in one case: CloudFormation
+  replaces a user whose attributes change, Terraform leaves it. Both let an existing
+  pool be adopted with an `import {}` block instead of being replaced.
 - **`TERRAFORM_DIRECTORY_READERS`**, keyed by function logical ID. These functions walk
   the stack tree at run time through CloudFormation; today that is
   `DataMartRollupFunction` alone. In the root module each gets
@@ -567,28 +577,93 @@ things, and none subsumes another:
 source templates, which carry the review's `# checkov:skip` comments, over the same
 templates SAM-expanded, and over the module generated offline from the standard
 template. Each failed Terraform check is reduced to (resource identity, check id),
-the identity coming from the manifest's `resources`, and compared only for checks
-`checkov` implements for both frameworks. A finding the CloudFormation side passes
-(softer), one on a resource the translator adds, or one with no counterpart fails
-the gate unless `scripts/terraform_scan_baseline.json` has an entry for that check
-on that resource with its reason. Findings on conditional resources the
-CloudFormation scan skips (it evaluates conditions at the parameter defaults) are
-counted, and the count is pinned. An entry that matches nothing fails.
+the identity coming from the manifest's `resources`.
 
-Measured on 2026-11-07 with `checkov` 3.4.0 on the standard template:
+A Terraform check is compared with its CloudFormation counterpart: the check with
+the same id, or else the one CloudFormation check whose policy text is identical.
+`checkov` numbers some rules separately per framework, so "IAM policies does not
+allow write access without constraints" is `CKV_AWS_111` for CloudFormation and
+`CKV_AWS_290` for Terraform, and the data-exfiltration rule is `CKV_AWS_108` and
+`CKV_AWS_288`. The counterparts are derived from `checkov --list` on every run, so
+a renumbered rule needs no edit here.
+
+Each failed Terraform check then falls into one of these classes, and two files
+hold what the gate accepts:
+
+- **Compared.** A finding the CloudFormation side passes (softer), one on a
+  resource the translator adds, or one with no CloudFormation result fails the gate
+  unless `scripts/terraform_scan_baseline.json` has an entry for that check on that
+  resource with its reason. Findings on conditional resources the CloudFormation
+  scan skips (it evaluates conditions at the parameter defaults) are counted, and
+  the count is pinned as `notEvaluatedCount`. An entry that matches nothing fails.
+- **Terraform-only.** A check with no CloudFormation counterpart has nothing to be
+  compared with, so its findings are ratcheted instead, in
+  `scripts/terraform_scan_tf_only_baseline.json`: one entry per check id with one
+  reason, and a pinned count per Terraform resource type. The reason says what is
+  accepted and why, which CloudFormation-side setting covers it, or that the finding
+  is a known gap and where the fix belongs. A check id with no entry fails the gate,
+  and so does a count above its pin. A count below its pin fails as stale, and the
+  message gives the number to lower it to.
+
+To update either baseline, run `make terraform-scan-diff`, read each `FAIL` line,
+and edit the file by hand; the gate writes neither. A stale entry or count is
+lowered or removed. A new compared finding gets an entry with its reason, and a new
+Terraform-only check gets an entry with a reason and the counts the failure message
+prints. A raised count on an existing Terraform-only check needs its reason checked
+against the new resource. Both files record the `checkov` version they were measured
+with, and a version bump fails the gate until both are re-measured.
+
+SRT, the repository's security scan, does not scan the generated module. The module
+is never committed: this gate writes it to a temporary directory, and
+`idp-cli publish --terraform` to the gitignored `.aws-sam/terraform`. In CI, SRT runs
+on a fresh checkout with no build stage before it, so neither exists there (a local
+`make srt-scan` can read a `.aws-sam` tree left by a build, and warns when one is
+present). `checkov` covers the module, through this gate.
+
+Measured on 2026-11-11 with `checkov` 3.4.0 on the standard template:
 
 | Class of failed Terraform check | Findings |
 |---|---|
-| the CloudFormation side fails or skips the same check on the same resource | 449 |
-| softer than CloudFormation | 0 |
-| on the custom-resource bridge the translator adds | 28 (7 checks, on each of 4 bridges) |
+| the CloudFormation side fails or skips the same check, or its counterpart, on the same resource | 453 |
+| softer than CloudFormation (an explained entry, below) | 1 |
+| on the custom-resource bridge the translator adds | 20 (5 checks, on each of 4 bridges) |
 | no counterpart | 0 |
-| on a conditional resource the CloudFormation scan skipped | 25 |
-| on a check only the Terraform framework has (not compared) | 381 |
+| on a conditional resource the CloudFormation scan skipped | 26 |
+| on a check with no CloudFormation counterpart (ratcheted, 14 checks) | 358 |
 
-The 28 bridge findings are the baseline's entries. Two of them are gaps rather than
-decisions, and the entries say so: the bridge's log group is not encrypted with
-the deployment's customer-managed key, and its bucket has no access logging.
+The custom-resource bridge's log group and its bucket are encrypted with the key the
+template's own log groups use (the bucket SSE-KMS with an S3 bucket key; without a
+key it stays SSE-S3), and its bucket sends server access logs to the template's
+logging bucket, under `cfn-bridge-logs/<stack_name>/`. S3 uses the key with the
+caller's own permissions, so the bridge role, and the one function that reads the
+resource directory, may use it through S3; the principal running `terraform apply`
+needs `kms:GenerateDataKey` and `kms:Decrypt` on it, because it writes the label
+stack's template into the bucket and CloudFormation reads that template with the
+same principal's credentials. Nested templates have no logging
+bucket of their own, so the root passes both down to every module through two
+variables the translator adds (`cfn_bridge_kms_key_arn` and
+`cfn_bridge_access_log_bucket`). At the root the stack's key waits on
+`IsStacknameLengthOK`, a custom resource the bridge runs, which would be a cycle; the
+translator leaves that one `DependsOn` out of the key, because the root module's
+`stack_name` validation refuses the same names at plan, before anything is created,
+and says so in the translation report. A key that waits on any other custom resource
+is not used. The bridge's remaining baselined checks are on its Lambda function:
+`CKV_AWS_115` (no reserved concurrency), `CKV_AWS_116` (no dead-letter queue, as
+Terraform invokes it synchronously), `CKV_AWS_117` (not in a VPC), `CKV_AWS_173`
+(its environment is not encrypted with a customer key; it holds only its bucket's
+name), and its bucket's `CKV_AWS_21` (no versioning, as every object is regenerated
+or consumed once). The baseline gives each reason in full.
+
+The one softer entry is `CKV_AWS_290` on `PATTERNSTACK/BDAOCRProjectFunctionRole`.
+It is not a translation difference: checkov evaluates the CloudFormation policy's
+`!If [DeployInVPC, ...]` at its default and drops the statement, while the Terraform
+side holds the same statement in a policy whose `count` checkov does not evaluate.
+
+Each remaining Terraform-only check is accepted rather than a known gap, and its
+entry says why per resource: Lambda tracing is left optional on purpose (the
+`EnableXRayTracing` parameter governs the functions that opt in), and each IAM
+statement with `Resource: "*"` that checkov calls restrictable carries a recorded
+reason on the CloudFormation side, which the entry cites.
 
 ### Replay over past releases
 

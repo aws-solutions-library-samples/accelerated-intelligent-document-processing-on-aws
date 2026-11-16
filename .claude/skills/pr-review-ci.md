@@ -123,6 +123,21 @@ So do not plan around fetching or running anything. If a judgement needs
 information that is not in the worktree or the four input files, say in the finding
 what you could not check.
 
+Reads outside the worktree are refused, and the worktree's own agent configuration
+(`.claude/` apart from the pinned skills, `CLAUDE.local.md`, `AGENTS.md`,
+`.mcp.json`) has been removed from it, so changes to those files are read in the
+diff. No project instructions load by themselves; read `CLAUDE.md` for the
+conventions that bear on the diff.
+
+### 7. Some text withholds the whole review
+
+Before it is posted, the review is checked, and one that contains a credential or
+token (including any value of the job's own credential variables), a GitHub token,
+an AWS secret-key shape, an internal hostname or identifier, or image or
+embedded-resource markup is replaced by a short notice. Refer to such things by
+file and line and describe them instead of reproducing them, including when you
+quote a diff that contains them.
+
 ## Bounds worth stating in the review itself
 
 An unattended review is read by someone who was not watching it run, so be

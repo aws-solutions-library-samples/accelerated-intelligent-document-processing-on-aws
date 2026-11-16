@@ -8,7 +8,7 @@ import json
 import math
 import re
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, TypeGuard
 
 from ux_runner import section, story_verdict
@@ -24,14 +24,84 @@ COMPLETION_GOOD = 3
 FIXED_NIGHTS = 2
 DIGEST_MAX_BYTES = 512 * 1024
 SLACK_SUMMARY_CHARS = 2000
-SLACK_STATUS_PREFIX = "🧭 UX STORIES · "
-SLACK_STATUS_LABELS = {
-    "regressions": "❌ REGRESSIONS",
-    "degraded": "⚠️ DEGRADED",
-    "no_run": "⏭️ NOT RUN",
-    "clean": "✅ CLEAN",
+SLACK_INTRO = (
+    "Each story is a first-time user doing one task from the docs alone, "
+    "in a real browser."
+)
+#: Each verdict's icon on its Slack line: passed, refused as the docs say, missed
+#: the docs' expectation, did not finish, the harness failed, never started.
+SLACK_ICONS: dict[str, str] = {
+    "done": "✅",
+    "refused_as_expected": "🚫",
+    "not_refused": "❌",
+    "stuck": "❌",
+    "offered": "❌",
+    "out_of_steps": "⚠️",
+    "gave_up": "⚠️",
+    "unclear": "⚠️",
+    "error": "🛠️",
+    "not_run": "⏭️",
+}
+#: What a flow that did not pass did, in a few words, by verdict.
+SLACK_WHY: dict[str, str] = {
+    "not_refused": "not refused, did what the docs say this role cannot",
+    "stuck": "got stuck",
+    "offered": "offered a control the docs say this role lacks",
+    "out_of_steps": "ran out of steps",
+    "gave_up": "gave up",
+    "unclear": "ended without a clear result",
+    "error": "harness error",
+    "not_run": "not run",
+}
+#: The same, where the verdict's sub-kind says more.
+SLACK_WHY_BY_CAUSE: dict[tuple[str, str], str] = {
+    ("stuck", "no_route"): "got stuck, found no way to do it",
+    ("stuck", "wrong_outcome"): "got stuck, the result was wrong",
+    ("stuck", "refused"): "got stuck, refused although allowed",
+    ("stuck", "precondition"): "got stuck, something it needed was missing",
+    ("gave_up", "budget_exhausted"): "gave up, used all its steps",
+    ("gave_up", "refusal_limit"): "gave up, too many actions refused",
+    ("gave_up", "max_turns"): "gave up, hit the turn limit",
+    ("gave_up", "dollar_cap"): "gave up, hit its dollar cap",
+    ("gave_up", "wall_clock"): "gave up, ran out of time",
+    ("not_run", "persona"): "not run, no account for this role",
+    ("not_run", "budget"): "not run, the night's budget ran out",
+    ("not_run", "time"): "not run, the night ran out of time",
+    ("not_run", "sign_in_refused"): "not run, its sign-in was refused",
+    ("not_run", "since"): "not run, the stack is older than the story",
+    ("not_run", "precondition"): "not run, the data it needs is missing",
+    ("error", "launch"): "harness error, the browser did not start",
+    ("error", "selftest"): "harness error, the browser self-test failed",
+    ("error", "sign_in"): "harness error, signing in failed",
+    ("error", "viewport"): "harness error, the browser window was the wrong size",
+    ("error", "recorder"): "harness error, the screen recorder failed",
+    ("error", "session"): "harness error, the session did not start",
+    ("error", "audit"): "harness error, the browser audit found violations",
+    ("error", "is_error"): "harness error, the model session ended in an error",
+    ("error", "crash"): "harness error, the model session crashed",
+    ("error", "journal"): "harness error, no usable journal",
+    ("error", "signed_out"): "harness error, signed out mid-run",
+    ("error", "relay"): "harness error, the browser relay died",
+    ("error", "hang"): "harness error, the session hung",
+}
+#: Why a night is not compared, by the review stack's state.
+SLACK_STACK_REASONS: dict[str, str] = {
+    "not_requested": "the review stack was not updated, as this is not a scheduled "
+    "develop run",
+    "not_deployed": "the review stack is not deployed",
+    "busy": "the review stack was busy with another operation",
+    "boundary": "the review stack's permissions boundary is not its own",
+    "failed": "the review stack's update failed",
+    "running": "the review stack was still updating",
+    "not_started": "the review stack's update never started",
+    "not_reported": "the deploy did not report the review stack's update",
+    "unrecognised": "the review stack's update could not be confirmed",
+    "missing": "the review stack's update could not be confirmed",
 }
 STACK_HEADER_PREFIX = "🌙 UX review stack ("
+#: The line the build prints after its consolidated summary and before the
+#: Bedrock narrative, which is model output and is never read for the state.
+NARRATIVE_MARKER = "🤖 Generating deployment summary with Bedrock..."
 STACK_STATES: tuple[str, ...] = (
     "updated",
     "up_to_date",
@@ -131,6 +201,10 @@ _NAME_CHARS = 120
 _PIN_CHARS = 60
 _URL_CHARS = 500
 _SLACK_LISTED = 10
+_SLACK_TITLE_CHARS = 80
+_SLACK_TEXT_CHARS = frozenset(" ',;:()?-’")
+_SLACK_PASSES = ("done", "refused_as_expected")
+_STACK_NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,127}")
 _CLEAN_AUDITS = frozenset({"clean", "not_run"})
 _AUDIT_STATES = ("clean", "violations", "unavailable", "not_run")
 
@@ -349,24 +423,32 @@ _ROW_PATTERNS = tuple(
 
 
 def classify_stack_state(summary_text: str | None) -> str:
-    """The review stack's state from ``deployment_summary.txt``'s row under its header.
+    """The review stack's state from the row under its header in the build's summary.
 
-    ``missing`` for no text or no header, ``unrecognised`` for a row that is not
-    exactly one of ROW_TEMPLATES with its slots in their fixed shapes.
+    The text is the integration build's log, or its summary. Everything from the
+    last NARRATIVE_MARKER line on is the Bedrock narrative and is left out, and of
+    what remains the header read is the last: the build prints the consolidated
+    summary just before that marker, so a header earlier in the text is not
+    tonight's final word. Text with no marker is read whole. ``missing`` for no
+    text or no header, ``unrecognised`` for a row that is not exactly one of
+    ROW_TEMPLATES with its slots in their fixed shapes.
     """
     if not isinstance(summary_text, str) or not summary_text:
         return "missing"
     lines = summary_text.split("\n")
-    header = next(
-        (
-            index
-            for index, line in enumerate(lines)
-            if line.lstrip().startswith(STACK_HEADER_PREFIX)
-        ),
-        None,
-    )
-    if header is None:
+    markers = [
+        index for index, line in enumerate(lines) if line.strip() == NARRATIVE_MARKER
+    ]
+    if markers:
+        lines = lines[: markers[-1]]
+    headers = [
+        index
+        for index, line in enumerate(lines)
+        if line.lstrip().startswith(STACK_HEADER_PREFIX)
+    ]
+    if not headers:
         return "missing"
+    header = headers[-1]
     row = next((line.strip() for line in lines[header + 1 :] if line.strip()), None)
     if row is None:
         return "unrecognised"
@@ -528,7 +610,7 @@ def _unconfirmed_keys(digest: Mapping[str, Any]) -> set[str]:
     """The keys of the digest's flows that stand unconfirmed tonight."""
     return {
         item["key"]
-        for item in digest.get("flows", [])
+        for item in _items(digest, "flows")
         if isinstance(item, Mapping)
         and isinstance(item.get("key"), str)
         and item.get("state") == "unconfirmed"
@@ -1122,19 +1204,308 @@ def compose_digest_md(
     return "\n".join(lines) + "\n"
 
 
-def _status(digest: Mapping[str, Any]) -> str:
-    flows = [item for item in digest.get("flows", []) if isinstance(item, Mapping)]
-    if digest.get("regressions"):
-        return "regressions"
-    if all(item.get("verdict") == "not_run" for item in flows):
-        return "no_run"
-    if (
-        digest.get("comparable") is not True
-        or digest.get("audits_clean") is not True
-        or any(item.get("verdict") == "error" for item in flows)
+@dataclass(frozen=True)
+class SlackFacts:
+    """What the Slack summary reads beside digest.json, none of it model output.
+
+    ``results`` and ``run`` are the merged night's results.json and
+    story-run.json, ``history`` the earlier nights it was compared with, None
+    when they were not read, ``titles`` each story id's title in the catalogue,
+    and ``cap_usd`` the night's dollar cap.
+    """
+
+    results: Mapping[str, Any] | None = None
+    run: Mapping[str, Any] | None = None
+    history: History | None = None
+    titles: Mapping[str, str] = field(default_factory=dict)
+    cap_usd: float | None = None
+
+
+def _items(digest: Mapping[str, Any], name: str) -> list[Any]:
+    value = digest.get(name)
+    return value if isinstance(value, list) else []
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
+def _slack_text(text: object, limit: int) -> str:
+    """``text`` as words Slack shows as typed: letters, digits and a little punctuation.
+
+    Every other character is a space, so nothing in it can mention, link or
+    format.
+    """
+    if not isinstance(text, str):
+        return ""
+    kept = "".join(
+        char if char.isalnum() or char in _SLACK_TEXT_CHARS else " "
+        for char in section.flatten(text)
+    )
+    return " ".join(kept.split())[:limit].strip()
+
+
+def _who(key: str, titles: Mapping[str, str]) -> str:
+    """A flow as its story's catalogue title and its persona's id in words."""
+    story, _, persona = key.partition("@")
+    title = _slack_text(titles.get(story), _SLACK_TITLE_CHARS)
+    if not title:
+        title = story.replace("-", " ").capitalize()
+    return f"{title} ({persona.replace('-', ' ')})"
+
+
+def _shown_flows(
+    results: Mapping[str, Any] | None,
+) -> dict[str, story_verdict.FlowResult]:
+    """Each flow key's shown attempt in ``results``; none when it cannot be read."""
+    if results is None:
+        return {}
+    try:
+        flows = story_verdict.flow_confirmations(_attempts(results))
+    except (story_verdict.RunRecordError, ValueError):
+        return {}
+    return {key: shown for key, _, shown in flows}
+
+
+def _why(verdict: str, shown: story_verdict.FlowResult | None) -> str:
+    cause = shown.sub_kind if shown is not None and shown.verdict == verdict else None
+    return SLACK_WHY_BY_CAUSE.get(
+        (verdict, cause or ""), SLACK_WHY.get(verdict, verdict.replace("_", " "))
+    )
+
+
+def _regression_note(item: Mapping[str, Any], confirmed: bool) -> str:
+    good, counted = item["good"], item["counted"]
+    seen = (
+        "its last compared night"
+        if counted == 1
+        else f"{good} of its last {counted} compared nights"
+    )
+    if confirmed:
+        return f" (a regression: good on {seen})"
+    return f" (possibly a regression, its re-run did not fit: good on {seen})"
+
+
+_SLACK_CONFIRMATIONS = {
+    "confirmed": " (confirmed by a re-run)",
+    "unconfirmed": " (unconfirmed)",
+    "mixed": " (a re-run disagreed)",
+}
+
+
+def _failure_lines(
+    flows: Sequence[NightFlow],
+    regressed: Mapping[str, Mapping[str, Any]],
+    unconfirmed: Collection[str],
+    shown: Mapping[str, story_verdict.FlowResult],
+    titles: Mapping[str, str],
+) -> list[str]:
+    """Confirmed regressions, then the other flows that did not pass, worst first."""
+    by_key = {flow.key: flow for flow in flows}
+    confirmed_lines: list[str] = []
+    other_lines: list[str] = []
+    for key, item in regressed.items():
+        flow = by_key.get(key)
+        verdict = flow.verdict if flow is not None else item["verdict"]
+        confirmed = key not in unconfirmed
+        line = (
+            f"{SLACK_ICONS[verdict]} {_who(key, titles)}: "
+            f"{_why(verdict, shown.get(key))}{_regression_note(item, confirmed)}"
+        )
+        (confirmed_lines if confirmed else other_lines).append(line)
+    failing = sorted(
+        (
+            flow
+            for flow in flows
+            if flow.key not in regressed
+            and flow.verdict not in story_verdict.GOOD_VERDICTS
+        ),
+        key=lambda flow: (story_verdict.VERDICT_ORDER.index(flow.verdict), flow.key),
+    )
+    other_lines += [
+        f"{SLACK_ICONS[flow.verdict]} {_who(flow.key, titles)}: "
+        f"{_why(flow.verdict, shown.get(flow.key))}"
+        f"{_SLACK_CONFIRMATIONS.get(flow.state, '')}"
+        for flow in failing
+    ]
+    return confirmed_lines + other_lines
+
+
+def _pass_lines(
+    flows: Sequence[NightFlow],
+    shown: Mapping[str, story_verdict.FlowResult],
+    titles: Mapping[str, str],
+) -> list[str]:
+    """The flows that passed: done with its steps, then refused as the docs say."""
+    lines: list[str] = []
+    unit = " steps"
+    for verdict in _SLACK_PASSES:
+        for flow in flows:
+            if flow.verdict != verdict:
+                continue
+            who = _who(flow.key, titles)
+            if verdict == "refused_as_expected":
+                lines.append(f"{SLACK_ICONS[verdict]} {who}: refused, as the docs say")
+                continue
+            result = shown.get(flow.key)
+            steps = ""
+            if (
+                result is not None
+                and _is_int(result.actions_used)
+                and _is_int(result.budget)
+            ):
+                steps = f", {result.actions_used} of {result.budget}{unit}"
+                unit = ""
+            lines.append(f"{SLACK_ICONS[verdict]} {who}{steps}")
+    return lines
+
+
+def _uncompared_nights(digest: Mapping[str, Any], history: History | None) -> int:
+    """How many nights in a row, tonight and back, could not be compared.
+
+    A night counts as compared when it was comparable and its audits clean, and
+    an earlier night whose digest could not be read, a gap, counts as one that
+    was not. Without the history, only tonight is known.
+    """
+    if digest.get("comparable") is True and digest.get("audits_clean") is True:
+        return 0
+    if history is None:
+        return 1
+    tonight = digest.get("pipeline_id")
+    earlier = sorted(
+        [
+            (night.pipeline_id, night.comparable and night.audits_clean)
+            for night in history.nights
+        ]
+        + [(gap, False) for gap in history.gaps if _is_int(gap)],
+        reverse=True,
+    )
+    count = 1
+    for pipeline_id, compared in earlier:
+        if _is_int(tonight) and pipeline_id >= tonight:
+            continue
+        if compared:
+            break
+        count += 1
+    return count
+
+
+def _slack_status(
+    digest: Mapping[str, Any],
+    flows: Sequence[NightFlow],
+    confirmed: int,
+    uncompared: int,
+) -> str:
+    """The night in a few words, from its stories.
+
+    A night that could not be compared changes it only once BASELINE_NIGHTS
+    nights in a row, tonight among them, could not be, because a run that long
+    is one in which no regression can be flagged.
+    """
+    if digest.get("shards_ran") == 0 or all(
+        flow.verdict == "not_run" for flow in flows
     ):
-        return "degraded"
-    return "clean"
+        return "⏭️ not run"
+    if confirmed:
+        return f"❌ {_plural(confirmed, 'regression')}"
+    if digest.get("audits_clean") is not True or any(
+        flow.verdict == "error" for flow in flows
+    ):
+        return "⚠️ harness problem"
+    passed = sum(1 for flow in flows if flow.verdict in story_verdict.GOOD_VERDICTS)
+    tally = f"{passed} of {len(flows)} passed"
+    if uncompared >= BASELINE_NIGHTS:
+        return f"⚠️ {tally}, not compared for {uncompared} nights"
+    return f"{'✅' if passed == len(flows) else '⚠️'} {tally}"
+
+
+def _compared_nights(history: History, pipeline_id: object) -> int:
+    return sum(
+        1
+        for night in history.nights
+        if night.comparable
+        and night.audits_clean
+        and (not _is_int(pipeline_id) or night.pipeline_id < pipeline_id)
+    )
+
+
+def _comparison_line(
+    digest: Mapping[str, Any], history: History | None, confirmed: int, unsure: int
+) -> str:
+    """Whether tonight was compared with earlier nights, and if not, why not."""
+    reasons = []
+    state = digest.get("stack_state")
+    state = state if isinstance(state, str) else "unrecognised"
+    if state not in COMPARABLE_STACK_STATES:
+        reasons.append(
+            SLACK_STACK_REASONS.get(state, SLACK_STACK_REASONS["unrecognised"])
+        )
+    elif digest.get("stack_changed_mid_run") is True:
+        reasons.append("the review stack changed during the run")
+    elif digest.get("comparable") is not True:
+        reasons.append(SLACK_STACK_REASONS["unrecognised"])
+    if digest.get("audits_clean") is not True:
+        reasons.append("a browser audit was not clean")
+    if reasons:
+        return "Not compared with earlier nights: " + "; ".join(reasons) + "."
+    if history is None:
+        return "Not compared with earlier nights: they could not be read."
+    nights = _compared_nights(history, digest.get("pipeline_id"))
+    gaps = sum(1 for gap in _items(digest, "gaps") if _is_int(gap))
+    unread = f" ({gaps} could not be read)" if gaps else ""
+    if not nights:
+        return f"Not compared: no earlier night was comparable{unread}."
+    compared = f"Compared with {_plural(nights, 'earlier night')}{unread}"
+    if nights < BASELINE_NIGHTS:
+        return (
+            f"{compared}: too few yet to flag a regression ({BASELINE_NIGHTS} needed)."
+        )
+    found = []
+    if confirmed:
+        found.append(_plural(confirmed, "regression"))
+    if unsure:
+        found.append(
+            f"{_plural(unsure, 'possible regression')} whose re-run did not fit"
+        )
+    return f"{compared}: {', '.join(found) or 'no regressions'}."
+
+
+def _slack_head(sha8: str, run: Mapping[str, Any] | None) -> str:
+    head = f"develop {sha8 or 'unknown'}"
+    stack = run.get("stack") if isinstance(run, Mapping) else None
+    if not isinstance(stack, Mapping):
+        return head
+    name = stack.get("name")
+    if not isinstance(name, str) or not _STACK_NAME_RE.fullmatch(name):
+        return head
+    version = section.StackFacts(
+        name=name, region="", version=stack.get("version")
+    ).shown_version
+    return f"{head} · {name}" + (f" v{version}" if version else "")
+
+
+def _fit(
+    head: Sequence[str],
+    failing: Sequence[str],
+    passing: Sequence[str],
+    foot: Sequence[str],
+    limit: int,
+) -> str:
+    """The summary within ``limit``: passes give way first, so a failure stays listed."""
+    for shown in range(len(passing), -1, -1):
+        more = (
+            [] if shown == len(passing) else [f"and {len(passing) - shown} more passed"]
+        )
+        text = "\n".join([*head, *failing, *passing[:shown], *more, *foot])
+        if len(text) <= limit:
+            return text
+    passed = [f"and {len(passing)} more passed"] if passing else []
+    for shown in range(len(failing) - 1, -1, -1):
+        more = [f"and {len(failing) - shown} more did not pass"]
+        text = "\n".join([*head, *failing[:shown], *more, *passed, *foot])
+        if len(text) <= limit:
+            return text
+    return _cut([*head, *foot], limit)
 
 
 def _cut(lines: Sequence[str], limit: int) -> str:
@@ -1156,71 +1527,96 @@ def _some(items: Sequence[str], *, separator: str = "; ") -> str:
     return shown
 
 
-def slack_payload(digest: Mapping[str, Any], *, job_url: str) -> dict[str, str]:
-    """The Slack workflow's four variables, in plain text built from closed values only."""
+def slack_payload(
+    digest: Mapping[str, Any], *, job_url: str, facts: SlackFacts | None = None
+) -> dict[str, str]:
+    """The Slack workflow's four variables, in plain text built from closed values only.
+
+    ``status`` is the night's outcome from its stories, and says so once no night
+    has been compared for BASELINE_NIGHTS nights in a row. ``summary`` lists every
+    flow, under its catalogue title and persona, confirmed regressions first,
+    then the other flows that did not pass, each saying why, then the passes,
+    which give way to "and N more passed" when the summary would pass
+    SLACK_SUMMARY_CHARS. It closes with whether the night was compared and
+    with what, its friction and its spend. Titles are the catalogue's, reduced
+    to letters, digits and plain punctuation, and everything else is a closed
+    value, a count or fixed text, so nothing in it can mention a channel or
+    carry a link but ``job_url``, which is the job's own.
+    """
+    facts = facts or SlackFacts()
     develop = digest.get("develop_sha")
     sha8 = (
         develop[:8] if isinstance(develop, str) and _SHA_RE.fullmatch(develop) else ""
     )
-    flows = [item for item in digest.get("flows", []) if isinstance(item, Mapping)]
-    counts: dict[str, int] = {}
-    for item in flows:
-        verdict = item.get("verdict")
-        if verdict in story_verdict.VERDICT_ORDER:
-            counts[verdict] = counts.get(verdict, 0) + 1
-    tally = ", ".join(
-        f"{verdict} {counts[verdict]}"
-        for verdict in story_verdict.VERDICT_ORDER
-        if verdict in counts
-    )
-    lines = [
-        f"First-time-user stories on develop {sha8 or 'unknown'}: "
-        f"{len(flows)} flow(s)" + (f"; {tally}" if tally else "") + "."
+    flows = [
+        flow
+        for item in _items(digest, "flows")
+        if (flow := _night_flow(item)) is not None
     ]
-    unconfirmed = _unconfirmed_keys(digest)
-    regression_lines = [
-        f"{item['key']} ({item['kind']}, {item['verdict']}"
-        + (", unconfirmed" if item["key"] in unconfirmed else "")
-        + f", good {item['good']} of {item['counted']})"
-        for item in digest.get("regressions", [])
+    regressed = {
+        item["key"]: item
+        for item in _items(digest, "regressions")
         if _regression_shape(item)
+    }
+    unconfirmed = _unconfirmed_keys(digest)
+    confirmed = sum(1 for key in regressed if key not in unconfirmed)
+    url = section.flatten(job_url) if isinstance(job_url, str) else ""
+    payload = {
+        "status": _slack_status(
+            digest, flows, confirmed, _uncompared_nights(digest, facts.history)
+        ),
+        "commit": sha8,
+        "job_url": url[:_URL_CHARS],
+    }
+    head = _slack_head(sha8, facts.run)
+    if digest.get("shards_ran") == 0:
+        payload["summary"] = (
+            f"{head}\nNo shard ran tonight, so no story was tried and nothing was "
+            "compared."
+        )
+        return payload
+    shown = _shown_flows(facts.results)
+    titles = facts.titles if isinstance(facts.titles, Mapping) else {}
+    foot = [
+        "",
+        _comparison_line(digest, facts.history, confirmed, len(regressed) - confirmed),
     ]
-    if regression_lines:
-        lines.append("Regressions: " + _some(regression_lines) + ".")
-    fixed_keys = [
-        key
-        for key in digest.get("fixed", [])
+    fixed_flows = [
+        _who(key, titles)
+        for key in _items(digest, "fixed")
         if isinstance(key, str) and _KEY_RE.fullmatch(key)
     ]
-    if fixed_keys:
-        lines.append("Fixed: " + _some(fixed_keys, separator=", ") + ".")
-    state = digest.get("stack_state")
-    if digest.get("shards_ran") == 0:
-        lines.append("No shard ran tonight; the stack's state is not known.")
-    else:
-        lines.append(
-            f"Stack {state if state in STACK_STATES else 'unrecognised'}; "
-            + ("comparable" if digest.get("comparable") is True else "not comparable")
-            + "; audits "
-            + ("clean" if digest.get("audits_clean") is True else "not clean")
+    if fixed_flows:
+        foot.append(
+            "Fixed after an earlier regression: "
+            + _some(fixed_flows, separator=", ")
             + "."
         )
     injections = digest.get("injections")
     if _is_int(injections) and injections > 0:
-        lines.append(f"Injection attempts noted: {injections}.")
+        foot.append(f"Injection attempts noted: {injections}.")
     reruns = digest.get("reruns_not_run")
     if _is_int(reruns) and reruns > 0:
-        lines.append(f"Confirming re-runs not run: {reruns}.")
-    gaps = [gap for gap in digest.get("gaps", []) if _is_int(gap)]
-    if gaps:
-        lines.append(f"History gaps: {len(gaps)} night(s).")
+        foot.append(f"Confirming re-runs that did not fit: {reruns}.")
+    if shown:
+        hesitations = sum(len(result.notes.confusion) for result in shown.values())
+        dead_ends = sum(len(result.notes.dead_end) for result in shown.values())
+        foot.append(
+            f"Friction: {_plural(hesitations, 'hesitation')}, "
+            f"{_plural(dead_ends, 'dead end')}."
+        )
     spend = digest.get("spend_usd")
     if _is_number(spend):
-        lines.append(f"Spend: ${float(spend):.2f}.")
-    url = section.flatten(job_url) if isinstance(job_url, str) else ""
-    return {
-        "status": SLACK_STATUS_PREFIX + SLACK_STATUS_LABELS[_status(digest)],
-        "commit": sha8,
-        "job_url": url[:_URL_CHARS],
-        "summary": _cut(lines, SLACK_SUMMARY_CHARS),
-    }
+        cap = facts.cap_usd
+        foot.append(
+            f"Spend: ${float(spend):.2f}"
+            + (f" of ${float(cap):.2f}" if _is_number(cap) else "")
+        )
+    payload["summary"] = _fit(
+        [head, SLACK_INTRO, ""],
+        _failure_lines(flows, regressed, unconfirmed, shown, titles),
+        _pass_lines(flows, shown, titles),
+        foot,
+        SLACK_SUMMARY_CHARS,
+    )
+    return payload

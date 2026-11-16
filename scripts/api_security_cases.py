@@ -62,6 +62,7 @@ SEC_DELETED = "SEC-2.5-DELETED-RESOURCE"
 SEC_INPUT = "SEC-3-INPUT-VALIDATION"
 SEC_TLS = "SEC-4-TLS"
 SEC_OBJREF = "SEC-2.1-CALLER-SUPPLIED-REF"
+SEC_CHAT_IDOR = "SEC-2.1-IDOR-CHAT-SESSION"
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +272,303 @@ def run_idor_suite(ctx, record, results, tokens, seed_fn=None, call_body=None):
         print(
             f"  User A getAgentJobStatus(own job) -> {st} "
             "(marker absent for OWNER too — seed keying mismatch, inconclusive)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 2.1 IDOR — User A's chat session is not reachable by User B, on either path
+# ---------------------------------------------------------------------------
+def run_chat_session_idor_suite(
+    ctx,
+    record,
+    results,
+    tokens,
+    seed_fn=None,
+    call_body=None,
+    stream_fn=None,
+    cleanup_fn=None,
+):
+    """User B cannot read, write into or delete User A's chat session.
+
+    Chat history is stored under the session id alone, so what keeps B out is the
+    owner the deployment records for the id. ``seed_fn(session_id, marker)`` seeds
+    a session OWNED BY User A (Admin): its owner row, A's session-list row and one
+    message carrying ``marker``. It returns a truthy value, or None when the
+    stack has no owner table (the suite SKIPs).
+
+    The cells, in order, because the order is the point:
+
+    1. B reads A's session — the marker must not appear.
+    2. B sends one message under A's session id — must be refused. That message
+       used to create B's own session row for the id, and that row was what the
+       history read accepted as ownership.
+    3. B reads A's session again — the marker must still not appear.
+    4. B deletes A's session — must be refused, and A's history must survive.
+    5. A reads its own session — the marker must appear (the control; without it
+       cells 1 and 3 are retracted as inconclusive).
+
+    Then, on the chat Function URL, through ``stream_fn(path, body, token)``
+    (``token=None`` sends the signed request with no ID token; returns
+    ``(status, body)``, or None when the stack has no streaming endpoint):
+
+    6. a request with no ID token — must be a 401;
+    7. B on A's session with A's email as ``callerSub`` in the body — must be a
+       403 with no marker in the body;
+    8. the same on ``/chat/document``.
+
+    Cell 2 starts a real agent turn on a deployment that does NOT refuse it, and
+    cell 6 does the same on one that does not require the token. That is the cost
+    of the cell being able to fail.
+    """
+    print("\n=== IDOR (User B cannot reach User A's chat session) ===")
+    a_tok = tokens.get("Admin")
+    b_tok = tokens.get("userB")
+    op_read, op_send, op_delete = (
+        "getChatMessages",
+        "sendAgentChatMessage",
+        ("deleteChatSession"),
+    )
+    if not a_tok or not b_tok or seed_fn is None or call_body is None:
+        record(
+            results,
+            op_read,
+            "chat-idor",
+            "SKIP",
+            False,
+            f"{SEC_CHAT_IDOR}: preconditions unavailable (two users + seed + "
+            "body-call) — skipped",
+            outcome="SKIP",
+        )
+        return
+
+    marker = f"CHAT-IDOR-MARKER-{_rand()}"
+    session_id = f"sectest-chat-idor-{_rand()}"
+    seeded = None
+    try:
+        seeded = seed_fn(session_id, marker)
+    except Exception as e:  # noqa: BLE001
+        print(f"  (seed error: {e})")
+    if not seeded:
+        record(
+            results,
+            op_read,
+            "chat-idor-seed",
+            "SKIP",
+            False,
+            f"{SEC_CHAT_IDOR}: could not seed A's session (owner table "
+            "unavailable) — skipped",
+            outcome="SKIP",
+        )
+        return
+
+    try:
+        _run_chat_session_rest_cells(
+            ctx,
+            record,
+            results,
+            a_tok,
+            b_tok,
+            session_id,
+            marker,
+            call_body,
+            op_read,
+            op_send,
+            op_delete,
+        )
+        _run_chat_session_stream_cells(
+            record, results, b_tok, session_id, marker, stream_fn, ctx
+        )
+    finally:
+        if cleanup_fn is not None:
+            try:
+                cleanup_fn(session_id)
+            except Exception as e:  # noqa: BLE001
+                print(f"  (cleanup error: {e})")
+
+
+def _run_chat_session_rest_cells(
+    ctx,
+    record,
+    results,
+    a_tok,
+    b_tok,
+    session_id,
+    marker,
+    call_body,
+    op_read,
+    op_send,
+    op_delete,
+):
+    api = ctx["api_base"]
+
+    def _marker_absent(op, principal, field, args):
+        st, body = call_body(api, field, args, b_tok)
+        why = _inconclusive_response(st, body, treat_5xx=False)
+        marker_seen = marker in (body or "")
+        record(
+            results,
+            op,
+            principal,
+            st,
+            (not why) and not marker_seen,
+            f"{SEC_CHAT_IDOR}: INCONCLUSIVE — {why}"
+            if why
+            else (
+                f"{SEC_CHAT_IDOR}: User B must not receive A's history; marker "
+                f"{'PRESENT' if marker_seen else 'absent'}; got {st}"
+            ),
+            outcome="ERROR" if why else None,
+        )
+        return why
+
+    if _marker_absent(
+        op_read, "userB(reads A's session)", op_read, {"sessionId": session_id}
+    ):
+        return
+
+    st, body = call_body(api, op_send, {"sessionId": session_id, "prompt": "hi"}, b_tok)
+    why = _inconclusive_response(st, body)
+    record(
+        results,
+        op_send,
+        "userB(sends into A's session)",
+        st,
+        (not why) and st in (401, 403),
+        f"{SEC_CHAT_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else (
+            f"{SEC_CHAT_IDOR}: a message from User B under A's session id must be "
+            f"refused; got {st}"
+        ),
+        outcome="ERROR" if why else None,
+    )
+
+    _marker_absent(
+        op_read,
+        "userB(reads A's session after sending)",
+        op_read,
+        {"sessionId": session_id},
+    )
+
+    st, body = call_body(api, op_delete, {"sessionId": session_id}, b_tok)
+    why = _inconclusive_response(st, body)
+    record(
+        results,
+        op_delete,
+        "userB(deletes A's session)",
+        st,
+        (not why) and st in (401, 403),
+        f"{SEC_CHAT_IDOR}: INCONCLUSIVE — {why}"
+        if why
+        else f"{SEC_CHAT_IDOR}: User B must not delete A's history; got {st}",
+        outcome="ERROR" if why else None,
+    )
+
+    st, body = call_body(api, op_read, {"sessionId": session_id}, a_tok)
+    if marker in (body or ""):
+        record(
+            results,
+            op_read,
+            "userA(reads own session)",
+            st,
+            True,
+            f"{SEC_CHAT_IDOR}: owner retains access (marker present); got {st}",
+        )
+        return
+    # Without the owner's read the earlier 'marker absent' results prove nothing,
+    # unless B's delete is what removed it — which is the failure, not a seed issue.
+    deleted_by_b = any(
+        r["op"] == op_delete
+        and r["principal"] == "userB(deletes A's session)"
+        and not r["passed"]
+        for r in results
+    )
+    if deleted_by_b:
+        record(
+            results,
+            op_read,
+            "userA(reads own session)",
+            st,
+            False,
+            f"{SEC_CHAT_IDOR}: A's history is gone after User B's delete; got {st}",
+        )
+        return
+    for row in results:
+        if row["op"] == op_read and row["principal"].startswith("userB(reads A's"):
+            row["passed"] = False
+            row["outcome"] = "SKIP"
+            row["detail"] = (
+                f"{SEC_CHAT_IDOR}: retracted — the owner could not read the seeded "
+                "session either, so 'no marker for User B' proves nothing"
+            )
+    record(
+        results,
+        op_read,
+        "chat-idor-inconclusive",
+        "SKIP",
+        False,
+        f"{SEC_CHAT_IDOR}: owner could not read the seeded session (got {st}) — "
+        "seed keying mismatch, inconclusive on this deployment",
+        outcome="SKIP",
+    )
+
+
+def _run_chat_session_stream_cells(
+    record, results, b_tok, session_id, marker, stream_fn, ctx
+):
+    owner_email = ctx.get("chat_idor_owner_email", "")
+    cells = [
+        (
+            "POST /chat/agent",
+            "no-id-token",
+            {"sessionId": f"sectest-chat-notoken-{_rand()}", "prompt": "hi"},
+            None,
+            (401,),
+        ),
+        (
+            "POST /chat/agent",
+            "userB(A's session, body callerSub=A)",
+            {"sessionId": session_id, "prompt": "hi", "callerSub": owner_email},
+            b_tok,
+            (403,),
+        ),
+        (
+            "POST /chat/document",
+            "userB(A's session)",
+            {"sessionId": session_id, "prompt": "hi", "s3Uri": "s3://x/y"},
+            b_tok,
+            (403,),
+        ),
+    ]
+    for route, principal, body, token, expected in cells:
+        response = stream_fn(route.split(" ", 1)[1], body, token) if stream_fn else None
+        if response is None:
+            record(
+                results,
+                route,
+                principal,
+                "SKIP",
+                False,
+                f"{SEC_CHAT_IDOR}: no streaming endpoint on this stack — skipped",
+                outcome="SKIP",
+            )
+            continue
+        st, text = response
+        why = _inconclusive_response(st, text)
+        marker_seen = marker in (text or "")
+        record(
+            results,
+            route,
+            principal,
+            st,
+            (not why) and st in expected and not marker_seen,
+            f"{SEC_CHAT_IDOR}: INCONCLUSIVE — {why}"
+            if why
+            else (
+                f"{SEC_CHAT_IDOR}: expected {expected[0]}; got {st}"
+                + ("; A's marker PRESENT" if marker_seen else "")
+            ),
+            outcome="ERROR" if why else None,
         )
 
 

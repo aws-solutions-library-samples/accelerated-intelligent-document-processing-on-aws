@@ -33,6 +33,12 @@ const client = generateClient();
 const logger = new ConsoleLogger('TestSetEditorSlots');
 
 const REEXTRACT_POLL_MS = 3000;
+/** Where a section's file records the class its fields were extracted under (#1816). */
+const EXTRACTED_AS_KEY = 'extractedAsClass';
+
+/** The class to name in the note, or null: none recorded, or the section is that class again. */
+const extractedAsNote = (stamp: unknown, documentClass: unknown): string | null =>
+  typeof stamp === 'string' && stamp !== '' && stamp !== documentClass ? stamp : null;
 // A re-extract is a full extraction + assessment pass, so the budget is generous;
 // timing out early would report failure on a run that is about to succeed.
 const REEXTRACT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -71,8 +77,11 @@ export interface TestSetEditorSlotsOptions {
   openSectionId: string | null;
   /** The open section's working copy, from the editor. */
   openData: Record<string, unknown> | null;
-  /** Section ids, classes or labels moved on the server: the caller re-reads its refs. */
-  onChanged: () => void;
+  /**
+   * Section ids, classes or labels moved on the server: the caller re-reads its refs. A
+   * returned promise settles once they are re-read.
+   */
+  onChanged: () => void | Promise<unknown>;
   /**
    * Where Edit Page Grouping is: `external` (the default) is the edit page's More Actions;
    * `structure` is a button beside the section selector. Only the pages field's
@@ -89,7 +98,8 @@ export interface TestSetEditorSlots {
   loadSection: (sectionId: string) => Promise<LoadedSection>;
   /** Bumped to re-read the open section after a regroup or re-extract rewrites it (its key is unchanged). */
   reloadToken: number;
-  onLoaded: (sectionId: string) => void;
+  /** The open section was read; `data` is what was read, which may carry `extractedAsClass`. */
+  onLoaded: (sectionId: string, data?: Record<string, unknown>) => void;
   classOptions: ConfigClassOption[];
   classConfig: ReturnType<typeof resolveClassConfigVersion>;
   /** The configuration the set was labelled with (null until read, or unreadable for this role). */
@@ -98,8 +108,10 @@ export interface TestSetEditorSlots {
   classSlot: EditorSlot;
   emptyFieldsSlot: EditorSlot;
   board: EditBoard;
-  /** There is a grouping to edit: the board has pages and sections to show. */
+  /** There is a grouping to edit: the board has pages and sections, and the refs are not behind a save. */
   canRegroup: boolean;
+  /** The last saved grouping has not been re-read yet: section ids on the page may be stale. */
+  refsPending: boolean;
 }
 
 export const useTestSetEditorSlots = ({
@@ -132,9 +144,11 @@ export const useTestSetEditorSlots = ({
    * different section is opened, where it would describe something else.
    */
   const [reextractNote, setReextractNote] = useState<{ text: string; sectionId: string; kept?: boolean } | null>(null);
-  // Sections whose class Edit Page Grouping just changed, by section id, with the class
-  // their fields were extracted under: their fields no longer match their class until
-  // they are re-extracted.
+  // Sections whose class Edit Page Grouping changed, by section id, with the class their
+  // fields were extracted under: their fields no longer match their class until they are
+  // re-extracted. The server records that class on the section as `extractedAsClass`
+  // (#1816): a save returns it for every section, and opening a section reads it from the
+  // section's file, which is how the note survives a reload.
   const [reclassified, setReclassified] = useState<Record<string, string>>({});
   // How many sections the last saved grouping wrote, until the caller's refs catch up.
   const [savedSectionCount, setSavedSectionCount] = useState<number | null>(null);
@@ -179,7 +193,6 @@ export const useTestSetEditorSlots = ({
 
   /** Pages for the board, in the 1-based page-id space. */
   const boardPages = useMemo(() => pages.map((page) => ({ id: Number(page.Id), imageUri: page.ImageUri })), [pages]);
-  const canRegroup = boardPages.length > 0 && sections.length > 0;
   /**
    * Which Re-extract this document gets. A whole-document re-extract forces one class
    * onto every page as one section, so on a document with several sections it would
@@ -199,6 +212,9 @@ export const useTestSetEditorSlots = ({
   // waits for them.
   const refsPending = savedSectionCount !== null;
   useEffect(() => setSavedSectionCount(null), [sections]);
+  // The board is built from the refs, so while they lag a save it would send ids that now
+  // name other sections on the server, and the save would move their fields (#1895).
+  const canRegroup = boardPages.length > 0 && sections.length > 0 && !refsPending;
 
   /**
    * Every section's grouping, in the board's 1-based page-id space, from the queue's
@@ -242,15 +258,36 @@ export const useTestSetEditorSlots = ({
       .filter((sec) => sec && before.get(sec.sectionId) !== JSON.stringify(sec.pageIndices ?? []))
       .map((sec) => (sec as { sectionId: string }).sectionId);
     setRegroupedSectionIds(changed);
-    const classByFirstPage = new Map(sections.map((sec) => [sec.pageIndices?.[0], sec.documentClass ?? '']));
-    const nextClassByFirstPage = new Map(payload.map((sec) => [sec.pageIndices[0], sec.documentClass ?? '']));
+    // Which sections' fields no longer match their class. The server says, for every
+    // section, including ones not opened in this visit; what follows is the same rule
+    // worked out here, for a response that does not carry it. A section's fields follow the
+    // section through a save, not its first page: the server keeps each sent section's
+    // fields and only renumbers it, so a written section is the sent one with the same
+    // pages (no page is in two sections). The class those fields were extracted under is
+    // the one recorded when an earlier save first changed it, if one did — they have not
+    // been re-extracted since, so a second change (Invoice → W2 → Payslip) still names
+    // Invoice — and otherwise the section's class before this save. A section the reviewer
+    // added has no fields, so no class to name: the board never gives it an id a ref has,
+    // even one deleted in the same edit (#1895).
+    const sentByPages = new Map(payload.map((sec) => [JSON.stringify(sec.pageIndices), sec]));
+    const refById = new Map(sections.map((sec) => [sec.sectionId, sec]));
+    const refByFirstPage = new Map(sections.map((sec) => [sec.pageIndices?.[0], sec]));
     const moved: Record<string, string> = {};
     written.forEach((sec) => {
       if (!sec) return;
-      const first = (sec.pageIndices ?? [])[0];
-      const was = classByFirstPage.get(first);
+      if (sec.extractedAsClass !== undefined) {
+        const stamp = extractedAsNote(sec.extractedAsClass, sec.documentClass);
+        if (stamp) moved[sec.sectionId] = stamp;
+        return;
+      }
+      const sent = sentByPages.get(JSON.stringify(sec.pageIndices ?? []));
+      // A written section matching none sent is not what this save wrote; the section
+      // that held its first page is the best remaining guess.
+      const ref = sent ? refById.get(sent.sectionId) : refByFirstPage.get((sec.pageIndices ?? [])[0]);
+      if (!ref) return;
+      const was = reclassified[ref.sectionId] ?? ref.documentClass ?? '';
       // What was saved, as the server reports it; what the board sent if it does not say.
-      const after = sec.documentClass ?? nextClassByFirstPage.get(first);
+      const after = sec.documentClass ?? sent?.documentClass ?? '';
       if (was && after && was !== after) moved[sec.sectionId] = was;
     });
     setReclassified(moved);
@@ -312,8 +349,13 @@ export const useTestSetEditorSlots = ({
         });
         return;
       }
+      // The write-back deleted the section's draft, so the caller's refs still name an
+      // object that is gone: re-read them before the section is read again.
+      await onChanged();
       setReloadToken((token) => token + 1);
-      setReclassified({});
+      // Only the re-extracted section's fields now match its class; every other section's
+      // still reflect the class they were extracted under.
+      setReclassified((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => id !== sectionId)));
       setReextractNote(
         authored
           ? {
@@ -330,7 +372,6 @@ export const useTestSetEditorSlots = ({
               sectionId,
             },
       );
-      onChanged();
     } catch (err) {
       logger.error('Re-extraction failed:', err);
       setError(`Could not re-extract this ${target ? 'section' : 'document'}: ${getErrorMessage(err)}`);
@@ -502,7 +543,21 @@ export const useTestSetEditorSlots = ({
     reviewSections,
     loadSection,
     reloadToken,
-    onLoaded: (sectionId: string) => setReextractNote((note) => (note && note.sectionId !== sectionId ? null : note)),
+    onLoaded: (sectionId: string, data?: Record<string, unknown>) => {
+      setReextractNote((note) => (note && note.sectionId !== sectionId ? null : note));
+      // What the section's file records wins over what this visit worked out: it is the
+      // class the server recorded, and the only record of it after a reload. A file that
+      // records none leaves the visit's note alone, so a server that does not record it
+      // keeps the behaviour it had.
+      if (!data || !(EXTRACTED_AS_KEY in data)) return;
+      const docClass = (data.document_class as Record<string, unknown> | undefined)?.type;
+      const stamp = extractedAsNote(data[EXTRACTED_AS_KEY], docClass);
+      setReclassified((prev) => {
+        if (stamp) return prev[sectionId] === stamp ? prev : { ...prev, [sectionId]: stamp };
+        if (!(sectionId in prev)) return prev;
+        return Object.fromEntries(Object.entries(prev).filter(([id]) => id !== sectionId));
+      });
+    },
     classOptions,
     classConfig,
     mergedConfig,
@@ -511,5 +566,6 @@ export const useTestSetEditorSlots = ({
     emptyFieldsSlot,
     board,
     canRegroup,
+    refsPending,
   };
 };

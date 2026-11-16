@@ -153,6 +153,68 @@ def emit_json(payload: Any) -> None:
     )
 
 
+def _build_terraform_module_from_local_code(
+    from_code_dir: str,
+    region: str,
+    *,
+    headless: bool = False,
+    govcloud: bool = False,
+    bucket_basename: Optional[str] = None,
+    prefix: Optional[str] = None,
+    public: bool = False,
+    max_workers: Optional[int] = None,
+    clean_build: bool = False,
+    no_validate: bool = False,
+) -> str:
+    """Build and publish the templates from a local checkout, translate them to
+    a Terraform module (`idp-cli publish --terraform`), and return the module
+    URL for `idp-cli deploy --terraform`.
+
+    With `headless` or `govcloud`, that variant's module is returned. A build
+    that publishes no module for the requested variant is refused, never
+    replaced by the standard module.
+    """
+    console.print(
+        "[bold cyan]Building project and Terraform module from source...[/bold cyan]"
+    )
+    console.print(f"[dim]Source: {from_code_dir}[/dim]")
+    console.print(f"[dim]Region: {region}[/dim]")
+    console.print()
+    client = IDPClient(region=region)
+    result = client.publish.build(
+        source_dir=from_code_dir,
+        bucket=bucket_basename,
+        prefix=prefix,
+        region=region,
+        headless=headless,
+        govcloud=govcloud,
+        public=public,
+        max_workers=max_workers,
+        clean_build=clean_build,
+        no_validate=no_validate,
+        terraform=True,
+    )
+    if not result.success:
+        console.print(f"[red]✗ Build failed: {result.error}[/red]")
+        sys.exit(1)
+    variant = "govcloud" if govcloud else ("headless" if headless else None)
+    if variant:
+        module_url = (
+            (result.terraform_variant_modules or {}).get(variant, {}).get("moduleUrl")
+        )
+    else:
+        module_url = result.terraform_module_url
+    if not module_url:
+        label = f"{variant} " if variant else ""
+        console.print(
+            f"[red]✗ Error: the build published no {label}Terraform module.[/red]"
+        )
+        sys.exit(1)
+    console.print(f"[green]✓ Terraform module: {module_url}[/green]")
+    console.print()
+    return module_url
+
+
 def _build_from_local_code(
     from_code_dir: str,
     region: str,
@@ -672,7 +734,7 @@ def _print_orphaned_blueprints(arns: Optional[List[str]]) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.14")
+@click.version_option(version="0.6.15")
 def cli():
     """
     IDP CLI - Batch document processing for IDP Accelerator
@@ -700,7 +762,7 @@ def cli():
 @click.option(
     "--from-code",
     type=click.Path(exists=True, file_okay=False, dir_okay=True),
-    help="Deploy from local code by building with publish.py (path to project root)",
+    help="Deploy from local code by building with publish.py (path to project root). With --terraform, also publishes the Terraform module from that checkout and deploys it",
 )
 @click.option(
     "--template-url",
@@ -926,10 +988,52 @@ def deploy(
 
       # Deploy with Terraform (root configuration in ./idp-terraform/my-idp)
       idp-cli deploy --terraform --stack-name my-idp --admin-email user@example.com
+
+      # Build and deploy with Terraform from a local checkout
+      idp-cli deploy --terraform --from-code . --stack-name my-idp --admin-email user@example.com
     """
     if terraform:
+        if from_code and terraform_module_url:
+            console.print(
+                "[red]✗ Error: --from-code builds and publishes its own Terraform "
+                "module; do not also pass --terraform-module-url.[/red]"
+            )
+            sys.exit(1)
+        if from_code:
+            build_region = region
+            if not build_region:
+                import boto3
+
+                build_region = boto3.session.Session().region_name  # type: ignore
+                if not build_region:
+                    console.print(
+                        "[red]✗ Error: Region could not be determined. Please specify "
+                        "--region or configure AWS_DEFAULT_REGION.[/red]"
+                    )
+                    sys.exit(1)
+            if headless and govcloud:
+                console.print(
+                    "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
+                    "Each selects its own Terraform module.[/red]"
+                )
+                sys.exit(1)
+            terraform_module_url = _build_terraform_module_from_local_code(
+                from_code,
+                build_region,
+                headless=headless,
+                govcloud=govcloud,
+                bucket_basename=bucket_basename,
+                prefix=prefix,
+                public=public,
+                max_workers=build_max_workers,
+                clean_build=clean_build,
+                no_validate=no_validate_template,
+            )
+            region = build_region
+            # The build already chose the variant's module, which is what these
+            # flags otherwise select; passing both would read as a conflict.
+            headless = govcloud = False
         ignored = {
-            "--from-code": from_code,
             "--template-url": template_url,
             "--template-file": template_file,
             "--custom-config": custom_config,
@@ -4216,8 +4320,10 @@ def _batch_status_to_display_dicts(batch_status):
     Convert a BatchStatus Pydantic model to the legacy dict format expected by display.py.
 
     display.py functions (create_live_display, show_final_summary, etc.) consume:
-      status_data = {"completed": [...], "running": [...], "queued": [...], "failed": [...], "total": N}
+      status_data = {"completed": [...], "running": [...], "queued": [...], "failed": [...],
+                     "awaiting_review": [...], "total": N}
       stats       = {"total": N, "completed": N, "failed": N, "running": N, "queued": N,
+                     "awaiting_review": N,
                      "all_complete": bool, "success_rate": float (0-100),
                      "completion_percentage": float, "avg_duration_seconds": float}
     """
@@ -4225,6 +4331,7 @@ def _batch_status_to_display_dicts(batch_status):
     running_docs = []
     queued_docs = []
     failed_docs = []
+    awaiting_review_docs = []
 
     total_duration = 0.0
     duration_count = 0
@@ -4269,6 +4376,8 @@ def _batch_status_to_display_dicts(batch_status):
                 duration_count += 1
         elif bucket is DocumentBucket.FAILED:
             failed_docs.append(doc_dict)
+        elif bucket is DocumentBucket.AWAITING_REVIEW:
+            awaiting_review_docs.append(doc_dict)
         elif bucket is DocumentBucket.RUNNING:
             running_docs.append(doc_dict)
         else:
@@ -4279,6 +4388,7 @@ def _batch_status_to_display_dicts(batch_status):
     failed = len(failed_docs)
     running = len(running_docs)
     queued = len(queued_docs)
+    awaiting_review = len(awaiting_review_docs)
 
     status_data = {
         "total": total,
@@ -4286,10 +4396,15 @@ def _batch_status_to_display_dicts(batch_status):
         "running": running_docs,
         "queued": queued_docs,
         "failed": failed_docs,
+        "awaiting_review": awaiting_review_docs,
     }
 
     avg_duration = total_duration / duration_count if duration_count > 0 else 0.0
-    completion_pct = (completed + failed) / total * 100.0 if total > 0 else 0.0
+    # Processing has stopped for a document awaiting review, so it counts towards
+    # completion; a batch the monitor ends on then reads 100% rather than stalling.
+    completion_pct = (
+        (completed + failed + awaiting_review) / total * 100.0 if total > 0 else 0.0
+    )
     # SDK returns success_rate as 0.0–1.0; display expects 0–100
     success_rate = batch_status.success_rate * 100.0
 
@@ -4299,6 +4414,7 @@ def _batch_status_to_display_dicts(batch_status):
         "failed": failed,
         "running": running,
         "queued": queued,
+        "awaiting_review": awaiting_review,
         "all_complete": batch_status.all_complete,
         "success_rate": success_rate,
         "completion_percentage": completion_pct,
@@ -4389,7 +4505,7 @@ def _monitor_progress(
                 # "gives time for documents to be picked up by the queue and
                 # tracked in DynamoDB" -- and it could never fire: it was reached
                 # only via `has_terminal_docs or waited_long_enough`, and
-                # `all_complete` is `completed + failed == total`, so for any
+                # `all_complete` was then `completed + failed == total`, so for any
                 # non-empty batch `all_complete` already implies
                 # `has_terminal_docs` and the first operand always won. The wait
                 # it described never happened once.
@@ -4400,6 +4516,10 @@ def _monitor_progress(
                 # than `NOT_FOUND_GRACE_SECONDS`, so it does not count towards
                 # `all_complete` and this loop keeps polling without having to
                 # second-guess the counts it is handed.
+                #
+                # A document awaiting human review is settled for this purpose:
+                # its workflow has ended and only a reviewer moves it on, so the
+                # monitor ends and the final summary says where to work it (#2022).
                 if stats["all_complete"]:
                     break
 
@@ -8410,6 +8530,18 @@ def bootstrap(
 from .tenancy import tenancy as _tenancy_group  # noqa: E402
 
 cli.add_command(_tenancy_group)
+
+# `idp-cli mcp credentials ...`, likewise.
+from .mcp import mcp as _mcp_group  # noqa: E402
+
+cli.add_command(_mcp_group)
+
+# `idp-cli terraform ...` (Terraform-only commands) likewise.
+from .terraform import configure as _configure_terraform  # noqa: E402
+from .terraform import terraform as _terraform_group  # noqa: E402
+
+_configure_terraform(TEMPLATE_URLS, _resolve_region)
+cli.add_command(_terraform_group)
 
 
 def main():

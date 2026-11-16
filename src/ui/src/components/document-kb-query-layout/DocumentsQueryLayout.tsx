@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: MIT-0
 
 import React, { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { Box, Button, Spinner, Header, Grid, Container, SpaceBetween, Input, Link } from '@cloudscape-design/components';
 import SafeMarkdown from '../common/SafeMarkdown';
 
@@ -32,7 +31,7 @@ const ValueWithLabel = ({ label, index, children }: ValueWithLabelProps): React.
   <>
     <Box variant="awsui-key-label">
       <span tabIndex={index}>
-        <ReactMarkdown>{label ? `**Q: ${label}**` : ''}</ReactMarkdown>
+        <SafeMarkdown rawHtml={false}>{label ? `**Q: ${label}**` : ''}</SafeMarkdown>
       </span>
     </Box>
     {children}

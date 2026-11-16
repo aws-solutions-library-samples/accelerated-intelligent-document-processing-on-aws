@@ -57,7 +57,7 @@ help: ## Show this help message
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; section=""} \
 		/^##@/ { section=substr($$0, 5); next } \
-		/^[a-zA-Z_-]+:.*?## / { \
+		/^[a-zA-Z0-9_-]+:.*?## / { \
 			if (section != "" && section != last_section) { \
 				printf "\n  \033[1m%s\033[0m\n", section; \
 				last_section = section \
@@ -200,8 +200,8 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint without UI checks
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -285,6 +285,18 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@# cache, since iteration latency is what it was added for.
 	@if ! make ui-lint UI_LINT_NO_SKIP=1; then \
 		echo -e "$(RED)ERROR: UI lint failed$(NC)"; \
+		exit 1; \
+	fi
+	@# After ui-lint, which installed src/ui/node_modules: the extraction it replays
+	@# needs them, and in CI their absence is an error rather than a skip.
+	@if ! make check-ui-i18n-catalog; then \
+		echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)"; \
+		exit 1; \
+	fi
+	@# Same node_modules, same CI rule: the string-debt ratchet counts the UI's
+	@# hardcoded user-facing strings per file and fails when a file gains one.
+	@if ! make check-ui-string-debt; then \
+		echo -e "$(RED)ERROR: UI string-debt ratchet failed: a file gained a hardcoded user-facing string (see issue #1770)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -380,13 +392,17 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 #            worker count CI gives it. The job therefore costs its slowest tree
 #            rather than the sum, and which tree that is moves; measure rather than
 #            reading a figure here.
-#   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
-#            step below still requires it BY NAME, so dropping the wrong tree here
-#            turns the gate red rather than quietly narrowing it.
+#   --skip   by default leaves out the one tree an earlier CI step already measured
+#            (idp_common). The ratchet step below still requires it BY NAME, so
+#            dropping the wrong tree here turns the gate red rather than quietly
+#            narrowing it. GitHub's unit_tests also skips `scripts`, which its
+#            scripts_coverage job measures and ratchets instead; the ratchet there passes
+#            --measured-elsewhere scripts, and test_coverage_debt.py's cross-job
+#            closure test asserts the other job requires it.
 COVERAGE_CICD_JOBS ?= 4
 COVERAGE_CICD_SKIP ?= --skip idp_common
 coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
-	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
+	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) --fail-on-empty $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
 
 coverage-summary: ## Print the recorded per-tree figures, without measuring anything
 	@python3 scripts/check_coverage_debt.py --summary
@@ -395,8 +411,11 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report and refuse (exit 2), red-lining
 # every lint run for a condition the lint targets themselves cause.
-# Both CI configurations invoke it immediately after the test step instead. They pass no
-# arguments and need none: with no usable report the gate refuses rather than reporting
+# Both CI configurations invoke it immediately after the test step instead. GitLab
+# passes no arguments; GitHub, which splits the coverage trees across two jobs, passes
+# --measured-elsewhere in one and reaches this bare target with --require-tree in the
+# other (see test_every_tree_is_measured_and_ratcheted_by_some_github_job). Neither
+# needs more than that: with no usable report the gate refuses rather than reporting
 # success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.
@@ -421,6 +440,24 @@ check-lint-debt: ## Ratchet ruff's per-file exclusions: fail if an excluded file
 	@# quietly accumulate more. Regenerate with --write after fixing findings.
 	@$(PYTHON) scripts/check_lint_debt.py || \
 		(echo -e "$(RED)ERROR: ruff exclusion baseline is out of date (see issue #975)$(NC)" && exit 1)
+
+check-ui-i18n-catalog: ## Fail if src/ui/src/i18n/en.json is stale against the UI's messages, or a translation catalog would fail the UI build (issue #1770)
+	@# Check-only: re-extracts into a temp file and diffs; `make ui-i18n-extract` is
+	@# the writer. Off CI without src/ui/node_modules it prints a SKIP (not a pass);
+	@# in CI that is an error. It runs a node tool out of src/ui/node_modules, so it
+	@# takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_i18n_catalog.py' || \
+		(echo -e "$(RED)ERROR: UI message catalog check failed (see issue #1770)$(NC)" && exit 1)
+
+check-ui-string-debt: ## Ratchet the UI's hardcoded user-facing strings: fail if a file gains one, an unlisted file has any, or the baseline is stale (issue #1770)
+	@# src/ui/eslint.i18n.config.js is the counting rule (eslint-plugin-i18next, kept
+	@# out of the UI's lint script); scripts/ui_string_debt.json pins the count per
+	@# file and may only shrink — `python3 scripts/check_ui_string_debt.py --write`
+	@# re-records it after a file is converted. Off CI without src/ui/node_modules it
+	@# prints a SKIP (not a pass); in CI that is an error. It runs eslint out of
+	@# src/ui/node_modules, so it takes the same lock as the UI targets (issue #1447).
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/check_ui_string_debt.py' || \
+		(echo -e "$(RED)ERROR: UI string-debt ratchet failed (see issue #1770)$(NC)" && exit 1)
 
 check-account-ids: ## Fail if a private AWS account id is committed in a tracked file's contents (issue #1067)
 	@# The PreToolUse hook scripts/hooks/check_commit_text.py inspects the COMMAND
@@ -517,8 +554,9 @@ validate-buildspec: ## Validate AWS CodeBuild buildspec files (all of them, disc
 # the commercial account?" — yes) confirmed it while it shielded 49 fixable
 # findings. Naming the lines makes the mismatch impossible to write down.
 #
-#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — two statements
-#     trust a named role in the commercial CI account that owns this pipeline.
+#   scripts/sdlc/cfn/credential-vendor.yml:gitlab-runners-prod — three statements
+#     (two on GitLabRole, one on GitLabReviewRole) trust a named role in the
+#     commercial CI account that owns this pipeline.
 #     Cross-partition IAM trust does not exist, so `arn:${AWS::Partition}:` here
 #     would render an ARN naming a GovCloud account that is not the one meant.
 #
@@ -873,20 +911,15 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 #     make test-packages-cicd PYTEST_XDIST="-n 4"
 #     make test-cicd -C lib/idp_common_pkg PYTEST_PARALLEL="-n 4"
 #
-# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
-# target:
-#
-#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
-#     lib/idp_sdk        2663 tests, serial  441s
-#
-# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
-# near-perfectly parallel and the win is close to the core count.
+# The two suites that once dominated this target, `scripts/tests` and `lib/idp_sdk`,
+# no longer run in it: `coverage-all-cicd` is their one CI run, and its worker share
+# comes from `coverage_all.worker_share`, never from this variable.
 #
 # ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
 # spinning up N workers costs a second or two before the first test runs, which is
 # longer than most of these invocations take — a majority finish in under a second.
-# The rule is **above 20s measured in CI**, which selects the nine that carry
-# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# The rule is **above 20s measured in CI**; grep the recipe for $(PYTEST_XDIST) to
+# see which invocations carry it today. Re-derive it by TIMING, not by counting tests: the test
 # count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
 # `src/lambda/complete_section_review` takes 7x longer for 115.
 #
@@ -909,29 +942,29 @@ test-integration-all: ## Run every integration-marked suite across all roots (re
 test-list: ## List the discovered test roots (run vs quarantined) without running them
 	$(PYTHON) scripts/run_all_tests.py --list
 
-test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
-	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
-	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_common_pkg test-cicd nor coverage-all-cicd runs (all green headless, no AWS)
+	@# The suites a coverage tree measures are NOT run here: `make coverage-all-cicd`
+	@# runs each of them, under coverage, in both CIs, and running them a second time
+	@# without coverage cost about 20 minutes of every pull request's longest job for
+	@# no added check. Those are the `scripts` gate suites, idp_sdk, idp_cli,
+	@# idp_feature_sdk, main-stack-extensions, seller-entitlement-service and the
+	@# pii-anonymizer hook and feature API -- every non-fan-out tree in
+	@# scripts/check_coverage_debt.py TREES. scripts/tests/test_src_lambda_tests_in_ci.py
+	@# credits those trees as run, so a suite dropped from here that no tree measures
+	@# fails there. The Lambda and resolver directories a fan-out tree measures are
+	@# still listed below: their runs are seconds each, and several are scoped
+	@# differently from the fan-out's invocation. `make test` runs every root locally.
 	@echo "Running Terraform translator and bridge tests..."
 	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
-	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@echo "Running pii-anonymizer UI deployer tests..."
+	@# These three ran in NO CI gate until #974. The feature API and hook suites are
+	@# now measured by their coverage trees (see the note at the top of this recipe). `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
@@ -991,6 +1024,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
+	@# filters) and the custom resource that attaches it to the gateway. moto for
+	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
+	cd src/lambda/mcp_identity_interceptor && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd src/lambda/mcp_interceptor_attach && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# MCP credential manager: Admin-only routing, the scoped-Admin rule, the sweep.
+	cd src/lambda/mcp_credential_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# Registers the stack-created MCP client as "Default (stack-created)".
+	cd src/lambda/mcp_default_credential && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/test_file_copier && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/update_configuration && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd src/lambda/user_management && $(PYTEST_HERMETIC) -q -p no:cacheprovider
@@ -1018,6 +1060,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
 	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_worker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -1051,14 +1095,15 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	cd nested/api-resolvers/src/lambda/delete_agent_chat_session_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/get_agent_chat_messages_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/list_agent_chat_sessions_resolver && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running the KB-ingestion and docker-build custom-resource suites..."
-	@# Both built a boto3 client at import time with no region, so both errored at
-	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine.
-	@# Each now supplies its own region from its own conftest.py, which is what makes
-	@# running them through the wrapper meaningful -- the wrapper takes the region
-	@# away rather than handing one over. See #988.
+	@echo "Running the KB-ingestion custom-resource suite..."
+	@# It built a boto3 client at import time with no region, so it errored at
+	@# COLLECTION under $(PYTEST_HERMETIC) while passing on a developer machine. It
+	@# now supplies its own region from its own conftest.py, which is what makes
+	@# running it through the wrapper meaningful -- the wrapper takes the region
+	@# away rather than handing one over. See #988. (The multi-document-discovery
+	@# build-run handler that sat beside it is now src/lambda/start_codebuild,
+	@# tested above; #1824.)
 	cd nested/bedrockkb/src/start_ingestion_job_custom_resource && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	cd nested/multi-doc-discovery/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running the feature-platform extension suites that reached neither CI..."
 	@# The three pii-anonymizer suites above were added by #974; these eight are the
 	@# rest of the same tree -- the ConfBench test-set extension, the data generator's
@@ -1068,6 +1113,7 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@# CI; the other modules in it run unconditionally.
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
@@ -1092,14 +1138,6 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
-	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
-	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
-	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
-	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
@@ -1111,11 +1149,12 @@ test-config-library: ## Run only config library validation tests
 	@echo "Validating config library YAML/JSON files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -v
 
-test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, loop liveness)
+test-hooks: ## Run only the hook tests (commit/PR text, shared-branch, agent filing, worktree reach, loop liveness)
 	@echo "Running Claude hook tests..."
 	$(PYTEST_HERMETIC) scripts/tests/test_check_commit_text.py \
 		scripts/tests/test_check_shared_branch.py \
 		scripts/tests/test_check_agent_filing.py \
+		scripts/tests/test_check_worktree_reach.py \
 		scripts/tests/test_check_loop_liveness.py -v
 
 test-capacity: ## Run only capacity planning tests
@@ -1360,6 +1399,16 @@ stacktest-seller: ## Seller Entitlement Service e2e: deploy throwaway stack, pro
 	    $(if $(REGION),--region $(REGION)) \
 	    $(if $(NO_TEARDOWN),--no-teardown)
 
+# Network reach of the analytics agent's Python interpreter. Needs no IDP stack:
+# it starts a session on the AWS-managed Bedrock AgentCore Code Interpreter the
+# analytics tool uses, runs a fixed probe program in it, and compares what it
+# reaches with the posture recorded in scripts/sdlc/sandbox_network_probe.py.
+# Creates and deletes its own throwaway bucket (ab-sandbox-probe-<random>).
+# Exit 0 = matches the recorded posture, 1 = differs, 2 = could not run.
+# Manual only: no CI job runs it (see .claude/skills/run-stack-tests.md).
+stacktest-sandbox-network: ## Analytics interpreter network reach: DNS, HTTPS, S3 presigned PUT, raw TCP, credential presence (no stack; [REGION=us-west-2])
+	$(RUN_FIRST_PARTY) scripts/sdlc/sandbox_network_probe.py --region $(if $(REGION),$(REGION),us-west-2) $(if $(JSON_OUT),--json-out $(JSON_OUT),)
+
 # Release-vs-release benchmark audit (alias to benchmark-release).
 stacktest-benchmark: benchmark-release ## Release benchmark audit (alias: benchmark-release)
 
@@ -1370,19 +1419,93 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 	@echo "It deploys a FROM release, update-stacks to a TO release, and watches"
 	@echo "the UpdateDefaultConfig custom resource. Follow that skill's steps."
 
+# In-place migration of an awslabs/genai-idp-terraform deployment onto this
+# repository's Terraform module: deploys the pinned upstream tag as OLD_NAME, seeds
+# it (documents, users, a config edit, a baseline and test set), runs every phase of
+# `idp-cli terraform migrate-from-genai-idp-terraform` with --apply onto a new
+# deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
+# passwords still sign in, then destroys both and sweeps what they retained. Measured
+# at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
+# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier J).
+#   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
+#       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
+_TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
+	--terraform-module-url $(TERRAFORM_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
+ifndef OLD_NAME
+	$(error OLD_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef NEW_NAME
+	$(error NEW_NAME is not set. Usage: make stacktest-terraform-migration OLD_NAME=<prefix> NEW_NAME=<stack> TERRAFORM_MODULE_URL=<zip url>)
+endif
+ifndef TERRAFORM_MODULE_URL
+	$(error TERRAFORM_MODULE_URL is not set: the module zip `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
+
+# In-place upgrade of a Terraform deployment between two releases of the module:
+# deploys FROM_MODULE_URL as STACK_NAME, seeds it (documents, users, a config edit,
+# a baseline and a test set), runs `idp-cli deploy --terraform` again against
+# TO_MODULE_URL, and verifies that every bucket, table, user pool and key kept its
+# physical identity, that the data in them is unchanged, that both users still sign
+# in with their old passwords, and that a new document still processes. It never
+# passes --terraform-allow-replace-stateful, so a plan the deploy guard refuses
+# fails the run. The Terraform counterpart of stacktest-upgrade. Budget about two
+# and a half hours. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>;
+# RESUME=1 continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier K).
+#   make stacktest-terraform-upgrade STACK_NAME=tfup1 ADMIN_EMAIL=you@example.com \
+#       FROM_MODULE_URL=https://.../idp-terraform-<old>.zip \
+#       TO_MODULE_URL=https://.../idp-terraform-<new>.zip
+_TFUP_ARGS = --stack-name $(STACK_NAME) --admin-email $(ADMIN_EMAIL) \
+	--from-module-url $(FROM_MODULE_URL) --to-module-url $(TO_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(PARAMETERS),--parameters $(PARAMETERS),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-upgrade: ## Upgrade a live Terraform deployment from one release's module to another in place, verify nothing was lost, tear it down (STACK_NAME= ADMIN_EMAIL= FROM_MODULE_URL= TO_MODULE_URL=)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-terraform-upgrade STACK_NAME=<stack> ADMIN_EMAIL=<email> FROM_MODULE_URL=<zip url> TO_MODULE_URL=<zip url>)
+endif
+ifndef ADMIN_EMAIL
+	$(error ADMIN_EMAIL is not set: the first deploy sends it a temporary password)
+endif
+ifndef FROM_MODULE_URL
+	$(error FROM_MODULE_URL is not set: the module zip of the release to upgrade FROM)
+endif
+ifndef TO_MODULE_URL
+	$(error TO_MODULE_URL is not set: the module zip to upgrade TO, which `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_upgrade_test.py $(_TFUP_ARGS)
+
 ##@ UI Development
 
-# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND SIX OF THEM
-# WIPE IT. `npm ci` deletes node_modules before rebuilding it, by design. Each of
-# those targets then runs a node tool out of that same tree. So two UI targets at
-# once in ONE checkout corrupt each other, and the loser does not report
-# contention — it reports a missing or half-deleted module from whatever package
-# the other lane was unpacking (issue #1447).
+# ⚠️ EVERY TARGET IN THIS SECTION SHARES ONE src/ui/node_modules, AND EVERY ONE WHOSE
+# RECIPE RUNS $(NPM_CI) WIPES IT. `npm ci` deletes node_modules before rebuilding it,
+# by design. Each of those targets then runs a node tool out of that same tree. So
+# two UI targets at once in ONE checkout corrupt each other, and the loser does not
+# report contention — it reports a missing or half-deleted module from whatever
+# package the other lane was unpacking (issue #1447). The set of targets is pinned
+# by UI_TARGETS in scripts/tests/test_ui_deps_lock.py, which fails when one joins or
+# leaves; no count is written here for that reason.
 #
-# `make lint-cicd` performs three of them itself (ui-lint, ui-build-only,
-# codegen-check), so lint-cicd PLUS ANY ONE UI TARGET is enough to collide. The
-# realistic composition is "lint in one lane, UI tests in another", which looks
-# like two unrelated things and is not.
+# `make lint-cicd` performs some of them itself (ui-lint, check-ui-i18n-catalog,
+# check-ui-string-debt, ui-build-only, codegen-check — pinned as
+# TARGETS_LINT_CICD_PERFORMS in the same test), so lint-cicd PLUS ANY ONE UI TARGET
+# is enough to collide. The realistic composition is "lint in one lane, UI tests in
+# another", which looks like two unrelated things and is not.
 #
 # $(UI_DEPS_LOCK) is why that is now safe rather than merely documented: it holds
 # an exclusive lock for the whole command, so a second UI target waits instead of
@@ -1529,6 +1652,29 @@ ui-build-only: ## Vite production build ONLY (no lint/typecheck) — for CI, whe
 ui-test: ## Run UI unit tests (Vitest, jsdom — no browser required)
 	@echo "Running UI unit tests..."
 	$(UI_DEPS_LOCK) '$(NPM_CI) && npx vitest run'
+
+# THE WRITER for `make check-ui-i18n-catalog`, which is check-only by design (the
+# `codegen-check` auto-update is the shape CONTRIBUTING documents as a wart).
+ui-i18n-extract: ## Re-extract the UI's English message catalog into src/ui/src/i18n/en.json (then commit it)
+	@echo "Extracting UI messages into src/ui/src/i18n/en.json..."
+	$(UI_DEPS_LOCK) '$(NPM_CI) && npm run i18n:extract'
+	@echo -e "$(GREEN)✅ src/ui/src/i18n/en.json re-extracted. Commit it if it changed.$(NC)"
+
+# ADVISORY BY DESIGN (decision D17 of #1770): this target never fails, so it is
+# not a prerequisite of `lint` or `fastlint`, is not in the `lint-cicd` recipe, and
+# its name matches none of the check shapes test_ci_gate_parity.py classifies by.
+# A missing or stale translation is an English fallback on screen, not a broken
+# build; this report makes it visible without turning every English-only string
+# into a red gate. Invalid entries are enforced by `check-ui-i18n-catalog` and the
+# UI build, and only listed here. Flags go through UI_I18N_COVERAGE_ARGS, e.g.
+# `make ui-i18n-coverage UI_I18N_COVERAGE_ARGS=--json` (nothing else is printed,
+# so the output is the JSON) or `UI_I18N_COVERAGE_ARGS="--locale fr-CA"`.
+UI_I18N_COVERAGE_ARGS ?=
+ui-i18n-coverage: ## Report translation coverage for each locale catalog present in src/ui/src/i18n: missing, stale (English changed since translation) and invalid entries; advisory, never fails (issue #1770)
+	@# It runs node out of src/ui/node_modules, so it takes the same lock as the UI
+	@# targets (issue #1447). Off CI without node_modules it prints a SKIP (not a
+	@# report); in CI that is an error. Exit 2 only when no report could be made.
+	@$(UI_DEPS_LOCK) 'cd "$(CURDIR)" && $(PYTHON) scripts/ui_i18n_coverage.py $(UI_I18N_COVERAGE_ARGS)'
 
 ##@ Code Generation
 codegen: ## Regenerate GraphQL types and operations

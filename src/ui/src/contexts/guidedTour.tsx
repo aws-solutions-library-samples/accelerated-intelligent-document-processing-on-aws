@@ -5,11 +5,13 @@ import { useNavigate } from 'react-router-dom';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 import { DOCUMENTS_PATH } from '../routes/constants';
+import { isQuickStartEnabled } from '../utils/quick-start-flag';
 import './guidedTour.css';
 
 interface TourFlags {
   customModels: boolean;
   capacityPlanning: boolean;
+  quickStart: boolean;
 }
 
 interface GuidedTourContextValue {
@@ -22,11 +24,13 @@ const GuidedTourContext = createContext<GuidedTourContextValue | null>(null);
 
 const DISMISS_LABEL = 'Dismiss tour';
 
-const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
+export const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
   title: 'Get started with GenAI IDP',
   description: 'A quick walkthrough of the main areas of the console.',
   completed: false,
-  completedScreenDescription: "That's the tour! Open the Quick Start assistant any time to build a configuration or get help.",
+  completedScreenDescription: flags.quickStart
+    ? "That's the tour! Open the Quick Start assistant any time to build a configuration or get help."
+    : "That's the tour!",
   tasks: [
     {
       title: 'Find your way around',
@@ -106,11 +110,16 @@ const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
             'so capabilities can be added without redeploying.',
           hotspotId: 'nav-extensions',
         },
-        {
-          title: 'Get started',
-          content: 'Open the Quick Start assistant any time to set up a configuration or ask questions. ' + 'Click Finish to open it now.',
-          hotspotId: 'nav-quick-start',
-        },
+        ...(flags.quickStart
+          ? [
+              {
+                title: 'Get started',
+                content:
+                  'Open the Quick Start assistant any time to set up a configuration or ask questions. ' + 'Click Finish to open it now.',
+                hotspotId: 'nav-quick-start',
+              },
+            ]
+          : []),
       ],
     },
   ],
@@ -135,6 +144,7 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
       const resolved: TourFlags = {
         customModels: flags?.customModels ?? false,
         capacityPlanning: flags?.capacityPlanning ?? true,
+        quickStart: isQuickStartEnabled(),
       };
       navigate(DOCUMENTS_PATH);
       window.setTimeout(() => setTutorial(buildTutorial(resolved)), 350);
@@ -144,7 +154,9 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
   const exitTour = useCallback(() => setTutorial(null), []);
   const finishTour = useCallback(() => {
     setTutorial(null);
-    window.dispatchEvent(new CustomEvent('openQuickStart'));
+    if (isQuickStartEnabled()) {
+      window.dispatchEvent(new CustomEvent('openQuickStart'));
+    }
   }, []);
 
   useEffect(() => {

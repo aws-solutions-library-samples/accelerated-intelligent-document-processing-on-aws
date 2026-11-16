@@ -1,6 +1,10 @@
 ---
 title: "Feature Platform — Developer Guide"
 ---
+
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Feature Platform — Developer Guide
 
 How to build a new **extension** (feature) and add it to the catalog. For the
@@ -155,7 +159,7 @@ The host passes your component a `uiAccessAllowed` boolean, and the reference
 samples use it (`disabled={!uiAccessAllowed}`). That is a **UX affordance, not a
 licence gate**, and it is important not to confuse the two.
 
-> **Renamed in this release.** This field was called `subscriptionActive`, which
+> **Renamed in 0.6.5.** This field was called `subscriptionActive`, which
 > invited precisely the wrong reading. If your extension destructures
 > `subscriptionActive`, rename it — see the upgrade note in `CHANGELOG.md`.
 

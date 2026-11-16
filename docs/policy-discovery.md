@@ -178,11 +178,11 @@ A single Bedrock LLM call that analyzes the full policy document in one pass and
 ```yaml
 discovery:
   rules:
-    model: "us.anthropic.claude-sonnet-4-6"
+    model: "global.anthropic.claude-sonnet-4-6"
     temperature: 0.0
     top_p: 0.0
     top_k: 5
-    max_tokens: 64000
+    max_tokens: ""    # empty = the model's maximum output (the default)
     agentic:
       enabled: false
 ```
@@ -206,7 +206,7 @@ A multi-turn Strands agent flow with an optional reviewer agent that iterates on
 ```yaml
 discovery:
   rules:
-    model: "us.anthropic.claude-sonnet-4-6"
+    model: "global.anthropic.claude-sonnet-4-6"
     agentic:
       enabled: true
       review_agent: true           # optional second-pass reviewer
@@ -311,7 +311,7 @@ The full default task prompt also defines the JSON output format the LLM must re
 
 ### API Integration
 
-**GraphQL Mutation:**
+**API operation** (`POST /op/uploadDiscoveryDocument`; the shape below is the contract in `schema.graphql`):
 ```graphql
 mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String) {
   uploadDiscoveryDocument(
@@ -436,7 +436,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 **Configuration Tuning:**
 - Keep `temperature: 0.0` for rule extraction. Determinism matters more than creativity here — you want the same document to produce the same rules on every run.
-- Raise `max_tokens` (not temperature) if the LLM is truncating mid-JSON on a long manual. The default 64000 is a safe ceiling.
+- Leave `max_tokens` empty, which is the default: it requests the model's maximum output. If you have set a lower value and the LLM truncates mid-JSON on a long manual, clear it (not temperature). At the default, a manual that still truncates has to be split.
 
 **Naming & Regex:**
 - Immediately after each extraction, set the `Document Name Regex` on the new class. Undocumented regex ⇒ rules never fire.
@@ -449,10 +449,10 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 **Job completes but no new class appears in Policy Schema:**
 - Check the job's `discoveryType` field — must be `"rules"`, not `"classes"`. A misrouted mutation saves to the wrong place.
-- Confirm the `Config#<profile>` record in DynamoDB exists — `_save_rules_to_config` targets the active profile; if the UI created a new profile after the job started, the rules may have landed in the previously active one.
+- Confirm the `Config#<profile>` record in DynamoDB exists for the profile the job names — rules are saved only into the profile chosen when the job was submitted, never into the active one. A job submitted without a profile is refused, and `RulesDiscovery` refuses to save without `version=`.
 
 **Job fails with "Failed to extract data from document":**
-- Increase `max_tokens` to 64000+ if the manual is long (100+ rules).
+- If you have set `max_tokens`, clear it so the model's maximum output is requested. At the default it already is, so split a long manual (100+ rules) instead.
 - Switch to agentic mode for complex manuals where a single pass under-extracts.
 - Check the source PDF's text layer — purely scanned policy manuals may need OCR preprocessing before rule extraction.
 
@@ -476,12 +476,12 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 - **No cross-policy deduplication.** If two policy documents contain the same underlying rule, it will appear in both policy classes. Duplicate detection across policies is not provided.
 
   This is more than untidy output: Rule Validation answers **each copy** with its own LLM call for **every** document processed, so a rule duplicated across three payer manuals is a standing 3× cost multiplier on that rule, not a one-time extraction cost. The copies are also worded differently (each is extracted verbatim from its own source), so they can return **contradictory** Pass/Fail answers with nothing indicating they were ever the same rule. The discovery job now reports rule names that collide with other policy classes in its status message; removing the duplicates in **Configuration → Policy Schema** is still manual.
-- **Token limits on very large manuals.** Manuals with thousands of rules may exceed a single Bedrock call's output token limit even at `max_tokens: 64000`. Split the document by chapter/section into multiple uploads for very large sources.
+- **Token limits on very large manuals.** Manuals with thousands of rules may exceed a single Bedrock call's output token limit even at the default `max_tokens`, which requests the model's maximum output. Split the document by chapter/section into multiple uploads for very large sources.
 
   A truncated response does **not** silently persist a partial ruleset — a compliance validation set quietly missing rules would report documents as compliant against a fraction of the policy, so the job fails instead. The mechanism differs by extraction method, and both end in a failed job naming the remedy:
 
   - **Traditional:** the model's stop reason is checked directly. A truncated response is retried, and if every attempt truncates the job fails rather than saving what was recovered.
   - **Agentic:** Strands fails hard on a truncated response (`MaxTokensReachedException`) before any result is returned, so there is no partial ruleset to save. That error is translated into the same actionable message as the traditional path.
 
-  If a job fails with a truncation message, split the document by chapter or raise `discovery.rules.max_tokens`.
+  If a job fails with a truncation message, split the document by chapter, or set `discovery.rules.model` to a model with a larger output limit. `discovery.rules.max_tokens` ships empty, which already requests the model's full output limit, so it helps only if you set a lower cap, in which case clear it. The message says which case applies.
 - **Validation-question phrasing depends on prompt.** Rule descriptions are only as good as the `task_prompt`'s instruction to phrase them as yes/no questions. Customize the prompt if the default phrasing doesn't match your validator's expectations.

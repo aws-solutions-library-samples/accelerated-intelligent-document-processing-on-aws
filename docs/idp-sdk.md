@@ -2,6 +2,9 @@
 title: "IDP SDK Documentation"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # IDP SDK Documentation
 
 The IDP SDK provides programmatic Python access to all IDP Accelerator capabilities with a clean, namespaced API.
@@ -151,6 +154,9 @@ client.config.sync_bda(...)
 client.manifest.generate(...)
 client.manifest.validate(...)
 
+# Terraform-only operations (genai-idp-terraform migration)
+client.terraform.migrate_from_genai_idp_terraform.plan(...)
+
 # Testing operations
 client.testing.load_test(...)
 ```
@@ -190,6 +196,56 @@ Deploying and deleting a Terraform deployment through the SDK's CloudFormation p
 is refused; use `idp-cli deploy --terraform` and `idp-cli delete --terraform`, or
 Terraform itself.
 
+### Terraform migration
+
+`client.terraform.migrate_from_genai_idp_terraform` moves a deployment of the separate
+`awslabs/genai-idp-terraform` implementation onto this repository's Terraform module
+in place, keeping its buckets, tables, KMS key and Cognito user pool. It is what
+`idp-cli terraform migrate-from-genai-idp-terraform` calls; the procedure is in
+[Migrating from genai-idp-terraform](./terraform-migration.md). The client's
+`stack_name` is the **new** deployment's name, and each method takes `terraform_dir`
+(default `./idp-terraform/<stack_name>`). The methods' own AWS calls assume the role
+the new deployment's providers assume (`assume_role_arn` of `plan`, read back from
+`main.tf` by the later methods), or use the ambient credentials when there is none.
+
+```python
+client = IDPClient(stack_name="my-idp", region="us-west-2")
+migration = client.terraform.migrate_from_genai_idp_terraform
+
+plan = migration.plan(
+    "old-idp.tfstate",
+    "admin@example.com",
+    pointer_url="https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/"
+    "artifacts/genai-idp/terraform/idp-terraform-latest.json",
+)
+migration.check_retention()
+migration.freeze(apply=True, wait=True)
+migration.fix_config(apply=True)
+migration.adopt_user_pool(apply=True)
+result = migration.apply(apply=True)
+migration.detach("./old-idp", apply=True)
+migration.check_destroy("destroy-plan.json")
+```
+
+| Method | Returns | Notes |
+|---|---|---|
+| `plan(old_state_path, admin_email, parameters=None, *, module_url=None, pointer_url=None, terraform_dir=None, terraform_bin="terraform", assume_role_arn=None)` | `TerraformMigrationPlanResult` | Writes the root configuration, runs `terraform init`, writes `adopt.tf` and the migration plan. Raises `IDPConfigurationError` on an old stateful resource with no verdict. |
+| `check_retention(terraform_dir=None, accept_expiry=())` | `TerraformMigrationStepResult` | Reads only. `notes` says what was not checked. |
+| `freeze(terraform_dir=None, *, apply=False, wait=False, timeout_seconds=1800, poll_seconds=30, ignore_documents=())` | `TerraformMigrationStepResult` | `details` separates documents in flight from documents awaiting review. |
+| `fix_config(terraform_dir=None, *, apply=False, restore=None)` | `TerraformMigrationStepResult` | `backup_path` names the backup. |
+| `adopt_user_pool(terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `apply(terraform_dir=None, terraform_bin="terraform", *, apply=False, accept_expiry=(), accept_changes=(), ignore_documents=())` | `TerraformMigrationStepResult` | `details["counts"]` has the plan's import, add, change and destroy counts; `details["review"]` lists the allowed in-place changes to adopted resources. `accept_changes` takes `"<address>:<rule>"` as a finding names it. |
+| `detach(old_terraform_dir, terraform_dir=None, terraform_bin="terraform", *, apply=False)` | `TerraformMigrationStepResult` | |
+| `check_destroy(destroy_plan_path, terraform_dir=None)` | `TerraformMigrationStepResult` | Reads only. |
+
+Every method that can change something is a dry run unless `apply=True`. A
+`TerraformMigrationStepResult` lists in `changes` exactly what the phase changes (or,
+in a dry run, would change), in `findings` what blocks the next step (`ok` is false
+when there is any), and in `back_out` how to undo it. `TerraformMigrationPlanResult`
+lists one `TerraformMigrationResource` per old resource, with its verdict, the
+address it is adopted into and the import id, plus the stack parameters written, the
+addresses to detach and the commands that detach them.
+
 ---
 
 ## Document Operations
@@ -226,7 +282,7 @@ Get processing status for a single document.
 - `document_id` (str, required): Document identifier (S3 key format: batch-id/filename)
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, and errors
+**Returns:** `DocumentStatus` with processing information including status, duration, pages, sections, errors, and `bucket` — the progress bucket the document is reported under: `completed`, `failed`, `awaiting_review` (held for human review), `running` or `queued`
 
 ```python
 status = client.document.get_status(document_id="batch-123/invoice.pdf")
@@ -440,10 +496,11 @@ Get processing status for all documents in a batch.
 - `batch_id` (str, required): Batch identifier
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `success_rate`, and `all_complete`
+**Returns:** `BatchStatus` with `batch_id`, `documents` (list of DocumentStatus), `total`, `completed`, `failed`, `in_progress`, `queued`, `awaiting_review`, `success_rate`, and `all_complete`
 
 ⚠️ **`all_complete` is the only correct thing to poll on.** It is
-`completed + failed == total`, and it is what accounts for a document that has
+`completed + failed + awaiting_review == total` — true once no document is
+queued or running — and it is what accounts for a document that has
 been accepted but has no tracking row yet — the row is written asynchronously by
 the queue sender, so for the first 60 seconds of a batch such a document is
 reported under `queued` rather than `failed`. Re-deriving completeness from the
@@ -454,12 +511,23 @@ fixed. Past that window a document with no row is reported as failed with
 `Document not found in tracking table`; `IDP_NOT_FOUND_GRACE_SECONDS` sets the
 window.
 
+**A document waiting for human review settles the batch without completing it.**
+With review queues on, a document that raises a confidence alert ends its first
+processing run as `HITL_IN_PROGRESS` and stays there until a reviewer completes
+or rejects it in the web UI's review queues. `get_status` counts it in
+`awaiting_review` (bucket `awaiting_review`), not in `in_progress`, and
+`all_complete` treats it as settled, so a polling loop ends rather than waiting
+on a person. `all_complete` is therefore not "every document has an outcome":
+check `awaiting_review` before treating the batch's results as final, and poll
+again after the reviews to see each document's outcome. `success_rate` is over
+completed and failed documents only.
+
 ⚠️ **Read a document's progress bucket from `doc.bucket`, not from
 `doc.status`.** `NOT_FOUND` is the one status whose bucket is not a function of
 the status: inside the window it means "queued", past it "failed", and the
 status string is the same either way, so code that derives a bucket from the
 status counts an in-flight document as a failure. `bucket` is one of `queued`,
-`running`, `completed` or `failed`, and `get_status` sets it on every document
+`running`, `completed`, `failed` or `awaiting_review`, and `get_status` sets it on every document
 it returns. It is `Optional`, because `DocumentStatus` has other producers that
 record no bucket; fall back to `idp_sdk.classify_document_state(doc.status)`
 when it is `None`.
@@ -2167,6 +2235,24 @@ result = client.discovery.run_batch(
 
 ---
 
+## MCP Operations
+
+MCP service credentials — the operations behind `idp-cli mcp credentials` and the MCP
+Configuration page. See [MCP Server](mcp-server.md#service-credentials).
+
+| Method | Returns | Purpose |
+|---|---|---|
+| `mcp.list_credentials()` | `list[McpCredential]` | Every credential; never a secret |
+| `mcp.create_credential(name, role, *, allowed_config_versions=None, write_tools=False, expires_in_days=None)` | `McpCredentialIssued` | Create one. The result is the only time `client_secret` is returned; it is also stored in Secrets Manager at `secret_arn`. Raises `IDPValidationError` on the same refusals as the page |
+| `mcp.update_credential(client_id, *, role=None, allowed_config_versions=None, clear_scope=False, write_tools=None, enabled=None)` | `McpCredential` | Change role, profiles, write tools or enabled |
+| `mcp.rotate_credential(client_id, *, overlap_days=7)` | `McpCredentialIssued` | A replacement with the same access; the old one keeps working for `overlap_days` (0 to 7) |
+| `mcp.revoke_credential(client_id)` | `McpCredential` | Refused from its next request; app client and secret deleted |
+| `mcp.set_credential_tenant(client_id, tenant_id)` | `McpCredential` | Grant one tenant, or none; only under `TenantGrantSource=Api` |
+
+The settings these use (gateway, token URL, stack key, isolation mode) are read from
+the stack's credential manager function, so a credential made here is configured
+exactly as one made on the page.
+
 ## Tenancy Operations
 
 Tenant declarations and isolation checks — the operations behind `idp-cli tenancy`.
@@ -2488,7 +2574,7 @@ except Exception as e:
 ## Complete Example
 
 ```python
-from idp_sdk import IDPClient, RerunStep
+from idp_sdk import DocumentBucket, IDPClient, RerunStep
 import time
 
 # Initialize client
@@ -2498,12 +2584,17 @@ client = IDPClient(stack_name="my-idp-stack", region="us-west-2")
 doc_result = client.document.process(file_path="./invoice.pdf")
 doc_id = doc_result.document_id
 
-# Monitor document processing
+# Monitor document processing. Stop on an outcome, or when the document is
+# held for human review (nothing more happens until a reviewer works it).
 while True:
     status = client.document.get_status(document_id=doc_id)
     print(f"Status: {status.status.value}")
 
-    if status.status.value in ["COMPLETED", "FAILED"]:
+    if status.bucket in (
+        DocumentBucket.COMPLETED,
+        DocumentBucket.FAILED,
+        DocumentBucket.AWAITING_REVIEW,
+    ):
         break
 
     time.sleep(5)

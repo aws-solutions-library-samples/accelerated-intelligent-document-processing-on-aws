@@ -6,9 +6,9 @@
 A per-field accuracy is a proportion measured on a sample, and a proportion measured
 on 3 observations means something very different from one measured on 300. Reporting
 the point estimate alone lets a badly-broken field hide inside a healthy-looking
-overall score: a run's *overall* accuracy firms up within roughly the first hundred
-documents because every document contributes to it, while a field appearing once per
-document gains one observation per document.
+overall score: a run's *overall* accuracy firms up quickly because every field of
+every document contributes to it, while a field appearing once per document gains
+only one observation per document.
 
 See ``docs/proposals/per-field-confidence-intervals.md`` for what these intervals do
 and do not account for.

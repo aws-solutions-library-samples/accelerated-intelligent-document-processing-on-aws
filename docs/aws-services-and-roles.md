@@ -21,7 +21,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | **Amazon DynamoDB** | Tracks document processing, manages configurations and concurrency, stores each user's [Inbox](./web-ui.md#inbox) messages (`NotificationsTable`), and holds HITL review queues, assignments and Test Studio queue summaries (`HITLTable`) | ✓ | ✓ |
 | **AWS Lambda** | Executes document processing functions and business logic | ✓ | ✓ |
 | **AWS Step Functions** | Orchestrates document processing workflows and the data-mart rollup schema-migration (`DataMartMigrationStateMachine`, retry-safe/chunked/resumable — see [reporting-sql-layer.md](./reporting-sql-layer.md) §Track A and [data-mart-migration-runbook.md](./data-mart-migration-runbook.md)) | ✓ | ✓ |
-| **Amazon SQS** | Queues documents for processing and handles throttling | ✓ | ✓ |
+| **Amazon SQS** | Queues documents for processing and handles throttling; carries bulk Skip All Reviews jobs (`BulkReviewJobQueue` and its dead-letter queue, in the API resolvers stack) | ✓ | ✓ |
 | **Amazon EventBridge** | Triggers document processing workflows when files are uploaded | ✓ | ✓ |
 | **Amazon CloudFront** | Delivers the web UI with global distribution (default hosting mode) | ✓ | ✓ |
 | **Amazon API Gateway** | Backs the web UI's data API — a REST API with a Cognito User Pools authorizer in front of a dispatcher Lambda, which is how every UI query and mutation reaches the backend (see [AppSync → REST API Migration](./migration-appsync-to-rest.md)). Can alternatively serve the web UI itself (S3 proxy) for VPC-based deployments (see [API Gateway Hosting](./apigateway-hosting.md)) | ✓ | ✓ |
@@ -57,7 +57,7 @@ This document outlines the AWS services used by the GenAI Intelligent Document P
 | Service | Usage | Deployment | Runtime |
 |---------|-------|------------|---------|
 | **Amazon Cognito** | Manages user authentication and authorization. The User Pool fronts the UI's REST API as a **User Pools authorizer** (authentication only — per-role authorization is enforced in each resolver, see [rbac.md](./rbac.md)), and the Identity Pool's authenticated role SigV4-signs the chat streaming Lambda Function URL | ✓ | ✓ |
-| **AWS WAF** | Protects the UI's REST API from unwanted sources (optional) — a REGIONAL WAFv2 WebACL associated with the REST API stage, enabled when `WAFAllowedIPv4Ranges` is set to anything other than the allow-all default | ✓ | ✓ |
+| **AWS WAF** | Protects the UI's REST API from unwanted sources (optional) — a REGIONAL WAFv2 WebACL associated with the REST API stage, enabled when `WAFAllowedIPv4Ranges` is set to anything other than the allow-all default. The web ACL logs every request it allows or blocks to the CloudWatch Logs group `aws-waf-logs-<StackName>-api` (retention `LogRetentionDays`, customer-managed key); WAF adds its delivery permission to the account's CloudWatch Logs resource policy when the logging configuration is created | ✓ | ✓ |
 | **AWS Marketplace (Agreement / Catalog / Entitlement)** | Subscription checks for paid Feature Platform extensions. In the **host** stack, buyer-side `SearchAgreements`. In the optional **Seller Entitlement Service** (deployed separately, into a *seller* account), seller-side `SearchAgreements` + `ListEntities` | — | ✓ |
 
 ### Monitoring & Operations
@@ -235,8 +235,8 @@ The solution creates various IAM roles to run different components of the system
   * `bedrock:GetDataAutomationProject`, `bedrock:ListDataAutomationProjects`, `bedrock:GetBlueprint`, `bedrock:GetBlueprintRecommendation`
   * `s3:GetObject`, `s3:PutObject`
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`
-  * `ssm:GetParameter`, `ssm:PutParameter`
   * `cloudwatch:PutMetricData`
+  * No SSM action: the results function reads no Parameter Store parameter
   * `logs:*`
 
 #### Web UI & API Roles
@@ -261,6 +261,22 @@ The solution creates various IAM roles to run different components of the system
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem` on `NotificationsTable` and its `UnreadIndex`. Deletes go through `BatchWriteItem`; there is no `DeleteItem`, Cognito or configuration access
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
 
+* **Review Queues Resolver Role** (API resolver Lambda for the review queue operations: queue lists, claims, drafts, dispositions and the Admin supervisor actions):
+  * `dynamodb:GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`, `BatchGetItem`, `BatchWriteItem`, `ConditionCheckItem` on `HITLTable` and its indexes, and the Inbox producer set on `NotificationsTable`
+  * `dynamodb:GetItem`, `Query`, `UpdateItem` on the Tracking table; `Scan`, `GetItem`, `Query` on the Configuration table; `GetItem`, `Query` on the Users table
+  * `sqs:SendMessage` on the DocumentQueue (finalize runs); S3 read/write of `review/` objects in the Output bucket and writes to the Working bucket
+  * `cognito-idp:ListUsersInGroup`, `ListUsers`, `AdminListGroupsForUser` on the user pool; the customer-managed key; `cloudwatch:PutMetricData` in the stack's namespace
+
+* **Bulk Review Resolver Role** (API resolver Lambda for `bulkSkipAllReviews`, `getBulkReviewJob`, `listBulkReviewJobs`, `cancelBulkReviewJob`, `deleteBulkReviewJob` and `sendToReview`):
+  * The Review Queues Resolver's grants (the skips go through the same review queue service)
+  * `dynamodb:BatchGetItem` and `Query` on the Tracking table and its `TypeDateIndex` (selection by configuration profile and date)
+  * `sqs:SendMessage` on `BulkReviewJobQueue` (requests above `hitl.bulk_skip_sync_limit`), and `sqs:GetQueueAttributes` on the DocumentQueue
+
+* **Bulk Review Worker Role** (SQS-triggered Lambda that advances bulk Skip All Reviews jobs):
+  * The Bulk Review Resolver's DynamoDB, S3, KMS, Inbox and metric grants
+  * `sqs:ReceiveMessage`, `DeleteMessage`, `GetQueueAttributes`, `ChangeMessageVisibility` and `SendMessage` on `BulkReviewJobQueue` and its dead-letter queue (continuations, and failing a dead-lettered job)
+  * `sqs:SendMessage` and `GetQueueAttributes` on the DocumentQueue (resubmissions, paced by its depth)
+
 * **Upload Resolver Role** (API resolver Lambda for `uploadDocument`, `listSampleDocuments` and `uploadSampleDocument`):
   * SAM `S3WritePolicy` on the Input, Configuration, Output, Evaluation Baseline and Test Set buckets (the write targets an upload's presigned POST may name), and `S3ReadPolicy` on the Configuration bucket (the bundled samples)
   * SAM `DynamoDBReadPolicy` on the Configuration table (the config prefix mappings)
@@ -269,7 +285,7 @@ The solution creates various IAM roles to run different components of the system
   * `kms:Encrypt`, `kms:Decrypt`, `kms:ReEncrypt*`, `kms:GenerateDataKey*`, `kms:DescribeKey` on the customer-managed key
   * `cloudwatch:PutMetricData`, limited to the stack's namespace
 
-* **Inbox producers** (none in this release). A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
+* **Inbox producers**. A Lambda that posts Inbox messages through `idp_common.notifications` needs the grants listed in the [notifications module README](../lib/idp_common_pkg/idp_common/notifications/README.md#producer-iam):
   * `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:GetItem`, `dynamodb:Query`, `dynamodb:BatchGetItem`, `dynamodb:BatchWriteItem`, `dynamodb:ConditionCheckItem` on `NotificationsTable` and its `UnreadIndex`
   * read access to the Configuration table (for retention and the per-user cap)
   * `cognito-idp:ListUsersInGroup` on the user pool, only when it posts to Cognito groups
@@ -346,6 +362,12 @@ The solution creates various IAM roles to run different components of the system
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (reporting/Athena results buckets)
   * `logs:*`
 
+* **Agent Roles** (the functions that run the analytics agent: `AgentChatProcessorFunction`, `ChatStreamProcessorFunction`, `AgentProcessorFunction`, and `AgentCoreMCPHandlerFunction` for the MCP `search` tool):
+  * `bedrock-agentcore:*CodeInterpreter*` session actions on the AWS-managed interpreter only (`arn:<partition>:bedrock-agentcore:*:aws:code-interpreter/*`)
+  * `lambda:InvokeFunction` on the document lookup function (`LookupFunction`) only
+  * On the reporting bucket, the three chat and agent processors hold read (`S3ReadPolicy`) plus `s3:PutObject` under `athena-results/` (where Athena writes query results with the caller's credentials); `ChatStreamProcessorFunction` also reads the output bucket and writes only `<document key>/summary/fulltext.txt` there, for Chat with Document
+  * Asserted, with the S3 object access each function declares, by `scripts/tests/test_analytics_role_grants.py`
+
 * **Save Reporting Data Role** (`SaveReportingDataFunctionV2`, writes each document's reporting Parquet):
   * Read and write on the reporting bucket (SAM `S3CrudPolicy`), read on the output bucket (`S3ReadPolicy`)
   * Read-only on the configuration table (`DynamoDBReadPolicy`)
@@ -397,8 +419,9 @@ The solution creates various IAM roles to run different components of the system
 * **CodeBuild Roles** (UI build and pattern container-image build):
   * `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` (artifacts)
   * `ecr:*` (push/scan container images), `cloudfront:CreateInvalidation` (UI)
-  * `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents`
+  * `logs:CreateLogStream`, `logs:PutLogEvents` on the project's own log group, `/<StackName>/codebuild/<ProjectLogicalId>`, which the stack creates with `LogRetentionDays` retention and the customer-managed key. No `logs:CreateLogGroup`
   * `ec2:*` networking actions (when deploying into a VPC)
+  * The UI build runs with CodeBuild privileged mode off; only the two container-image builds, which run `docker build`, have it on
 
 * **Malware Scan Role** (optional malware scanning, `MalwareScanning: CREATE_PLAN`) — assumed by `malware-protection-plan.guardduty.<url-suffix>`, never by a Lambda:
   * `s3:GetObject`, `s3:GetObjectVersion` on the input bucket's objects — reading what it scans.

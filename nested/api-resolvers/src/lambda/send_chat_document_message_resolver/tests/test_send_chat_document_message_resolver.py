@@ -67,9 +67,11 @@ class TestResolverUIPath:
     def test_first_message_records_ownership_and_invokes_processor(self):
         import index
 
-        # Session does not exist yet — resolver will put_item and claim ownership.
+        # Session does not exist yet and has no stored messages — the resolver
+        # will put_item and claim ownership.
         table = MagicMock()
         table.get_item.return_value = {}
+        table.query.return_value = {"Items": []}
         dyn = MagicMock()
         dyn.Table.return_value = table
 
@@ -100,11 +102,19 @@ class TestResolverUIPath:
         assert result["role"] == "user"
         assert result["isProcessing"] is True
 
-        # Claimed ownership
+        # Claimed ownership, in the owner table every chat path shares, with a
+        # write that cannot overwrite another user's claim.
         table.put_item.assert_called_once()
+        assert ("chat-session-owners-table",) in [
+            c.args for c in dyn.Table.call_args_list
+        ]
         claim = table.put_item.call_args.kwargs["Item"]
         assert claim["sessionId"] == "s-1"
         assert claim["ownerSub"] == "caller-sub"
+        assert (
+            table.put_item.call_args.kwargs["ConditionExpression"]
+            == "attribute_not_exists(sessionId)"
+        )
 
         # Async invoke (Event)
         lam.invoke.assert_called_once()
@@ -371,3 +381,89 @@ class TestResolverOwnership:
                 ),
                 None,
             )
+
+
+class TestResolverOwnerRegistry:
+    """The refusals the owner registry adds, each of which must deny the turn."""
+
+    _ARGS = {
+        "sessionId": "s-1",
+        "prompt": "hi",
+        "s3Uri": "uploads/x.pdf",
+        "method": "chat",
+    }
+
+    def _run(self, index, table, event):
+        dyn = MagicMock()
+        dyn.Table.return_value = table
+        lam = MagicMock()
+        with patch.object(index, "_dynamodb", dyn), patch.object(index, "_lambda", lam):
+            index.handler(event, None)
+        return lam
+
+    @pytest.mark.unit
+    def test_an_unconfigured_owner_table_refuses(self, monkeypatch):
+        import index
+
+        monkeypatch.setattr(index, "OWNERS_TABLE", "")
+        with pytest.raises(PermissionError, match="cannot be verified"):
+            self._run(index, MagicMock(), _make_event(dict(self._ARGS)))
+
+    @pytest.mark.unit
+    def test_a_caller_with_no_sub_refuses(self):
+        import index
+
+        event = _make_event(dict(self._ARGS))
+        event["identity"] = {"username": "x", "claims": {"email": "x@example.com"}}
+        with pytest.raises(PermissionError, match="cannot be verified"):
+            self._run(index, MagicMock(), event)
+
+    @pytest.mark.unit
+    def test_a_lookup_error_refuses_rather_than_failing_open(self):
+        import index
+        from botocore.exceptions import ClientError
+
+        table = MagicMock()
+        table.get_item.side_effect = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "GetItem"
+        )
+        with pytest.raises(PermissionError, match="cannot be verified"):
+            self._run(index, table, _make_event(dict(self._ARGS)))
+
+    @pytest.mark.unit
+    def test_an_id_with_history_and_no_owner_needs_the_earlier_ownership_row(self):
+        import index
+
+        table = MagicMock()
+        table.query.return_value = {"Items": [{"PK": "s-1"}]}
+        # No owner recorded, and the earlier table names someone else.
+        table.get_item.side_effect = [
+            {},
+            {"Item": {"sessionId": "s-1", "ownerSub": "owner-a"}},
+        ]
+        with pytest.raises(PermissionError, match="another user"):
+            self._run(index, table, _make_event(dict(self._ARGS)))
+        table.put_item.assert_not_called()
+
+    @pytest.mark.unit
+    def test_the_earlier_ownership_row_registers_its_owner(self):
+        import index
+
+        table = MagicMock()
+        table.get_item.side_effect = [
+            {},
+            {"Item": {"sessionId": "s-1", "ownerSub": "caller-sub"}},
+        ]
+        lam = self._run(index, table, _make_event(dict(self._ARGS)))
+        assert table.put_item.call_args.kwargs["Item"]["ownerSub"] == "caller-sub"
+        lam.invoke.assert_called_once()
+
+    @pytest.mark.unit
+    def test_an_identity_less_invocation_is_not_checked(self):
+        import index
+
+        event = {"arguments": dict(self._ARGS), "identity": None}
+        table = MagicMock()
+        lam = self._run(index, table, event)
+        table.get_item.assert_not_called()
+        lam.invoke.assert_called_once()

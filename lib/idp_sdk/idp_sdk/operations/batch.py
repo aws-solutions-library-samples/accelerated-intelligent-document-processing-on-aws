@@ -63,6 +63,30 @@ def _batch_started_at(batch_info: Dict) -> Optional[datetime]:
         return None
 
 
+#: The status a one-document lookup reports for each progress bucket, in the
+#: order the buckets are read. Keyed by `DocumentBucket` and asserted to cover
+#: every member by `test_batch_operations_extended.py`, so a bucket added to the
+#: enum cannot fall through to UNKNOWN, which is what a hand-typed chain over the
+#: older four names would do to `awaiting_review` (#2022). That bucket reports
+#: `HITL_IN_PROGRESS`, the one status it holds, rather than a label no
+#: `DocumentState` defines; before it existed a held document read RUNNING.
+_SINGLE_DOCUMENT_STATUS_BY_BUCKET = (
+    (DocumentBucket.COMPLETED, "COMPLETED"),
+    (DocumentBucket.AWAITING_REVIEW, "HITL_IN_PROGRESS"),
+    (DocumentBucket.RUNNING, "RUNNING"),
+    (DocumentBucket.QUEUED, "QUEUED"),
+    (DocumentBucket.FAILED, "FAILED"),
+)
+
+
+def _single_document_status(status_data: Dict[str, Any]) -> str:
+    """The coarse status of the one document a `get_batch_status([id])` covered."""
+    for bucket, status in _SINGLE_DOCUMENT_STATUS_BY_BUCKET:
+        if status_data.get(bucket.value):
+            return status
+    return "UNKNOWN"
+
+
 class BatchOperation:
     """Batch document processing operations."""
 
@@ -572,7 +596,11 @@ class BatchOperation:
         stats = monitor.calculate_statistics(status_data)
 
         documents = []
-        for category in ["completed", "running", "queued", "failed"]:
+        # Every bucket the monitor fills, derived from the enum so a bucket added
+        # there cannot be dropped here: `awaiting_review` was the one a hand-typed
+        # list would have lost, taking its documents out of `documents` while the
+        # counts still included them.
+        for category in [bucket.value for bucket in DocumentBucket]:
             for doc in status_data.get(category, []):
                 start_time = doc.get("start_time") or None
                 end_time = doc.get("end_time") or None
@@ -612,6 +640,7 @@ class BatchOperation:
             failed=stats.get("failed", 0),
             in_progress=stats.get("running", 0),
             queued=stats.get("queued", 0),
+            awaiting_review=stats.get("awaiting_review", 0),
             success_rate=stats.get("success_rate", 0.0) / 100.0,
             all_complete=stats.get("all_complete", False),
         )
@@ -1132,15 +1161,7 @@ class BatchOperation:
         try:
             # Get status
             status_data = monitor.get_batch_status([doc_id])
-            status = "UNKNOWN"
-            if status_data.get("completed"):
-                status = "COMPLETED"
-            elif status_data.get("running"):
-                status = "RUNNING"
-            elif status_data.get("queued"):
-                status = "QUEUED"
-            elif status_data.get("failed"):
-                status = "FAILED"
+            status = _single_document_status(status_data)
             # A rejected document (review queues) sits in the failed bucket but
             # has results; report it as REJECTED, never collapsed to FAILED.
             entries = [
@@ -1308,15 +1329,7 @@ class BatchOperation:
             try:
                 confidence_data = analyzer.get_confidence(doc_id, section_id)
                 status_data = monitor.get_batch_status([doc_id])
-                status = "UNKNOWN"
-                if status_data.get("completed"):
-                    status = "COMPLETED"
-                elif status_data.get("running"):
-                    status = "RUNNING"
-                elif status_data.get("queued"):
-                    status = "QUEUED"
-                elif status_data.get("failed"):
-                    status = "FAILED"
+                status = _single_document_status(status_data)
 
                 attributes = confidence_data.get("attributes", {})
                 documents.append(

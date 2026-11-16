@@ -1258,6 +1258,7 @@ logs:*
 - `CreateExportTask`, `DescribeExportTasks`
 - `PutMetricFilter`, `DeleteMetricFilter`, `DescribeMetricFilters`
 - `PutResourcePolicy`, `DeleteResourcePolicy`, `DescribeResourcePolicies`
+- `CreateLogDelivery`, `DeleteLogDelivery` (the API WAF web ACL's request logging, when WAF is enabled)
 - `TagResource`, `UntagResource`, `ListTagsForResource`
 
 </details>

@@ -2,6 +2,9 @@
 title: "GovCloud Operations"
 ---
 
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # GovCloud Operations
 
 Monitoring, troubleshooting, and operational best practices for the GenAI IDP solution in GovCloud.

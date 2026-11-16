@@ -15,7 +15,8 @@
  */
 
 import React from 'react';
-import { act, render, waitFor } from '@testing-library/react';
+import { act, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { barButtonLabels, chooseMenuItem, menuItems, menuNames } from './edit-bar';
@@ -112,7 +113,7 @@ const queryOf = (call: unknown[]) => String((call[0] as { query: string }).query
 const processCalls = () => graphql.mock.calls.filter((c) => queryOf(c).includes('processChanges'));
 
 const renderEditor = async (seed?: DirectEditOptions['seed'], path = '/documents/in%2Fdoc.pdf/edit') => {
-  render(
+  renderWithIntl(
     <MemoryRouter initialEntries={[path]}>
       <DocumentEdit objectKey="in/doc.pdf" seed={seed} />
       <LocationProbe />

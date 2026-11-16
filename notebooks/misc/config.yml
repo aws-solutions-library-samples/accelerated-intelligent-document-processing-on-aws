@@ -722,7 +722,7 @@ extraction:
 
     </document_ocr_data>
   temperature: "0.0"
-  model: us.anthropic.claude-3-7-sonnet-20250219-v1:0
+  model: us.anthropic.claude-sonnet-5
   system_prompt: >
     You are a document assistant. Respond only with JSON. Never make up data,
     only provide data found in the document being provided.
@@ -852,7 +852,7 @@ evaluation:
         "reason": "Your explanation here"
       }
     temperature: "0.0"
-    model: us.anthropic.claude-3-haiku-20240307-v1:0
+    model: us.amazon.nova-2-lite-v1:0
     system_prompt: >
       You are an evaluator that helps determine if the predicted and expected
       values match for document attribute extraction. You will consider the

@@ -193,7 +193,8 @@ CACHE_RATE_CASES = [
     # Claude: cache read 0.1x input, cache write 1.25x input.
     ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 3.3e-6, 3.3e-7, 4.125e-6),
     ("us.anthropic.claude-sonnet-4-6", 3.3e-6, 3.3e-7, 4.125e-6),
-    ("us.anthropic.claude-sonnet-5", 3.3e-6, 3.3e-7, 4.125e-6),
+    # Sonnet 5 carried Sonnet 4.6's rates (the row above) until #1830.
+    ("us.anthropic.claude-sonnet-5", 2.2e-6, 2.2e-7, 2.75e-6),
     # ":1m" selects the 1M-token context window, which carries no price premium
     # on a 4.6-or-later model, so this row is deliberately identical to the
     # base us.anthropic.claude-sonnet-4-6 row above. It used to transcribe a

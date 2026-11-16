@@ -41,6 +41,9 @@ import {
   NO_PAGES_REASON,
   NO_PAGE_TEXT_REASON,
   NO_PENDING_REVIEW_REASON,
+  NOT_FINISHED_REASON,
+  ALREADY_IN_REVIEW_REASON,
+  REVIEW_QUEUE_OFF_REASON,
   NO_RULE_VALIDATION_REASON,
   REVIEWER_FINISHED_REASON,
   REVIEWER_UNCLAIMED_REASON,
@@ -60,6 +63,7 @@ export type DocumentActionId =
   | 'reset-class'
   | 'baseline'
   | 'skip-all'
+  | 'send-to-review'
   | 'reprocess'
   | 'abort'
   | 'delete'
@@ -89,6 +93,7 @@ export const ACTION_OPERATIONS: Record<GatedAction, { operations: string[] }> = 
   'reset-class': { operations: ['processChanges'] },
   baseline: { operations: ['copyToBaseline'] },
   'skip-all': { operations: ['skipAllSectionsReview'] },
+  'send-to-review': { operations: ['sendToReview'] },
   reprocess: { operations: ['reprocessDocument'] },
   abort: { operations: ['abortWorkflow'] },
   delete: { operations: ['deleteDocument'] },
@@ -117,6 +122,7 @@ export const ACTION_GROUPS: Record<GatedAction, readonly AppGroup[]> = {
   'reset-class': ADMIN_REVIEWER,
   baseline: ADMIN_AUTHOR,
   'skip-all': ADMIN_REVIEWER,
+  'send-to-review': ADMIN_REVIEWER,
   reprocess: ADMIN_AUTHOR,
   abort: ADMIN_AUTHOR,
   delete: ADMIN_AUTHOR,
@@ -170,6 +176,8 @@ export interface GateInput {
   bdaMode: boolean;
   configLoading: boolean;
   baselineRequestInFlight: boolean;
+  /** Whether the Default review queue is on (``null``/absent = not known yet: the server decides). */
+  defaultQueueEnabled?: boolean | null;
 }
 
 export interface ActionGate {
@@ -196,11 +204,14 @@ const GROUP_FLAG: Record<AppGroup, keyof ActionRoles> = {
 
 const inGroups = (roles: ActionRoles, groups: readonly AppGroup[]): boolean => groups.some((g) => roles[GROUP_FLAG[g]]);
 
+/** Whether ``roles`` are offered ``action`` at all (the list and queue menus use it too). */
+export const isOfferedTo = (roles: ActionRoles, action: GatedAction): boolean => inGroups(roles, ACTION_GROUPS[action]);
+
 /** The first reason that applies, in order. */
 const first = (...checks: [boolean, string | undefined][]): string | undefined => checks.find(([applies]) => applies)?.[1];
 
 export const documentActionGates = (input: GateInput): DocumentActionGates => {
-  const { roles, doc, displayed, isHistorical, holdsReview, bdaMode, configLoading, baselineRequestInFlight } = input;
+  const { roles, doc, displayed, isHistorical, holdsReview, bdaMode, configLoading, baselineRequestInFlight, defaultQueueEnabled } = input;
   const H: [boolean, string] = [isHistorical, HISTORICAL_REASON];
   const inQueue = isInReviewQueue(doc.hitlStatus);
   const Q: [boolean, string] = [inQueue, inReviewQueueEditReason(roles.canWorkReviewQueues)];
@@ -278,6 +289,13 @@ export const documentActionGates = (input: GateInput): DocumentActionGates => {
       H,
       [hitl.queueManaged && hitl.kind === 'in_review', inReviewQueueEditReason(roles.canWorkReviewQueues)],
       [!pendingReview, NO_PENDING_REVIEW_REASON],
+    ),
+    'send-to-review': gate(
+      'send-to-review',
+      H,
+      [defaultQueueEnabled === false, REVIEW_QUEUE_OFF_REASON],
+      [doc.objectStatus !== 'COMPLETED', NOT_FINISHED_REASON],
+      [(hitl.queueManaged && hitl.kind === 'in_review') || pendingReview, ALREADY_IN_REVIEW_REASON],
     ),
     reprocess: gate('reprocess', H),
     abort: gate('abort', H, [!ABORTABLE_STATUSES.includes(String(doc.objectStatus ?? '')), NOT_ABORTABLE_REASON]),

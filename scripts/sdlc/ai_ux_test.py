@@ -196,8 +196,13 @@ What it does NOT protect, stated rather than implied
   job's AWS keys; what keeps those from the model is that it holds no tool that
   reads a file (``agent``). The same holds for the job's apt and toolchain
   install, which inherit none of those but run as root beside the job's shell.
-* **The review stack is shared.** The contract forbids every write, but a model
-  that disobeys could still change shared fixtures.
+* **The review stack is shared, and the commit guard judges a control by its
+  name.** The contract forbids every write, and every click and input the model
+  makes passes the first-time-user stories' commit guard before it reaches the
+  browser (``ux_runner.review_relay``), which refuses each control a story may not
+  press, Process Changes on a review-queue item among them, and lists the refusal
+  in ``refusals.jsonl``. A control that commits under a name the guard has no verb
+  for still gets through, and so could change shared fixtures.
 
 Usage
 -----
@@ -307,6 +312,7 @@ from ux_runner import (  # noqa: E402
     processes,
     prompt,
     recording,
+    review_relay,
     section,
     session,
     signin,
@@ -324,6 +330,7 @@ review = gitlab_api.review
 HARNESS_PATHS = (
     "scripts/sdlc/ai_ux_test.py",
     "scripts/sdlc/ai_mr_review.py",
+    "scripts/hooks/check_commit_text.py",
     "scripts/ux_runner",
     "scripts/ux_test_proxy.py",
     "scripts/ux_recorder.py",
@@ -337,6 +344,9 @@ HARNESS_PATHS = (
 )
 #: This file, as the CI job's ``UX_ENTRY`` must name it, relative to the tree.
 ENTRY = "scripts/sdlc/ai_ux_test.py"
+#: The browser server the session's MCP config runs, relative to the harness. It is
+#: under ``scripts/ux_runner``, so :data:`HARNESS_PATHS` already extracts it.
+REVIEW_RELAY = "scripts/ux_runner/review_relay.py"
 #: The two skills the prompt inlines, in that order. Read from the harness, so the
 #: MR under test cannot rewrite its own instructions.
 SKILL_FILES = (".claude/skills/ux-test-ci.md", ".claude/skills/ux-test.md")
@@ -397,6 +407,8 @@ _UPLOAD_FAILED = "_The video could not be uploaded; it is in the job artifacts._
 #: the full run classifies and labels from them.
 _INPUTS_PROSE_FIELDS = ("title", "author", "web_url", "source_branch", "ui_diff")
 _TOOLCHAIN_KEYS = ("chrome", "node", "chrome_devtools_mcp", "claude_code")
+#: The shape of a refusal kind the guard writes; any other is counted as ``other``.
+_GUARD_KIND_RE = re.compile(r"[a-z_]{1,40}")
 _EGRESS_KEYS = ("refused", "served", "connect_allowed", "upstream_failed", "by_reason")
 
 
@@ -790,6 +802,7 @@ def _new_summary(args: argparse.Namespace) -> dict[str, Any]:
             "dev_video_any_stack": args.dev_video_any_stack,
         },
         "egress": {},
+        "guard": {},
         "socket_audit": {
             "state": "not_run",
             "violations": [],
@@ -1055,6 +1068,7 @@ class _Run:
         self.browser = session.ConfinedBrowser(runtime, say=self._say)
         self.audit: chrome.SocketAudit | None = None
         self.rec_out: Path | None = None
+        self.guard_log: Path | None = None
 
     def execute(self) -> int:
         """Run, clean up, and write ``summary.json`` whatever happened.
@@ -1406,7 +1420,8 @@ class _Run:
         When the self-assume is refused, which is the usual case for a local run
         on a developer's SSO session, ``claude`` gets the job's own credentials
         (D5) and a ``WARNING:`` line says so before the session starts. Its working
-        directory, home, temporary directory and the chrome-devtools file root are
+        directory, home, temporary directory, the chrome-devtools file root and the
+        directory the review relay writes the commit guard's refusals into are
         private directories of the run, and the MCP config is written ``0o600``
         beside them.
         """
@@ -1426,10 +1441,14 @@ class _Run:
         agent_home = artifacts.private_dir(agent_root / "home")
         agent_tmp = artifacts.private_dir(agent_root / "tmp")
         mcp_files = artifacts.private_dir(agent_root / "mcp-files")
+        guard_dir = artifacts.private_dir(agent_root / "guard")
+        self.guard_log = guard_dir / review_relay.REFUSAL_LOG
         mcp_path = agent.write_mcp_config(
             agent_root / "mcp.json",
             agent.mcp_servers(
                 toolchain=tc,
+                relay=paths.HARNESS_ROOT / REVIEW_RELAY,
+                refusal_log=self.guard_log,
                 recorder_adapter=paths.HARNESS_ROOT / "scripts" / "ux_recorder_mcp.py",
                 recorder_out=self.rec_out,
                 python=sys.executable,
@@ -2054,18 +2073,21 @@ class _Run:
         self.browser.stop_proxy()
 
     def _copy_egress(self) -> None:
-        """The proxy's totals into the summary, its refusals into the artifacts.
+        """The proxy's totals into the summary, every refusal into the artifacts.
 
         Read after the proxy has exited, because it writes its stats on SIGTERM.
         The summary also counts the refusals by whose request each was
         (``chrome.refusal_origin``), so the page's own stand apart from Chrome's
         background traffic and the self-test; ``refusals.jsonl`` keeps every one,
-        each with that ``origin`` beside the proxy's own fields.
-        Both files are the proxy's, read back as such, and each is judged alone:
-        one that is refused is left out and a line says why, because the cleanup
-        this runs in reports only an exception's type, and the other is copied all
-        the same. So refused stats never cost the note's caveat the
-        ``refusals.jsonl`` it points at.
+        each with that ``origin`` beside the proxy's own fields, and after them
+        every call the commit guard refused (:meth:`_guard_refusals`), whose
+        ``origin`` is ``guard``.
+        Both proxy files are the proxy's, read back as such, and each is judged
+        alone: one that is refused is left out and a line says why, because the
+        cleanup this runs in reports only an exception's type, and the other is
+        copied all the same. So refused stats never cost the note's caveat the
+        ``refusals.jsonl`` it points at, and a refused proxy log never costs it the
+        guard's lines.
         """
         proxy = self.browser.proxy
         if proxy is None:
@@ -2077,6 +2099,8 @@ class _Run:
             self._say(f"egress: not copied: {refused}")
         else:
             copied.update({key: stats[key] for key in _EGRESS_KEYS if key in stats})
+        lines: list[str] = []
+        records: list[dict[str, Any]] | None = None
         try:
             records = egress.read_refusals(proxy.refusal_log, owner=proxy.owner)
         except egress.ProxyError as refused:
@@ -2087,8 +2111,46 @@ class _Run:
                 json.dumps(self.scrub.tree(chrome.with_origin(r)), ensure_ascii=False)
                 for r in records
             ]
-            self._write("refusals.jsonl", "".join(line + "\n" for line in lines))
         self.summary["egress"] = copied
+        guarded = self._guard_refusals()
+        lines += [
+            json.dumps(self.scrub.tree(review_relay.with_origin(r)), ensure_ascii=False)
+            for r in guarded
+        ]
+        if records is not None or guarded:
+            self._write("refusals.jsonl", "".join(line + "\n" for line in lines))
+
+    def _guard_refusals(self) -> list[dict[str, Any]]:
+        """The commit guard's refusals, counted by kind into ``summary.json``.
+
+        The review relay wrote them as this process's uid into a private directory
+        of the run, and they are read back as its file all the same: a link, a pipe
+        or an oversized file there is left out, with a line saying why.
+        ``summary.guard`` is ``{}`` when the session never started.
+        """
+        if self.guard_log is None:
+            return []
+        try:
+            records = review_relay.read_refusals(self.guard_log)
+        except review_relay.GuardLogError as refused:
+            self._say(f"guard: not copied: {refused}")
+            return []
+        kinds: dict[str, int] = {}
+        for record in records:
+            kind = record.get("refused")
+            key = (
+                kind
+                if isinstance(kind, str) and _GUARD_KIND_RE.fullmatch(kind)
+                else "other"
+            )
+            kinds[key] = kinds.get(key, 0) + 1
+        self.summary["guard"] = {"refused": len(records), "by_refusal": kinds}
+        if records:
+            shown = ", ".join(
+                f"{kind} x{count}" for kind, count in sorted(kinds.items())
+            )
+            self._say(f"guard: refused {len(records)} call(s): {shown}")
+        return records
 
     def _remove_run_dir(self) -> None:
         run_dir, self.run_dir = self.run_dir, None

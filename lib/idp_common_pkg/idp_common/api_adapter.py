@@ -43,13 +43,14 @@ in that payload is its own assertion — no signed token backs it. Passing it
 through unchanged let such a caller state its own ``cognito:groups`` and have the
 group check made against its own claim.
 
-:func:`normalize_event` therefore applies the same precedence rule the chat
-streaming endpoint applies to a body-supplied ``callerSub``
-(``resolve_caller_sub`` in ``src/lambda/chat_stream_processor/sse.py``): **the
-principal the transport verified wins, and an asserted one that contradicts it is
-refused rather than silently preferred.** Where there is no verified principal to
-compare against, an asserted identity cannot be honoured at all and is refused
-with :class:`CallerIdentityRefused`.
+:func:`normalize_event` therefore applies one rule: **the principal the transport
+verified wins, and an asserted one that contradicts it is refused rather than
+silently preferred.** Where there is no verified principal to compare against, an
+asserted identity cannot be honoured at all and is refused with
+:class:`CallerIdentityRefused`. The chat streaming endpoint
+(``src/lambda/chat_stream_processor/app.py``) goes further on its transport: it
+takes the caller only from the Cognito ID token it verifies and ignores any
+identity in the request body.
 
 The one shape that still passes through is an event whose ``identity`` is
 explicitly ``None``. Across this repository that is the established marker for a
@@ -93,12 +94,8 @@ class CallerIdentityRefused(PermissionError):
     an authorization denial: the dispatcher and :func:`api_resolver` both turn a
     ``PermissionError`` into HTTP 403 with ``errorType: "Unauthorized"``.
 
-    The sibling of ``CallerIdentityConflict`` in
-    ``src/lambda/chat_stream_processor/sse.py``, which applies the same rule to
-    that transport's body-supplied ``callerSub``. The two are deliberately not one
-    class: ``sse.py`` lives inside a Lambda's ``CodeUri`` and is not importable
-    from this library, and the identifiers it reconciles (SigV4 principals) are
-    not the ones reconciled here (Cognito claim sets).
+    The chat streaming endpoint needs no equivalent: it reads the caller only
+    from the ID token it verifies, so there is no asserted identity to reconcile.
     """
 
 

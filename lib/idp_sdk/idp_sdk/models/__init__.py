@@ -77,6 +77,7 @@ from .evaluation import (
     UseAsBaselineResult,
 )
 from .manifest import ManifestDocument, ManifestResult, ManifestValidationResult
+from .mcp import McpCredential, McpCredentialIssued
 from .publish import PublishResult, TemplateTransformResult
 from .search import SearchCitation, SearchDocumentReference, SearchResult
 from .stack import (
@@ -107,6 +108,11 @@ from .tenancy import (
     TenantVerifyCheck,
     TenantVerifyOutcome,
     TenantVerifyResult,
+)
+from .terraform import (
+    TerraformMigrationPlanResult,
+    TerraformMigrationResource,
+    TerraformMigrationStepResult,
 )
 from .testing import (
     DocumentsAbortedResult,
@@ -225,9 +231,14 @@ __all__ = [
     "TenantPlanItem",
     "TenantAccessPoint",
     "TenantPolicyDeployResult",
+    "TerraformMigrationPlanResult",
+    "TerraformMigrationResource",
+    "TerraformMigrationStepResult",
     "TenantPolicyResult",
     "TenantVerifyCheck",
     "TenantVerifyOutcome",
     "TenantUserGrant",
+    "McpCredential",
+    "McpCredentialIssued",
     "TenantVerifyResult",
 ]

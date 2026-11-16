@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
@@ -66,6 +67,13 @@ vi.mock('../../review-queues/ReviewQueuesLayout', () => ({ default: ({ children 
 import TestSetItemEdit from '../TestSetItemEdit';
 import { chooseMenuItem } from './edit-bar';
 
+/** English, as the app's LocaleProvider gives the page: the model formats its messages with react-intl. */
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 beforeEach(() => {
   skip.mockReset().mockResolvedValue(undefined);
   exit.mockReset();
@@ -92,6 +100,7 @@ describe('Skip on a Test Studio document', () => {
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
+      { wrapper: English },
     );
     buttonByText('Skip')!.click();
     expect(skip).not.toHaveBeenCalled();
@@ -114,6 +123,7 @@ describe('Skip on a Test Studio document', () => {
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
+      { wrapper: English },
     );
     chooseMenuItem('Reports', 'History');
     const tabs = createWrapper(document.body).findTabs()!;
@@ -126,6 +136,7 @@ describe('Skip on a Test Studio document', () => {
       <MemoryRouter>
         <TestSetItemEdit testSetId="ts-1" objectKey="a.pdf" />
       </MemoryRouter>,
+      { wrapper: English },
     );
     const alert = createWrapper(document.body).findAlert()!;
     expect(alert.findHeader()!.getElement().textContent).toBe('Not available for your account');

@@ -274,6 +274,38 @@ class TestTruncationIsNotSuccess:
         # It should retry before giving up, not fail on the first truncation.
         assert discovery.bedrock_client.invoke_model.call_count == 2
 
+    def test_remedy_names_an_action_that_exists_at_the_shipped_default(self, discovery):
+        """With ``max_tokens`` unset the call already had the model's whole output.
+
+        Telling the user to raise ``discovery.rules.max_tokens`` then names nothing
+        they can do: the field ships empty, which requests the model maximum, and a
+        value above it is refused. What remains is a smaller document or a model
+        with a larger output limit.
+        """
+        assert discovery.rules_config.max_tokens is None
+        discovery.bedrock_client.invoke_model.return_value = _bedrock_response(
+            _PARTIAL_BUT_VALID, stop_reason="max_tokens"
+        )
+        with pytest.raises(RulesTruncatedError) as exc:
+            discovery._extract_rules(b"pdf-bytes", "pdf", max_retries=1)
+
+        message = str(exc.value)
+        assert "raise discovery.rules.max_tokens" not in message
+        assert "discovery.rules.model" in message
+        assert "already empty" in message
+
+    def test_remedy_names_the_cap_when_one_is_set(self, discovery):
+        discovery.rules_config.max_tokens = 4096
+        discovery.bedrock_client.invoke_model.return_value = _bedrock_response(
+            _PARTIAL_BUT_VALID, stop_reason="max_tokens"
+        )
+        with pytest.raises(RulesTruncatedError) as exc:
+            discovery._extract_rules(b"pdf-bytes", "pdf", max_retries=1)
+
+        message = str(exc.value)
+        assert "discovery.rules.max_tokens is set to 4096" in message
+        assert "clearing it" in message
+
     def test_truncation_retried_then_succeeds(self, discovery):
         """A transient truncation must not fail the job if a retry completes."""
         complete = json.dumps(
@@ -626,6 +658,29 @@ class TestAgenticTruncationIsNotSuccess:
         assert "split" in message.lower()
         assert "max_tokens" in message
 
+    @pytest.mark.parametrize(
+        ("max_tokens", "expected"),
+        [(None, "already empty"), (2048, "is set to 2048")],
+    )
+    def test_strands_remedy_follows_the_configured_cap(
+        self, agentic_discovery, max_tokens, expected
+    ):
+        class MaxTokensReachedException(Exception):
+            pass
+
+        agentic_discovery.rules_config.max_tokens = max_tokens
+        with patch(
+            "idp_common.discovery.rules_discovery.structured_output",
+            create=True,
+            side_effect=MaxTokensReachedException("max_tokens limit"),
+        ):
+            with pytest.raises(RulesTruncatedError) as exc:
+                agentic_discovery._extract_rules(b"pdf-bytes", "pdf")
+
+        message = str(exc.value)
+        assert expected in message
+        assert "raise discovery.rules.max_tokens" not in message
+
     def test_unrelated_agentic_failure_is_not_relabeled(self, agentic_discovery):
         """A genuine error must not be reported as a truncation."""
         with patch(
@@ -636,8 +691,12 @@ class TestAgenticTruncationIsNotSuccess:
             with pytest.raises(RuntimeError):
                 agentic_discovery._extract_rules(b"pdf-bytes", "pdf")
 
+    @pytest.mark.parametrize(
+        ("max_tokens", "expected"),
+        [(None, "already empty"), (2048, "is set to 2048")],
+    )
     def test_envelope_stop_reason_guard_fires_if_ever_populated(
-        self, agentic_discovery
+        self, agentic_discovery, max_tokens, expected
     ):
         """The belt-and-braces check works once the envelope carries a stopReason.
 
@@ -645,6 +704,7 @@ class TestAgenticTruncationIsNotSuccess:
         inert in production — but it must actually work if that changes, or it is
         decoration rather than defence.
         """
+        agentic_discovery.rules_config.max_tokens = max_tokens
         structured = MagicMock()
         rc = MagicMock()
         rc.model_dump.return_value = {
@@ -658,8 +718,9 @@ class TestAgenticTruncationIsNotSuccess:
             create=True,
             return_value=(structured, {"response": {"stopReason": "max_tokens"}}),
         ):
-            with pytest.raises(RulesTruncatedError):
+            with pytest.raises(RulesTruncatedError) as exc:
                 agentic_discovery._extract_rules(b"pdf-bytes", "pdf")
+        assert expected in str(exc.value)
 
     def test_untruncated_agentic_response_succeeds(self, agentic_discovery):
         structured = MagicMock()

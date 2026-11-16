@@ -35,10 +35,18 @@
       "Admin",
       "Author"
     ],
+    "bulkSkipAllReviews": [
+      "Admin",
+      "Reviewer"
+    ],
     "calculateCapacity": [
       "Admin",
       "Author",
       "Viewer"
+    ],
+    "cancelBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "checkFeatureEntitlement": "ANY",
     "claimNextReviewItem": [
@@ -103,6 +111,9 @@
       "Admin",
       "Author"
     ],
+    "createMcpCredential": [
+      "Admin"
+    ],
     "createReviewQueue": [
       "Admin"
     ],
@@ -115,6 +126,10 @@
       "Author",
       "Reviewer",
       "Viewer"
+    ],
+    "deleteBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "deleteChatSession": [
       "Admin",
@@ -196,6 +211,10 @@
       "Admin",
       "Annotator",
       "Author"
+    ],
+    "getBulkReviewJob": [
+      "Admin",
+      "Reviewer"
     ],
     "getChatMessages": [
       "Admin",
@@ -380,6 +399,10 @@
     "listBucketFiles": [
       "Admin"
     ],
+    "listBulkReviewJobs": [
+      "Admin",
+      "Reviewer"
+    ],
     "listCatalogFeatures": "ANY",
     "listChatSessions": "ANY",
     "listConfigPrefixMappings": [
@@ -443,6 +466,9 @@
       "Viewer"
     ],
     "listInstalledFeatures": "ANY",
+    "listMcpCredentials": [
+      "Admin"
+    ],
     "listMyReviewWork": [
       "Admin",
       "Annotator",
@@ -582,6 +608,12 @@
     "resumeCircuitBreaker": [
       "Admin"
     ],
+    "revokeMcpCredential": [
+      "Admin"
+    ],
+    "rotateMcpCredential": [
+      "Admin"
+    ],
     "saveReviewDraft": [
       "Admin",
       "Annotator",
@@ -617,9 +649,16 @@
       "Admin",
       "Author"
     ],
+    "sendToReview": [
+      "Admin",
+      "Reviewer"
+    ],
     "setActiveVersion": [
       "Admin",
       "Author"
+    ],
+    "setMcpCredentialTenant": [
+      "Admin"
     ],
     "setUserTenant": [
       "Admin"
@@ -679,6 +718,9 @@
       "Author",
       "Reviewer",
       "Viewer"
+    ],
+    "updateMcpCredential": [
+      "Admin"
     ],
     "updateModelConfigLimits": [
       "Admin"

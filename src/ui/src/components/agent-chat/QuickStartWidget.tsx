@@ -6,17 +6,13 @@ import { Button, Icon, Hotspot } from '@cloudscape-design/components';
 import { AgentChatProvider, useAgentChatContext } from '../../contexts/agentChat';
 import AgentChatLayout from './AgentChatLayout';
 import { WELCOME_PATH } from '../../routes/constants';
+import { isQuickStartEnabled } from '../../utils/quick-start-flag';
 import './QuickStartWidget.css';
 
 const WidgetHeaderTitle = (): React.JSX.Element => {
   const { agentChatState } = useAgentChatContext();
   const title = agentChatState.mode === 'quick_start' ? 'Quick Start' : 'Agent Companion Chat';
   return <span className="quick-start-widget-title">{title}</span>;
-};
-
-const isWidgetEnabled = (): boolean => {
-  const flag = import.meta.env.VITE_ENABLE_QUICK_START_WIDGET;
-  return flag === undefined || flag === 'true' || flag === true;
 };
 
 const DRAG_THRESHOLD = 4;
@@ -249,7 +245,7 @@ const QuickStartWidget = (): React.JSX.Element | null => {
     setMounted(false);
   }, []);
 
-  if (!isWidgetEnabled() || location.pathname === WELCOME_PATH) {
+  if (!isQuickStartEnabled() || location.pathname === WELCOME_PATH) {
     return null;
   }
 

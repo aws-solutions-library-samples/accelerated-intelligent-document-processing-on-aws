@@ -501,3 +501,92 @@ class TestAssumeRole:
         assert "--terraform-assume-role-arn" in result.output
         client.stack.deploy.assert_not_called()
         client.stack.delete.assert_not_called()
+
+
+class TestDeployTerraformFromCode:
+    """``deploy --terraform --from-code``: build and publish the module from a
+    local checkout, then deploy that module."""
+
+    MODULE = (
+        "https://s3.us-west-2.amazonaws.com/b-us-west-2/p/0.0.0/terraform/"
+        "idp-terraform-0.0.0.zip"
+    )
+    GOV = (
+        "https://s3.us-west-2.amazonaws.com/b-us-west-2/p/0.0.0/terraform/"
+        "idp-terraform-govcloud-0.0.0.zip"
+    )
+
+    def _client(self, success=True, variants=None):
+        from idp_sdk.models.publish import PublishResult
+
+        client = _client()
+        client.publish.build.return_value = PublishResult(
+            success=success,
+            error=None if success else "boom",
+            terraform_module_url=self.MODULE if success else None,
+            terraform_variant_modules=variants or {},
+        )
+        return client
+
+    def _invoke(self, runner, client, *extra):
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            return runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--from-code",
+                    ".",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--bucket-basename",
+                    "b",
+                    "--prefix",
+                    "p",
+                    *extra,
+                ],
+            )
+
+    def test_the_module_built_from_the_checkout_is_deployed(self, runner):
+        client = self._client()
+        result = self._invoke(runner, client)
+        assert result.exit_code == 0, result.output
+        build = client.publish.build.call_args.kwargs
+        assert build["terraform"] is True
+        assert build["source_dir"] == "."
+        assert build["bucket"] == "b" and build["prefix"] == "p"
+        assert client.stack.deploy_terraform.call_args.kwargs["module_url"] == (
+            self.MODULE
+        )
+        client.stack.deploy.assert_not_called()
+
+    def test_a_variant_deploys_that_variants_module(self, runner):
+        client = self._client(variants={"govcloud": {"moduleUrl": self.GOV}})
+        result = self._invoke(runner, client, "--govcloud")
+        assert result.exit_code == 0, result.output
+        assert client.publish.build.call_args.kwargs["govcloud"] is True
+        assert client.stack.deploy_terraform.call_args.kwargs["module_url"] == self.GOV
+
+    def test_a_missing_variant_module_is_refused_not_replaced(self, runner):
+        client = self._client(variants={})
+        result = self._invoke(runner, client, "--headless")
+        assert result.exit_code == 1
+        assert "no headless Terraform module" in result.output
+        client.stack.deploy_terraform.assert_not_called()
+
+    def test_an_explicit_module_url_is_refused(self, runner):
+        client = self._client()
+        result = self._invoke(runner, client, "--terraform-module-url", self.MODULE)
+        assert result.exit_code == 1
+        assert "--terraform-module-url" in result.output
+        client.publish.build.assert_not_called()
+        client.stack.deploy_terraform.assert_not_called()
+
+    def test_a_failed_build_deploys_nothing(self, runner):
+        client = self._client(success=False)
+        result = self._invoke(runner, client)
+        assert result.exit_code == 1
+        assert "Build failed: boom" in result.output
+        client.stack.deploy_terraform.assert_not_called()

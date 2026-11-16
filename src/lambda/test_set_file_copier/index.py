@@ -61,6 +61,7 @@ def handler(event, context):
 
             missing_keys = []
             already_members = []
+            not_documents = []
             if by_key:
                 if bucket_type != "input":
                     raise ValueError(
@@ -91,6 +92,22 @@ def handler(event, context):
 
                 if not matching_files:
                     raise ValueError(f"No files found matching pattern: {file_pattern}")
+                if bucket_type == "input":
+                    matching_files, not_documents = _split_documents(matching_files)
+                    if not matching_files:
+                        raise ValueError(
+                            f"No documents found matching pattern: {file_pattern} "
+                            f"({len(not_documents)} matching files are .zip "
+                            "archives, which are not added)"
+                        )
+
+                # As on the by-key path, a document already in the set is never
+                # copied again, from either bucket and labeled or not: the append
+                # dialog pre-fills the set's own pattern, and the set's copy of a
+                # member may carry labels drafted or reviewed there.
+                matching_files, already_members = _split_pattern_members(
+                    test_set_id, bucket_type, matching_files
+                )
 
             logger.info(
                 f"Found {len(matching_files)} files to copy, matching files {matching_files}"
@@ -125,38 +142,30 @@ def handler(event, context):
                         missing_baselines.append(file_key)
 
                 except Exception as e:
-                    if by_key:
+                    # From the input bucket a missing baseline means "add unlabeled",
+                    # so a failed check must not be read as one: that would add a
+                    # labeled document without its labels.
+                    if bucket_type == "input":
                         raise
                     logger.error(f"Error checking baseline folder {file_key}: {e}")
                     missing_baselines.append(file_key)
 
             # Handle missing baselines based on bucket type
             total_matched = len(matching_files)
-            if missing_baselines and by_key:
-                files_to_copy = matching_files
-                logger.info(
-                    f"{len(missing_baselines)} of {total_matched} selected documents have no baseline; adding them unlabeled"
+            if missing_baselines and bucket_type != "input":
+                # Test set bucket: strict validation
+                raise ValueError(
+                    f"Missing baseline folders for: {', '.join(missing_baselines)}"
                 )
-            elif missing_baselines:
-                if bucket_type == "input":
-                    # Input bucket: skip files without baselines (partial ground truth is expected)
-                    files_to_copy = [
-                        f for f in matching_files if f not in set(missing_baselines)
-                    ]
-                    if not files_to_copy:
-                        raise ValueError(
-                            f"None of the {total_matched} matching files have baseline data"
-                        )
-                    logger.info(
-                        f"Skipping {len(missing_baselines)} files without baselines, copying {len(files_to_copy)} files"
-                    )
-                else:
-                    # Test set bucket: strict validation
-                    raise ValueError(
-                        f"Missing baseline folders for: {', '.join(missing_baselines)}"
-                    )
-            else:
-                files_to_copy = matching_files
+            # From the input bucket, by key or by pattern, a document without a
+            # baseline is added unlabeled: its input is copied and no baseline/
+            # folder is written, which is how every other route into a set
+            # represents one. Draft labeling fills it in afterwards.
+            files_to_copy = matching_files
+            if missing_baselines:
+                logger.info(
+                    f"{len(missing_baselines)} of {total_matched} documents have no baseline; adding them unlabeled"
+                )
 
             # Update status to COPYING before starting file operations
             if mode == "create":
@@ -184,20 +193,23 @@ def handler(event, context):
             file_count = _count_test_set_files(test_set_id)
 
             # Build result message
-            skipped_count = len(missing_baselines)
+            unlabeled_count = len(missing_baselines)
             last_add_result = None
             if by_key:
                 last_add_result = _selected_documents_result(
                     len(files_to_copy),
-                    skipped_count,
+                    unlabeled_count,
                     len(missing_keys),
                     len(already_members),
                 )
-            elif skipped_count > 0:
-                action = "Added" if mode == "append" else "Created with"
-                last_add_result = f"{action} {len(files_to_copy)} of {total_matched} files ({skipped_count} excluded - no baseline data)"
-            elif mode == "append":
-                last_add_result = f"Added {len(files_to_copy)} files"
+            else:
+                last_add_result = _pattern_result(
+                    mode,
+                    len(files_to_copy),
+                    unlabeled_count,
+                    len(already_members),
+                    len(not_documents),
+                )
 
             # Update test set record with completion status and file count
             _update_test_set_status(
@@ -291,6 +303,85 @@ def _split_existing_members(test_set_id, object_keys):
         else:
             new.append(key)
     return new, members
+
+
+#: The key suffix the test-set zip extractor's S3 notification on the TestSetBucket
+#: filters on (``template.yaml``, ``TestSetZipExtractor``); a unit test holds the two
+#: equal. Any object ending in it, written under a set's folder, starts the extractor.
+ZIP_EXTRACTOR_SUFFIX = ".zip"
+
+
+def _split_documents(matching_files):
+    """Split Input-bucket matches into documents and archives.
+
+    A pattern searches the whole bucket. A ``.zip`` copied into the set's ``input/``
+    folder starts the test-set zip extractor, which reads it as a test-set upload and
+    fails the set, so archives are counted and left out. Nothing else is: the
+    pipeline processes any other object it is given (including types the upload
+    dialog does not offer, such as ``.webp``), and the by-key add has no filter.
+    """
+    documents = []
+    archives = []
+    for file_key in matching_files:
+        if file_key.lower().endswith(ZIP_EXTRACTOR_SUFFIX):
+            archives.append(file_key)
+        else:
+            documents.append(file_key)
+    if archives:
+        logger.info(f"{len(archives)} matches are .zip archives; leaving them out")
+    return documents, archives
+
+
+def _set_member_name(bucket_type, file_key):
+    """The key a matched file lands under in the set's ``input/`` folder, as
+    ``_copy_input_files_from_*`` writes it."""
+    if bucket_type == "testset":
+        path_parts = file_key.split("/")
+        if len(path_parts) >= 3 and path_parts[1] == "input":
+            return "/".join(path_parts[2:])
+    return file_key
+
+
+def _split_pattern_members(test_set_id, bucket_type, matching_files):
+    """Split a pattern's matches into new documents and ones already in the set.
+
+    One listing of the set's ``input/`` folder rather than a lookup per match, since
+    a pattern can match thousands of files. See :func:`_split_existing_members`.
+    """
+    test_set_bucket = os.environ["TEST_SET_BUCKET"]
+    prefix = f"{test_set_id}/input/"
+    members = set()
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=test_set_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            members.add(obj["Key"][len(prefix) :])
+    new = []
+    already = []
+    for file_key in matching_files:
+        if _set_member_name(bucket_type, file_key) in members:
+            already.append(file_key)
+        else:
+            new.append(file_key)
+    if already:
+        logger.info(
+            f"{len(already)} matches are already in the set; leaving them as they are"
+        )
+    return new, already
+
+
+def _pattern_result(mode, added, unlabeled, already_members, not_documents=0):
+    parts = []
+    if unlabeled:
+        parts.append(f"{unlabeled} unlabeled")
+    if already_members:
+        parts.append(f"{already_members} already in the set")
+    if not_documents:
+        parts.append(f"{not_documents} .zip archives left out")
+    if not parts and mode != "append":
+        return None
+    action = "Added" if mode == "append" else "Created with"
+    detail = f" ({', '.join(parts)})" if parts else ""
+    return f"{action} {added} files{detail}"
 
 
 def _selected_documents_result(added, unlabeled, not_found, already_members=0):

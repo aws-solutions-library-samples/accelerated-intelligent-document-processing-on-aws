@@ -238,7 +238,7 @@ The implementation uses `DeferredRefreshableCredentials` so STS credentials auto
 | Chat with Document | Open a processed document and use the "Chat with Document" feature. | `*-ChatWithDocumentProcessor-*` |
 | Agent Companion / Agent Chat | Open the agent chat panel and ask an analytics question. | `*-AgentChatProcessor-*` (sub-agents reuse the same session, so they appear under the same `RoleSessionName`). |
 | Agent processor | Trigger an agent invocation from the UI. | `*-AgentProcessor-*` |
-| Strands agentic extraction | Set `extraction.agentic.enabled: true` in the configuration and run extraction on a document with large tables. | `*-ExtractionFunction-*` |
+| Strands agentic extraction | Set `extraction.mode: advanced` in the configuration and run extraction on a document with large tables. | `*-ExtractionFunction-*` |
 
 ### 7. Failure-mode probes
 

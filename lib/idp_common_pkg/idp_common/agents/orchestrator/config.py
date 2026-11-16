@@ -73,13 +73,9 @@ def get_chat_companion_model_id() -> str:
         # how every one of them ended up naming an end-of-life model. This
         # function had such a literal and it named Claude Sonnet 4.
         #
-        # ⚠️ This is NOT the same value a healthy stack runs.
-        # DEFAULT_AGENT_MODEL_ID derives from ChatCompanionConfig.model_id's
-        # declared default, which is a Sonnet, while
-        # system_defaults/base-agents.yaml sets the same field to Claude Haiku
-        # 4.5 and the YAML is what a deployed stack resolves. So this path costs
-        # roughly 3x the configured one. Reconciling the two layers moves the
-        # fallback for the other agent modules too, so it is its own change.
+        # DEFAULT_AGENT_MODEL_ID is the model base-agents.yaml ships for the chat
+        # companion (the field default equals it), translated to the stack's
+        # Region the way the deploy-time swap translates a stored configuration.
         default_model_id = DEFAULT_AGENT_MODEL_ID
         logger.info(f"Using default chat companion model ID: {default_model_id}")
         return default_model_id

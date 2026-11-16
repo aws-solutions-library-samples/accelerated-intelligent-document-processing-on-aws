@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Test Sets — Data Model & Versioning (ERD)
 
 **What this is:** how a test set, its immutable versions, its documents, and the

@@ -1,3 +1,6 @@
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: MIT-0
+
 # Plan: Retire granular assessment safely (+ unify extraction/confidence docs)
 
 **Author:** design, 2026-07-03
@@ -101,7 +104,8 @@ of the single `assess_results` call:
 - **Migration guide** (v0.5→v0.6, or a new v0.6→v0.7 entry): document the granular
   retirement, that `granular.*` is now a no-op, `list_batch_size` is the knob, and
   **mode guidance for large documents**: recommend Advanced (agentic) for large
-  docs / big tables (shards extraction AND assessment; best-calibrated per A/B);
+  docs / big tables (shards extraction AND assessment; no committed A/B compares
+  its calibration with simple mode, so none is claimed);
   simple+separate still handles large lists via batching but a very large single
   section is better served by Advanced sharding.
 - Both doc tiers (docs/*.md + module README) + CHANGELOG.

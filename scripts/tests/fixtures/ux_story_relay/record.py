@@ -11,8 +11,9 @@ image tag ``run_in_docker.py`` builds for the checkout:
 It serves the pages in ``pages/`` (and a generated long list) through the harness's
 own egress proxy, so Chrome reaches them exactly as it reaches an MR's build,
 starts the pinned Chrome for Testing with ``chrome.chrome_flags``, and starts the
-pinned chrome-devtools-mcp exactly as ``agent.mcp_servers`` starts it. It speaks to
-the server as the relay does, with no ``roots`` capability, and writes three files
+pinned chrome-devtools-mcp exactly as both relays start it
+(``story_relay.devtools_argv``). It speaks to the server as a relay does, with no
+``roots`` capability, and writes three files
 beside itself: ``tools_list.json`` and ``tools_list_default_flags.json``, the
 server's ``tools/list`` under the harness's flags and under none, and
 ``session.json``, every recorded call's answer. No stack, no sign-in and no network
@@ -39,7 +40,7 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parents[2]
 sys.path.insert(0, str(SCRIPTS))
 
-from ux_runner import agent, chrome, paths  # noqa: E402
+from ux_runner import agent, chrome, paths, story_relay  # noqa: E402
 
 BASE = "http://localhost:3000"
 IMAGE_DATA = "(a recorded JPEG, not kept)"
@@ -402,16 +403,12 @@ def main() -> int:
     fs_root = work / "mcp-files"
     home.mkdir(mode=0o700)
     fs_root.mkdir(mode=0o700)
-    servers = agent.mcp_servers(
-        toolchain=toolchain,
-        recorder_adapter=work / "unused",
-        recorder_out=work / "unused",
-        python=sys.executable,
+    argv = story_relay.devtools_argv(
+        toolchain.devtools_mcp,
         home=home,
         fs_root=fs_root,
+        search_path=agent.DEFAULT_SEARCH_PATH,
     )
-    entry = servers["chrome-devtools"]
-    argv = [entry["command"], *entry["args"]]
     client = Client(argv, work / "devtools.log")
     hello = client.handshake()
     listed = client.request("tools/list")

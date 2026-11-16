@@ -19,6 +19,7 @@ Example:
 
 import logging
 
+from ...chat_session_agents import OPT_IN_CODE_INTELLIGENCE, OPT_IN_EXTERNAL_MCP
 from ..analytics.agent import create_analytics_agent
 from ..code_intelligence.agent import create_code_intelligence_agent
 from ..error_analyzer.agent import create_error_analyzer_agent
@@ -94,6 +95,7 @@ agent_factory.register_agent(
         "What AWS services does this solution use?",
         "How is the Lambda function structured?",
     ],
+    opt_in=OPT_IN_CODE_INTELLIGENCE,
 )
 
 # Register Quick Start Agent
@@ -239,6 +241,9 @@ try:
                 "Help me use the external tools to solve my problem",
                 "Show me what capabilities the MCP server provides",
             ],
+            # Off unless the request opts in, like Code Intelligence: the agent
+            # sends its query to a server outside the deployment.
+            opt_in=OPT_IN_EXTERNAL_MCP,
         )
         logger.info(
             f"External MCP Agent '{agent_name}' registered successfully with ID '{agent_id}'"

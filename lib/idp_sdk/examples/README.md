@@ -169,7 +169,11 @@ while True:
     status = client.batch.get_status(batch_id=result.batch_id)
     print(f"Progress: {status.completed}/{status.total}")
 
+    # `all_complete` means nothing is queued or running. A document held for
+    # human review counts as settled but has no final result yet.
     if status.all_complete:
+        if status.awaiting_review:
+            print(f"{status.awaiting_review} document(s) await human review")
         print(f"Done! Success rate: {status.success_rate:.1%}")
         break
 

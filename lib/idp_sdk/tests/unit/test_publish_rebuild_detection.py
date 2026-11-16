@@ -55,7 +55,7 @@ import pytest
 from rich.console import Console
 
 from idp_sdk._core import publish as publish_mod
-from idp_sdk._core.publish import IDPPublisher
+from idp_sdk._core.publish import MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP, IDPPublisher
 
 _BUCKET = "artifacts-bucket"
 _PREFIX = "idp"
@@ -179,7 +179,7 @@ def _build_repo_tree(root):
         "nested/multi-doc-discovery/template.yaml": "Resources: {}\n",
         "nested/multi-doc-discovery/Dockerfile": "FROM scratch\n",
         "nested/multi-doc-discovery/requirements.txt": "boto3==1.40.0\n",
-        "nested/multi-doc-discovery/docker_build_lambda/index.py": "def h(): pass\n",
+        "src/lambda/start_codebuild/index.py": "def h(): pass\n",
         "patterns/unified/template.yaml": "Resources: {}\n",
         "patterns/unified/src/ocr/index.py": "def handler(): pass\n",
         "patterns/unified/statemachine/workflow.asl.json": '{"StartAt": "A"}\n',
@@ -754,8 +754,11 @@ def test_a_changed_container_build_input_rebuilds_multi_doc_discovery(
     pub = _publisher(capture=True)
     items = pub.get_components_needing_rebuild()
     assert {i["component"] for i in items} == {"nested/multi-doc-discovery"}
+    # The bump moves the image's BuildHash too, which is recorded as its own
+    # dependency so changes the source checksum cannot see still rebuild (#1856).
     assert items[0]["changed_dependencies"] == [
-        "nested/multi-doc-discovery/requirements.txt"
+        "nested/multi-doc-discovery/requirements.txt",
+        MULTI_DOC_DISCOVERY_IMAGE_INPUTS_DEP,
     ]
 
 

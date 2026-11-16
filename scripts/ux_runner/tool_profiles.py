@@ -27,6 +27,12 @@ is belt and braces, not a list of every built-in the pinned CLI has: releases ad
 built-ins it does not name (worktree, scheduling and messaging tools among them),
 and ``--tools ''`` is what removes those, as it removes the rest.
 
+The server registered as :data:`CHROME_DEVTOOLS_SERVER` is the review relay
+(``review_relay``), not chrome-devtools-mcp itself. It serves only the browser
+tools :data:`EXPERT_ALLOWED_TOOLS` grants, whatever the pinned server lists, and
+puts each call to them through the first-time-user stories' commit guard before it
+reaches the browser.
+
 A tool name says what a tool is for, not every parameter it takes, so the lists
 alone do not keep script out of the page: under its default flags the granted
 ``navigate_page`` takes an ``initScript`` to run on the next document and follows

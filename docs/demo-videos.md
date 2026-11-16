@@ -132,6 +132,17 @@ https://github.com/user-attachments/assets/28deadbb-378b-42b7-a5e2-f929af9b0e41
 
 ---
 
+### Terraform Deployment and Migration (Experimental)
+Every release now ships as a Terraform module beside its CloudFormation templates. This walkthrough deploys the accelerator from the published module in your own Terraform configuration and with `idp-cli deploy --terraform`, builds and deploys a local clone with `--from-code`, updates a deployment and shows the plan check that refuses to replace buckets, tables, user pools and keys, and plans an in-place migration of a `genai-idp-terraform` deployment with `idp-cli terraform migrate-from-genai-idp-terraform`. Terraform support is experimental: please report anything that does not work as a GitHub issue.
+
+**Duration**: ~3.5 minutes
+
+https://github.com/user-attachments/assets/e207110a-3301-4242-9f41-4edc8dd7ade9
+
+**Related Documentation**: [Terraform Deployment](./terraform.md), [Migrating from genai-idp-terraform](./terraform-migration.md)
+
+---
+
 ## AI Agents & Analytics
 
 ### Agent Companion Chat
@@ -344,7 +355,7 @@ https://github.com/user-attachments/assets/d5e0d590-ce8b-4e14-b2b7-8bde31e57ec2
 ---
 
 ### Adding Documents to Existing Test Sets
-Incrementally grow test sets over time by adding newly reviewed documents with ground truth — with automatic baseline filtering, time-based file selection, and prepopulated file patterns.
+Incrementally grow test sets over time by adding newly reviewed documents with ground truth — with time-based file selection, and prepopulated file patterns.
 
 https://github.com/user-attachments/assets/bcd18e62-4795-44ea-9554-637062fd21d7
 
