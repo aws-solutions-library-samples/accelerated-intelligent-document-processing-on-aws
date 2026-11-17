@@ -35,6 +35,114 @@
     "defaultMessage": "Open help panel",
     "description": "Screen-reader label of the button that opens the info panel."
   },
+  "breadcrumbs.configuration.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Configuration page."
+  },
+  "breadcrumbs.configuration.configuration": {
+    "defaultMessage": "Configuration",
+    "description": "Last crumb of the breadcrumb trail on the Configuration page: the page itself."
+  },
+  "breadcrumbs.configuration.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the Configuration page: the document list."
+  },
+  "breadcrumbs.configuration.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Configuration page: the application home, which opens the document list."
+  },
+  "breadcrumbs.documentDetails.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on a document page."
+  },
+  "breadcrumbs.documentList.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the document list page."
+  },
+  "breadcrumbs.documentList.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the document list and on every page under it: the document list itself."
+  },
+  "breadcrumbs.documentList.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the document list and on every page under it: the application home, which opens the document list."
+  },
+  "breadcrumbs.layout.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Extensions catalog and the configuration and analysis pages."
+  },
+  "breadcrumbs.layout.extensions": {
+    "defaultMessage": "Extensions",
+    "description": "Last crumb of the breadcrumb trail on the Extensions catalog and on an extension page."
+  },
+  "breadcrumbs.layout.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Extensions catalog pages: the application home, which opens the document list."
+  },
+  "breadcrumbs.page.capacityPlanning": {
+    "defaultMessage": "Capacity Planning",
+    "description": "Last crumb of the breadcrumb trail on the Capacity Planning page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.customModels": {
+    "defaultMessage": "Custom Models",
+    "description": "Last crumb of the breadcrumb trail on the Custom Models page and on a fine-tuning job, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.discovery": {
+    "defaultMessage": "Discovery",
+    "description": "Last crumb of the breadcrumb trail on the Discovery page and on a discovery job, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.documentAnalytics": {
+    "defaultMessage": "Document Analytics",
+    "description": "Last crumb of the breadcrumb trail on the Document Analytics page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.knowledgeBase": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Last crumb of the breadcrumb trail on the Knowledge Base query page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.modelLimits": {
+    "defaultMessage": "Model Limits",
+    "description": "Last crumb of the breadcrumb trail on the Model Limits configuration page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.pricing": {
+    "defaultMessage": "Pricing",
+    "description": "Last crumb of the breadcrumb trail on the Pricing configuration page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.userManagement": {
+    "defaultMessage": "User Management",
+    "description": "Last crumb of the breadcrumb trail on the User Management page, after Document Processing and Documents."
+  },
+  "breadcrumbs.prefixMappings.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Prefix Mappings page."
+  },
+  "breadcrumbs.prefixMappings.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the Prefix Mappings page: the document list."
+  },
+  "breadcrumbs.prefixMappings.prefixMappings": {
+    "defaultMessage": "Prefix Mappings",
+    "description": "Last crumb of the breadcrumb trail on the Prefix Mappings page: the page itself."
+  },
+  "breadcrumbs.prefixMappings.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Prefix Mappings page: the application home, which opens the document list."
+  },
+  "breadcrumbs.uploadDocument.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Upload Documents page."
+  },
+  "breadcrumbs.uploadDocument.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the Upload Documents page: the document list."
+  },
+  "breadcrumbs.uploadDocument.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Upload Documents page: the application home, which opens the document list."
+  },
+  "breadcrumbs.uploadDocument.upload": {
+    "defaultMessage": "Upload Documents",
+    "description": "Last crumb of the breadcrumb trail on the Upload Documents page: the page itself."
+  },
   "capacityPlanning.quotaNotRead.body": {
     "defaultMessage": "The quota analysis below leaves out the steps that use these models.",
     "description": "Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated."
