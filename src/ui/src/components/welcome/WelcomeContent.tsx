@@ -46,7 +46,7 @@ const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
 const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps): React.JSX.Element => {
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
-  const { isAnnotatorOnly, canWrite } = useUserRole();
+  const { isAnnotatorOnly, isReviewerOnly, canWrite } = useUserRole();
   const quickStart = useQuickStartAvailable();
 
   const openQuickStart = useCallback(() => {
@@ -84,7 +84,9 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
         {/* An Annotator is scoped to reading and annotating their assigned test
             set(s). Quick Start drives discovery and upload, the tour ends at Quick
             Start, and Configuration / Upload Document are out of scope too — so
-            for them this page would be a set of dead ends. */}
+            for them this page would be a set of dead ends. A Reviewer-only user's
+            side navigation is the review queues alone, which the tour has no step
+            for, so they are not offered it. */}
         <SpaceBetween direction="horizontal" size="s">
           {!isAnnotatorOnly && (
             <>
@@ -93,9 +95,11 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
                   Quick Start
                 </Button>
               )}
-              <Button iconName="status-info" onClick={startTour}>
-                Take the tour
-              </Button>
+              {!isReviewerOnly && (
+                <Button iconName="status-info" onClick={startTour}>
+                  Take the tour
+                </Button>
+              )}
             </>
           )}
           <Button variant={isAnnotatorOnly ? 'primary' : undefined} onClick={enterConsole}>
