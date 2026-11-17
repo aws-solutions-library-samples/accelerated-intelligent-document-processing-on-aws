@@ -12,7 +12,7 @@ import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 vi.mock('../../../contexts/settings', () => ({
   default: () => ({ settings: {} }),
 }));
-const { role } = vi.hoisted(() => ({ role: { isAnnotatorOnly: false, isAdmin: true, canWrite: true } }));
+const { role } = vi.hoisted(() => ({ role: { isAnnotatorOnly: false, isReviewerOnly: false, isAdmin: true, canWrite: true } }));
 vi.mock('../../../hooks/use-user-role', () => ({ default: () => role }));
 
 const renderWelcome = () =>
@@ -27,6 +27,18 @@ describe('WelcomeContent', () => {
     vi.unstubAllEnvs();
     role.isAdmin = true;
     role.canWrite = true;
+    role.isReviewerOnly = false;
+  });
+
+  it('does not offer the tour to a Reviewer-only user, whose navigation it has no step for', () => {
+    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
+    role.isAdmin = false;
+    role.canWrite = false;
+    role.isReviewerOnly = true;
+    renderWelcome();
+
+    expect(screen.queryByRole('button', { name: 'Take the tour' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Enter IDP Console' })).toBeInTheDocument();
   });
 
   it('offers Quick Start twice, and each opens the Quick Start chat', () => {
