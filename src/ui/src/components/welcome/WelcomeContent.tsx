@@ -29,7 +29,7 @@ const messages = defineMessages<{
   noConfigurationQuickStart: {
     id: 'welcome.content.noConfigurationQuickStart',
     defaultMessage:
-      '<b>No configuration yet?</b> Open <quickStart>Quick Start</quickStart>, here or from the side navigation, and describe your document type or upload an example to have a configuration built for you. Or let <discovery>Discovery</discovery> infer classes and fields from example documents.',
+      '<b>No configuration yet?</b> Open <quickStart>Quick Start</quickStart> to describe your document type or upload an example. Once you approve, it creates and activates a configuration for you. In the console, Quick Start is also at the top of the side navigation. Or let <discovery>Discovery</discovery> infer classes and fields from example documents.',
     description:
       'Welcome page hint for a user offered Quick Start. <b> wraps the question; <quickStart> wraps a link that opens the Quick Start panel; <discovery> wraps a link to the Discovery page.',
   },
