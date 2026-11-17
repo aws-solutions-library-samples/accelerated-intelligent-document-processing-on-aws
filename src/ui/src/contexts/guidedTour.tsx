@@ -1,9 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
+import Hotspot, { type HotspotProps } from '@cloudscape-design/components/hotspot';
 import { DOCUMENTS_PATH } from '../routes/constants';
 import { isQuickStartEnabled } from '../utils/quick-start-flag';
 import './guidedTour.css';
@@ -22,9 +23,26 @@ interface GuidedTourContextValue {
 
 const GuidedTourContext = createContext<GuidedTourContextValue | null>(null);
 
+type RegisterHotspot = (hotspotId: string) => () => void;
+
+const HotspotRegistry = createContext<RegisterHotspot | null>(null);
+
+/**
+ * A Cloudscape Hotspot the tour can see. A tour step whose hotspot is not on the page
+ * cannot be shown, and Cloudscape then holds the tour on the step before it, so the
+ * tour keeps only the steps whose hotspot is mounted. Render every hotspot through
+ * this component so that it is counted.
+ */
+export const TourHotspot = (props: HotspotProps): React.JSX.Element => {
+  const register = useContext(HotspotRegistry);
+  const { hotspotId } = props;
+  useEffect(() => register?.(hotspotId), [register, hotspotId]);
+  return <Hotspot {...props} />;
+};
+
 const DISMISS_LABEL = 'Dismiss tour';
 
-export const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
+const allSteps = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
   title: 'Get started with GenAI IDP',
   description: 'A quick walkthrough of the main areas of the console.',
   completed: false,
@@ -125,6 +143,22 @@ export const buildTutorial = (flags: TourFlags): AnnotationContextProps.Tutorial
   ],
 });
 
+const keepMountedSteps = (tutorial: AnnotationContextProps.Tutorial, mounted: ReadonlySet<string>): AnnotationContextProps.Tutorial => ({
+  ...tutorial,
+  tasks: tutorial.tasks
+    .map((task) => ({ ...task, steps: task.steps.filter((step) => mounted.has(step.hotspotId)) }))
+    .filter((task) => task.steps.length > 0),
+});
+
+/**
+ * The tour for these flags. Given the hotspots on the page, it keeps only the steps
+ * that point at one, so a role whose navigation lacks a page skips that page's step.
+ */
+export const buildTutorial = (flags: TourFlags, mounted?: ReadonlySet<string>): AnnotationContextProps.Tutorial => {
+  const tutorial = allSteps(flags);
+  return mounted ? keepMountedSteps(tutorial, mounted) : tutorial;
+};
+
 const i18nStrings: AnnotationContextProps.I18nStrings = {
   stepCounterText: (stepIndex, totalStepCount) => `Step ${stepIndex + 1} of ${totalStepCount}`,
   taskTitle: (taskIndex, taskTitle) => `Task ${taskIndex + 1}: ${taskTitle}`,
@@ -138,6 +172,17 @@ const i18nStrings: AnnotationContextProps.I18nStrings = {
 export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
   const navigate = useNavigate();
+  const mountedHotspots = useRef(new Map<string, number>());
+
+  const registerHotspot = useCallback<RegisterHotspot>((hotspotId) => {
+    const counts = mountedHotspots.current;
+    counts.set(hotspotId, (counts.get(hotspotId) ?? 0) + 1);
+    return () => {
+      const left = (counts.get(hotspotId) ?? 1) - 1;
+      if (left > 0) counts.set(hotspotId, left);
+      else counts.delete(hotspotId);
+    };
+  }, []);
 
   const startTour = useCallback(
     (flags?: Partial<TourFlags>) => {
@@ -147,7 +192,10 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
         quickStart: isQuickStartEnabled(),
       };
       navigate(DOCUMENTS_PATH);
-      window.setTimeout(() => setTutorial(buildTutorial(resolved)), 350);
+      window.setTimeout(() => {
+        const next = buildTutorial(resolved, new Set(mountedHotspots.current.keys()));
+        if (next.tasks.length > 0) setTutorial(next);
+      }, 350);
     },
     [navigate],
   );
@@ -181,15 +229,17 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
 
   return (
     <GuidedTourContext.Provider value={value}>
-      <AnnotationContext
-        currentTutorial={tutorial}
-        onStartTutorial={() => startTour()}
-        onExitTutorial={() => exitTour()}
-        onFinish={() => finishTour()}
-        i18nStrings={i18nStrings}
-      >
-        {children}
-      </AnnotationContext>
+      <HotspotRegistry.Provider value={registerHotspot}>
+        <AnnotationContext
+          currentTutorial={tutorial}
+          onStartTutorial={() => startTour()}
+          onExitTutorial={() => exitTour()}
+          onFinish={() => finishTour()}
+          i18nStrings={i18nStrings}
+        >
+          {children}
+        </AnnotationContext>
+      </HotspotRegistry.Provider>
     </GuidedTourContext.Provider>
   );
 };
