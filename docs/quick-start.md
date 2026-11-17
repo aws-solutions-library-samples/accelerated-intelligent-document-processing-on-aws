@@ -106,7 +106,7 @@ You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
 [Configuration Profiles](configuration-profiles.md)).
 
-### Disabling the widget
+### Turning Quick Start off
 
 Set `EnableQuickStartWidget=false` at deploy time to turn Quick Start off in the
 web UI (for example, on a mature deployment where every user already has a tuned

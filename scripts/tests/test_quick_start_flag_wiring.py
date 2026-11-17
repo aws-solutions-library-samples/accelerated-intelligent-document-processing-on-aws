@@ -23,6 +23,15 @@ PARENT = gate_premises.load_template("template.yaml")
 API_STACK = gate_premises.load_template("nested/api-resolvers/template.yaml")
 
 
+def _ref(node: object) -> str | None:
+    """The parameter a ``Ref`` names, in either the short or the long form."""
+    if isinstance(node, dict) and len(node) == 1:
+        key, value = next(iter(node.items()))
+        if key in ("Ref", "Fn::Ref") and isinstance(value, str):
+            return value
+    return None
+
+
 def _variables(template: dict, function: str) -> dict:
     properties = template["Resources"][function]["Properties"]
     return properties["Environment"]["Variables"]
@@ -38,13 +47,26 @@ def _variables(template: dict, function: str) -> dict:
     ids=["agent-chat-processor", "chat-stream-processor", "agent-chat-resolver"],
 )
 def test_each_quick_start_route_reads_the_stack_parameter(template, function):
-    assert _variables(template, function).get(VARIABLE) == {"Fn::Ref": PARAMETER}
+    assert _ref(_variables(template, function).get(VARIABLE)) == PARAMETER
     assert PARAMETER in template["Parameters"]
 
 
 def test_the_parent_passes_its_parameter_to_the_api_stack():
     parameters = PARENT["Resources"]["APIRESOLVERSTACK"]["Properties"]["Parameters"]
-    assert parameters.get(PARAMETER) == {"Fn::Ref": PARAMETER}
+    assert _ref(parameters.get(PARAMETER)) == PARAMETER
+
+
+@pytest.mark.parametrize(
+    ("node", "expected"),
+    [
+        ({"Ref": PARAMETER}, PARAMETER),
+        ({"Fn::Ref": PARAMETER}, PARAMETER),
+        ("true", None),
+        ({"Fn::GetAtt": PARAMETER}, None),
+    ],
+)
+def test_a_ref_is_read_in_either_form(node, expected):
+    assert _ref(node) == expected
 
 
 def test_the_api_stack_parameter_matches_the_parents():

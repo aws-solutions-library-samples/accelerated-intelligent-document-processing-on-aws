@@ -51,7 +51,8 @@ chat agent, so [agents.md](agents.md) applies too.
   another page: the discovery uploads, the configuration profile API, the chat
   route and stream, and chat sessions. The stack wiring it reads counts too: the
   `EnableQuickStartWidget` parameter in `template.yaml`, which sets the UI's
-  `VITE_ENABLE_QUICK_START_WIDGET`, and the
+  `VITE_ENABLE_QUICK_START_WIDGET` and, as `QUICK_START_ENABLED`, the switch the
+  agent chat resolver and both chat processors refuse a Quick Start turn on, and the
   `/<stack>/feature-platform/installed-features-table` SSM parameter the agent
   finds extensions through.
 - When you rename a page, a navigation item or a product term, update the agent's

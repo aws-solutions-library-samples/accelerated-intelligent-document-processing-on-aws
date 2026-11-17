@@ -513,12 +513,16 @@ def test_resolver_still_allows_ordinary_agent_chat_to_non_admins(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("identity", [True, False], ids=["signed-in", "backend"])
 def test_resolver_refuses_quick_start_when_the_stack_turns_it_off(
-    agent_chat_index, monkeypatch
+    agent_chat_index, monkeypatch, identity
 ):
     monkeypatch.setenv("QUICK_START_ENABLED", "false")
+    event = _quick_start_event("Admin")
+    if not identity:
+        del event["identity"]
     with pytest.raises(PermissionError, match="Quick Start is turned off"):
-        agent_chat_index.handler(_quick_start_event("Admin"), None)
+        agent_chat_index.handler(event, None)
 
 
 @pytest.mark.unit
