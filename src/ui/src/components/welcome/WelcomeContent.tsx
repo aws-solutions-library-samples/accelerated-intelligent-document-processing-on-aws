@@ -2,11 +2,19 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, FormattedMessage, type MessageTag } from 'react-intl';
 import { Box, Button, Container, Header, SpaceBetween, Link } from '@cloudscape-design/components';
-import { DOCUMENTS_PATH, MY_TASKS_PATH, CONFIGURATION_PATH, UPLOAD_DOCUMENT_PATH, WELCOME_DISMISSED_KEY } from '../../routes/constants';
+import {
+  DOCUMENTS_PATH,
+  DISCOVERY_PATH,
+  MY_TASKS_PATH,
+  CONFIGURATION_PATH,
+  UPLOAD_DOCUMENT_PATH,
+  WELCOME_DISMISSED_KEY,
+} from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
-import { isQuickStartEnabled } from '../../utils/quick-start-flag';
+import useQuickStartAvailable from '../../hooks/use-quick-start-available';
 
 interface WelcomeContentProps {
   // When true, shows the "Don't show this again" dismissal (landing-page variant).
@@ -14,25 +22,49 @@ interface WelcomeContentProps {
   onDismiss?: () => void;
 }
 
+const messages = defineMessages<{
+  noConfigurationQuickStart: { readonly b: MessageTag; readonly quickStart: MessageTag; readonly discovery: MessageTag };
+  noConfigurationDiscovery: { readonly b: MessageTag; readonly link: MessageTag };
+}>({
+  noConfigurationQuickStart: {
+    id: 'welcome.content.noConfigurationQuickStart',
+    defaultMessage:
+      '<b>No configuration yet?</b> Open <quickStart>Quick Start</quickStart> to describe your document type or upload an example. Once you approve, it creates and activates a configuration for you. In the console, Quick Start is also at the top of the side navigation. Or let <discovery>Discovery</discovery> infer classes and fields from example documents.',
+    description:
+      'Welcome page hint for a user offered Quick Start. <b> wraps the question; <quickStart> wraps a link that opens the Quick Start panel; <discovery> wraps a link to the Discovery page.',
+  },
+  noConfigurationDiscovery: {
+    id: 'welcome.content.noConfigurationDiscovery',
+    defaultMessage: '<b>No configuration yet?</b> <link>Discovery</link> infers classes and fields from example documents.',
+    description:
+      'Welcome page hint for a user who can create a configuration but is not offered Quick Start. <b> wraps the question; <link> wraps a link to the Discovery page.',
+  },
+});
+
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
+
 const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps): React.JSX.Element => {
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
-  const { isAnnotatorOnly } = useUserRole();
-  const quickStart = isQuickStartEnabled();
+  const { isAnnotatorOnly, canWrite } = useUserRole();
+  const quickStart = useQuickStartAvailable();
 
   const openQuickStart = useCallback(() => {
     navigate(DOCUMENTS_PATH);
     window.dispatchEvent(new CustomEvent('openQuickStart'));
   }, [navigate]);
 
+  const openDiscovery = (chunks: React.ReactNode[]): React.JSX.Element => <Link onFollow={() => navigate(DISCOVERY_PATH)}>{chunks}</Link>;
+
   const startTour = useCallback(() => {
     const pattern = (settings?.IDPPattern as string | undefined)?.toLowerCase();
     const detail = {
       customModels: (import.meta.env.VITE_AWS_REGION as string | undefined) === 'us-east-1',
       capacityPlanning: !pattern || /pattern[\s\-_]?2/.test(pattern) || pattern.includes('unified'),
+      quickStart,
     };
     window.dispatchEvent(new CustomEvent('startTutorial', { detail }));
-  }, [settings?.IDPPattern]);
+  }, [settings?.IDPPattern, quickStart]);
 
   const enterConsole = useCallback(() => {
     // An Annotator cannot read the document list, so sending them there would be
@@ -77,8 +109,25 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
             <SpaceBetween size="xs">
               {quickStart && (
                 <Box variant="p">
-                  <b>No configuration yet?</b> Use <Link onFollow={openQuickStart}>Quick Start</Link> to describe your document type (or
-                  upload an example) and we&apos;ll build a config for you.
+                  <FormattedMessage
+                    {...messages.noConfigurationQuickStart}
+                    values={{
+                      b: bold,
+                      quickStart: (chunks: React.ReactNode[]) => <Link onFollow={openQuickStart}>{chunks}</Link>,
+                      discovery: openDiscovery,
+                    }}
+                  />
+                </Box>
+              )}
+              {!quickStart && canWrite && (
+                <Box variant="p">
+                  <FormattedMessage
+                    {...messages.noConfigurationDiscovery}
+                    values={{
+                      b: bold,
+                      link: openDiscovery,
+                    }}
+                  />
                 </Box>
               )}
               <Box variant="p">

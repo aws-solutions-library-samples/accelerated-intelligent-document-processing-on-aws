@@ -1399,6 +1399,14 @@
     "defaultMessage": "Loading test sets",
     "description": "Shown in the test set field while the list of test sets loads."
   },
+  "testStudio.createTestSetWizard.noConfiguration": {
+    "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents.",
+    "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is not offered Quick Start. <link> wraps a link to the Discovery page."
+  },
+  "testStudio.createTestSetWizard.noConfigurationWithQuickStart": {
+    "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or open Quick Start from the side navigation to describe them in your own words.",
+    "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page."
+  },
   "testStudio.itemEdit.regroupPending": {
     "defaultMessage": "Loading the saved grouping…",
     "description": "Why Edit Page Grouping is unavailable: a page grouping was just saved and the document editor is still re-reading the saved sections."
@@ -1406,5 +1414,13 @@
   "testStudio.itemEdit.regroupRereadFailed": {
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
+  },
+  "welcome.content.noConfigurationDiscovery": {
+    "defaultMessage": "<b>No configuration yet?</b> <link>Discovery</link> infers classes and fields from example documents.",
+    "description": "Welcome page hint for a user who can create a configuration but is not offered Quick Start. <b> wraps the question; <link> wraps a link to the Discovery page."
+  },
+  "welcome.content.noConfigurationQuickStart": {
+    "defaultMessage": "<b>No configuration yet?</b> Open <quickStart>Quick Start</quickStart> to describe your document type or upload an example. Once you approve, it creates and activates a configuration for you. In the console, Quick Start is also at the top of the side navigation. Or let <discovery>Discovery</discovery> infer classes and fields from example documents.",
+    "description": "Welcome page hint for a user offered Quick Start. <b> wraps the question; <quickStart> wraps a link that opens the Quick Start panel; <discovery> wraps a link to the Discovery page."
   }
 }

@@ -1,11 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 import { DOCUMENTS_PATH } from '../routes/constants';
-import { isQuickStartEnabled } from '../utils/quick-start-flag';
 import './guidedTour.css';
 
 interface TourFlags {
@@ -135,8 +134,16 @@ const i18nStrings: AnnotationContextProps.I18nStrings = {
   labelDismissAnnotation: DISMISS_LABEL,
 };
 
+/**
+ * The guided tour. Whether it shows and opens Quick Start is decided by whoever
+ * starts it, through the `quickStart` flag. This provider sits above the routes and
+ * mounts before the app has configured the session, so a role check here would
+ * read no session; the Welcome page starts the tour from inside the signed-in
+ * routes, where the role is known.
+ */
 export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
+  const opensQuickStartOnFinish = useRef(false);
   const navigate = useNavigate();
 
   const startTour = useCallback(
@@ -144,8 +151,9 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
       const resolved: TourFlags = {
         customModels: flags?.customModels ?? false,
         capacityPlanning: flags?.capacityPlanning ?? true,
-        quickStart: isQuickStartEnabled(),
+        quickStart: flags?.quickStart ?? false,
       };
+      opensQuickStartOnFinish.current = resolved.quickStart;
       navigate(DOCUMENTS_PATH);
       window.setTimeout(() => setTutorial(buildTutorial(resolved)), 350);
     },
@@ -154,7 +162,7 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
   const exitTour = useCallback(() => setTutorial(null), []);
   const finishTour = useCallback(() => {
     setTutorial(null);
-    if (isQuickStartEnabled()) {
+    if (opensQuickStartOnFinish.current) {
       window.dispatchEvent(new CustomEvent('openQuickStart'));
     }
   }, []);

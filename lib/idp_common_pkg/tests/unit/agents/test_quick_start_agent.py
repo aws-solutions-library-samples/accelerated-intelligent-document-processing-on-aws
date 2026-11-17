@@ -118,7 +118,7 @@ def processor(monkeypatch):
 
 def _send(processor, **event):
     event = {
-        "identity": {"claims": {"cognito:groups": ["Author"]}},
+        "identity": {"claims": {"cognito:groups": ["Admin"]}},
         "sessionId": "s1",
         "prompt": "I process paystubs",
         **event,
