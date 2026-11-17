@@ -4,6 +4,7 @@
 // src/components/upload-document/UploadDocumentPanel.jsx
 import { ConsoleLogger } from 'aws-amplify/utils';
 import React, { useState, useEffect } from 'react';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import {
   Button,
   Container,
@@ -53,7 +54,281 @@ type UploadSource = 'local' | 'sample';
 // always 'unified'; kept as a helper to mirror ConfigurationLayout's mapping.
 const SAMPLE_CONFIG_PATTERN_DIR = 'unified';
 
+const messages = defineMessages<{
+  title: NoMessageValues;
+  noInputBucket: NoMessageValues;
+  errorNoFiles: NoMessageValues;
+  errorNoSample: NoMessageValues;
+  uploadFailed: { readonly error: string };
+  importFailed: { readonly error: string };
+  outOfScope: NoMessageValues;
+  refused: NoMessageValues;
+  refusedAdvice: NoMessageValues;
+  mappingWins: NoMessageValues;
+  selectionWins: NoMessageValues;
+  sourceLabel: NoMessageValues;
+  sourceLocal: NoMessageValues;
+  sourceSample: NoMessageValues;
+  prefixLabel: NoMessageValues;
+  prefixPlaceholder: NoMessageValues;
+  profileLabel: NoMessageValues;
+  profileDescription: NoMessageValues;
+  profileLoading: NoMessageValues;
+  profilePlaceholder: NoMessageValues;
+  filesLabel: NoMessageValues;
+  filesConstraint: NoMessageValues;
+  chooseMultiple: NoMessageValues;
+  chooseSingle: NoMessageValues;
+  dropMultiple: NoMessageValues;
+  dropSingle: NoMessageValues;
+  removeFile: { readonly index: number };
+  errorIcon: NoMessageValues;
+  warningIcon: NoMessageValues;
+  sampleLabel: NoMessageValues;
+  sampleDescription: NoMessageValues;
+  sampleLoading: NoMessageValues;
+  sampleEmpty: NoMessageValues;
+  sampleFileCount: { readonly count: number };
+  autoImportLabel: { readonly configId: string };
+  autoImportHint: { readonly configId: string };
+  autoImportAlreadyImported: { readonly configId: string };
+  resultsTitle: NoMessageValues;
+  resultsSuccess: NoMessageValues;
+  resultsFailed: { readonly error: string };
+  resultsObjectKey: { readonly key: string };
+}>({
+  title: {
+    id: 'documents.upload.title',
+    defaultMessage: 'Upload Documents',
+    description: 'Heading of the Upload Documents page.',
+  },
+  noInputBucket: {
+    id: 'documents.upload.noInputBucket',
+    defaultMessage: 'Input bucket not configured',
+    description: 'Error on the Upload Documents page when the stack has no input bucket to upload to.',
+  },
+  errorNoFiles: {
+    id: 'documents.upload.errorNoFiles',
+    defaultMessage: 'Please select at least one file to upload',
+    description: 'Error on the Upload Documents page when Upload is pressed with no file chosen.',
+  },
+  errorNoSample: {
+    id: 'documents.upload.errorNoSample',
+    defaultMessage: 'Please select a sample document to upload',
+    description: 'Error on the Upload Documents page when Process sample is pressed with no sample chosen.',
+  },
+  uploadFailed: {
+    id: 'documents.upload.uploadFailed',
+    defaultMessage: 'Upload process failed: {error}',
+    description: 'Error on the Upload Documents page when the upload as a whole fails. {error} is the error message.',
+  },
+  importFailed: {
+    id: 'documents.upload.importFailed',
+    defaultMessage: 'Configuration import failed: {error}',
+    description:
+      'Error on the Upload Documents page when the library configuration of a sample could not be imported. {error} is the error message.',
+  },
+  outOfScope: {
+    id: 'documents.upload.outOfScope',
+    defaultMessage: 'You cannot upload to this folder',
+    description:
+      'Heading of the error alert when the user may not upload under the folder prefix entered. The reason from the server follows.',
+  },
+  refused: {
+    id: 'documents.upload.refused',
+    defaultMessage: 'This upload would be refused',
+    description:
+      'Heading of the error alert when the server would refuse an upload under the folder prefix entered. The reason from the server follows.',
+  },
+  refusedAdvice: {
+    id: 'documents.upload.refusedAdvice',
+    defaultMessage: 'Choose that profile, or upload somewhere else.',
+    description: 'Advice after the reason in the refusal alert, when a prefix mapping requires the configuration profile the reason names.',
+  },
+  mappingWins: {
+    id: 'documents.upload.mappingWins',
+    defaultMessage: 'Your profile selection will be ignored',
+    description:
+      'Heading of the warning when a prefix mapping processes the upload under another configuration profile than the one selected.',
+  },
+  selectionWins: {
+    id: 'documents.upload.selectionWins',
+    defaultMessage: 'Your selection overrides the mapping',
+    description: 'Heading of the warning when the selected configuration profile takes precedence over the prefix mapping of the folder.',
+  },
+  sourceLabel: {
+    id: 'documents.upload.source.label',
+    defaultMessage: 'Document source',
+    description: 'Label of the control that chooses where the documents to upload come from.',
+  },
+  sourceLocal: {
+    id: 'documents.upload.source.local',
+    defaultMessage: 'From my computer',
+    description: 'Option of the document source control: upload files from the computer.',
+  },
+  sourceSample: {
+    id: 'documents.upload.source.sample',
+    defaultMessage: 'Sample documents',
+    description: 'Option of the document source control: process one of the bundled sample documents.',
+  },
+  prefixLabel: {
+    id: 'documents.upload.prefix.label',
+    defaultMessage: 'Optional folder prefix (e.g., invoices/2024)',
+    description: 'Label of the text field for the folder prefix the documents are uploaded under. "invoices/2024" is an example prefix.',
+  },
+  prefixPlaceholder: {
+    id: 'documents.upload.prefix.placeholder',
+    defaultMessage: 'Leave empty for root folder',
+    description: 'Placeholder of the folder prefix field: with no prefix the documents go to the root folder.',
+  },
+  profileLabel: {
+    id: 'documents.upload.profile.label',
+    defaultMessage: 'Configuration Profile',
+    description: 'Label of the selector of the configuration profile the documents are processed with.',
+  },
+  profileDescription: {
+    id: 'documents.upload.profile.description',
+    defaultMessage: 'Select which configuration profile to use for processing these documents',
+    description: 'Help text under the Configuration Profile label on the Upload Documents page.',
+  },
+  profileLoading: {
+    id: 'documents.upload.profile.loading',
+    defaultMessage: 'Loading profiles...',
+    description: 'Placeholder and loading text of the configuration profile selector while the profiles load.',
+  },
+  profilePlaceholder: {
+    id: 'documents.upload.profile.placeholder',
+    defaultMessage: 'Select configuration profile',
+    description: 'Placeholder of the configuration profile selector when no profile is selected.',
+  },
+  filesLabel: {
+    id: 'documents.upload.files.label',
+    defaultMessage: 'Select files to upload',
+    description: 'Label of the file picker on the Upload Documents page.',
+  },
+  filesConstraint: {
+    id: 'documents.upload.files.constraint',
+    defaultMessage: 'Multiple files allowed. Spreadsheet, Word, and text files are converted on the backend.',
+    description: 'Hint under the file picker: several files can be chosen, and some file types are converted by the server.',
+  },
+  chooseMultiple: {
+    id: 'documents.upload.files.chooseMultiple',
+    defaultMessage: 'Choose files',
+    description: 'Button of the file picker that opens the file chooser, when several files can be chosen.',
+  },
+  chooseSingle: {
+    id: 'documents.upload.files.chooseSingle',
+    defaultMessage: 'Choose file',
+    description: 'Button of the file picker that opens the file chooser, when one file can be chosen.',
+  },
+  dropMultiple: {
+    id: 'documents.upload.files.dropMultiple',
+    defaultMessage: 'Drop files to upload',
+    description: 'Text of the drop zone shown while files are dragged over the page, when several files can be dropped.',
+  },
+  dropSingle: {
+    id: 'documents.upload.files.dropSingle',
+    defaultMessage: 'Drop file to upload',
+    description: 'Text of the drop zone shown while a file is dragged over the page, when one file can be dropped.',
+  },
+  removeFile: {
+    id: 'documents.upload.files.removeFile',
+    defaultMessage: 'Remove file {index, number}',
+    description: 'Screen-reader label of the button that removes a chosen file. {index} is the position of the file in the list, from 1.',
+  },
+  errorIcon: {
+    id: 'documents.upload.files.errorIcon',
+    defaultMessage: 'Error',
+    description: 'Screen-reader label of the error icon next to a chosen file.',
+  },
+  warningIcon: {
+    id: 'documents.upload.files.warningIcon',
+    defaultMessage: 'Warning',
+    description: 'Screen-reader label of the warning icon next to a chosen file.',
+  },
+  sampleLabel: {
+    id: 'documents.upload.sample.label',
+    defaultMessage: 'Select a sample document',
+    description: 'Label of the sample document selector, and its placeholder when no sample is selected.',
+  },
+  sampleDescription: {
+    id: 'documents.upload.sample.description',
+    defaultMessage: 'Bundled sample documents you can process without downloading them first',
+    description: 'Help text under the sample document selector.',
+  },
+  sampleLoading: {
+    id: 'documents.upload.sample.loading',
+    defaultMessage: 'Loading samples...',
+    description: 'Placeholder and loading text of the sample document selector while the samples load.',
+  },
+  sampleEmpty: {
+    id: 'documents.upload.sample.empty',
+    defaultMessage: 'No sample documents available',
+    description: 'Shown in the sample document selector when there is no sample document.',
+  },
+  sampleFileCount: {
+    id: 'documents.upload.sample.fileCount',
+    defaultMessage: '{count, plural, one {# file} other {# files}}',
+    description: 'Tag next to a sample that is a batch of files, in the sample document selector. {count} is the number of files.',
+  },
+  autoImportLabel: {
+    id: 'documents.upload.autoImport.label',
+    defaultMessage: 'Also import and use its configuration ({configId})',
+    description:
+      'Checkbox label: also import the library configuration the selected sample is tuned for, and process the sample with it. {configId} is the name of that configuration.',
+  },
+  autoImportHint: {
+    id: 'documents.upload.autoImport.hint',
+    defaultMessage:
+      'This sample is tuned for the “{configId}” library configuration, which is not yet imported. It will be saved as a new configuration profile and selected for processing.',
+    description: 'Text under the import checkbox. {configId} is the name of the library configuration the sample is tuned for.',
+  },
+  autoImportAlreadyImported: {
+    id: 'documents.upload.autoImport.alreadyImported',
+    defaultMessage:
+      'This sample is tuned for the already-imported “{configId}” configuration profile, which has been pre-selected above. You can choose a different version if you prefer.',
+    description:
+      'Shown when the configuration the selected sample is tuned for is already imported as a profile. {configId} is the name of that profile.',
+  },
+  resultsTitle: {
+    id: 'documents.upload.results.title',
+    defaultMessage: 'Upload Results:',
+    description: 'Heading of the upload results, one line per file.',
+  },
+  resultsSuccess: {
+    id: 'documents.upload.results.success',
+    defaultMessage: 'Uploaded successfully',
+    description: 'Result of one file in the upload results, after the file name and a colon: the upload succeeded.',
+  },
+  resultsFailed: {
+    id: 'documents.upload.results.failed',
+    defaultMessage: 'Failed - {error}',
+    description:
+      'Result of one file in the upload results, after the file name and a colon: the upload failed. {error} is the error message.',
+  },
+  resultsObjectKey: {
+    id: 'documents.upload.results.objectKey',
+    defaultMessage: 'Object Key: {key}',
+    description: 'Line under a successful upload result. {key} is the S3 object key the file was stored under.',
+  },
+});
+
+/** The submit button's two labels, by source mode; exported for the locale test of the upload plural. */
+export const submitMessages = defineMessages<{ sample: NoMessageValues; upload: { readonly count: number } }>({
+  sample: {
+    id: 'documents.upload.submit.sample',
+    defaultMessage: 'Process sample',
+    description: 'Button that processes the selected sample document.',
+  },
+  upload: {
+    id: 'documents.upload.submit.upload',
+    defaultMessage: '{count, plural, =0 {Upload} one {Upload (# file)} other {Upload (# files)}}',
+    description: 'Button that uploads the chosen files. {count} is the number of files chosen; with none, it reads only the verb.',
+  },
+});
+
 const UploadDocumentPanel = (): React.JSX.Element => {
+  const intl = useIntl();
   const { settings } = useSettingsContext();
   const { versions, getVersionOptions, saveAsNewVersion } = useConfigurationVersions();
   const { listSamples, uploadSample } = useSampleDocuments();
@@ -172,8 +447,16 @@ const UploadDocumentPanel = (): React.JSX.Element => {
 
   if (!(settings as Record<string, unknown>).InputBucket) {
     return (
-      <Container header={<Header variant="h2">Upload Documents</Header>}>
-        <Alert type="error">Input bucket not configured</Alert>
+      <Container
+        header={
+          <Header variant="h2">
+            <FormattedMessage {...messages.title} />
+          </Header>
+        }
+      >
+        <Alert type="error">
+          <FormattedMessage {...messages.noInputBucket} />
+        </Alert>
       </Container>
     );
   }
@@ -202,7 +485,10 @@ const UploadDocumentPanel = (): React.JSX.Element => {
     value: s.id,
     label: s.name,
     description: s.description ?? undefined,
-    labelTag: s.kind === 'batch' ? `${s.fileCount ?? ''} files` : undefined,
+    labelTag:
+      s.kind === 'batch' && typeof s.fileCount === 'number'
+        ? intl.formatMessage(messages.sampleFileCount, { count: s.fileCount })
+        : undefined,
   }));
 
   // When a sample with an already-imported config is selected, preselect that
@@ -251,7 +537,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
 
   const uploadLocalFiles = async () => {
     if (selectedFiles.length === 0) {
-      setError('Please select at least one file to upload');
+      setError(intl.formatMessage(messages.errorNoFiles));
       return;
     }
 
@@ -345,7 +631,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
       }, Promise.resolve() as Promise<void>);
     } catch (err) {
       console.error('Error in overall upload process:', err);
-      setError(`Upload process failed: ${err instanceof Error ? err.message : String(err)}`);
+      setError(intl.formatMessage(messages.uploadFailed, { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setIsUploading(false);
     }
@@ -353,7 +639,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
 
   const uploadSelectedSample = async () => {
     if (!activeSample) {
-      setError('Please select a sample document to upload');
+      setError(intl.formatMessage(messages.errorNoSample));
       return;
     }
 
@@ -372,7 +658,9 @@ const UploadDocumentPanel = (): React.JSX.Element => {
         try {
           versionToUse = await importConfigVersion(activeSample.configId);
         } catch (importErr) {
-          setError(`Configuration import failed: ${importErr instanceof Error ? importErr.message : String(importErr)}`);
+          setError(
+            intl.formatMessage(messages.importFailed, { error: importErr instanceof Error ? importErr.message : String(importErr) }),
+          );
           setIsUploading(false);
           return;
         }
@@ -386,7 +674,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
         setUploadStatus([{ file: activeSample.name, status: 'error', error: result.error }]);
       }
     } catch (err) {
-      setError(`Upload process failed: ${err instanceof Error ? err.message : String(err)}`);
+      setError(intl.formatMessage(messages.uploadFailed, { error: err instanceof Error ? err.message : String(err) }));
     } finally {
       setIsUploading(false);
     }
@@ -415,7 +703,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
     // forward. The `reason` names nothing privileged.
     if (assignment.outOfScope) {
       return (
-        <Alert type="error" header="You cannot upload to this folder">
+        <Alert type="error" header={intl.formatMessage(messages.outOfScope)}>
           {assignment.reason}
         </Alert>
       );
@@ -430,9 +718,16 @@ const UploadDocumentPanel = (): React.JSX.Element => {
     // choose, so only that one gets the "Choose that profile" advice.
     if (assignment.rejected) {
       return (
-        <Alert type="error" header="This upload would be refused">
+        <Alert type="error" header={intl.formatMessage(messages.refused)}>
           {assignment.reason}
-          {assignment.mappingPrefix ? ' Choose that profile, or upload somewhere else.' : ''}
+          {assignment.mappingPrefix ? (
+            <>
+              {' '}
+              <FormattedMessage {...messages.refusedAdvice} />
+            </>
+          ) : (
+            ''
+          )}
         </Alert>
       );
     }
@@ -442,7 +737,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
     if (assignment.conflict) {
       const mappingWins = assignment.source === 'prefix-mapping';
       return (
-        <Alert type="warning" header={mappingWins ? 'Your profile selection will be ignored' : 'Your selection overrides the mapping'}>
+        <Alert type="warning" header={intl.formatMessage(mappingWins ? messages.mappingWins : messages.selectionWins)}>
           {assignment.reason}
         </Alert>
       );
@@ -459,7 +754,13 @@ const UploadDocumentPanel = (): React.JSX.Element => {
   const uploadWouldBeRefused = !!assignment && (!!assignment.rejected || !!assignment.outOfScope);
 
   return (
-    <Container header={<Header variant="h2">Upload Documents</Header>}>
+    <Container
+      header={
+        <Header variant="h2">
+          <FormattedMessage {...messages.title} />
+        </Header>
+      }
+    >
       {error && (
         <Alert type="error" dismissible onDismiss={() => setError(null)}>
           {error}
@@ -467,7 +768,7 @@ const UploadDocumentPanel = (): React.JSX.Element => {
       )}
 
       <SpaceBetween size="l">
-        <FormField label="Document source">
+        <FormField label={intl.formatMessage(messages.sourceLabel)}>
           <SegmentedControl
             selectedId={uploadSourceType}
             onChange={({ detail }) => {
@@ -476,24 +777,29 @@ const UploadDocumentPanel = (): React.JSX.Element => {
               setError(null);
             }}
             options={[
-              { id: 'local', text: 'From my computer' },
-              { id: 'sample', text: 'Sample documents' },
+              { id: 'local', text: intl.formatMessage(messages.sourceLocal) },
+              { id: 'sample', text: intl.formatMessage(messages.sourceSample) },
             ]}
           />
         </FormField>
 
-        <FormField label="Optional folder prefix (e.g., invoices/2024)">
-          <Input value={prefix} onChange={handlePrefixChange} placeholder="Leave empty for root folder" disabled={isUploading} />
+        <FormField label={intl.formatMessage(messages.prefixLabel)}>
+          <Input
+            value={prefix}
+            onChange={handlePrefixChange}
+            placeholder={intl.formatMessage(messages.prefixPlaceholder)}
+            disabled={isUploading}
+          />
         </FormField>
 
-        <FormField label="Configuration Profile" description="Select which configuration profile to use for processing these documents">
+        <FormField label={intl.formatMessage(messages.profileLabel)} description={intl.formatMessage(messages.profileDescription)}>
           <Select
             selectedOption={selectedVersion}
             onChange={({ detail }) => setSelectedVersion(detail.selectedOption)}
             options={getVersionOptions()}
-            placeholder={versions.length === 0 ? 'Loading profiles...' : 'Select configuration profile'}
+            placeholder={intl.formatMessage(versions.length === 0 ? messages.profileLoading : messages.profilePlaceholder)}
             disabled={isUploading || versions.length === 0 || (isSampleMode && showAutoImport && autoImportConfig)}
-            loadingText="Loading profiles..."
+            loadingText={intl.formatMessage(messages.profileLoading)}
           />
         </FormField>
 
@@ -507,19 +813,16 @@ const UploadDocumentPanel = (): React.JSX.Element => {
         {prefixMappingNotice}
 
         {!isSampleMode && (
-          <FormField
-            label="Select files to upload"
-            constraintText="Multiple files allowed. Spreadsheet, Word, and text files are converted on the backend."
-          >
+          <FormField label={intl.formatMessage(messages.filesLabel)} constraintText={intl.formatMessage(messages.filesConstraint)}>
             <FileUpload
               onChange={({ detail }) => handleFileChange(detail.value)}
               value={selectedFiles}
               i18nStrings={{
-                uploadButtonText: (multiple: boolean) => (multiple ? 'Choose files' : 'Choose file'),
-                dropzoneText: (multiple: boolean) => (multiple ? 'Drop files to upload' : 'Drop file to upload'),
-                removeFileAriaLabel: (fileIndex: number) => `Remove file ${fileIndex + 1}`,
-                errorIconAriaLabel: 'Error',
-                warningIconAriaLabel: 'Warning',
+                uploadButtonText: (multiple: boolean) => intl.formatMessage(multiple ? messages.chooseMultiple : messages.chooseSingle),
+                dropzoneText: (multiple: boolean) => intl.formatMessage(multiple ? messages.dropMultiple : messages.dropSingle),
+                removeFileAriaLabel: (fileIndex: number) => intl.formatMessage(messages.removeFile, { index: fileIndex + 1 }),
+                errorIconAriaLabel: intl.formatMessage(messages.errorIcon),
+                warningIconAriaLabel: intl.formatMessage(messages.warningIcon),
               }}
               accept={SUPPORTED_UPLOAD_EXTENSIONS}
               multiple
@@ -531,35 +834,33 @@ const UploadDocumentPanel = (): React.JSX.Element => {
         )}
 
         {isSampleMode && (
-          <FormField label="Select a sample document" description="Bundled sample documents you can process without downloading them first">
+          <FormField label={intl.formatMessage(messages.sampleLabel)} description={intl.formatMessage(messages.sampleDescription)}>
             <Select
               selectedOption={selectedSample}
               onChange={({ detail }) => handleSampleChange(detail.selectedOption)}
               options={sampleOptions}
-              placeholder={samplesLoading ? 'Loading samples...' : 'Select a sample document'}
+              placeholder={intl.formatMessage(samplesLoading ? messages.sampleLoading : messages.sampleLabel)}
               disabled={isUploading || samplesLoading}
-              loadingText="Loading samples..."
+              loadingText={intl.formatMessage(messages.sampleLoading)}
               statusType={samplesLoading ? 'loading' : 'finished'}
               filteringType="auto"
-              empty="No sample documents available"
+              empty={intl.formatMessage(messages.sampleEmpty)}
             />
           </FormField>
         )}
 
         {isSampleMode && showAutoImport && (
           <Checkbox checked={autoImportConfig} onChange={({ detail }) => setAutoImportConfig(detail.checked)} disabled={isUploading}>
-            Also import and use its configuration ({activeSample?.configId})
+            <FormattedMessage {...messages.autoImportLabel} values={{ configId: activeSample?.configId ?? '' }} />
             <Box variant="small" color="text-body-secondary">
-              This sample is tuned for the &ldquo;{activeSample?.configId}&rdquo; library configuration, which is not yet imported. It will
-              be saved as a new configuration profile and selected for processing.
+              <FormattedMessage {...messages.autoImportHint} values={{ configId: activeSample?.configId ?? '' }} />
             </Box>
           </Checkbox>
         )}
 
         {isSampleMode && activeSample?.configId && configAlreadyImported && (
           <Alert type="info">
-            This sample is tuned for the already-imported &ldquo;{activeSample.configId}&rdquo; configuration profile, which has been
-            pre-selected above. You can choose a different version if you prefer.
+            <FormattedMessage {...messages.autoImportAlreadyImported} values={{ configId: activeSample.configId }} />
           </Alert>
         )}
 
@@ -569,21 +870,34 @@ const UploadDocumentPanel = (): React.JSX.Element => {
           loading={isUploading}
           disabled={isUploading || uploadWouldBeRefused || (isSampleMode ? !selectedSample : selectedFiles.length === 0)}
         >
-          {isSampleMode ? 'Process sample' : `Upload ${selectedFiles.length > 0 ? `(${selectedFiles.length} files)` : ''}`}
+          {isSampleMode ? (
+            <FormattedMessage {...submitMessages.sample} />
+          ) : (
+            <FormattedMessage {...submitMessages.upload} values={{ count: selectedFiles.length }} />
+          )}
         </Button>
 
         {uploadStatus.length > 0 && (
           <div>
-            <h3>Upload Results:</h3>
+            <h3>
+              <FormattedMessage {...messages.resultsTitle} />
+            </h3>
             <SpaceBetween size="s">
               {uploadStatus.map((item, index) => (
                 // eslint-disable-next-line react/no-array-index-key
                 <div key={index}>
                   <StatusIndicator type={item.status === 'success' ? 'success' : 'error'}>
-                    {item.file}: {item.status === 'success' ? 'Uploaded successfully' : `Failed - ${item.error}`}
+                    {item.file}:{' '}
+                    {item.status === 'success' ? (
+                      <FormattedMessage {...messages.resultsSuccess} />
+                    ) : (
+                      <FormattedMessage {...messages.resultsFailed} values={{ error: String(item.error) }} />
+                    )}
                     {item.status === 'success' && item.objectKey && (
                       <div>
-                        <small>Object Key: {item.objectKey}</small>
+                        <small>
+                          <FormattedMessage {...messages.resultsObjectKey} values={{ key: item.objectKey }} />
+                        </small>
                       </div>
                     )}
                   </StatusIndicator>

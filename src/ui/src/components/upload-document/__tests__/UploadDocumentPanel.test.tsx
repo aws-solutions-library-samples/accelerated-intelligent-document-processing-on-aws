@@ -14,6 +14,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import type { ConfigAssignmentPreview } from '../../../hooks/use-config-prefix-mappings';
 
 vi.mock('../../../api/client-shim', () => ({
@@ -52,6 +53,12 @@ import UploadDocumentPanel from '../UploadDocumentPanel';
 const STRICT_REASON =
   'Refused under strict tenant isolation: this destination and the profile it would be processed under do not belong to the same tenant.';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('UploadDocumentPanel pre-flight notice', () => {
   beforeEach(() => {
     preview.answer = null;
@@ -70,7 +77,7 @@ describe('UploadDocumentPanel pre-flight notice', () => {
       rejected: true,
       reason: STRICT_REASON,
     };
-    render(<UploadDocumentPanel />);
+    render(<UploadDocumentPanel />, { wrapper: English });
 
     expect(await screen.findByText('This upload would be refused')).toBeTruthy();
     // The reason and the advice render as sibling text nodes, so read the page
@@ -92,7 +99,7 @@ describe('UploadDocumentPanel pre-flight notice', () => {
       rejected: true,
       reason: "Prefix mapping 'locked/' requires profile 'lending'.",
     };
-    render(<UploadDocumentPanel />);
+    render(<UploadDocumentPanel />, { wrapper: English });
 
     expect(await screen.findByText('This upload would be refused')).toBeTruthy();
     await waitFor(() =>
@@ -113,7 +120,7 @@ describe('UploadDocumentPanel pre-flight notice', () => {
       rejected: false,
       reason: 'No mapping matched.',
     };
-    render(<UploadDocumentPanel />);
+    render(<UploadDocumentPanel />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Upload Documents')).toBeTruthy());
     // Give the 400 ms debounce time to deliver the answer before asserting absence.

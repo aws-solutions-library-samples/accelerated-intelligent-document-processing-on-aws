@@ -763,6 +763,178 @@
     "defaultMessage": "Test Studio",
     "description": "Document source option: documents submitted by Test Studio runs."
   },
+  "documents.upload.autoImport.alreadyImported": {
+    "defaultMessage": "This sample is tuned for the already-imported “{configId}” configuration profile, which has been pre-selected above. You can choose a different version if you prefer.",
+    "description": "Shown when the configuration the selected sample is tuned for is already imported as a profile. {configId} is the name of that profile."
+  },
+  "documents.upload.autoImport.hint": {
+    "defaultMessage": "This sample is tuned for the “{configId}” library configuration, which is not yet imported. It will be saved as a new configuration profile and selected for processing.",
+    "description": "Text under the import checkbox. {configId} is the name of the library configuration the sample is tuned for."
+  },
+  "documents.upload.autoImport.label": {
+    "defaultMessage": "Also import and use its configuration ({configId})",
+    "description": "Checkbox label: also import the library configuration the selected sample is tuned for, and process the sample with it. {configId} is the name of that configuration."
+  },
+  "documents.upload.errorNoFiles": {
+    "defaultMessage": "Please select at least one file to upload",
+    "description": "Error on the Upload Documents page when Upload is pressed with no file chosen."
+  },
+  "documents.upload.errorNoSample": {
+    "defaultMessage": "Please select a sample document to upload",
+    "description": "Error on the Upload Documents page when Process sample is pressed with no sample chosen."
+  },
+  "documents.upload.files.chooseMultiple": {
+    "defaultMessage": "Choose files",
+    "description": "Button of the file picker that opens the file chooser, when several files can be chosen."
+  },
+  "documents.upload.files.chooseSingle": {
+    "defaultMessage": "Choose file",
+    "description": "Button of the file picker that opens the file chooser, when one file can be chosen."
+  },
+  "documents.upload.files.constraint": {
+    "defaultMessage": "Multiple files allowed. Spreadsheet, Word, and text files are converted on the backend.",
+    "description": "Hint under the file picker: several files can be chosen, and some file types are converted by the server."
+  },
+  "documents.upload.files.dropMultiple": {
+    "defaultMessage": "Drop files to upload",
+    "description": "Text of the drop zone shown while files are dragged over the page, when several files can be dropped."
+  },
+  "documents.upload.files.dropSingle": {
+    "defaultMessage": "Drop file to upload",
+    "description": "Text of the drop zone shown while a file is dragged over the page, when one file can be dropped."
+  },
+  "documents.upload.files.errorIcon": {
+    "defaultMessage": "Error",
+    "description": "Screen-reader label of the error icon next to a chosen file."
+  },
+  "documents.upload.files.label": {
+    "defaultMessage": "Select files to upload",
+    "description": "Label of the file picker on the Upload Documents page."
+  },
+  "documents.upload.files.removeFile": {
+    "defaultMessage": "Remove file {index, number}",
+    "description": "Screen-reader label of the button that removes a chosen file. {index} is the position of the file in the list, from 1."
+  },
+  "documents.upload.files.warningIcon": {
+    "defaultMessage": "Warning",
+    "description": "Screen-reader label of the warning icon next to a chosen file."
+  },
+  "documents.upload.importFailed": {
+    "defaultMessage": "Configuration import failed: {error}",
+    "description": "Error on the Upload Documents page when the library configuration of a sample could not be imported. {error} is the error message."
+  },
+  "documents.upload.mappingWins": {
+    "defaultMessage": "Your profile selection will be ignored",
+    "description": "Heading of the warning when a prefix mapping processes the upload under another configuration profile than the one selected."
+  },
+  "documents.upload.noInputBucket": {
+    "defaultMessage": "Input bucket not configured",
+    "description": "Error on the Upload Documents page when the stack has no input bucket to upload to."
+  },
+  "documents.upload.outOfScope": {
+    "defaultMessage": "You cannot upload to this folder",
+    "description": "Heading of the error alert when the user may not upload under the folder prefix entered. The reason from the server follows."
+  },
+  "documents.upload.prefix.label": {
+    "defaultMessage": "Optional folder prefix (e.g., invoices/2024)",
+    "description": "Label of the text field for the folder prefix the documents are uploaded under. \"invoices/2024\" is an example prefix."
+  },
+  "documents.upload.prefix.placeholder": {
+    "defaultMessage": "Leave empty for root folder",
+    "description": "Placeholder of the folder prefix field: with no prefix the documents go to the root folder."
+  },
+  "documents.upload.profile.description": {
+    "defaultMessage": "Select which configuration profile to use for processing these documents",
+    "description": "Help text under the Configuration Profile label on the Upload Documents page."
+  },
+  "documents.upload.profile.label": {
+    "defaultMessage": "Configuration Profile",
+    "description": "Label of the selector of the configuration profile the documents are processed with."
+  },
+  "documents.upload.profile.loading": {
+    "defaultMessage": "Loading profiles...",
+    "description": "Placeholder and loading text of the configuration profile selector while the profiles load."
+  },
+  "documents.upload.profile.placeholder": {
+    "defaultMessage": "Select configuration profile",
+    "description": "Placeholder of the configuration profile selector when no profile is selected."
+  },
+  "documents.upload.refused": {
+    "defaultMessage": "This upload would be refused",
+    "description": "Heading of the error alert when the server would refuse an upload under the folder prefix entered. The reason from the server follows."
+  },
+  "documents.upload.refusedAdvice": {
+    "defaultMessage": "Choose that profile, or upload somewhere else.",
+    "description": "Advice after the reason in the refusal alert, when a prefix mapping requires the configuration profile the reason names."
+  },
+  "documents.upload.results.failed": {
+    "defaultMessage": "Failed - {error}",
+    "description": "Result of one file in the upload results, after the file name and a colon: the upload failed. {error} is the error message."
+  },
+  "documents.upload.results.objectKey": {
+    "defaultMessage": "Object Key: {key}",
+    "description": "Line under a successful upload result. {key} is the S3 object key the file was stored under."
+  },
+  "documents.upload.results.success": {
+    "defaultMessage": "Uploaded successfully",
+    "description": "Result of one file in the upload results, after the file name and a colon: the upload succeeded."
+  },
+  "documents.upload.results.title": {
+    "defaultMessage": "Upload Results:",
+    "description": "Heading of the upload results, one line per file."
+  },
+  "documents.upload.sample.description": {
+    "defaultMessage": "Bundled sample documents you can process without downloading them first",
+    "description": "Help text under the sample document selector."
+  },
+  "documents.upload.sample.empty": {
+    "defaultMessage": "No sample documents available",
+    "description": "Shown in the sample document selector when there is no sample document."
+  },
+  "documents.upload.sample.fileCount": {
+    "defaultMessage": "{count, plural, one {# file} other {# files}}",
+    "description": "Tag next to a sample that is a batch of files, in the sample document selector. {count} is the number of files."
+  },
+  "documents.upload.sample.label": {
+    "defaultMessage": "Select a sample document",
+    "description": "Label of the sample document selector, and its placeholder when no sample is selected."
+  },
+  "documents.upload.sample.loading": {
+    "defaultMessage": "Loading samples...",
+    "description": "Placeholder and loading text of the sample document selector while the samples load."
+  },
+  "documents.upload.selectionWins": {
+    "defaultMessage": "Your selection overrides the mapping",
+    "description": "Heading of the warning when the selected configuration profile takes precedence over the prefix mapping of the folder."
+  },
+  "documents.upload.source.label": {
+    "defaultMessage": "Document source",
+    "description": "Label of the control that chooses where the documents to upload come from."
+  },
+  "documents.upload.source.local": {
+    "defaultMessage": "From my computer",
+    "description": "Option of the document source control: upload files from the computer."
+  },
+  "documents.upload.source.sample": {
+    "defaultMessage": "Sample documents",
+    "description": "Option of the document source control: process one of the bundled sample documents."
+  },
+  "documents.upload.submit.sample": {
+    "defaultMessage": "Process sample",
+    "description": "Button that processes the selected sample document."
+  },
+  "documents.upload.submit.upload": {
+    "defaultMessage": "{count, plural, =0 {Upload} one {Upload (# file)} other {Upload (# files)}}",
+    "description": "Button that uploads the chosen files. {count} is the number of files chosen; with none, it reads only the verb."
+  },
+  "documents.upload.title": {
+    "defaultMessage": "Upload Documents",
+    "description": "Heading of the Upload Documents page."
+  },
+  "documents.upload.uploadFailed": {
+    "defaultMessage": "Upload process failed: {error}",
+    "description": "Error on the Upload Documents page when the upload as a whole fails. {error} is the error message."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
@@ -1022,6 +1194,46 @@
   "helpPanel.feedback.viewIssues": {
     "defaultMessage": "View existing issues",
     "description": "Link in the feedback block that opens the list of GitHub issues of the project in a new tab."
+  },
+  "helpPanel.upload.details": {
+    "defaultMessage": "Details",
+    "description": "Heading above the list of upload details in the Upload Documents help panel."
+  },
+  "helpPanel.upload.docsOcrSizing": {
+    "defaultMessage": "OCR & Image Sizing Guide",
+    "description": "Documentation link in the Upload Documents help panel: the guide to text recognition (OCR) and image sizes."
+  },
+  "helpPanel.upload.docsWebUi": {
+    "defaultMessage": "Web UI",
+    "description": "Documentation link in the Upload Documents help panel: the page about the web interface."
+  },
+  "helpPanel.upload.formats": {
+    "defaultMessage": "Supported formats: PDF, PNG, JPEG, TIFF, Excel (XLSX/XLS), CSV, Word (DOCX), and plain text (TXT). PDF and image files are processed with Textract; spreadsheet, Word, and text files are supported through backend conversion. Legacy Word (.doc) is not supported — re-save it as .docx.",
+    "description": "First item of the details list in the Upload Documents help panel: the file types an upload accepts. Format names, file extensions and \"Textract\" (an AWS service) stay as they are."
+  },
+  "helpPanel.upload.intro": {
+    "defaultMessage": "Upload documents to be processed by the IDP system.",
+    "description": "First sentence of the Upload Documents help panel. \"IDP\" is the product abbreviation and may stay as it is in the translation."
+  },
+  "helpPanel.upload.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Upload Documents help panel."
+  },
+  "helpPanel.upload.multiple": {
+    "defaultMessage": "Multiple files can be uploaded simultaneously",
+    "description": "Fourth item of the details list in the Upload Documents help panel."
+  },
+  "helpPanel.upload.prefix": {
+    "defaultMessage": "<strong>Prefix:</strong> Optionally add a prefix to organize your documents (e.g., \"invoices/\", \"forms/2023/\")",
+    "description": "Second item of the details list in the Upload Documents help panel. The <strong> phrase is shown in bold and names the folder prefix field; the quoted examples are folder prefixes."
+  },
+  "helpPanel.upload.queue": {
+    "defaultMessage": "After upload, documents are automatically added to the processing queue and appear in the Documents list when processing begins",
+    "description": "Third item of the details list in the Upload Documents help panel. \"Documents\" is the name of the document list page."
+  },
+  "helpPanel.upload.title": {
+    "defaultMessage": "Upload Documents",
+    "description": "Heading of the help panel of the Upload Documents page."
   },
   "home.toolsPanels.goodToKnow": {
     "defaultMessage": "Good to know",
