@@ -10,7 +10,7 @@ import TestExecutions from './TestExecutions';
 import TestResults from './TestResults';
 import TestComparison from './TestComparison';
 import ToolsPanel from './tools-panel';
-import { appLayoutLabels } from '../common/labels';
+import { useAppLayoutLabels } from '../common/labels';
 import useAppContext from '../../contexts/app';
 
 interface TestRunItem {
@@ -28,6 +28,7 @@ interface TestRunItem {
 
 const TestStudioLayout = (): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen, activeTestRuns, addTestRun, removeTestRun } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
   const location = useLocation();
   const [activeTabId, setActiveTabId] = useState('sets');
   const [timePeriodHours, setTimePeriodHours] = useState(336); // Default: 2 weeks

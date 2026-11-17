@@ -53,7 +53,7 @@ import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import useSyntheticDataGenerator from '../../hooks/use-synthetic-data-generator';
 import Navigation from '../genaiidp-layout/navigation';
-import { EDIT_GROUND_TRUTH_LABEL, LABEL_SOURCE_BADGES, appLayoutLabels } from '../common/labels';
+import { EDIT_GROUND_TRUTH_LABEL, LABEL_SOURCE_BADGES, useAppLayoutLabels } from '../common/labels';
 import { TEST_STUDIO_PATH, testSetAnnotateHref, testSetReviewedHref } from '../../routes/constants';
 import TestDocThumbnail from './TestDocThumbnail';
 import ReviewEffortModal from './ReviewEffortModal';
@@ -416,6 +416,7 @@ const TestSetDetail = (): React.JSX.Element => {
   const { testSetId } = useParams<{ testSetId: string }>();
   const navigate = useNavigate();
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
   const { settings } = useSettingsContext();
   const { formatDateTime, locale } = useFormatters();
   const testSetBucket = (settings as Record<string, unknown>).TestSetBucket as string | undefined;

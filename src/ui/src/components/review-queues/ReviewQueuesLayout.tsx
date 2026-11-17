@@ -10,7 +10,7 @@ import type { BreadcrumbGroupProps } from '@cloudscape-design/components';
 import useAppContext from '../../contexts/app';
 import useNotifications from '../../hooks/use-notifications';
 import { mapNotificationsToFlashbar } from '../common/notification-flashbar';
-import { appLayoutLabels } from '../common/labels';
+import { useAppLayoutLabels } from '../common/labels';
 import Navigation from '../genaiidp-layout/navigation';
 import { reviewManagementTrail } from './breadcrumbs';
 
@@ -33,6 +33,7 @@ const ReviewQueuesLayout = ({
   navActiveHref,
 }: ReviewQueuesLayoutProps): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
   const flashItems = mapNotificationsToFlashbar(useNotifications());
   // Closed until asked for, as on the document pages.
   const [toolsOpen, setToolsOpen] = useState(false);

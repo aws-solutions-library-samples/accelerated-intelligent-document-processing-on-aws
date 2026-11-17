@@ -7,6 +7,34 @@
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
   },
+  "appLayout.ariaLabels.navigation": {
+    "defaultMessage": "Side navigation",
+    "description": "Screen-reader name of the side navigation landmark of every page."
+  },
+  "appLayout.ariaLabels.navigationClose": {
+    "defaultMessage": "Close side navigation",
+    "description": "Screen-reader label of the button that closes the side navigation."
+  },
+  "appLayout.ariaLabels.navigationToggle": {
+    "defaultMessage": "Open side navigation",
+    "description": "Screen-reader label of the button that opens the side navigation."
+  },
+  "appLayout.ariaLabels.notifications": {
+    "defaultMessage": "Notifications",
+    "description": "Screen-reader name of the region at the top of every page that holds the flash messages."
+  },
+  "appLayout.ariaLabels.tools": {
+    "defaultMessage": "Help panel",
+    "description": "Screen-reader name of the info panel on the right of a page."
+  },
+  "appLayout.ariaLabels.toolsClose": {
+    "defaultMessage": "Close help panel",
+    "description": "Screen-reader label of the button that closes the info panel."
+  },
+  "appLayout.ariaLabels.toolsToggle": {
+    "defaultMessage": "Open help panel",
+    "description": "Screen-reader label of the button that opens the info panel."
+  },
   "capacityPlanning.quotaNotRead.body": {
     "defaultMessage": "The quota analysis below leaves out the steps that use these models.",
     "description": "Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated."
@@ -1406,5 +1434,85 @@
   "testStudio.itemEdit.regroupRereadFailed": {
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
+  },
+  "topNavigation.feedback.ariaLabel": {
+    "defaultMessage": "Feedback and issue reporting",
+    "description": "Screen-reader label of the feedback menu button in the top navigation."
+  },
+  "topNavigation.feedback.reportBug": {
+    "defaultMessage": "Report a bug",
+    "description": "Feedback menu item that opens a pre-filled GitHub bug report in a new tab."
+  },
+  "topNavigation.feedback.requestFeature": {
+    "defaultMessage": "Request a feature",
+    "description": "Feedback menu item that opens a pre-filled GitHub feature request in a new tab."
+  },
+  "topNavigation.feedback.text": {
+    "defaultMessage": "Feedback",
+    "description": "Text and tooltip of the feedback menu button in the top navigation, which lists the GitHub feedback links."
+  },
+  "topNavigation.feedback.viewIssues": {
+    "defaultMessage": "View existing issues",
+    "description": "Feedback menu item that opens the list of GitHub issues of the project in a new tab."
+  },
+  "topNavigation.identity.defaultTitle": {
+    "defaultMessage": "AWS IDP Accelerator Console",
+    "description": "Title in the top navigation bar when the deployment sets no console title of its own. \"AWS IDP Accelerator\" is the product name and may stay as it is in the translation."
+  },
+  "topNavigation.overflowMenuTriggerText": {
+    "defaultMessage": "More",
+    "description": "Text of the button that opens the collapsed utilities when the top navigation is too narrow to show them all."
+  },
+  "topNavigation.role.admin": {
+    "defaultMessage": "Admin",
+    "description": "Role label of a user in the Admin group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.annotator": {
+    "defaultMessage": "Annotator",
+    "description": "Role label of a user in the Annotator group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.author": {
+    "defaultMessage": "Author",
+    "description": "Role label of a user in the Author group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.reviewer": {
+    "defaultMessage": "Reviewer",
+    "description": "Role label of a user in the Reviewer group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.viewer": {
+    "defaultMessage": "Viewer",
+    "description": "Role label of a user in the Viewer group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.signOutModal.body": {
+    "defaultMessage": "Sign out of the application?",
+    "description": "Question asked in the body of the sign-out confirmation dialog."
+  },
+  "topNavigation.signOutModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the sign-out confirmation dialog that closes it without signing out."
+  },
+  "topNavigation.signOutModal.closeAriaLabel": {
+    "defaultMessage": "Close modal",
+    "description": "Screen-reader label of the close (X) button of the sign-out confirmation dialog."
+  },
+  "topNavigation.signOutModal.confirm": {
+    "defaultMessage": "Sign Out",
+    "description": "Primary button of the sign-out confirmation dialog, which signs the user out."
+  },
+  "topNavigation.signOutModal.header": {
+    "defaultMessage": "Sign Out",
+    "description": "Title of the sign-out confirmation dialog."
+  },
+  "topNavigation.user.fallback": {
+    "defaultMessage": "user",
+    "description": "Stands in for the name in the user menu of the top navigation when the signed-in user has neither a display name nor a username."
+  },
+  "topNavigation.user.signOut": {
+    "defaultMessage": "Sign out",
+    "description": "The item of the user menu in the top navigation that opens the sign-out confirmation dialog."
+  },
+  "topNavigation.user.withRole": {
+    "defaultMessage": "{user} ({role})",
+    "description": "Text of the user menu button in the top navigation. {user} is the display name or username, {role} the role label (Admin, Author, Reviewer, Viewer or Annotator)."
   }
 }

@@ -14,6 +14,7 @@ import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { MemoryRouter } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../contexts/app', () => ({ default: () => ({ navigationOpen: false, setNavigationOpen: vi.fn() }) }));
@@ -22,6 +23,12 @@ vi.mock('../../genaiidp-layout/navigation', () => ({ default: () => null }));
 
 import ReviewQueuesLayout from '../ReviewQueuesLayout';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderLayout = (tools?: React.ReactNode) =>
   render(
     <MemoryRouter>
@@ -29,6 +36,7 @@ const renderLayout = (tools?: React.ReactNode) =>
         <div />
       </ReviewQueuesLayout>
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 describe('the HITL layout info panel', () => {

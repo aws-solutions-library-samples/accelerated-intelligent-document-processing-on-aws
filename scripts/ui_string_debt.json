@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 259,
-    "findings": 6417
+    "files": 258,
+    "findings": 6389
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -74,7 +74,7 @@
     "src/ui/src/components/common/geometry-coverage.ts": 5,
     "src/ui/src/components/common/hitl-status-renderer.tsx": 9,
     "src/ui/src/components/common/info-link.tsx": 1,
-    "src/ui/src/components/common/labels.ts": 16,
+    "src/ui/src/components/common/labels.ts": 9,
     "src/ui/src/components/common/malware-scan.ts": 14,
     "src/ui/src/components/common/object-status-renderer.tsx": 1,
     "src/ui/src/components/common/processing-issues-utils.ts": 5,
@@ -170,7 +170,6 @@
     "src/ui/src/components/feature-page/FeatureStateMessages.tsx": 76,
     "src/ui/src/components/feature-page/FeaturesToolsPanel.tsx": 32,
     "src/ui/src/components/feature-page/entitlement-source.ts": 7,
-    "src/ui/src/components/genai-idp-top-navigation/GenAIIDPTopNavigation.tsx": 20,
     "src/ui/src/components/genaiidp-layout/breadcrumbs.tsx": 3,
     "src/ui/src/components/genaiidp-layout/feature-platform-nav-items.ts": 3,
     "src/ui/src/components/genaiidp-layout/navigation.tsx": 78,
@@ -247,7 +246,7 @@
     "src/ui/src/components/test-studio/TestResultsList.tsx": 46,
     "src/ui/src/components/test-studio/TestRunner.tsx": 37,
     "src/ui/src/components/test-studio/TestRunnerStatus.tsx": 3,
-    "src/ui/src/components/test-studio/TestSetDetail.tsx": 122,
+    "src/ui/src/components/test-studio/TestSetDetail.tsx": 121,
     "src/ui/src/components/test-studio/TestSets.tsx": 72,
     "src/ui/src/components/test-studio/TestStudioHeader.tsx": 2,
     "src/ui/src/components/test-studio/TestStudioLayout.tsx": 2,
