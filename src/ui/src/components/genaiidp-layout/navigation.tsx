@@ -476,7 +476,7 @@ const FullNavigation = ({
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
+  const { loading: roleLoading, isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
   const quickStartAvailable = useQuickStartAvailable();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
@@ -661,6 +661,14 @@ const FullNavigation = ({
 
   const deploymentInfo = useDeploymentInfoNavSection();
   if (deploymentInfo) navigationItems.push(deploymentInfo);
+
+  if (roleLoading && !items) {
+    return (
+      <div className="idp-side-nav">
+        <SideNavigation items={[]} header={header} />
+      </div>
+    );
+  }
 
   return (
     <div className="idp-side-nav">

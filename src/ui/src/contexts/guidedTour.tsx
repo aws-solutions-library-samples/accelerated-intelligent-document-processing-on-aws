@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { ConsoleLogger } from 'aws-amplify/utils';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 import { HotspotRegistry, type RegisterHotspot } from './tourHotspots';
@@ -21,6 +22,8 @@ interface GuidedTourContextValue {
 }
 
 const GuidedTourContext = createContext<GuidedTourContextValue | null>(null);
+
+const logger = new ConsoleLogger('GuidedTour');
 
 const DISMISS_LABEL = 'Dismiss tour';
 
@@ -222,7 +225,9 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
         startPendingTour();
       }, TOUR_DELAY_MS);
       window.setTimeout(() => {
-        if (pendingTour.current === pending) pendingTour.current = null;
+        if (pendingTour.current !== pending) return;
+        pendingTour.current = null;
+        logger.warn('The guided tour did not start: no step it points at was on the page in time');
       }, TOUR_WAIT_MS);
     },
     [navigate, startPendingTour],
