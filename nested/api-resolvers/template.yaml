@@ -8,6 +8,12 @@ Parameters:
     Type: String
     Description: ARN of the AgentChatProcessorFunction from main template
 
+  EnableQuickStartWidget:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: Whether the agent chat resolver accepts a Quick Start message (the parent's EnableQuickStartWidget)
+
   ChatWithDocumentProcessorFunctionArn:
     Type: String
     Description: ARN of the ChatWithDocumentProcessorFunction from main template (long-running chat Lambda invoked async by the lightweight mutation resolver)
@@ -606,6 +612,7 @@ Resources:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           LOG_LEVEL: !Ref LogLevel
           CHAT_MESSAGES_TABLE: !Ref ChatMessagesTableName
           AGENT_CHAT_PROCESSOR_FUNCTION: !Ref AgentChatProcessorFunctionArn

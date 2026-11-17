@@ -108,11 +108,13 @@ You can review or switch configurations at any time from
 
 ### Disabling the widget
 
-Set `EnableQuickStartWidget=false` at deploy time to hide Quick Start from the web
-UI: the side navigation button, the Welcome page's button and its mention, the
-guided tour's last step, and the floating panel (for example, on a mature
-deployment where every user already has a tuned configuration). It changes only
-the web UI; `idp-cli bootstrap` still works.
+Set `EnableQuickStartWidget=false` at deploy time to turn Quick Start off in the
+web UI (for example, on a mature deployment where every user already has a tuned
+configuration). The UI hides the side navigation button, the Welcome page's button
+and its mention, the guided tour's last step, and the floating panel, and both chat
+routes refuse a Quick Start message, so it cannot be reached by calling the API
+directly either. `idp-cli bootstrap` does not go through the chat routes and still
+works.
 
 ---
 
