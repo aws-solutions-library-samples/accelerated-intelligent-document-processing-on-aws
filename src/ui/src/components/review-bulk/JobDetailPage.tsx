@@ -10,6 +10,7 @@ import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 
 
 import usePolling from '../../hooks/use-polling';
 import { describeApiError, isAuthorizationError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { formatDateTime } from '../../utils/date-time';
 import type { BulkDocumentOutcome, BulkReviewJob } from '../../graphql/generated/schema-types';
 import { getBulkJob } from './bulk-review-api';
@@ -189,6 +190,7 @@ const isNotFound = (e: unknown): boolean =>
 
 const JobDetailPage = (): React.JSX.Element => {
   const intl = useIntl();
+  const { locale } = useFormatters();
   const { jobId = '' } = useParams();
   const [job, setJob] = useState<BulkReviewJob | null>(null);
   const [results, setResults] = useState<BulkDocumentOutcome[]>([]);
@@ -281,8 +283,8 @@ const JobDetailPage = (): React.JSX.Element => {
                 value: intl.formatMessage(job.resubmit ? messages.yes : messages.no),
               },
               { label: intl.formatMessage(messages.requestedBy), value: job.requestedBy },
-              { label: intl.formatMessage(messages.created), value: formatDateTime(job.createdAt) },
-              { label: intl.formatMessage(messages.finished), value: job.finishedAt ? formatDateTime(job.finishedAt) : '-' },
+              { label: intl.formatMessage(messages.created), value: formatDateTime(job.createdAt, locale) },
+              { label: intl.formatMessage(messages.finished), value: job.finishedAt ? formatDateTime(job.finishedAt, locale) : '-' },
             ]}
           />
           <ProgressBar

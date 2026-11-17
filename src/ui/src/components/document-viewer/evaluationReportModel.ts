@@ -14,6 +14,8 @@
  * the component. The markdown report is still generated and downloadable — this
  * does not replace the artifact, only how it is presented.
  */
+import { formatFixed, formatPercent } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 export interface AttributeResult {
   name?: string;
@@ -147,7 +149,8 @@ export const scoreBand = (score: number | null): ScoreBand => {
 };
 
 /** "94.2%" — scores are proportions everywhere in this payload. */
-export const formatScore = (score: number | null): string => (score === null ? '—' : `${(score * 100).toFixed(1)}%`);
+export const formatScore = (score: number | null, locale: Locale): string =>
+  score === null ? '—' : formatPercent(score, locale, { fractionDigits: 1 });
 
 // ---------------------------------------------------------------------------
 // Parity with the markdown report.
@@ -551,9 +554,9 @@ export const describeValue = (value: unknown): ValueShape => {
 };
 
 /** Seconds → "12.3 s" / "2 min 5 s"; null when the run recorded none. */
-export const formatDuration = (seconds: unknown): string | null => {
+export const formatDuration = (seconds: unknown, locale: Locale): string | null => {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds)) return null;
-  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  if (seconds < 60) return `${formatFixed(seconds, locale, 1)} s`;
   const minutes = Math.floor(seconds / 60);
   return `${minutes} min ${Math.round(seconds - minutes * 60)} s`;
 };

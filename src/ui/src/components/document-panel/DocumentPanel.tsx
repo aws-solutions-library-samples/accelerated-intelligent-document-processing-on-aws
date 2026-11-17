@@ -36,6 +36,7 @@ import { documentName } from '../review-queues/review-api';
 import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
+import { useFormatters } from '../../i18n/format';
 // Uncomment the line below to enable debugging
 
 interface MappedDocument {
@@ -245,6 +246,7 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
  * there reading N/A on every deployment.
  */
 const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Element | null => {
+  const { formatDateTime } = useFormatters();
   const scan = getMalwareScanView(item);
   if (scan.outcome === 'none') return null;
 
@@ -260,7 +262,7 @@ const MalwareScanAttribute = ({ item }: { item: MappedDocument }): React.JSX.Ele
       <StatusIndicator type={statusType}>{scan.label}</StatusIndicator>
       {scan.time ? (
         <Box fontSize="body-s" color="text-status-inactive">
-          {new Date(scan.time).toLocaleString()}
+          {formatDateTime(new Date(scan.time))}
         </Box>
       ) : null}
     </Field>

@@ -7,6 +7,14 @@
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
   },
+  "capacityPlanning.quotaNotRead.body": {
+    "defaultMessage": "The quota analysis below leaves out the steps that use these models.",
+    "description": "Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated."
+  },
+  "capacityPlanning.quotaNotRead.header": {
+    "defaultMessage": "Some Bedrock quotas could not be read",
+    "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
+  },
   "common.dateRangeFields.bothDatesRequired": {
     "defaultMessage": "Both start and end dates are required.",
     "description": "Validation error of a UTC date range when the start or end date is empty."

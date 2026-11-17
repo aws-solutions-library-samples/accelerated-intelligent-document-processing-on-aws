@@ -72,6 +72,7 @@ docs-site/src/content/docs/release-validation/
 docs-site/src/content/images
 docs-site/public/images
 docs-site/public/analyst-reports
+docs-site/public/idp-in-action.html
 
 # Type checking
 pyrightconfig.temp.json

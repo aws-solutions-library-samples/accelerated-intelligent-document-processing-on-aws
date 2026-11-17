@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /* eslint-disable react/no-array-index-key */
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { calculateCapacity as calculateCapacityOp } from '../../graphql/generated';
 import {
@@ -32,11 +33,13 @@ import useDocumentsContext from '../../contexts/documents';
 import { documentsBeyondCap, documentsNeedingDetail, fetchInChunks, MAX_DOCUMENTS_TO_DETAIL, withDetails } from './populate-sources';
 import type { Document as UIDocument, Section } from '../../types/documents';
 import DocumentPickerModal from './DocumentPickerModal';
+import { QUOTA_NOT_READ_PREFIX, quotaNotReadWarnings } from './quota-warnings';
 import DateRangeModal from '../common/DateRangeModal';
 import NoConfigProfilesInScopeAlert from '../common/NoConfigProfilesInScopeAlert';
 import { parseMetering } from '../../graphql/awsjson-parsers';
 import { chooseOpeningProfile, isProfileReadable } from '../../utils/readable-profile';
 import { classificationModelOf } from '../../utils/classification-config';
+import { useFormatters } from '../../i18n/format';
 
 // The split-then-classify strategy meters its halves as Splitting and
 // SectionClassification instead of Classification; all three are the
@@ -186,6 +189,21 @@ interface SelectOption {
   disabled?: boolean;
 }
 
+const quotaWarningMessages = defineMessages<{ header: NoMessageValues; body: NoMessageValues }>({
+  header: {
+    id: 'capacityPlanning.quotaNotRead.header',
+    defaultMessage: 'Some Bedrock quotas could not be read',
+    description:
+      'Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas.',
+  },
+  body: {
+    id: 'capacityPlanning.quotaNotRead.body',
+    defaultMessage: 'The quota analysis below leaves out the steps that use these models.',
+    description:
+      'Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated.',
+  },
+});
+
 // Time period constants from main Document List
 const _DOCUMENT_LIST_SHARDS_PER_DAY = 6;
 
@@ -198,6 +216,7 @@ const CapacityPlanningLayout = () => {
     getVersionOptions,
   } = useConfigurationVersions();
   const { allowedConfigVersions, loading: roleLoading } = useUserRole();
+  const { formatFixed, formatNumber, formatPercent } = useFormatters();
   const callerScope = { allowedConfigVersions, loading: roleLoading };
   const [selectedConfigVersion, setSelectedConfigVersion] = useState<SelectOption | null>(null);
   const { mergedConfig: configurationUntyped, fetchConfiguration } = useConfiguration(
@@ -1684,12 +1703,16 @@ const CapacityPlanningLayout = () => {
       },
       {
         label: 'Total Tokens',
-        value: safeTokensPerHour > 0 ? `${(safeTokensPerHour / 1000000).toFixed(2)}M` : '0M',
+        value: safeTokensPerHour > 0 ? `${formatFixed(safeTokensPerHour / 1000000, 2)}M` : '0M',
       },
     ];
-  }, [documentConfigs, processingConfig, results, hasCalculated]);
+  }, [documentConfigs, processingConfig, results, hasCalculated, formatFixed]);
 
   // Memoized quota data that updates when config changes
+  // Recommendations reporting a quota the calculator could not read, shown in a
+  // warning banner above the results.
+  const quotaWarnings = useMemo(() => (results?.success ? quotaNotReadWarnings(results.recommendations) : []), [results]);
+
   const quotaData = useMemo(() => {
     // Use API response data if available - check for successful calculation
     if (results?.success && hasCalculated) {
@@ -2751,7 +2774,7 @@ const CapacityPlanningLayout = () => {
                   inputMode="numeric"
                 />
                 <Box variant="span" color="text-body-secondary" padding={{ top: 'xs' }}>
-                  = {processingConfig.maxLatency ? `${(parseFloat(processingConfig.maxLatency) / 60).toFixed(1)} minutes` : '-- minutes'}
+                  = {processingConfig.maxLatency ? `${formatFixed(parseFloat(processingConfig.maxLatency) / 60, 1)} minutes` : '-- minutes'}
                 </Box>
               </SpaceBetween>
             </FormField>
@@ -2783,6 +2806,17 @@ const CapacityPlanningLayout = () => {
               The capacity calculation service is temporarily unavailable. Showing estimated values based on your configuration. Please try
               again later for precise calculations.
             </Box>
+          </Alert>
+        )}
+
+        {quotaWarnings.length > 0 && (
+          <Alert type="warning" header={<FormattedMessage {...quotaWarningMessages.header} />}>
+            <FormattedMessage {...quotaWarningMessages.body} />
+            <ul>
+              {quotaWarnings.map((warning) => (
+                <li key={warning}>{warning.slice(QUOTA_NOT_READ_PREFIX.length).trim()}</li>
+              ))}
+            </ul>
           </Alert>
         )}
 
@@ -3334,7 +3368,7 @@ const CapacityPlanningLayout = () => {
                                       borderRadius: '3px 3px 0 0',
                                       cursor: 'pointer',
                                     }}
-                                    title={`Hour ${hourData.hour}: OCR ${hourData.ocrTokens.toLocaleString()} tokens`}
+                                    title={`Hour ${hourData.hour}: OCR ${formatNumber(hourData.ocrTokens)} tokens`}
                                   />
                                 )}
                                 {classificationHeight > 0 && (
@@ -3350,7 +3384,7 @@ const CapacityPlanningLayout = () => {
                                         classificationHeight > 0 && !(configuration?.ocr?.backend === 'bedrock') ? '3px 3px 0 0' : '0',
                                       cursor: 'pointer',
                                     }}
-                                    title={`Hour ${hourData.hour}: Classification ${hourData.classificationTokens.toLocaleString()} tokens`}
+                                    title={`Hour ${hourData.hour}: Classification ${formatNumber(hourData.classificationTokens)} tokens`}
                                   />
                                 )}
                                 {extractionHeight > 0 && (
@@ -3366,7 +3400,7 @@ const CapacityPlanningLayout = () => {
                                       background: '#10b981', // Green for extraction
                                       cursor: 'pointer',
                                     }}
-                                    title={`Hour ${hourData.hour}: Extraction ${hourData.extractionTokens.toLocaleString()} tokens`}
+                                    title={`Hour ${hourData.hour}: Extraction ${formatNumber(hourData.extractionTokens)} tokens`}
                                   />
                                 )}
                                 {assessmentHeight > 0 && (
@@ -3385,7 +3419,7 @@ const CapacityPlanningLayout = () => {
                                       background: '#3b82f6', // Blue for assessment
                                       cursor: 'pointer',
                                     }}
-                                    title={`Hour ${hourData.hour}: Assessment ${hourData.assessmentTokens.toLocaleString()} tokens`}
+                                    title={`Hour ${hourData.hour}: Assessment ${formatNumber(hourData.assessmentTokens)} tokens`}
                                   />
                                 )}
                                 {summarizationHeight > 0 && (
@@ -3406,7 +3440,7 @@ const CapacityPlanningLayout = () => {
                                       borderRadius: '3px 3px 0 0',
                                       cursor: 'pointer',
                                     }}
-                                    title={`Hour ${hourData.hour}: Summarization ${hourData.summarizationTokens.toLocaleString()} tokens`}
+                                    title={`Hour ${hourData.hour}: Summarization ${formatNumber(hourData.summarizationTokens)} tokens`}
                                   />
                                 )}
                                 <div
@@ -3434,7 +3468,7 @@ const CapacityPlanningLayout = () => {
                                     textAlign: 'center',
                                   }}
                                 >
-                                  {hourData.totalTokens > 0 ? `${(hourData.totalTokens / 1000).toFixed(1)}K` : '0'}
+                                  {hourData.totalTokens > 0 ? `${formatFixed(hourData.totalTokens / 1000, 1)}K` : '0'}
                                 </div>
                               </div>
                             );
@@ -3570,18 +3604,18 @@ const CapacityPlanningLayout = () => {
                             <div>
                               Peak: {String(peakHour.hour).padStart(2, '0')}:00-
                               {}
-                              {String(peakHour.hour + 1).padStart(2, '0')}:00 ({peakHour.totalTokens.toLocaleString()} tokens)
+                              {String(peakHour.hour + 1).padStart(2, '0')}:00 ({formatNumber(peakHour.totalTokens)} tokens)
                             </div>
                             <div>
-                              ⚡ <strong>Peak:</strong> {peakInferenceType} ({peakInference.toLocaleString()} tokens)
+                              ⚡ <strong>Peak:</strong> {peakInferenceType} ({formatNumber(peakInference)} tokens)
                             </div>
                             <div>
-                              📊 <strong>Average Load:</strong> {avgTokens.toLocaleString()} tokens/hour across {activeHours.length} active
+                              📊 <strong>Average Load:</strong> {formatNumber(avgTokens)} tokens/hour across {activeHours.length} active
                               hours
                             </div>
                             <div>
-                              📈 <strong>Peak vs Average:</strong> {((peakHour.totalTokens / avgTokens - 1) * 100).toFixed(1)}% above
-                              average
+                              📈 <strong>Peak vs Average:</strong>{' '}
+                              {formatPercent(peakHour.totalTokens / avgTokens - 1, { fractionDigits: 1 })} above average
                             </div>
                           </div>
                         );
@@ -3696,7 +3730,7 @@ const CapacityPlanningLayout = () => {
                                     borderRadius: queueVal > 0 ? '4px 0 0 4px' : '4px',
                                     zIndex: 2,
                                   }}
-                                  title={`Processing: ${procVal.toFixed(1)}s`}
+                                  title={`Processing: ${formatFixed(procVal, 1)}s`}
                                 />
                                 {/* Queue delay segment (orange) */}
                                 {queueVal > 0 && (
@@ -3711,7 +3745,7 @@ const CapacityPlanningLayout = () => {
                                       borderRadius: '0 4px 4px 0',
                                       zIndex: 2,
                                     }}
-                                    title={`Queue: ${queueVal.toFixed(1)}s`}
+                                    title={`Queue: ${formatFixed(queueVal, 1)}s`}
                                   />
                                 )}
                                 {/* SLA vertical marker line */}
@@ -3742,7 +3776,7 @@ const CapacityPlanningLayout = () => {
                                     paddingLeft: '6px',
                                   }}
                                 >
-                                  {totalVal.toFixed(1)}s {exceedsLimit ? '❌' : '✅'}
+                                  {formatFixed(totalVal, 1)}s {exceedsLimit ? '❌' : '✅'}
                                 </div>
                               </div>
                               <div style={{ minWidth: '200px', fontSize: '12px', color: '#5f6b7a' }}>{percentile.description}</div>
