@@ -67,6 +67,7 @@ class BatchStatusTool(IDPTool):
                 "in_progress": status.in_progress,
                 "failed": status.failed,
                 "queued": status.queued,
+                "awaiting_review": status.awaiting_review,
             }
             all_complete = status.all_complete
 
@@ -93,8 +94,16 @@ class BatchStatusTool(IDPTool):
                     "in_progress": buckets.count("running"),
                     "failed": buckets.count("failed"),
                     "queued": buckets.count("queued"),
+                    "awaiting_review": buckets.count("awaiting_review"),
                 }
-                all_complete = counts["completed"] + counts["failed"] == counts["total"]
+                # The SDK's rule, restated over the in-scope subset: settled once
+                # nothing is queued or running. A document awaiting human review
+                # counts as settled, or an agent polling this waits on a reviewer
+                # with no bound (#2022).
+                all_complete = (
+                    counts["completed"] + counts["failed"] + counts["awaiting_review"]
+                    == counts["total"]
+                )
 
             # Format response
             response = {
@@ -111,6 +120,15 @@ class BatchStatusTool(IDPTool):
                 },
                 "all_complete": all_complete,
             }
+            if counts["awaiting_review"]:
+                # Say in words that a person is the blocker: `all_complete` is
+                # true and `percentage` stays below 100, which an agent reading
+                # only those two fields cannot reconcile (#2022).
+                response["message"] = (
+                    f"Processing finished; {counts['awaiting_review']} document(s) "
+                    "awaiting human review in the web UI's review queues. They have "
+                    "no final result until a reviewer completes or rejects them."
+                )
 
             # Add detailed info if requested
             if options.get("detailed"):
@@ -139,7 +157,8 @@ class BatchStatusTool(IDPTool):
                         "completed": 0,
                         "in_progress": 0,
                         "failed": 0,
-                        "queued": 0
+                        "queued": 0,
+                        "awaiting_review": 0
                     },
                     "progress": {
                         "percentage": 0

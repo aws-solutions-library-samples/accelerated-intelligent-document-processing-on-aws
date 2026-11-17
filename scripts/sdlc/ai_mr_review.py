@@ -153,6 +153,7 @@ Environment
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime
 import hashlib
 import hmac
@@ -1850,6 +1851,103 @@ def sigv4_headers(
     }
 
 
+#: The session's three environment names. Each one's option name in the shared
+#: files is the same name lowercased (``aws_access_key_id`` and so on).
+_CREDENTIAL_FILE_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+)
+
+
+def _file_credentials(environ: Mapping[str, str]) -> dict[str, str]:
+    """Static keys for the active profile from the shared credentials files.
+
+    GitLab's runner fleet does not export the job's session as environment
+    variables: its credential vendor writes the files and symlinks the directory
+    to ``$HOME/.aws`` before the script runs. An AWS SDK finds them there, but
+    this harness has no SDK, so it reads them the way the SDK would: the profile
+    named by ``AWS_PROFILE`` (else ``AWS_DEFAULT_PROFILE``, else ``default``),
+    from ``AWS_SHARED_CREDENTIALS_FILE`` (else ``~/.aws/credentials``) and then
+    ``AWS_CONFIG_FILE`` (else ``~/.aws/config``, where a named profile's section
+    is ``[profile <name>]``). Only static keys are read; a ``credential_process``
+    or ``role_arn`` profile yields nothing, which refuses rather than guesses.
+    """
+    profile = (
+        environ.get("AWS_PROFILE") or environ.get("AWS_DEFAULT_PROFILE") or "default"
+    )
+    home = environ.get("HOME") or os.path.expanduser("~")
+    candidates = (
+        (
+            environ.get("AWS_SHARED_CREDENTIALS_FILE")
+            or os.path.join(home, ".aws", "credentials"),
+            profile,
+        ),
+        (
+            environ.get("AWS_CONFIG_FILE") or os.path.join(home, ".aws", "config"),
+            profile if profile == "default" else f"profile {profile}",
+        ),
+    )
+    for path, section in candidates:
+        parser = configparser.RawConfigParser()
+        try:
+            parser.read(path, encoding="utf-8")
+        except (OSError, configparser.Error):
+            continue
+        if not parser.has_section(section):
+            continue
+        found = {
+            key: parser.get(section, key.lower()).strip()
+            for key in _CREDENTIAL_FILE_KEYS
+            if parser.has_option(section, key.lower())
+            and parser.get(section, key.lower()).strip()
+        }
+        if found.get("AWS_ACCESS_KEY_ID") and found.get("AWS_SECRET_ACCESS_KEY"):
+            return found
+    return {}
+
+
+def _credential_files_seen(environ: Mapping[str, str]) -> str:
+    """Which shared AWS files exist and their section names, never a value.
+
+    Printed with the refusal so a vendor that writes an unexpected profile is
+    diagnosable from the job log alone.
+    """
+    home = environ.get("HOME") or os.path.expanduser("~")
+    profile = (
+        environ.get("AWS_PROFILE") or environ.get("AWS_DEFAULT_PROFILE") or "default"
+    )
+    parts = [f"profile {profile!r}"]
+    for path in (
+        environ.get("AWS_SHARED_CREDENTIALS_FILE")
+        or os.path.join(home, ".aws", "credentials"),
+        environ.get("AWS_CONFIG_FILE") or os.path.join(home, ".aws", "config"),
+    ):
+        parser = configparser.RawConfigParser()
+        try:
+            read = parser.read(path, encoding="utf-8")
+        except (OSError, configparser.Error):
+            read = []
+        parts.append(
+            f"{path}: sections {parser.sections()}" if read else f"{path}: absent"
+        )
+    return "; ".join(parts)
+
+
+def job_credentials(environ: Mapping[str, str]) -> dict[str, str]:
+    """The job's AWS session: the environment's keys, else the shared files'.
+
+    Environment variables win, as they do in every AWS SDK, so GitHub's OIDC
+    session (exported by ``configure-aws-credentials``) is read exactly as before.
+    """
+    from_env = {
+        key: environ[key] for key in _CREDENTIAL_FILE_KEYS if environ.get(key, "")
+    }
+    if from_env.get("AWS_ACCESS_KEY_ID") and from_env.get("AWS_SECRET_ACCESS_KEY"):
+        return from_env
+    return _file_credentials(environ)
+
+
 def _sts(action_body: str, environ: Mapping[str, str]) -> str:
     """POST one STS query with the environment's credentials; the XML answer.
 
@@ -1857,12 +1955,14 @@ def _sts(action_body: str, environ: Mapping[str, str]) -> str:
     the harness runs as ``python3 -I`` from a staged copy, so nothing installed
     beside it could be imported anyway.
     """
-    access_key = environ.get("AWS_ACCESS_KEY_ID", "")
-    secret_key = environ.get("AWS_SECRET_ACCESS_KEY", "")
+    credentials = job_credentials(environ)
+    access_key = credentials.get("AWS_ACCESS_KEY_ID", "")
+    secret_key = credentials.get("AWS_SECRET_ACCESS_KEY", "")
     if not access_key or not secret_key:
         raise Failure(
-            "no AWS credentials in the environment, so the role this job holds "
-            "cannot be confirmed and the review does not run"
+            "no AWS credentials in the environment or the shared credentials "
+            "file, so the role this job holds cannot be confirmed and the review "
+            f"does not run ({_credential_files_seen(environ)})"
         )
     region = (
         environ.get("AWS_REGION") or environ.get("AWS_DEFAULT_REGION") or ("us-east-1")
@@ -1880,7 +1980,7 @@ def _sts(action_body: str, environ: Mapping[str, str]) -> str:
             body,
             access_key,
             secret_key,
-            environ.get("AWS_SESSION_TOKEN", ""),
+            credentials.get("AWS_SESSION_TOKEN", ""),
             amz_date,
         ),
     )
@@ -1903,8 +2003,9 @@ def _sts(action_body: str, environ: Mapping[str, str]) -> str:
 def caller_role_name(environ: Mapping[str, str] | None = None) -> str:
     """The IAM role name behind this job's AWS credentials, from STS.
 
-    Reads the credentials from the environment, which is where both CI platforms
-    put them for this job. A caller that is not an assumed role (an IAM user, the
+    Reads the credentials through :func:`job_credentials`: the environment on
+    GitHub, the shared credentials files the runner fleet links into ``$HOME/.aws``
+    on GitLab. A caller that is not an assumed role (an IAM user, the
     account root) returns its ARN's resource part instead, which no role name
     equals.
     """
@@ -1989,10 +2090,11 @@ def assume_review_role(
         if not found:
             raise Failure("STS AssumeRole answered without a complete credential")
         issued[name] = found.group(1)
+    # The first session may have come from the shared files rather than the
+    # environment (GitLab's runner fleet), so retire whatever was actually used.
+    _RETIRED_CREDENTIALS.extend(job_credentials(environ).values())
     _RETIRED_CREDENTIALS.extend(
-        environ[key]
-        for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN")
-        if environ.get(key)
+        environ[key] for key in _CREDENTIAL_FILE_KEYS if environ.get(key)
     )
     for key in CREDENTIAL_SOURCE_KEYS:
         environ.pop(key, None)

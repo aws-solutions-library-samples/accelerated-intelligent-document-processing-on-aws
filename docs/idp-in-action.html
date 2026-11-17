@@ -1,0 +1,493 @@
+<!doctype html>
+<!-- Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. SPDX-License-Identifier: MIT-0 -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GenAI IDP Accelerator in action</title>
+<meta name="description" content="The GenAI Intelligent Document Processing Accelerator: an open-source, serverless solution that splits, classifies and extracts structured data from document packets with confidence scores, human review and accuracy testing, in your own AWS account.">
+<style>
+  :root {
+    --ink: #16191f; --muted: #4b5563; --navy: #0f1b2d; --blue: #0972d3; --blue-2: #5ab0ff;
+    --soft: #f2f8fd; --line: #e2e8f0; --card: #ffffff; --bg: #ffffff; --band: #f7f9fc;
+    --shadow: 0 18px 50px rgba(15, 27, 45, .14), 0 2px 8px rgba(15, 27, 45, .06);
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; font-family: "Amazon Ember", "Helvetica Neue", Arial, sans-serif; color: var(--ink); background: var(--bg); line-height: 1.6; }
+  a { color: var(--blue); }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px; }
+
+  /* top bar */
+  .top { position: sticky; top: 0; z-index: 10; background: rgba(255,255,255,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  .top .wrap { display: flex; align-items: center; justify-content: space-between; height: 58px; }
+  .brand { font-weight: 800; color: var(--navy); text-decoration: none; letter-spacing: .01em; }
+  .top nav a { margin-left: 22px; font-size: 15px; color: var(--muted); text-decoration: none; }
+  .top nav a:hover { color: var(--blue); }
+
+  /* hero */
+  .hero { background: radial-gradient(1200px 500px at 50% -120px, #e3f1fd 0%, rgba(255,255,255,0) 70%); padding: 72px 0 40px; text-align: center; }
+  .pill { display: inline-block; font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: var(--blue); background: #fff; border: 1px solid #b6d8f5; border-radius: 999px; padding: 6px 16px; }
+  .hero h1 { font-size: clamp(38px, 5.4vw, 64px); line-height: 1.08; margin: 22px auto 18px; max-width: 900px; color: var(--navy); letter-spacing: -.02em; }
+  .accent { background: linear-gradient(90deg, var(--blue), #7b5cff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .hero p.lead { font-size: 20px; color: var(--muted); max-width: 760px; margin: 0 auto 30px; }
+  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-bottom: 46px; }
+  .btn { display: inline-block; padding: 13px 24px; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: 16px; }
+  .btn.primary { background: var(--blue); color: #fff; }
+  .btn.ghost { border: 1px solid #b6d8f5; color: var(--navy); background: #fff; }
+  .shot { border-radius: 16px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--line); background: #fff; }
+  .hero .shot { max-width: 1100px; margin: 0 auto; }
+  .platforms { margin-top: 34px; color: var(--muted); font-size: 15px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 12px; }
+  .chip { border: 1px solid var(--line); background: #fff; color: var(--navy); border-radius: 999px; padding: 6px 14px; font-size: 14px; font-weight: 600; }
+
+  /* stats band */
+  .band { background: var(--navy); color: #fff; padding: 46px 0; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; text-align: center; }
+  .stats b { display: block; font-size: 30px; color: var(--blue-2); margin-bottom: 4px; }
+  .stats span { font-size: 15px; color: #cbd5e1; }
+
+  /* feature rows */
+  section.feature { padding: 86px 0; border-bottom: 1px solid var(--line); }
+  section.feature:nth-of-type(even) { background: var(--band); }
+  .row { display: grid; grid-template-columns: 1fr 1.15fr; gap: 64px; align-items: center; }
+  .row.flip .text { order: 2; }
+  .row.narrow-shot { grid-template-columns: 1fr 1fr; }
+  .row.narrow-shot.flip { grid-template-columns: 1fr 1fr; }
+  .kicker { color: var(--blue); font-weight: 800; letter-spacing: .12em; text-transform: uppercase; font-size: 13px; margin-bottom: 10px; }
+  h2 { font-size: clamp(28px, 3.3vw, 40px); line-height: 1.15; margin: 0 0 18px; color: var(--navy); letter-spacing: -.01em; }
+  .text p { font-size: 17.5px; color: #33404f; margin: 0 0 16px; }
+  .why { border-left: 3px solid var(--blue); padding: 4px 0 4px 16px; margin-top: 20px; }
+  .why b { display: block; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--navy); margin-bottom: 2px; }
+  .why p { margin: 0; }
+  .text ul { margin: 0 0 16px; padding-left: 20px; color: #33404f; font-size: 17px; }
+  .text li { margin-bottom: 6px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: start; }
+  .caption { font-size: 13.5px; color: var(--muted); text-align: center; margin-top: 10px; }
+  .more { font-weight: 700; text-decoration: none; }
+  .more::after { content: " \2192"; }
+
+  /* sub-hero */
+  .subhero { padding: 90px 0 30px; text-align: center; background: linear-gradient(180deg, #fff 0%, var(--soft) 100%); }
+  .subhero h2 { font-size: clamp(32px, 4.2vw, 50px); max-width: 860px; margin: 14px auto 16px; }
+  .subhero p { font-size: 19px; color: var(--muted); max-width: 720px; margin: 0 auto; }
+
+  /* grid of cards */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 40px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px 24px 20px; }
+  .card h3 { margin: 0 0 8px; font-size: 19px; color: var(--navy); }
+  .card p { margin: 0; font-size: 15.5px; color: #33404f; }
+
+  /* videos */
+  section.videos { padding: 86px 0; border-bottom: 1px solid var(--line); text-align: center; }
+  .vgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px; margin-top: 40px; text-align: left; }
+  .vcard h3 { font-size: 17px; margin: 12px 0 2px; color: var(--navy); }
+  .vcard p { font-size: 14.5px; margin: 0; color: var(--muted); }
+  .vbox { position: relative; aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); box-shadow: var(--shadow); background: var(--navy); }
+  .vbox video, .vbox img { width: 100%; height: 100%; object-fit: cover; object-position: top center; }
+  .vbox .soon { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(15, 27, 45, .55); color: #fff; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
+  .vfeature { max-width: 980px; margin: 40px auto 0; text-align: left; }
+  .vfeature .vbox { border-radius: 16px; }
+  .vfeature h3 { font-size: 22px; }
+  @media (max-width: 900px) { .vgrid { grid-template-columns: 1fr; } }
+
+  /* closing */
+  .closing { background: var(--navy); color: #fff; text-align: center; padding: 90px 0; }
+  .closing h2 { color: #fff; }
+  .closing p { color: #cbd5e1; font-size: 19px; max-width: 700px; margin: 0 auto 30px; }
+  .closing .btn.ghost { background: transparent; color: #fff; border-color: #475569; }
+  footer { text-align: center; font-size: 13px; color: var(--muted); padding: 26px 0 40px; }
+
+  @media (max-width: 900px) {
+    .row, .row.narrow-shot, .row.narrow-shot.flip { grid-template-columns: 1fr; gap: 32px; }
+    .row.flip .text { order: 0; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .cards { grid-template-columns: 1fr; }
+    .top nav { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./">GenAI IDP Accelerator</a>
+    <nav>
+      <a href="#watch">Watch</a>
+      <a href="#setup">Set up</a>
+      <a href="#process">Process</a>
+      <a href="#trust">Trust</a>
+      <a href="#build">Build on it</a>
+      <a href="deployment/">Get started</a>
+    </nav>
+  </div>
+</header>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap">
+    <span class="pill">Open source &middot; runs in your AWS account</span>
+    <h1>From document packets to <span class="accent">data you can trust</span></h1>
+    <p class="lead">The GenAI IDP Accelerator turns unstructured documents into structured, validated data. It splits a packet into its documents, classifies each one and extracts the fields you define. Every value gets a confidence score and its location on the page, and a person reviews the ones that need it. It runs serverless at any volume, in your own AWS account.</p>
+    <div class="cta">
+      <a class="btn primary" href="deployment/">Deploy the accelerator</a>
+      <a class="btn ghost" href="#watch">Watch the demos</a>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/hero.png" alt="A processed lending packet in the web UI: review reasons for low-confidence fields, the page image with the selected value highlighted, and each extracted value with its confidence against its threshold"></div>
+    <div class="platforms">
+      Built for documents like
+      <div class="chips"><span class="chip">Lending packets</span><span class="chip">Bank statements</span><span class="chip">W-2s and tax forms</span><span class="chip">Healthcare packages</span><span class="chip">Insurance claims</span><span class="chip">Passport applications</span><span class="chip">Your own document types</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- STATS BAND -->
+<section class="band">
+  <div class="wrap stats">
+    <div><b>Any document</b><span>Define a type by describing it, or from a sample</span></div>
+    <div><b>Two engines</b><span>Bedrock Data Automation, or Textract plus Bedrock</span></div>
+    <div><b>Your account</b><span>Documents, models and keys stay with you</span></div>
+    <div><b>MIT-0</b><span>Open source, change anything</span></div>
+  </div>
+</section>
+
+<!-- VIDEOS -->
+<section class="videos" id="watch">
+  <div class="wrap">
+    <span class="pill">Watch</span>
+    <h2 style="margin-top:14px">See it in action</h2>
+    <p style="font-size:18px;color:var(--muted);max-width:720px;margin:0 auto">Narrated demos recorded on a test deployment, using the sample documents that ship with the accelerator.</p>
+    <div class="vfeature">
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/beb7a697-2074-4932-b218-1daa7f2e8cbf" data-poster="images/idp-in-action/hero.png" id="video-idp-overview"></div>
+        <h3>The GenAI IDP Accelerator: from documents to decisions <span style="font-weight:400;color:var(--muted)">(8:00)</span></h3>
+        <p>For new viewers, the whole product through one lending packet. Describe a new document type and get a working configuration, then upload the packet. It's split into documents, classified and extracted, with a confidence score and a page location for each field. A low-confidence value is corrected in a review queue, and accuracy is measured against ground truth in Test Studio. Then you ask questions across every processed document, see what each one cost, and reach it all from the CLI, the SDK, MCP and extensions.</p>
+      </div>
+    </div>
+    <div class="vgrid">
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/f8039708-4d6f-4e8d-9483-82d9cb5fa653" data-poster="images/idp-in-action/quick-start.png" id="video-new-document-type"></div>
+        <h3>Set up a new document type <span style="font-weight:400;color:var(--muted)">(2:00)</span></h3>
+        <p>Discovery reads a sample invoice and drafts a document class, with its nested groups and line-item table, beside the class Quick Start created. Then the revision history shows exactly what Discovery added.</p>
+      </div>
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/05f24c6f-5f47-47a6-9795-12b4cbfa575f" data-poster="images/idp-in-action/extraction-confidence.png" id="video-inside-a-document"></div>
+        <h3>Inside a processed document <span style="font-weight:400;color:var(--muted)">(2:39)</span></h3>
+        <p>The lending packet in detail: its sections and page classes, each field with its confidence and place on the page, the summary and processing report, every retained version, and a chat with the document that catches a pay slip and a W-2 naming different employees.</p>
+      </div>
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/a0b24048-2369-4faf-a931-d9f697c62141" data-poster="images/idp-in-action/review-queue.png" id="video-review-queues"></div>
+        <h3>Human review with review queues <span style="font-weight:400;color:var(--muted)">(2:38)</span></h3>
+        <p>An Admin adds an annotator to the review queue and assigns a document. The annotator works it against the page, and hands back one that needs reprocessing rather than new values, with a reason kept in its history.</p>
+      </div>
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/843aa4d7-030f-4856-aa7e-a52064b513d1" data-poster="images/idp-in-action/test-studio.png" id="video-test-studio"></div>
+        <h3>Measure accuracy with Test Studio <span style="font-weight:400;color:var(--muted)">(2:12)</span></h3>
+        <p>Test sets from public datasets, two runs of the same W-2 forms with different extraction models, field-level accuracy that shows where each model struggles, and a side-by-side comparison of accuracy and cost.</p>
+      </div>
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/f778a71d-7360-44d9-afe4-2dbe23171042" data-poster="images/idp-in-action/agent-chat.png" id="video-ask-your-documents"></div>
+        <h3>Ask your documents <span style="font-weight:400;color:var(--muted)">(2:25)</span></h3>
+        <p>Agent Chat builds a table of processed documents and refines it in conversation, the error analyzer names the root cause of a failed document from its logs and traces, and the Knowledge Base answers from the documents, saying so when they don't hold the answer.</p>
+      </div>
+      <div class="vcard">
+        <div class="vbox" data-video="https://github.com/user-attachments/assets/ccb92a67-c075-4163-8c56-d122b2184a69" data-poster="images/idp-in-action/operate.png" id="video-operate-at-scale"></div>
+        <h3>Operate it at scale <span style="font-weight:400;color:var(--muted)">(2:11)</span></h3>
+        <p>The pricing behind every cost estimate, capacity planning from the tokens real documents used, checked against live Bedrock service quotas, and routing documents and tenants to their own configuration.</p>
+      </div>
+    </div>
+    <p style="margin-top:34px"><a class="more" href="demo-videos/">All demo videos</a></p>
+  </div>
+</section>
+
+<!-- SUB-HERO: SET UP -->
+<section class="subhero" id="setup">
+  <div class="wrap">
+    <span class="pill">Set up</span>
+    <h2>A new document type <span class="accent">in minutes</span>, not a project</h2>
+    <p>A fresh deployment doesn't know your documents yet. Describe them, show it one, or start from a preset. Every change is saved as a revision that you can test before it goes live.</p>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row">
+    <div class="text">
+      <div class="kicker">Quick Start</div>
+      <h2>Describe your documents, get a working configuration</h2>
+      <p>Tell Quick Start what you process, for example "commercial invoices with line items, totals and payment terms". It proposes the document classes and fields, refines them with you in conversation, and activates the configuration. You don't edit a schema by hand.</p>
+      <div class="why"><b>Why it matters</b><p>The first useful result comes from a conversation, not from learning a schema format.</p></div>
+      <p style="margin-top:18px"><a class="more" href="quick-start/">Quick Start</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/quick-start.png" alt="Quick Start proposing a Supplier Invoice class and its fields from a plain-language description"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row flip">
+    <div class="text">
+      <div class="kicker">Discovery</div>
+      <h2>Show it a sample, and it drafts the schema</h2>
+      <p>Discovery reads a sample document, or several of the same kind, and identifies its structure: the fields, their types, groups and tables. It turns them into a document class you can edit. In BDA mode it creates and manages the Bedrock Data Automation blueprints as well.</p>
+      <div class="why"><b>Why it matters</b><p>The schema starts from your real documents, so nothing on the page is left out by accident.</p></div>
+      <p style="margin-top:18px"><a class="more" href="discovery/">Discovery</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/discovery.png" alt="Discovery: upload a sample document to generate a document class in a configuration profile"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row">
+    <div class="text">
+      <div class="kicker">Configuration profiles</div>
+      <h2>Many use cases in one deployment, every change kept</h2>
+      <p>Each named configuration profile holds its own classes, prompts, models and rules, with a revision history. Route documents to a profile by S3 prefix, compare revisions setting by setting, and roll back without redeploying. Presets for bank statements, lending packets, W-2s, healthcare packages and more give you a running start.</p>
+      <div class="why"><b>Why it matters</b><p>Teams change prompts and models with confidence, because every document records the exact configuration that produced it.</p></div>
+      <p style="margin-top:18px"><a class="more" href="configuration-profiles/">Configuration profiles</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/configuration.png" alt="The Schema Builder showing the SupplierInvoice class Quick Start created, with its attributes and the shared LineItem class"></div>
+  </div>
+</section>
+
+<!-- SUB-HERO: PROCESS -->
+<section class="subhero" id="process">
+  <div class="wrap">
+    <span class="pill">Process</span>
+    <h2>Every field, <span class="accent">with its evidence</span></h2>
+    <p>Upload through the web UI, drop files in S3, or send a batch from the CLI. The accelerator queues, throttles and retries for you, and shows you why it produced every value.</p>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row">
+    <div class="text">
+      <div class="kicker">Classification</div>
+      <h2>One upload, many documents</h2>
+      <p>A lending packet arrives as one PDF that holds a W-2, a bank statement, a pay stub and a driver's license. The accelerator finds where each document starts and ends, classifies each section, and processes it with that class's schema. Classify a page at a time or a whole packet at a time, and add few-shot examples where classes look alike.</p>
+      <div class="why"><b>Why it matters</b><p>Mixed packets need no pre-sorting. They come out as separate, correctly typed documents.</p></div>
+      <p style="margin-top:18px"><a class="more" href="classification/">Classification</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/document-sections.png" alt="The lending packet split into six sections, each with its document class, pages, low-confidence and missing fields, and status"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row flip">
+    <div class="text">
+      <div class="kicker">Extraction and confidence</div>
+      <h2>Structured data, a confidence score and the place on the page</h2>
+      <p>Each section's fields are extracted to your JSON Schema, including nested groups and tables hundreds of rows long. Agentic extraction parses tables deterministically and checks its own output for completeness. Every value gets a confidence score and a bounding box on the page, so you can see at a glance which values to trust and where they came from.</p>
+      <p>Choose the engine per configuration: Bedrock Data Automation end to end, or Amazon Textract OCR with the Amazon Bedrock model you pick for each step.</p>
+      <div class="why"><b>Why it matters</b><p>Downstream systems get data they can act on, and reviewers check only the values that need a look.</p></div>
+      <p style="margin-top:18px"><a class="more" href="extraction-and-confidence/">Extraction and confidence</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/extraction-confidence.png" alt="Extracted fields with confidence scores, and the selected field highlighted on the page image"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap">
+    <div class="kicker">Also in the pipeline</div>
+    <h2>More checks and controls, configured rather than coded</h2>
+    <div class="cards">
+      <div class="card"><h3><a href="rule-validation/">Rule validation</a></h3><p>Check each document against business rules written in plain language, such as matching names across a packet, with a verdict and its reasoning. Arithmetic and threshold rules can go to the Z3 solver for a deterministic answer.</p></div>
+      <div class="card"><h3><a href="pattern-1/">Bedrock Data Automation</a></h3><p>Switch a profile to BDA mode and Bedrock Data Automation does OCR, classification and extraction end to end. The review, evaluation and analytics stay the same.</p></div>
+      <div class="card"><h3><a href="few-shot-examples/">Few-shot examples</a></h3><p>Attach example pages to a class when similar documents need telling apart, and extraction learns from them too.</p></div>
+      <div class="card"><h3><a href="document-versions/">Document versions</a></h3><p>Every processing run is kept as an immutable version you can view, compare and download, so reprocessing never loses a result.</p></div>
+      <div class="card"><h3><a href="post-processing-lambda-hook/">Lambda hooks</a></h3><p>Inject your own logic before or after a step: custom prompts, post-processing, or a call into another system.</p></div>
+      <div class="card"><h3><a href="evaluation/">Evaluation and calibration</a></h3><p>Field-level accuracy against ground truth, with confidence calibration that shows whether a 90% score really means 90%.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row flip">
+    <div class="text">
+      <div class="kicker">Human review</div>
+      <h2>People review only the values that need it</h2>
+      <p>A document with a low-confidence field, or a required field left empty, waits in a review queue with the reasons it's there. An Admin assigns it, and an Annotator corrects the values against the page and processes the changes. A finalize run produces the corrected outputs, and every earlier version stays on record.</p>
+      <div class="why"><b>Why it matters</b><p>Straight-through processing for the easy majority, a person in the loop for the rest, and an audit trail for both.</p></div>
+      <p style="margin-top:18px"><a class="more" href="review-queues/">Review queues</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/review-queue.png" alt="The Default review queue with documents waiting for review, its progress and its annotators"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row">
+    <div class="text">
+      <div class="kicker">Test Studio</div>
+      <h2>Know your accuracy before you change production</h2>
+      <p>Build a test set from processed documents, from a labeled dataset, or by generating synthetic documents. Run it against any configuration revision and read the accuracy field by field, alongside cost and confidence calibration. Compare two runs side by side to see exactly what a new prompt or model changed.</p>
+      <div class="why"><b>Why it matters</b><p>Model and prompt choices become measured decisions, not guesses.</p></div>
+      <p style="margin-top:18px"><a class="more" href="test-studio/">Test Studio</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/test-studio.png" alt="Two Test Studio runs of ten W-2 forms compared: accuracy, cost per page, confidence and duration for two extraction models"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row flip narrow-shot">
+    <div class="text">
+      <div class="kicker">Agents</div>
+      <h2>Ask questions across every document</h2>
+      <p>"What was the average loan amount by state last month, and which documents had low-confidence income fields?" Agent Chat writes and runs the query over your processing results and answers with tables and charts. The Knowledge Base answers questions about what the documents say, with links to the sources. When a document fails, the Error Analyzer reads the logs and traces and explains why.</p>
+      <div class="why"><b>Why it matters</b><p>Analysts and operators get answers in plain language, without writing SQL or digging through logs.</p></div>
+      <p style="margin-top:18px"><a class="more" href="agent-companion-chat/">Agent Companion Chat</a></p>
+    </div>
+    <div>
+      <div class="pair">
+        <div class="shot"><img src="images/idp-in-action/agent-chat.png" alt="Agent Chat answering an analytics question with a chart"></div>
+        <div class="shot"><img src="images/idp-in-action/knowledge-base.png" alt="The Knowledge Base answering a question with links to source documents"></div>
+      </div>
+      <div class="caption">Analytics across documents, and questions about their contents</div>
+    </div>
+  </div>
+</section>
+
+<!-- SUB-HERO: TRUST -->
+<section class="subhero" id="trust">
+  <div class="wrap">
+    <span class="pill">Trust</span>
+    <h2>Under your control, <span class="accent">down to the cent</span></h2>
+    <p>Built for teams that have to answer "who can see this document, and what did it cost?"</p>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row narrow-shot">
+    <div class="text">
+      <div class="kicker">Transparent cost</div>
+      <h2>See what every document cost</h2>
+      <p>Each document shows an itemized estimate of its cost: OCR pages, model tokens for each step and Bedrock Data Automation pages, at list prices that administrators can replace with their own rates. Capacity planning turns your expected volume into the throughput and service quotas you'll need.</p>
+      <div class="why"><b>Why it matters</b><p>No per-page licence. You pay only for the AWS services each document uses, and you can see where the money goes.</p></div>
+      <p style="margin-top:18px"><a class="more" href="cost-calculator/">Cost considerations</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/operate.png" alt="A document's estimated cost, itemized by service and processing step, with the cost per page"></div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row flip">
+    <div class="text">
+      <div class="kicker">Access control</div>
+      <h2>The right people see the right documents</h2>
+      <p>Admin, Author, Reviewer, Annotator and Viewer roles are enforced on the server, at the API. Scope a user to the configuration profiles of their use case, or keep each tenant's documents visible only to that tenant's users in one shared deployment. Sign in with Cognito or federate your own identity provider.</p>
+      <div class="why"><b>Why it matters</b><p>One deployment can serve several teams or customers without one seeing another's documents.</p></div>
+      <p style="margin-top:18px"><a class="more" href="rbac/">Role-based access control</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/user-management.png" alt="User Management listing users with their roles and allowed configuration profiles"></div>
+  </div>
+</section>
+
+<!-- BUILD ON IT -->
+<section class="subhero" id="build">
+  <div class="wrap">
+    <span class="pill">Build on it</span>
+    <h2>Beyond the web UI, <span class="accent">into your systems</span></h2>
+    <p>Everything the UI does is available from code, from your AI tools, and through extensions you install into a running stack.</p>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row">
+    <div class="text">
+      <div class="kicker">CLI, SDK and MCP</div>
+      <h2>Automate it from code and from your agents</h2>
+      <p>The <code>idp-cli</code> deploys and updates stacks, sends batches, monitors progress and downloads results. The Python SDK gives your applications the same operations. The built-in MCP server lets Amazon Quick Suite query your documents and analytics directly, signed in through OAuth, and the MCP connector brings the same tools to IDE assistants such as Kiro and Cline.</p>
+      <div class="why"><b>Why it matters</b><p>Document processing fits into existing pipelines and AI assistants, rather than sitting beside them.</p></div>
+      <p style="margin-top:18px"><a class="more" href="idp-cli/">IDP CLI</a> &nbsp; <a class="more" href="idp-sdk/">IDP SDK</a> &nbsp; <a class="more" href="mcp-server/">MCP server</a></p>
+    </div>
+    <div class="vcard">
+      <div class="vbox" data-video="https://github.com/user-attachments/assets/3d448a74-ba5b-4a4a-96ad-ec03ac0b4d7d" data-poster="images/idp-in-action/cli.png" id="video-idp-cli"></div>
+      <div class="caption">Batch processing with live progress from the IDP CLI</div>
+    </div>
+  </div>
+</section>
+
+<section class="feature">
+  <div class="wrap row flip">
+    <div class="text">
+      <div class="kicker">Extensions</div>
+      <h2>Add capabilities without forking the code</h2>
+      <p>Install extensions into a running deployment, each with its own pages and pipeline hooks. PII Anonymization redacts personal data before the models see a page, the Data Generator creates labeled synthetic test documents, and the Auto Optimizer tunes prompts and models against a cost-per-page budget. The Feature Platform SDK lets you build your own.</p>
+      <div class="why"><b>Why it matters</b><p>You add what your use case needs and keep taking upgrades.</p></div>
+      <p style="margin-top:18px"><a class="more" href="feature-platform/">Feature Platform</a></p>
+    </div>
+    <div class="shot"><img src="images/idp-in-action/extensions.png" alt="Installed extensions in the web UI"></div>
+  </div>
+</section>
+
+<!-- WHY IDP -->
+<section class="subhero">
+  <div class="wrap">
+    <span class="pill">Why the accelerator</span>
+    <h2>Yours to run, <span class="accent">yours to shape</span></h2>
+    <div class="cards">
+      <div class="card"><h3>Runs in your AWS account</h3><p>Documents, results and models stay in your account and Region, encrypted at rest. Deploy into a private network, a VPC-secured mode, or AWS GovCloud (US).</p></div>
+      <div class="card"><h3>Serverless at any volume</h3><p>Lambda, Step Functions, SQS and DynamoDB scale from one document to millions, with queuing, concurrency limits, retries and a circuit breaker built in.</p></div>
+      <div class="card"><h3>Open source</h3><p>MIT-0 licensed. Change the prompts, the schemas, the pipeline, or the code itself. Inject your own logic through Lambda hooks.</p></div>
+      <div class="card"><h3>Your models</h3><p>Built on Amazon Bedrock. Choose the model for each step, from Amazon Nova to Anthropic Claude, or fine-tune a classifier on your own documents.</p></div>
+      <div class="card"><h3>Deploy your way</h3><p>One-click CloudFormation, a generated Terraform or OpenTofu module, or headless for API-only use. Prefer AWS CDK? A separate port, <a href="https://github.com/cdklabs/genai-idp">GenAI IDP Accelerator for AWS CDK</a>, is released on its own schedule.</p></div>
+      <div class="card"><h3>Built to be operated</h3><p>A CloudWatch dashboard, alarms, document versions and a tracking table, so you can always answer "where is this document, and what happened to it?"</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- CLOSING -->
+<section class="closing">
+  <div class="wrap">
+    <h2>Process your first document today</h2>
+    <p>Deploy the accelerator in your own AWS account in under an hour, then upload the sample lending packet and watch it come apart.</p>
+    <div class="cta" style="margin-bottom:0">
+      <a class="btn primary" href="deployment/">Deployment guide</a>
+      <a class="btn ghost" href="demo-videos/">Demo videos</a>
+      <a class="btn ghost" href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws">GitHub</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  The GenAI IDP Accelerator is sample code, provided under the MIT-0 License. Screenshots show a test deployment processing the sample documents in the repository.
+</footer>
+
+
+<script>
+  // Each .vbox[data-video] holding a GitHub asset URL becomes a player. Any other value, or a
+  // video that fails to load, shows the poster with a link to the video instead.
+  const showPoster = (box, poster, url) => {
+    box.replaceChildren();
+    const img = document.createElement('img');
+    img.src = poster; img.alt = '';
+    const soon = document.createElement('div');
+    soon.className = 'soon';
+    if (url) {
+      const a = document.createElement('a');
+      a.href = url; a.textContent = 'Watch video'; a.style.color = 'inherit';
+      soon.appendChild(a);
+    } else {
+      soon.textContent = 'Video coming soon';
+    }
+    box.append(img, soon);
+  };
+  document.querySelectorAll('.vbox[data-video]').forEach((box) => {
+    const url = box.dataset.video.trim();
+    const poster = box.dataset.poster;
+    if (/^https:\/\/github\.com\/user-attachments\/assets\/[\w-]+$/.test(url)) {
+      const v = document.createElement('video');
+      v.controls = true; v.playsInline = true; v.preload = 'metadata'; v.poster = poster;
+      v.style.objectFit = 'contain'; v.style.background = '#000';
+      const src = document.createElement('source');
+      src.src = url; src.type = 'video/mp4';
+      src.addEventListener('error', () => showPoster(box, poster, url));
+      const a = document.createElement('a');
+      a.href = url; a.textContent = 'Watch video';
+      v.append(src, a);
+      box.appendChild(v);
+    } else {
+      showPoster(box, poster, null);
+    }
+  });
+</script>
+</body>
+</html>

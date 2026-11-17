@@ -470,6 +470,12 @@ The full contract, including the schema, the ordering, `sequence` and an
 EventBridge rule pattern, is in the
 [review queues module README](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/review_queues/README.md#review-status-contract).
 
+A batch watched with `idp-cli run-inference --monitor` or `idp-cli status --wait`,
+or polled through the SDK's `batch.get_status`, counts a document held in a queue
+as **awaiting review** and stops waiting once nothing else is queued or running.
+See [IDP CLI](./idp-cli.md#process--run-inference) and
+[IDP SDK](./idp-sdk.md#batchget_status).
+
 ## Limits and behaviour to know
 
 - `REJECTED` is a terminal status, but it isn't success: the SDK counts it as

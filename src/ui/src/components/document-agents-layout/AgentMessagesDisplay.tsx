@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { Container, Header, Box, Spinner, SpaceBetween, Button, Modal } from '@cloudscape-design/components';
+import { useFormatters } from '../../i18n/format';
 
 interface AgentMessage {
   role: string;
@@ -24,6 +25,7 @@ interface AgentMessagesDisplayProps {
 }
 
 const AgentMessagesDisplay = ({ agentMessages = null, isProcessing = false }: AgentMessagesDisplayProps): React.JSX.Element | null => {
+  const { formatTime } = useFormatters();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [sqlModalVisible, setSqlModalVisible] = useState(false);
@@ -746,7 +748,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
     if (!timestamp) return '';
     try {
       const date = new Date(timestamp);
-      return date.toLocaleTimeString();
+      return formatTime(date);
     } catch (error) {
       return timestamp;
     }

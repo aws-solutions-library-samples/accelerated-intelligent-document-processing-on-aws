@@ -63,8 +63,19 @@ def a_model() -> str:
     return bench.MODELS["nova2lite"]
 
 
+#: A decision-model function ARN, written into the *-decider variants' configs.
+DECIDER_ARN = "arn:aws:lambda:us-east-1:123456789012:function:GENAIIDP-decider"
+
+
 def _config(docsplit_base, a_model, variant, mode="topk"):
-    return bench.build_config(docsplit_base, a_model, mode, 3, variant=variant)
+    return bench.build_config(
+        docsplit_base,
+        a_model,
+        mode,
+        3,
+        variant=variant,
+        decision_model_endpoint=DECIDER_ARN,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -257,6 +268,27 @@ def test_an_omitted_variant_leaves_modality_at_the_test_sets_own_setting(
             "page-both",
             lambda c: c["combined"]["llm"]["confidence"].update(task_prompt_topk=""),
             "confidence.task_prompt_topk",
+        ),
+        (
+            "split-then-classify-page-decider",
+            lambda c: c["split_then_classify"]["section_classification"].update(
+                method="llm"
+            ),
+            "section_classification.method",
+        ),
+        (
+            "split-then-classify-page-decider",
+            lambda c: c["split_then_classify"]["section_classification"][
+                "decision_model"
+            ].update(endpoint=None),
+            "decision_model.endpoint",
+        ),
+        (
+            "split-then-classify-packet-decider",
+            lambda c: c["split_then_classify"]["section_classification"][
+                "decision_model"
+            ].update(input="text"),
+            "decision_model.input",
         ),
         (
             # Split-then-classify reads confidence from section classification.
@@ -969,3 +1001,29 @@ def test_a_broken_cell_is_caught_before_anything_launches(monkeypatch):
         "a cell launched before the broken one was reported, which is the spend "
         "the pre-flight exists to avoid"
     )
+
+
+def test_a_decider_variant_writes_the_endpoint_and_input(docsplit_base, a_model):
+    cfg = _config(docsplit_base, a_model, "split-then-classify-page-decider")
+    section = cfg["classification"]["split_then_classify"]["section_classification"]
+    assert section["method"] == "decision_model"
+    assert section["decision_model"]["endpoint"] == DECIDER_ARN
+    assert section["decision_model"]["input"] == "images"
+
+
+def test_main_refuses_a_decider_variant_without_an_endpoint(monkeypatch):
+    monkeypatch.delenv("DECISION_MODEL_FUNCTION_ARN", raising=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_classification_bench.py",
+            "--stack",
+            "s",
+            "--models",
+            "nova2lite",
+            "--variants",
+            "page-both,split-then-classify-page-decider",
+        ],
+    )
+    with pytest.raises(SystemExit, match="decision-model-endpoint"):
+        bench.main()

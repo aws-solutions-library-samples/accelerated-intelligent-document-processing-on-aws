@@ -183,8 +183,10 @@ def get_status(event, stack_name, region):
             if doc_status.status.value in ["PROCESSING", "RUNNING"]
             else 0,
             queued=1 if doc_status.status.value == "QUEUED" else 0,
+            awaiting_review=1 if doc_status.status.value == "HITL_IN_PROGRESS" else 0,
             success_rate=1.0 if doc_status.status.value == "COMPLETED" else 0.0,
-            all_complete=doc_status.status.value in ["COMPLETED", "FAILED"],
+            all_complete=doc_status.status.value
+            in ["COMPLETED", "FAILED", "HITL_IN_PROGRESS"],
         )
 
     # Convert documents to serializable format
