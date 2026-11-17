@@ -85,7 +85,15 @@ HANDLERS = _handlers()
 
 
 def test_the_derivation_finds_the_known_handlers():
-    assert {(template, name) for template, name, _, _ in HANDLERS} >= KNOWN_HANDLERS
+    """A floor under the derived set. A member the derivation no longer finds fails
+    here, whether the signal stopped matching or the function was renamed, so the
+    floor cannot go stale beside a narrowed derivation."""
+    found = {(template, name) for template, name, _, _ in HANDLERS}
+    missing = sorted(KNOWN_HANDLERS - found)
+    assert not missing, (
+        f"the derivation no longer finds {missing}; it has lost its signal, or the "
+        "function moved and KNOWN_HANDLERS should say where"
+    )
 
 
 @pytest.mark.parametrize(

@@ -579,3 +579,18 @@ def test_processor_and_resolver_agree_on_quick_starts_groups(agent_chat_processo
     resolver = _load("agent_chat_resolver_qs_groups", "agent_chat_resolver/index.py")
     assert agent_chat_processor._QUICK_START_ROLES == resolver._QUICK_START_ROLES
     assert agent_chat_processor._QUICK_START_ROLES == ("Admin",)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["true", "TRUE", " false ", "False", "", None])
+def test_processor_and_resolver_read_the_quick_start_flag_alike(
+    agent_chat_processor, monkeypatch, value
+):
+    resolver = _load("agent_chat_resolver_qs_flag", "agent_chat_resolver/index.py")
+    if value is None:
+        monkeypatch.delenv("QUICK_START_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("QUICK_START_ENABLED", value)
+    assert (
+        agent_chat_processor._quick_start_enabled() == resolver._quick_start_enabled()
+    )
