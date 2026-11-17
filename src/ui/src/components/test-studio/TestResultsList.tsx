@@ -28,6 +28,7 @@ import TestRunnerStatus from './TestRunnerStatus';
 import { TableHeader } from '../common/table';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionLink, formatConfigVersionText } from './utils/configVersionUtils';
+import { useFormatters } from '../../i18n/format';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GqlResult = { data: Record<string, any> };
@@ -153,6 +154,7 @@ const TestResultsList = ({
   onTestComplete,
 }: TestResultsListProps): React.JSX.Element => {
   const { versions } = useConfigurationVersions();
+  const { formatDateTime } = useFormatters();
   const [testRuns, setTestRuns] = useState<TestRunItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -586,13 +588,13 @@ const TestResultsList = ({
           {
             id: 'createdAt',
             header: 'Created At',
-            cell: (item) => new Date(item.createdAt).toLocaleString(),
+            cell: (item) => formatDateTime(new Date(item.createdAt)),
             sortingField: 'createdAt',
           },
           {
             id: 'completedAt',
             header: 'Completed At',
-            cell: (item) => (item.completedAt ? new Date(item.completedAt).toLocaleString() : 'N/A'),
+            cell: (item) => (item.completedAt ? formatDateTime(new Date(item.completedAt)) : 'N/A'),
             sortingField: 'completedAt',
           },
         ]}

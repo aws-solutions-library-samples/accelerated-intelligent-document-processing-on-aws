@@ -13,6 +13,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
 - [Quick Start](./quick-start.md) - Cold-start configuration authoring for new deployments (chat widget + `idp-cli bootstrap`)
+- [IDP in Action](./idp-in-action.md) - An illustrated tour of the main features, with an overview video and feature walkthroughs
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
 - [AI-Guided Deployment Walkthrough](./idp-deployment-ai-guide.md) - A system prompt to paste into an AI assistant that walks you through choosing deployment parameters one question at a time
 - [After Subscribing on AWS Marketplace](./marketplace-subscription-next-steps.md) - What to do next in your own AWS account after a Marketplace subscription
@@ -83,6 +84,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Post-Processing Lambda Hook](./post-processing-lambda-hook.md) - Custom downstream processing integration
 - [Lambda Hook Inference](./lambda-hook-inference.md) - Custom LLM integration via Lambda hooks
+- [Decision Models](./decision-models.md) - Classify sections with a decision model that returns a probability for every class
 - [Nova Fine-Tuning](./nova-finetuning.md) - Fine-tuning Amazon Nova models for IDP tasks
 - [Custom Model Fine-Tuning](./custom-model-finetuning.md) - Fine-tuning Nova models for document classification with the accelerator
 - [OpenAI Models](./openai-models.md) - GPT-6 Astra via the Converse API (CRIS-only `us.`/`global.` IDs, agentic extraction, all regions) **and** GPT-5.4 / GPT-5.5 / GPT-5.6 (Sol/Terra/Luna) via the bedrock-mantle Responses API: the two-path split, support matrices, limitations, regions, caching, long-context pricing

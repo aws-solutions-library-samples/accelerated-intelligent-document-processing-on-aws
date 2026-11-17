@@ -32,6 +32,7 @@ export default defineConfig({
           label: "Overview",
           items: [
             { label: "Welcome", slug: "index" },
+            { label: "IDP in Action", slug: "idp-in-action" },
             {
               label: "Blogs, Customer Stories & Research",
               slug: "references",
@@ -235,6 +236,10 @@ export default defineConfig({
             {
               label: "Lambda Hook Inference",
               slug: "lambda-hook-inference",
+            },
+            {
+              label: "Decision Models",
+              slug: "decision-models",
             },
             { label: "Nova Fine-Tuning", slug: "nova-finetuning" },
             { label: "Custom Model Fine-Tuning", slug: "custom-model-finetuning" },

@@ -20,6 +20,7 @@ import type { ButtonDropdownProps } from '@cloudscape-design/components';
 
 import { listAgentJobs, deleteAgentJob, listAvailableAgents } from '../../graphql/generated';
 import { useAnalyticsContext } from '../../contexts/analytics';
+import { useFormatters } from '../../i18n/format';
 
 interface AvailableAgent {
   agent_id: string;
@@ -69,6 +70,7 @@ const logger = new ConsoleLogger('AgentQueryInput');
 const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null }: AgentQueryInputProps): React.JSX.Element => {
   const { analyticsState, updateAnalyticsState, resetAnalyticsState } = useAnalyticsContext();
   const { currentInputText } = analyticsState;
+  const { formatDateTime } = useFormatters();
 
   const [queryHistory, setQueryHistory] = useState<AgentJob[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -361,7 +363,7 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
       if (Number.isNaN(date.getTime())) {
         return 'Unknown date';
       }
-      return date.toLocaleString();
+      return formatDateTime(date);
     } catch (e) {
       logger.warn(`Error formatting date: ${dateString}`, e);
       return 'Unknown date';

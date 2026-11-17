@@ -49,6 +49,7 @@ import { deepMerge } from '../../utils/configUtils';
 import { chooseOpeningProfile } from '../../utils/readable-profile';
 import { syncBdaIdp } from '../../graphql/generated';
 import { parseConfigurationData } from '../../graphql/awsjson-parsers';
+import { useFormatters } from '../../i18n/format';
 import {
   DEFAULT_SECTION_SPLITTING,
   SECTION_SPLITTING_VALUES,
@@ -205,6 +206,7 @@ const getInitialVersionFromUrl = (): string | null => {
 
 const ConfigurationLayout = (): React.JSX.Element => {
   const intl = useIntl();
+  const { formatDateTime } = useFormatters();
   // Version selection state - declare first
   // Initialize from URL to avoid a race where 'default' config is fetched before the URL version
   const [selectedVersionsForCompare, setSelectedVersionsForCompare] = useState<string[]>([]);
@@ -2787,7 +2789,7 @@ const ConfigurationLayout = (): React.JSX.Element => {
                         </>
                       )}
                       {currentVersion.bdaLastSyncedAt && (
-                        <> &mdash; Last synced: {new Date(currentVersion.bdaLastSyncedAt as string).toLocaleString()}</>
+                        <> &mdash; Last synced: {formatDateTime(new Date(currentVersion.bdaLastSyncedAt as string))}</>
                       )}
                     </>
                   )}

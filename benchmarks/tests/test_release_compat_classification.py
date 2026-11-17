@@ -562,3 +562,26 @@ def test_native_upload_without_a_release_to_validate_against_is_an_error(monkeyp
     with pytest.raises(SystemExit) as exc:
         run_matrix.main()
     assert exc.value.code == 2
+
+
+def test_a_decision_model_cell_is_still_refused_against_a_release_without_it():
+    """The method-selected skip is bounded by the cell's own method: a cell that
+    selects ``decision_model`` cannot be run on a release that drops its block."""
+    classification = {
+        "split_then_classify": {
+            "section_classification": {
+                "method": "decision_model",
+                "decision_model": {"max_pages": 1},
+            }
+        }
+    }
+    path = "classification.split_then_classify.section_classification.decision_model.max_pages"
+    assert release_model_check._unselected_method_block(classification, path) is False
+    classification["split_then_classify"]["section_classification"]["method"] = "llm"
+    assert release_model_check._unselected_method_block(classification, path) is True
+    assert (
+        release_model_check._unselected_method_block(
+            classification, "classification.combined.llm.model"
+        )
+        is False
+    )

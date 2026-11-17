@@ -68,6 +68,12 @@ notifications = []
 # pydantic and boto3 are base dependencies
 review_queues = []
 
+# Decision models (idp_common.decision_model) - pydantic and boto3 are base
+# dependencies; Pillow scales page images to the size the model reads.
+decision_model = [
+  "Pillow==13.0.0",
+]
+
 # Development only dependencies
 dev = [
   "python-dotenv (>=1.1.0,<2.0.0)",
