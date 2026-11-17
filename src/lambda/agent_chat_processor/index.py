@@ -70,7 +70,7 @@ _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 # agent_chat_resolver — the two enforce the same operation on two different entry
 # paths.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
-_QUICK_START_GROUPS = ("Admin",)
+_QUICK_START_ROLES = ("Admin",)
 
 
 def _caller_in_groups(event, allowed):
@@ -153,7 +153,7 @@ def _enforce_agent_chat_groups(event):
             "the Admin group"
         )
     if event.get("method") == "quick_start" and not _caller_in_groups(
-        event, _QUICK_START_GROUPS
+        event, _QUICK_START_ROLES
     ):
         logger.warning("Rejecting Quick Start: caller is not an Admin")
         raise PermissionError("Unauthorized: Quick Start requires the Admin group")

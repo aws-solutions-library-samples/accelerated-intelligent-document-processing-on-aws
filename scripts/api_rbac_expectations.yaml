@@ -1415,7 +1415,7 @@ operations:
     note: server-side _caller_in_groups check matches the schema directive
       (Reviewer excluded, closes former GAP-03); allowed-role call skipped
       (would start a live agent session). A message with method quick_start is
-      Admin only (_QUICK_START_GROUPS), because Quick Start creates a
+      Admin only (_QUICK_START_ROLES), because Quick Start creates a
       configuration profile, which only an Admin may create.
   sendChatDocumentMessage:
     groups: ANY_GROUP

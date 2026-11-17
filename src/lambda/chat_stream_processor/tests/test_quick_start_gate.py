@@ -42,7 +42,7 @@ def test_ordinary_agent_chat_keeps_its_three_groups(processor, group):
 
 
 def test_both_copies_keep_quick_start_to_admins(processor):
-    assert processor._QUICK_START_GROUPS == ("Admin",)
+    assert processor._QUICK_START_ROLES == ("Admin",)
 
 
 @pytest.mark.parametrize("identity", [True, False], ids=["signed-in", "backend"])
