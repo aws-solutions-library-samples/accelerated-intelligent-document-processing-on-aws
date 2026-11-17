@@ -3,6 +3,7 @@
 
 import React from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -81,11 +82,17 @@ const inbox = {
 // What beginUnreadSync hands back: applies the listed unread count (never stale here).
 const applyUnread = vi.fn();
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 const renderPage = (path = '/inbox') =>
   render(
     <MemoryRouter initialEntries={[path]}>
       <InboxPage />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 const wrapper = () => createWrapper(document.body);

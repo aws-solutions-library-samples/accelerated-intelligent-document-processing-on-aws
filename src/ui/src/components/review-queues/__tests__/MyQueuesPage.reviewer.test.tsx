@@ -10,6 +10,7 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { role, fetchMyReviewQueues, listTestSetQueues } = vi.hoisted(() => ({
@@ -26,6 +27,12 @@ vi.mock('../reviewer-assignment', () => ({ listTestSetQueues: (...a: unknown[]) 
 
 import MyQueuesPage from '../MyQueuesPage';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const PRODUCTION = { name: 'claims', displayName: 'Claims', depth: 2, unclaimed: 1, claimed: 1, claimedByMe: 0 };
 const TEST_SET = { id: 'ts1', name: 'Invoices', fileCount: 3, pendingDocs: 3 };
 
@@ -38,7 +45,7 @@ beforeEach(() => {
 describe('Home › Queues', () => {
   it('makes no listTestSetQueues call for a Reviewer-only user and shows no error', async () => {
     Object.assign(role, { canWorkTestSetQueues: false, loading: false });
-    render(<MyQueuesPage />);
+    render(<MyQueuesPage />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Claims')).toBeTruthy());
     expect(fetchMyReviewQueues).toHaveBeenCalled();
@@ -49,7 +56,7 @@ describe('Home › Queues', () => {
 
   it('lists production and Test Studio queues for an Annotator', async () => {
     Object.assign(role, { canWorkTestSetQueues: true, loading: false });
-    render(<MyQueuesPage />);
+    render(<MyQueuesPage />, { wrapper: English });
 
     await waitFor(() => expect(screen.getByText('Invoices')).toBeTruthy());
     expect(screen.getByText('Claims')).toBeTruthy();
@@ -60,7 +67,7 @@ describe('Home › Queues', () => {
 
   it('waits for the role before loading', () => {
     Object.assign(role, { canWorkTestSetQueues: false, loading: true });
-    render(<MyQueuesPage />);
+    render(<MyQueuesPage />, { wrapper: English });
 
     expect(fetchMyReviewQueues).not.toHaveBeenCalled();
     expect(listTestSetQueues).not.toHaveBeenCalled();

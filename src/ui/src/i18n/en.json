@@ -203,6 +203,34 @@
     "defaultMessage": "Learn more",
     "description": "Heading of the footer of an info (help) panel, above a list of links into the product documentation."
   },
+  "common.pagination.next": {
+    "defaultMessage": "Next page",
+    "description": "Screen-reader label of the next-page button of a table's pagination."
+  },
+  "common.pagination.page": {
+    "defaultMessage": "Page {pageNumber, number} of all pages",
+    "description": "Screen-reader label of a page button of a table's pagination. {pageNumber} is the page number."
+  },
+  "common.pagination.previous": {
+    "defaultMessage": "Previous page",
+    "description": "Screen-reader label of the previous-page button of a table's pagination."
+  },
+  "common.table.filterCount": {
+    "defaultMessage": "{count, plural, one {# match} other {# matches}}",
+    "description": "Count next to a table's text filter. {count} is the number of rows the filter matches."
+  },
+  "common.table.noMatch.body": {
+    "defaultMessage": "We can't find a match.",
+    "description": "Text under the heading a table shows when its filter matches no row."
+  },
+  "common.table.noMatch.clear": {
+    "defaultMessage": "Clear filter",
+    "description": "Button under the no-match text of a table that clears its filter."
+  },
+  "common.table.noMatch.title": {
+    "defaultMessage": "No matches",
+    "description": "Heading a table shows when its filter matches no row."
+  },
   "configuration.layout.previewPrompts": {
     "defaultMessage": "Preview prompts",
     "description": "Configuration page: label of the button that opens a dialog showing what each processing step's prompt includes, and the header of that dialog."
@@ -259,9 +287,33 @@
     "defaultMessage": "Skip All Reviews results",
     "description": "Title of the results dialog of a bulk Skip All Reviews run from the Document List."
   },
+  "documents.list.circuit.bedrockOutage": {
+    "defaultMessage": "Circuit: Bedrock outage",
+    "description": "Badge in the document list header when the Bedrock circuit breaker opened on failures."
+  },
+  "documents.list.circuit.closed": {
+    "defaultMessage": "Circuit: closed",
+    "description": "Badge in the document list header when the Bedrock circuit breaker is closed (processing runs normally)."
+  },
+  "documents.list.circuit.manuallyPaused": {
+    "defaultMessage": "Circuit: manually paused",
+    "description": "Badge in the document list header when an Admin paused the Bedrock circuit breaker."
+  },
+  "documents.list.circuit.recovering": {
+    "defaultMessage": "Circuit: recovering",
+    "description": "Badge in the document list header when the Bedrock circuit breaker is half-open (probing whether Bedrock is back)."
+  },
   "documents.list.downloadFailed": {
     "defaultMessage": "Download failed: {error}",
     "description": "Error notification when the bulk document export fails. {error} is the error message."
+  },
+  "documents.list.empty.body": {
+    "defaultMessage": "No documents found.",
+    "description": "Text under the heading of the empty Document List."
+  },
+  "documents.list.empty.title": {
+    "defaultMessage": "No documents",
+    "description": "Heading of the empty Document List when the loaded period holds no document."
   },
   "documents.list.sendToReviewResults": {
     "defaultMessage": "Send to review results",
@@ -406,6 +458,254 @@
   "documents.status.unknown": {
     "defaultMessage": "Unknown",
     "description": "Status column text for a document row whose stored status is empty."
+  },
+  "documents.table.abort.label": {
+    "defaultMessage": "Abort",
+    "description": "Screen-reader label of the Abort button of the document list."
+  },
+  "documents.table.abort.title": {
+    "defaultMessage": "Abort processing for selected documents",
+    "description": "Tooltip of the Abort button of the document list."
+  },
+  "documents.table.column.completionTime": {
+    "defaultMessage": "Completed",
+    "description": "Column header of the document list: when processing finished."
+  },
+  "documents.table.column.confidenceAlertCount": {
+    "defaultMessage": "Confidence Alerts",
+    "description": "Column header of the document list: the number of low-confidence fields."
+  },
+  "documents.table.column.configVersion": {
+    "defaultMessage": "Config Profile",
+    "description": "Column header of the document list: the configuration profile the document was processed with."
+  },
+  "documents.table.column.duration": {
+    "defaultMessage": "Duration",
+    "description": "Column header of the document list: how long processing took."
+  },
+  "documents.table.column.evaluationStatus": {
+    "defaultMessage": "Evaluation",
+    "description": "Column header of the document list: the evaluation status against a baseline."
+  },
+  "documents.table.column.hitlReviewOwner": {
+    "defaultMessage": "Review Owner",
+    "description": "Column header of the document list: who holds the review."
+  },
+  "documents.table.column.hitlReviewedBy": {
+    "defaultMessage": "Review Completed By",
+    "description": "Column header of the document list: who completed the review."
+  },
+  "documents.table.column.hitlStatus": {
+    "defaultMessage": "Review Status",
+    "description": "Column header of the document list: the human review status."
+  },
+  "documents.table.column.initialEventTime": {
+    "defaultMessage": "Submitted",
+    "description": "Column header of the document list: when the document was submitted."
+  },
+  "documents.table.column.missingRequiredFieldCount": {
+    "defaultMessage": "Missing Required Fields",
+    "description": "Column header of the document list: the number of required fields with no value."
+  },
+  "documents.table.column.objectKey": {
+    "defaultMessage": "Document ID",
+    "description": "Column header of the document list: the document key."
+  },
+  "documents.table.column.objectStatus": {
+    "defaultMessage": "Status",
+    "description": "Column header of the document list: the processing status."
+  },
+  "documents.table.column.processingIssueCount": {
+    "defaultMessage": "Processing Issues",
+    "description": "Column header of the document list: the number of issues raised while processing."
+  },
+  "documents.table.column.testRunId": {
+    "defaultMessage": "Test Run",
+    "description": "Column header of the document list: the Test Studio run that submitted the document."
+  },
+  "documents.table.delete.label": {
+    "defaultMessage": "Delete",
+    "description": "Screen-reader label of the Delete button of the document list."
+  },
+  "documents.table.delete.title": {
+    "defaultMessage": "Delete selected documents",
+    "description": "Tooltip of the Delete button of the document list."
+  },
+  "documents.table.download.all": {
+    "defaultMessage": "All data (ZIP)",
+    "description": "Download menu item: every artifact of the selected documents as a ZIP."
+  },
+  "documents.table.download.baselines": {
+    "defaultMessage": "Baselines (ZIP)",
+    "description": "Download menu item: the evaluation baselines of the selected documents as a ZIP."
+  },
+  "documents.table.download.excel": {
+    "defaultMessage": "Table as Excel ({count, plural, one {# row} other {# rows}})",
+    "description": "Download menu item exporting the filtered list as an Excel file. {count} is the number of rows."
+  },
+  "documents.table.download.inProgress": {
+    "defaultMessage": "A download is already in progress",
+    "description": "Why the ZIP items of the Download menu are disabled while an export runs."
+  },
+  "documents.table.download.label": {
+    "defaultMessage": "Download",
+    "description": "Text and screen-reader label of the Download menu button of the document list."
+  },
+  "documents.table.download.listGroup": {
+    "defaultMessage": "Document list",
+    "description": "Group label in the Download menu above the export of the whole list."
+  },
+  "documents.table.download.noBaseline": {
+    "defaultMessage": "No selected document has an evaluation baseline",
+    "description": "Why the Baselines item of the Download menu is disabled."
+  },
+  "documents.table.download.predictions": {
+    "defaultMessage": "Predictions (ZIP)",
+    "description": "Download menu item: the predictions of the selected documents as a ZIP."
+  },
+  "documents.table.download.selectFirst": {
+    "defaultMessage": "Select one or more documents in the table",
+    "description": "Why the ZIP items of the Download menu are disabled when no document is selected."
+  },
+  "documents.table.download.selectedGroup": {
+    "defaultMessage": "Selected documents ({count, number})",
+    "description": "Group label in the Download menu above the ZIP exports. {count} is the number of selected documents."
+  },
+  "documents.table.load.button": {
+    "defaultMessage": "Load: {period}",
+    "description": "Menu button of the document list that picks how far back to load. {period} is the chosen period or date range."
+  },
+  "documents.table.load.customRange": {
+    "defaultMessage": "Custom range...",
+    "description": "Load menu option of the document list that opens the date range dialog."
+  },
+  "documents.table.load.day1": {
+    "defaultMessage": "1 day",
+    "description": "Load menu option of the document list: the last day."
+  },
+  "documents.table.load.days2": {
+    "defaultMessage": "2 days",
+    "description": "Load menu option of the document list: the last 2 days."
+  },
+  "documents.table.load.days30": {
+    "defaultMessage": "30 days",
+    "description": "Load menu option of the document list: the last 30 days."
+  },
+  "documents.table.load.hours2": {
+    "defaultMessage": "2 hrs",
+    "description": "Load menu option of the document list: the last 2 hours."
+  },
+  "documents.table.load.hours4": {
+    "defaultMessage": "4 hrs",
+    "description": "Load menu option of the document list: the last 4 hours."
+  },
+  "documents.table.load.hours8": {
+    "defaultMessage": "8 hrs",
+    "description": "Load menu option of the document list: the last 8 hours."
+  },
+  "documents.table.load.latest": {
+    "defaultMessage": "Latest",
+    "description": "Load menu option of the document list: the newest documents, with no date bounds."
+  },
+  "documents.table.load.week1": {
+    "defaultMessage": "1 week",
+    "description": "Load menu option of the document list: the last week."
+  },
+  "documents.table.load.weeks2": {
+    "defaultMessage": "2 weeks",
+    "description": "Load menu option of the document list: the last 2 weeks."
+  },
+  "documents.table.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Evaluation cell of the document list for a document that was not evaluated."
+  },
+  "documents.table.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Preferences dialog of the document list without saving."
+  },
+  "documents.table.preferences.columnsGroup": {
+    "defaultMessage": "Document list properties",
+    "description": "Group label above the column checkboxes in the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that saves the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Heading of the page-size choices in the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# Document} other {# Documents}}",
+    "description": "A page-size choice in the Preferences dialog of the document list. {count} is the number of rows per page."
+  },
+  "documents.table.preferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.visibleColumns": {
+    "defaultMessage": "Select visible columns",
+    "description": "Heading of the column checkboxes in the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.wrapLines": {
+    "defaultMessage": "Wrap lines",
+    "description": "Checkbox in the Preferences dialog of the document list that wraps long cell text."
+  },
+  "documents.table.preferences.wrapLinesDescription": {
+    "defaultMessage": "Check to see all the text and wrap the lines",
+    "description": "Help text under the Wrap lines checkbox in the Preferences dialog of the document list."
+  },
+  "documents.table.refresh.ariaLabel": {
+    "defaultMessage": "Refresh",
+    "description": "Screen-reader label of the refresh button of the document list."
+  },
+  "documents.table.refresh.title": {
+    "defaultMessage": "Refresh document list",
+    "description": "Tooltip of the refresh button of the document list."
+  },
+  "documents.table.reprocess.label": {
+    "defaultMessage": "Reprocess",
+    "description": "Screen-reader label of the Reprocess button of the document list."
+  },
+  "documents.table.reprocess.refused": {
+    "defaultMessage": "{count, plural, one {# selected document was} other {# selected documents were}} refused by malware scanning and cannot be reprocessed. Delete {count, plural, one {it} other {them}}, or re-upload an unprotected copy of a file GuardDuty could not read.",
+    "description": "Tooltip of the disabled Reprocess button when the selection holds documents refused by malware scanning. {count} is how many."
+  },
+  "documents.table.reprocess.scanning": {
+    "defaultMessage": "{count, plural, one {# selected document is} other {# selected documents are}} still being scanned for malware. Reprocess is available once the scan verdict arrives.",
+    "description": "Tooltip of the disabled Reprocess button when the selection holds documents still being scanned. {count} is how many."
+  },
+  "documents.table.reprocess.title": {
+    "defaultMessage": "Reprocess selected documents",
+    "description": "Tooltip of the Reprocess button of the document list."
+  },
+  "documents.table.review.label": {
+    "defaultMessage": "Review",
+    "description": "Text and screen-reader label of the Review menu button of the document list."
+  },
+  "documents.table.selection.all": {
+    "defaultMessage": "select all",
+    "description": "Screen-reader label of the select-all checkbox of the document list."
+  },
+  "documents.table.selection.group": {
+    "defaultMessage": "Document selection",
+    "description": "Screen-reader name of the group of row checkboxes of the document list."
+  },
+  "documents.table.selection.item": {
+    "defaultMessage": "select {name}",
+    "description": "Screen-reader label of a row checkbox of the document list. {name} is the document key."
+  },
+  "documents.table.source.label": {
+    "defaultMessage": "Document source",
+    "description": "Screen-reader label of the control that switches the document list between production and Test Studio documents."
+  },
+  "documents.table.source.production": {
+    "defaultMessage": "Production",
+    "description": "Document source option: documents submitted for processing (uploads, API, CLI, extensions)."
+  },
+  "documents.table.source.testStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Document source option: documents submitted by Test Studio runs."
   },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
@@ -1898,10 +2198,6 @@
   "reviewBulk.jobsPage.refresh": {
     "defaultMessage": "Refresh jobs",
     "description": "Screen-reader label of the refresh button of the Jobs table."
-  },
-  "reviewBulk.jobsPage.resourceName": {
-    "defaultMessage": "Job",
-    "description": "Name of one item of the Jobs table, used by its empty state."
   },
   "reviewBulk.jobsPage.retry": {
     "defaultMessage": "Retry",

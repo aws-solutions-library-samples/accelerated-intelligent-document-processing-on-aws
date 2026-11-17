@@ -21,7 +21,7 @@ import useAppContext from '../../contexts/app';
 import useUserRole from '../../hooks/use-user-role';
 
 import mapDocumentsAttributes from '../common/map-document-attributes';
-import { paginationLabels } from '../common/labels';
+import { usePaginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
 import { exportToExcel } from '../common/download-func';
 import DeleteDocumentModal from '../common/DeleteDocumentModal';
@@ -55,13 +55,13 @@ import {
   KEY_COLUMN_ID,
   UNIQUE_TRACK_ID,
   TEST_RUN_COLUMN_ID,
-  SELECTION_LABELS,
+  selectionLabels,
   DEFAULT_PREFERENCES,
   DEFAULT_SORT_COLUMN,
 } from './documents-table-config';
 import { testExecutionsHref } from '../../routes/constants';
 
-import { getFilterCounterText, TableEmptyState, TableNoMatchState } from '../common/table';
+import { filterCounterText, TableEmptyState, TableNoMatchState } from '../common/table';
 import useConfigurationVersions from '../../hooks/use-configuration-versions';
 import { formatConfigVersionText } from '../test-studio/utils/configVersionUtils';
 
@@ -75,6 +75,8 @@ const messages = defineMessages<{
   bulkSkipJobStarted: NoMessageValues;
   bulkSkipResults: NoMessageValues;
   sendToReviewResults: NoMessageValues;
+  emptyTitle: NoMessageValues;
+  emptyBody: NoMessageValues;
 }>({
   downloadFailed: {
     id: 'documents.list.downloadFailed',
@@ -100,6 +102,16 @@ const messages = defineMessages<{
     id: 'documents.list.sendToReviewResults',
     defaultMessage: 'Send to review results',
     description: 'Title of the results dialog of Send to review from the Document List.',
+  },
+  emptyTitle: {
+    id: 'documents.list.empty.title',
+    defaultMessage: 'No documents',
+    description: 'Heading of the empty Document List when the loaded period holds no document.',
+  },
+  emptyBody: {
+    id: 'documents.list.empty.body',
+    defaultMessage: 'No documents found.',
+    description: 'Text under the heading of the empty Document List.',
   },
 });
 
@@ -136,6 +148,7 @@ const DocumentList = (): React.JSX.Element => {
   const { currentCredentials, setErrorMessage, setSuccessMessage } = useAppContext();
   const reviewSettings = useReviewActionSettings();
   const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   // Bulk Skip All Reviews / Send to review: the open dialog and the last results.
   const [bulkSkip, setBulkSkip] = useState<{ mode: BulkSkipMode; keys: string[] } | null>(null);
   const [sendKeys, setSendKeys] = useState<string[] | null>(null);
@@ -255,8 +268,8 @@ const DocumentList = (): React.JSX.Element => {
         </Box>
       );
     }
-    return <TableEmptyState resourceName="Document" />;
-  }, [isReviewerOnly, isTestView]);
+    return <TableEmptyState title={intl.formatMessage(messages.emptyTitle)} description={intl.formatMessage(messages.emptyBody)} />;
+  }, [isReviewerOnly, isTestView, intl]);
 
   // prettier-ignore
   const {
@@ -694,12 +707,12 @@ const DocumentList = (): React.JSX.Element => {
             currentUsername={currentUsername}
           />
         }
-        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView, canWorkReviewQueues)}
+        columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView, canWorkReviewQueues, intl)}
         items={items}
         loading={isDocumentsListLoading}
         loadingText="Loading documents"
         selectionType="multi"
-        ariaLabels={SELECTION_LABELS}
+        ariaLabels={selectionLabels(intl)}
         filter={
           // Source first, then search: the segmented control chooses which set of
           // documents is in the table, and the text filter narrows within it.
@@ -713,7 +726,7 @@ const DocumentList = (): React.JSX.Element => {
                 {...filterProps}
                 filteringAriaLabel="Filter documents"
                 filteringPlaceholder="Find documents"
-                countText={getFilterCounterText(filteredItemsCount ?? 0)}
+                countText={filterCounterText(intl, filteredItemsCount ?? 0)}
               />
             </div>
           </SpaceBetween>

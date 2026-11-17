@@ -29,9 +29,9 @@ import { jobDetailHref } from '../../routes/constants';
 import { formatDateTime } from '../../utils/date-time';
 import { useFormatters } from '../../i18n/format';
 import type { BulkReviewJob } from '../../graphql/generated/schema-types';
-import { paginationLabels } from '../common/labels';
+import { usePaginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
-import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
+import { TableEmptyState, TableHeader, TableNoMatchState, filterCounterText } from '../common/table';
 import { cancelBulkJob, deleteBulkJob, listBulkJobs } from './bulk-review-api';
 import { ACTIVE_JOB_STATUSES, JOB_MODE_LABELS, JOB_TYPE_LABELS, jobStatusView } from './bulk-outcomes';
 import JobActionModal from './JobActionModals';
@@ -45,7 +45,6 @@ const messages = defineMessages<{
   loadJobsAction: NoMessageValues;
   cancelJobAction: NoMessageValues;
   deleteJobAction: NoMessageValues;
-  resourceName: NoMessageValues;
   emptyTitle: NoMessageValues;
   emptyDescription: NoMessageValues;
   cancelled: { readonly jobId: string };
@@ -115,11 +114,6 @@ const messages = defineMessages<{
     defaultMessage: 'delete the job',
     description:
       'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a job cannot be deleted.',
-  },
-  resourceName: {
-    id: 'reviewBulk.jobsPage.resourceName',
-    defaultMessage: 'Job',
-    description: 'Name of one item of the Jobs table, used by its empty state.',
   },
   emptyTitle: {
     id: 'reviewBulk.jobsPage.emptyTitle',
@@ -351,6 +345,7 @@ const searchText = (j: BulkReviewJob): string =>
 const JobsPage = (): React.JSX.Element => {
   // 1. Hooks
   const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const { formatNumber, locale } = useFormatters();
   const { setErrorMessage, setSuccessMessage } = useAppContext();
   const { isAdmin } = useUserRole();
@@ -385,11 +380,7 @@ const JobsPage = (): React.JSX.Element => {
   const { items, collectionProps, filterProps, filteredItemsCount, paginationProps, actions } = useCollection(jobs ?? [], {
     filtering: {
       empty: (
-        <TableEmptyState
-          resourceName={intl.formatMessage(messages.resourceName)}
-          title={intl.formatMessage(messages.emptyTitle)}
-          description={intl.formatMessage(messages.emptyDescription)}
-        />
+        <TableEmptyState title={intl.formatMessage(messages.emptyTitle)} description={intl.formatMessage(messages.emptyDescription)} />
       ),
       noMatch: <TableNoMatchState onClearFilter={() => actions.setFiltering('')} />,
       filteringFunction: (j, text) => searchText(j).includes(text.trim().toLowerCase()),
@@ -527,7 +518,7 @@ const JobsPage = (): React.JSX.Element => {
             {...filterProps}
             filteringPlaceholder={intl.formatMessage(messages.find)}
             filteringAriaLabel={intl.formatMessage(messages.find)}
-            countText={getFilterCounterText(filteredItemsCount ?? 0)}
+            countText={filterCounterText(intl, filteredItemsCount ?? 0)}
           />
         }
         pagination={<Pagination {...paginationProps} ariaLabels={paginationLabels} />}

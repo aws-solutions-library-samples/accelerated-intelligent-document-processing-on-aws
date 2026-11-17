@@ -23,6 +23,7 @@ import {
   TextFilter,
 } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
+import { useIntl } from 'react-intl';
 
 import { generateClient } from '../../api/client-shim';
 import { getInboxPreferences as getInboxPreferencesQuery, listInboxMessages as listInboxMessagesQuery } from '../../graphql/generated';
@@ -30,9 +31,9 @@ import type { InboxMessage, InboxMessageType, ListInboxMessagesQuery } from '../
 import useInbox from '../../hooks/use-inbox';
 import { describeApiError } from '../../hooks/utils/graphql-error';
 import { useFormatters } from '../../i18n/format';
-import { paginationLabels } from '../common/labels';
+import { usePaginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
-import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
+import { TableEmptyState, TableHeader, TableNoMatchState, filterCounterText } from '../common/table';
 import TruncatedText from '../common/TruncatedText';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import DeleteInboxMessagesModal from './DeleteInboxMessagesModal';
@@ -77,6 +78,8 @@ const markRead = (m: InboxMessage, read: boolean, readAt: string | null): InboxM
 
 const InboxMessagesTable = (): React.JSX.Element => {
   // 1. Hooks
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const { unreadCount, changeToken, beginUnreadSync, markMessages, markAllRead, deleteMessages, clearRead } = useInbox();
   const { locale } = useFormatters();
   const [items, setItems] = useState<InboxMessage[]>([]);
@@ -200,7 +203,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
     paginationProps,
   } = useCollection(filtered, {
     filtering: {
-      empty: <TableEmptyState resourceName="Message" title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />,
+      empty: <TableEmptyState title={EMPTY_TITLE} description={EMPTY_DESCRIPTION} />,
       noMatch: <TableNoMatchState onClearFilter={clearFilters} />,
     },
     pagination: { pageSize: preferences.pageSize },
@@ -451,7 +454,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
               {...filterProps}
               filteringPlaceholder="Find messages"
               filteringAriaLabel="Find messages"
-              countText={getFilterCounterText(filteredItemsCount ?? 0)}
+              countText={filterCounterText(intl, filteredItemsCount ?? 0)}
             />
             <SegmentedControl
               label="Read state"

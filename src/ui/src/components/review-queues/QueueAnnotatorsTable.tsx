@@ -8,9 +8,10 @@
 import React, { useMemo } from 'react';
 import { Box, Header, Pagination, Table, TextFilter } from '@cloudscape-design/components';
 import { useCollection } from '@cloudscape-design/collection-hooks';
+import { useIntl } from 'react-intl';
 
-import { paginationLabels } from '../common/labels';
-import { TableNoMatchState, getFilterCounterText } from '../common/table';
+import { usePaginationLabels } from '../common/labels';
+import { TableNoMatchState, filterCounterText } from '../common/table';
 
 export interface QueueAnnotatorRow {
   email: string;
@@ -39,6 +40,8 @@ interface QueueAnnotatorsTableProps {
 }
 
 const QueueAnnotatorsTable = ({ rows, loading }: QueueAnnotatorsTableProps): React.JSX.Element => {
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const sorted = useMemo(() => rows, [rows]);
   const { items, actions, filteredItemsCount, collectionProps, filterProps, paginationProps } = useCollection(sorted, {
     filtering: {
@@ -89,7 +92,7 @@ const QueueAnnotatorsTable = ({ rows, loading }: QueueAnnotatorsTableProps): Rea
           {...filterProps}
           filteringPlaceholder="Find Annotators"
           filteringAriaLabel="Find Annotators"
-          countText={getFilterCounterText(filteredItemsCount ?? 0)}
+          countText={filterCounterText(intl, filteredItemsCount ?? 0)}
         />
       }
       pagination={<Pagination {...paginationProps} ariaLabels={paginationLabels} />}

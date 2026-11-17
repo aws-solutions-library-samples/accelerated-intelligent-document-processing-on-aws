@@ -15,6 +15,7 @@
 
 import React from 'react';
 import { fireEvent, render, waitFor } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -62,11 +63,17 @@ const health = (name: string, depth: number, claimed = 0, inProgress = 0) => ({
   summary: { name, displayName: name, depth, unclaimed: depth - claimed, claimed, inProgress },
 });
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 const renderPage = async (path = '/') => {
   render(
     <MemoryRouter initialEntries={[path]}>
       <QueuesPage />
     </MemoryRouter>,
+    { wrapper: English },
   );
   await waitFor(() => expect(table().findRows().length).toBeGreaterThan(0));
 };

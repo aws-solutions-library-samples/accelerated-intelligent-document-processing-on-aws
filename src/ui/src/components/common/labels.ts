@@ -1,7 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 import { useMemo } from 'react';
-import type { AppLayoutProps } from '@cloudscape-design/components';
+import type { AppLayoutProps, PaginationProps } from '@cloudscape-design/components';
 import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
 
 /**
@@ -72,10 +72,43 @@ export const useAppLayoutLabels = (): AppLayoutProps.Labels => {
   );
 };
 
-export const paginationLabels = {
-  nextPageLabel: 'Next page',
-  previousPageLabel: 'Previous page',
-  pageLabel: (pageNumber: number): string => `Page ${pageNumber} of all pages`,
+/**
+ * The Pagination aria labels every table passes. Set under every locale: Cloudscape's own
+ * bundle has them in French but not under `en`, where the provider carries no messages.
+ */
+const paginationMessages = defineMessages<{
+  next: NoMessageValues;
+  previous: NoMessageValues;
+  page: { readonly pageNumber: number };
+}>({
+  next: {
+    id: 'common.pagination.next',
+    defaultMessage: 'Next page',
+    description: "Screen-reader label of the next-page button of a table's pagination.",
+  },
+  previous: {
+    id: 'common.pagination.previous',
+    defaultMessage: 'Previous page',
+    description: "Screen-reader label of the previous-page button of a table's pagination.",
+  },
+  page: {
+    id: 'common.pagination.page',
+    defaultMessage: 'Page {pageNumber, number} of all pages',
+    description: "Screen-reader label of a page button of a table's pagination. {pageNumber} is the page number.",
+  },
+});
+
+/** The Pagination aria labels in the UI's language: one object per locale, safe in a dependency list. */
+export const usePaginationLabels = (): PaginationProps.Labels => {
+  const intl = useIntl();
+  return useMemo(
+    () => ({
+      nextPageLabel: intl.formatMessage(paginationMessages.next),
+      previousPageLabel: intl.formatMessage(paginationMessages.previous),
+      pageLabel: (pageNumber: number): string => intl.formatMessage(paginationMessages.page, { pageNumber }),
+    }),
+    [intl],
+  );
 };
 
 /**
