@@ -283,6 +283,30 @@
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
   },
+  "helpPanel.feedback.intro": {
+    "defaultMessage": "Report bugs or suggest enhancements on GitHub — your deployment details are filled in automatically.",
+    "description": "Sentence under the heading of the feedback block, above its three links."
+  },
+  "helpPanel.feedback.reportBug": {
+    "defaultMessage": "Report a bug",
+    "description": "Link in the feedback block that opens a pre-filled GitHub bug report in a new tab."
+  },
+  "helpPanel.feedback.requestFeature": {
+    "defaultMessage": "Request a feature",
+    "description": "Link in the feedback block that opens a pre-filled GitHub feature request in a new tab."
+  },
+  "helpPanel.feedback.title": {
+    "defaultMessage": "Feedback & support",
+    "description": "Heading of the feedback block at the bottom of the Documents help panel, which lists the GitHub feedback links."
+  },
+  "helpPanel.feedback.troubleshootHint": {
+    "defaultMessage": "For document-processing failures, run the <strong>Troubleshoot</strong> agent on a failed document and use <strong>Report this issue on GitHub</strong> to attach its findings. Issues are public — please redact sensitive data before submitting.",
+    "description": "Note under the links of the feedback block. The two <strong> phrases are the names of controls rendered elsewhere, shown in bold: \"Troubleshoot\" is the action button on a document, \"Report this issue on GitHub\" the button in the dialog that shows its findings. Keep each consistent with the translation of that control."
+  },
+  "helpPanel.feedback.viewIssues": {
+    "defaultMessage": "View existing issues",
+    "description": "Link in the feedback block that opens the list of GitHub issues of the project in a new tab."
+  },
   "home.toolsPanels.goodToKnow": {
     "defaultMessage": "Good to know",
     "description": "Sub-heading in a Home info panel, above a list of notes and limits."
@@ -1858,5 +1882,49 @@
   "topNavigation.user.withRole": {
     "defaultMessage": "{user} ({role})",
     "description": "Text of the user menu button in the top navigation. {user} is the display name or username, {role} the role label (Admin, Author, Reviewer, Viewer or Annotator)."
+  },
+  "welcome.page.description": {
+    "defaultMessage": "Get a working configuration in minutes — or jump straight into the console.",
+    "description": "Subtitle under the heading of the Welcome page."
+  },
+  "welcome.page.dismiss": {
+    "defaultMessage": "Don't show this again",
+    "description": "Link at the bottom of the Welcome page that hides the page on later visits and opens the document list."
+  },
+  "welcome.page.enterConsole": {
+    "defaultMessage": "Enter IDP Console",
+    "description": "Button of the Welcome page that opens the document list. \"IDP\" is the product abbreviation and may stay as it is in the translation."
+  },
+  "welcome.page.goToQueue": {
+    "defaultMessage": "Go to my annotation queue",
+    "description": "Button of the Welcome page for a user who can only annotate; it opens their task queue."
+  },
+  "welcome.page.haveConfigHint": {
+    "defaultMessage": "<b>Already have a config?</b> Go to <link>Configuration > View/Edit Configuration</link> to review or update it.",
+    "description": "Second hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the path to the configuration editor in the side navigation (section > page, with the same names) and opens it."
+  },
+  "welcome.page.helpHeading": {
+    "defaultMessage": "Not sure where to begin?",
+    "description": "Heading above the hints on the Welcome page."
+  },
+  "welcome.page.noConfigHint": {
+    "defaultMessage": "<b>No configuration yet?</b> Use <link>Quick Start</link> to describe your document type (or upload an example) and we'll build a config for you.",
+    "description": "First hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the name of the Quick Start feature (the same as the Quick Start button) and opens it."
+  },
+  "welcome.page.quickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Primary button of the Welcome page that opens the Quick Start chat, which builds a configuration from a description or an example document. The first hint names the same feature in its link."
+  },
+  "welcome.page.takeTour": {
+    "defaultMessage": "Take the tour",
+    "description": "Button of the Welcome page that starts the guided tour of the console."
+  },
+  "welcome.page.testDocumentHint": {
+    "defaultMessage": "<b>Want to test a document?</b> Head to <link>Upload Documents</link> to run one through your active configuration.",
+    "description": "Third hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the name of the Upload Documents page in the side navigation and opens it."
+  },
+  "welcome.page.title": {
+    "defaultMessage": "Welcome to GenAI IDP",
+    "description": "Heading of the Welcome page. \"GenAI IDP\" is the product name and may stay as it is in the translation."
   }
 }
