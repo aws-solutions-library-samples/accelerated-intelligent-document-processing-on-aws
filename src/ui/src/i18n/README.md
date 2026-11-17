@@ -445,7 +445,7 @@ invitation and verification emails; Cognito service errors on the sign-in form t
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
 headers and generated report headings; the relative-time literal "just now", the unit suffixes
 on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
-built in template strings (`${progressPct}%`) and the stored ISO timestamps the Documents list
+built in template strings (`${progressPct}%`) and the stored ISO timestamps the document page
 shows as submitted and completed times, until their screens convert; extension UIs built
 before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
 until they carry stable codes; and document data, always. The remaining PRs of the series (the

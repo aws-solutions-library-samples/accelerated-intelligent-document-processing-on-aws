@@ -19,6 +19,7 @@ import { isBaselineAvailable, type ExportScope } from '../document-panel/documen
 import { TableHeader } from '../common/table';
 import { DOCUMENTS_PATH, documentEditHref, testRunResultsHref } from '../../routes/constants';
 import type { DocumentView } from '../../contexts/documents';
+import { useFormatters } from '../../i18n/format';
 import { renderHitlStatus } from '../common/hitl-status-renderer';
 import { isInReviewQueue, isQueueManaged } from '../common/review-status';
 import { renderObjectStatus } from '../common/object-status-renderer';
@@ -600,6 +601,18 @@ const testRunColumn = (intl?: IntlShape): TableProps.ColumnDefinition<MappedDocu
 });
 
 /**
+ * A stored timestamp as a date and time in the UI locale and the browser's time zone; a
+ * column's `cell` cannot call a hook, so this is a component. An empty value (no timestamp)
+ * is an invalid date too, so it stays empty, and any other value `Date` cannot parse is shown
+ * as stored. Display only: the column sorts on the stored value.
+ */
+const DateTimeCell = ({ value }: { value: string }): React.JSX.Element => {
+  const { formatDateTime } = useFormatters();
+  const date = new Date(value);
+  return <>{Number.isNaN(date.getTime()) ? value : formatDateTime(date)}</>;
+};
+
+/**
  * `canWorkReviewQueues` links a queued document's In Review status to its queue item,
  * the same destination as the document page's Review button. Without `intl` the
  * headers and cell labels are the English source text.
@@ -647,14 +660,14 @@ export const COLUMN_DEFINITIONS_MAIN = (
   {
     id: 'initialEventTime',
     header: labelOf(columnMessages.initialEventTime, intl),
-    cell: (item) => item.initialEventTime,
+    cell: (item) => <DateTimeCell value={item.initialEventTime} />,
     sortingField: 'initialEventTime',
     width: 225,
   },
   {
     id: 'completionTime',
     header: labelOf(columnMessages.completionTime, intl),
-    cell: (item) => item.completionTime,
+    cell: (item) => <DateTimeCell value={item.completionTime} />,
     sortingField: 'completionTime',
     width: 225,
   },

@@ -11,6 +11,7 @@ import React from 'react';
 import { screen, waitFor } from '@testing-library/react';
 import { createIntl } from 'react-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { formatDateTime } from '../../../i18n/format';
 import { onIntlError } from '../../../i18n/LocaleProvider';
 import { renderHookWithIntl, renderWithIntl } from '../../../test-utils/renderWithIntl';
 import { usePaginationLabels } from '../../common/labels';
@@ -131,5 +132,32 @@ describe('the document table helpers in English', () => {
     expect(screen.getByText('Load: Latest')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Circuit: closed' })).toBeInTheDocument();
+  });
+});
+
+describe('the Submitted cell', () => {
+  /** A fixed instant, stored as the list maps it: the UTC ISO string. */
+  const SUBMITTED = new Date(1_700_000_000_000).toISOString();
+  const submittedCell = (initialEventTime: string) =>
+    COLUMN_DEFINITIONS_MAIN()
+      .find((c) => c.id === 'initialEventTime')
+      ?.cell({ ...row, initialEventTime });
+
+  it('shows the stored time in the UI locale, and no time as nothing', async () => {
+    const french = renderWithIntl(submittedCell(SUBMITTED), FR_CA).container;
+    const english = renderWithIntl(submittedCell(SUBMITTED)).container;
+    const empty = renderWithIntl(submittedCell('')).container;
+    // The helper is the oracle: the exact shape of each locale belongs to ICU. One comparison,
+    // so a cell that ignores the formatter shows every field it gets wrong. Awaited so the
+    // French catalog settles inside the test.
+    await waitFor(() =>
+      expect({ french: french.textContent, english: english.textContent, empty: empty.textContent }).toEqual({
+        french: formatDateTime(new Date(SUBMITTED), 'fr-CA'),
+        english: formatDateTime(new Date(SUBMITTED), 'en'),
+        empty: '',
+      }),
+    );
+    // Not vacuous: the French text is not the English text.
+    expect(french.textContent).not.toBe(english.textContent);
   });
 });
