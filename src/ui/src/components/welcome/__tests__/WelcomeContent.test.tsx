@@ -44,6 +44,14 @@ describe('WelcomeContent', () => {
     expect(screen.getByText(/No configuration yet\?/)).toBeInTheDocument();
   });
 
+  it('tells an Admin Quick Start is also in the side navigation, and offers Discovery beside it', () => {
+    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
+    renderWelcome();
+
+    expect(screen.getByText(/from the side navigation/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Discovery' })).toBeInTheDocument();
+  });
+
   it('offers no Quick Start when the stack turns it off, and points a writer at Discovery', () => {
     vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'false');
     renderWelcome();

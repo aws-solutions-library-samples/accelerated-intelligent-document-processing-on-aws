@@ -22,7 +22,17 @@ interface WelcomeContentProps {
   onDismiss?: () => void;
 }
 
-const messages = defineMessages<{ noConfigurationDiscovery: { readonly b: MessageTag; readonly link: MessageTag } }>({
+const messages = defineMessages<{
+  noConfigurationQuickStart: { readonly b: MessageTag; readonly quickStart: MessageTag; readonly discovery: MessageTag };
+  noConfigurationDiscovery: { readonly b: MessageTag; readonly link: MessageTag };
+}>({
+  noConfigurationQuickStart: {
+    id: 'welcome.content.noConfigurationQuickStart',
+    defaultMessage:
+      '<b>No configuration yet?</b> Open <quickStart>Quick Start</quickStart>, here or from the side navigation, and describe your document type or upload an example to have a configuration built for you. Or let <discovery>Discovery</discovery> infer classes and fields from example documents.',
+    description:
+      'Welcome page hint for a user offered Quick Start. <b> wraps the question; <quickStart> wraps a link that opens the Quick Start panel; <discovery> wraps a link to the Discovery page.',
+  },
   noConfigurationDiscovery: {
     id: 'welcome.content.noConfigurationDiscovery',
     defaultMessage: '<b>No configuration yet?</b> <link>Discovery</link> infers classes and fields from example documents.',
@@ -43,6 +53,8 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
     navigate(DOCUMENTS_PATH);
     window.dispatchEvent(new CustomEvent('openQuickStart'));
   }, [navigate]);
+
+  const openDiscovery = (chunks: React.ReactNode[]): React.JSX.Element => <Link onFollow={() => navigate(DISCOVERY_PATH)}>{chunks}</Link>;
 
   const startTour = useCallback(() => {
     const pattern = (settings?.IDPPattern as string | undefined)?.toLowerCase();
@@ -97,8 +109,14 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
             <SpaceBetween size="xs">
               {quickStart && (
                 <Box variant="p">
-                  <b>No configuration yet?</b> Use <Link onFollow={openQuickStart}>Quick Start</Link> to describe your document type (or
-                  upload an example) and we&apos;ll build a config for you.
+                  <FormattedMessage
+                    {...messages.noConfigurationQuickStart}
+                    values={{
+                      b: bold,
+                      quickStart: (chunks: React.ReactNode[]) => <Link onFollow={openQuickStart}>{chunks}</Link>,
+                      discovery: openDiscovery,
+                    }}
+                  />
                 </Box>
               )}
               {!quickStart && canWrite && (
@@ -107,7 +125,7 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
                     {...messages.noConfigurationDiscovery}
                     values={{
                       b: bold,
-                      link: (chunks: React.ReactNode[]) => <Link onFollow={() => navigate(DISCOVERY_PATH)}>{chunks}</Link>,
+                      link: openDiscovery,
                     }}
                   />
                 </Box>
