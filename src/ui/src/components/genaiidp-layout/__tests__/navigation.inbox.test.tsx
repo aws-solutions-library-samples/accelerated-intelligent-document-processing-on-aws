@@ -100,9 +100,14 @@ const homeLinks = (nav: SideNavigationProps) => homeSection(nav).items.map((l) =
 /** The first link of the Home section. */
 const firstHomeLink = (nav: SideNavigationProps) => homeSection(nav).items[0] as SideNavigationProps.Link;
 
+/** The badge's text as rendered; the visually-hidden suffix is a message, so it renders under an IntlProvider. */
 const infoText = (link: SideNavigationProps.Link): string => {
   if (!link.info) return '';
-  const { container } = render(<>{link.info}</>);
+  const { container } = render(
+    <IntlProvider locale="en" defaultLocale="en">
+      {link.info}
+    </IntlProvider>,
+  );
   return container.textContent ?? '';
 };
 

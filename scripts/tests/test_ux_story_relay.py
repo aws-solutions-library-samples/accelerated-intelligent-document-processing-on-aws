@@ -1284,8 +1284,12 @@ def test_the_merged_side_navigation_still_offers_the_upload_link_as_a_route() ->
     it a route of the app rather than a control the page handles."""
     text = (UI_SOURCE / NAVIGATION_SOURCE).read_text(encoding="utf-8")
     assert (
-        "{ type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` }"
-        in text
+        "{ type: 'link', text: intl.formatMessage(messages.uploadDocuments), "
+        "href: `#${UPLOAD_DOCUMENT_PATH}` }"
+    ) in text
+    assert re.search(
+        r"uploadDocuments: \{\s*id: '[\w.]+',\s*defaultMessage: 'Upload Documents',",
+        text,
     )
 
 

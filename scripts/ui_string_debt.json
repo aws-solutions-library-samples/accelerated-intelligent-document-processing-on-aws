@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 258,
-    "findings": 6389
+    "files": 255,
+    "findings": 6308
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -171,9 +171,7 @@
     "src/ui/src/components/feature-page/FeaturesToolsPanel.tsx": 32,
     "src/ui/src/components/feature-page/entitlement-source.ts": 7,
     "src/ui/src/components/genaiidp-layout/breadcrumbs.tsx": 3,
-    "src/ui/src/components/genaiidp-layout/feature-platform-nav-items.ts": 3,
-    "src/ui/src/components/genaiidp-layout/navigation.tsx": 78,
-    "src/ui/src/components/genaiidp-layout/review-queues-nav-items.tsx": 3,
+    "src/ui/src/components/genaiidp-layout/navigation.tsx": 4,
     "src/ui/src/components/inbox/DeleteInboxMessagesModal.tsx": 7,
     "src/ui/src/components/inbox/InboxLayout.tsx": 1,
     "src/ui/src/components/inbox/InboxMessageModal.tsx": 7,
@@ -181,7 +179,6 @@
     "src/ui/src/components/inbox/InboxPage.tsx": 4,
     "src/ui/src/components/inbox/InboxPreferences.tsx": 12,
     "src/ui/src/components/inbox/inbox-bell.tsx": 11,
-    "src/ui/src/components/inbox/inbox-nav-link.tsx": 1,
     "src/ui/src/components/inbox/message-category.ts": 2,
     "src/ui/src/components/json-schema-builder/SchemaBuilder.tsx": 133,
     "src/ui/src/components/json-schema-builder/SchemaCanvas.tsx": 15,

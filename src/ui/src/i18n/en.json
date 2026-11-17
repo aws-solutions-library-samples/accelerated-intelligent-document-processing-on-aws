@@ -375,6 +375,14 @@
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
   },
+  "inbox.navLink.text": {
+    "defaultMessage": "Inbox",
+    "description": "Side-navigation link, first in the Home section of every user, to the Inbox of notifications."
+  },
+  "inbox.navLink.unread": {
+    "defaultMessage": "{count, plural, one {unread} other {unread}}",
+    "description": "Read by screen readers after the count badge of the Inbox link, as in \"3 unread\". {count} is the number of unread messages; the badge itself shows the number."
+  },
   "mcp.configuration.adminOnly": {
     "defaultMessage": "MCP Configuration is available to Admin users only.",
     "description": "Error shown on the MCP Configuration page to a user who is not an Admin."
@@ -771,13 +779,241 @@
     "defaultMessage": "Yes",
     "description": "Table cell value: the credential may use the write tools."
   },
+  "navigation.assistants.agentChat": {
+    "defaultMessage": "Agent Chat",
+    "description": "Side navigation link, in the Assistants section, to the chat with the analytics agent."
+  },
+  "navigation.assistants.knowledgeBase": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Side navigation link, in the Assistants section, to the page that queries the knowledge base built from the documents."
+  },
+  "navigation.assistants.section": {
+    "defaultMessage": "Assistants",
+    "description": "Side navigation section that holds the Knowledge Base and Agent Chat assistants. Admin users only."
+  },
+  "navigation.configuration.capacityPlanning": {
+    "defaultMessage": "Capacity Planning",
+    "description": "Side navigation link, in the Configuration section, to the page that plans model throughput capacity."
+  },
+  "navigation.configuration.customModels": {
+    "defaultMessage": "Custom Models",
+    "description": "Side navigation link, in the Configuration section, to the page that fine-tunes custom models."
+  },
+  "navigation.configuration.customModelsRegionBadge": {
+    "defaultMessage": "us-east-1 only",
+    "description": "Badge next to the Custom Models link when the deployment is not in the us-east-1 AWS Region, where that link is greyed out. \"us-east-1\" is a Region code and stays as it is."
+  },
+  "navigation.configuration.customModelsRegionNote": {
+    "defaultMessage": "Custom Models requires Amazon Nova fine-tuning, which is currently available in us-east-1 only. Deploy your stack in us-east-1 to use this feature.",
+    "description": "Popover text behind the badge of the Custom Models link when the deployment is not in the us-east-1 AWS Region, where that link is greyed out. \"us-east-1\" is a Region code and stays as it is."
+  },
+  "navigation.configuration.discovery": {
+    "defaultMessage": "Discovery",
+    "description": "Side navigation link, in the Configuration section, to the page that discovers document classes and attributes from sample documents."
+  },
   "navigation.configuration.mcpConfiguration": {
     "defaultMessage": "MCP Configuration",
     "description": "Side navigation link, in the Configuration section, to the page that manages MCP server credentials. Admin users only."
   },
+  "navigation.configuration.prefixMappings": {
+    "defaultMessage": "Prefix Mappings",
+    "description": "Side navigation link, in the Configuration section, to the page that maps upload prefixes to configuration profiles. Admin users only."
+  },
+  "navigation.configuration.section": {
+    "defaultMessage": "Configuration",
+    "description": "Side navigation section that holds the configuration pages (processing configuration, discovery, pricing, users)."
+  },
+  "navigation.configuration.userManagement": {
+    "defaultMessage": "User Management",
+    "description": "Side navigation link, in the Configuration section, to the page that manages the users of the application. Admin users only."
+  },
+  "navigation.configuration.view": {
+    "defaultMessage": "View Configuration",
+    "description": "Side navigation link, in the Configuration section, to the processing configuration page, for users who may only read it (Viewer)."
+  },
+  "navigation.configuration.viewEdit": {
+    "defaultMessage": "View/Edit Configuration",
+    "description": "Side navigation link, in the Configuration section, to the processing configuration page, for users who may edit it (Admin, Author)."
+  },
+  "navigation.configuration.viewEditModelLimits": {
+    "defaultMessage": "View / Edit Model Limits",
+    "description": "Side navigation link, in the Configuration section, to the model limits page, for Admin users, who may edit it."
+  },
+  "navigation.configuration.viewEditPricing": {
+    "defaultMessage": "View / Edit Pricing",
+    "description": "Side navigation link, in the Configuration section, to the model pricing page, for Admin users, who may edit it."
+  },
+  "navigation.configuration.viewModelLimits": {
+    "defaultMessage": "View Model Limits",
+    "description": "Side navigation link, in the Configuration section, to the model limits page, for users who may only read it (Author, Viewer)."
+  },
+  "navigation.configuration.viewPricing": {
+    "defaultMessage": "View Pricing",
+    "description": "Side navigation link, in the Configuration section, to the model pricing page, for users who may only read it (Author, Viewer)."
+  },
+  "navigation.deploymentInfo.build": {
+    "defaultMessage": "Build: {buildDateTime}",
+    "description": "Entry of the Deployment Info section. {buildDateTime} is the build timestamp of the deployed solution, as the build wrote it."
+  },
+  "navigation.deploymentInfo.contactAdministrator": {
+    "defaultMessage": "Contact your administrator to update this deployment to the latest version.",
+    "description": "Small print of the Update available popover for users who are not Admins and cannot update the stack themselves."
+  },
+  "navigation.deploymentInfo.currentVersion": {
+    "defaultMessage": "Currently deployed: <strong>v{version}</strong>",
+    "description": "Second line of the Update available popover. {version} is the version number deployed here, such as 0.4.2; <strong> puts it in bold."
+  },
+  "navigation.deploymentInfo.latestVersion": {
+    "defaultMessage": "Latest published version: <strong>v{version}</strong>",
+    "description": "First line of the Update available popover. {version} is the newest published version number, such as 0.4.3; <strong> puts it in bold."
+  },
+  "navigation.deploymentInfo.pattern": {
+    "defaultMessage": "Pattern: {pattern}",
+    "description": "Entry of the Deployment Info section. {pattern} is the name of the deployed processing pattern, such as Pattern-2 or Unified."
+  },
+  "navigation.deploymentInfo.region": {
+    "defaultMessage": "Region: {region}",
+    "description": "Entry of the Deployment Info section. {region} is the code of the AWS Region of this deployment, such as us-east-1."
+  },
+  "navigation.deploymentInfo.section": {
+    "defaultMessage": "Deployment Info",
+    "description": "Last section of the side navigation: facts about this deployment (stack name, version, build, pattern, Region). Its entries are not links."
+  },
+  "navigation.deploymentInfo.stackName": {
+    "defaultMessage": "Stack Name: {stackName}",
+    "description": "Entry of the Deployment Info section. {stackName} is the name of the CloudFormation stack of this deployment."
+  },
+  "navigation.deploymentInfo.updateAvailable": {
+    "defaultMessage": "Update available",
+    "description": "Header of the popover behind the Update badge of the Version entry, shown when a newer version of the solution is published."
+  },
+  "navigation.deploymentInfo.updateBadge": {
+    "defaultMessage": "Update",
+    "description": "Badge next to the Version entry of the Deployment Info section when a newer version of the solution is published. Opens the popover."
+  },
+  "navigation.deploymentInfo.updateStackHelp": {
+    "defaultMessage": "Opens the AWS CloudFormation console with the new template URL pre-filled. Review parameters before applying.",
+    "description": "Small print under the CloudFormation link of the Update available popover, for Admin users."
+  },
+  "navigation.deploymentInfo.updateStackLink": {
+    "defaultMessage": "Update stack in CloudFormation →",
+    "description": "Link in the Update available popover, for Admin users, that opens the AWS CloudFormation console on the stack update page (new tab)."
+  },
+  "navigation.deploymentInfo.version": {
+    "defaultMessage": "Version: {version}",
+    "description": "Entry of the Deployment Info section. {version} is the version number of the deployed solution, such as 0.4.2."
+  },
+  "navigation.documents.list": {
+    "defaultMessage": "Document List",
+    "description": "Side navigation link, in the Documents section, to the list of processed documents."
+  },
+  "navigation.documents.section": {
+    "defaultMessage": "Documents",
+    "description": "Side navigation section that holds the document list and the upload page."
+  },
+  "navigation.documents.upload": {
+    "defaultMessage": "Upload Documents",
+    "description": "Side navigation link, in the Documents section, to the page that uploads documents for processing."
+  },
+  "navigation.extensions.browseCatalog": {
+    "defaultMessage": "Browse catalog",
+    "description": "First link of the Extensions section of the side navigation, to the catalog browser that lists every extension."
+  },
+  "navigation.extensions.comingSoon": {
+    "defaultMessage": "Coming soon",
+    "description": "Badge next to an extension announced in the Extensions section of the side navigation but not published yet."
+  },
+  "navigation.extensions.install": {
+    "defaultMessage": "Install",
+    "description": "Badge, for an Admin, next to an extension in the Extensions section of the side navigation that is not installed yet."
+  },
+  "navigation.extensions.marketplaceSubscriptionNote": {
+    "defaultMessage": "Requires an AWS Marketplace subscription.",
+    "description": "Sentence appended to the hover text of a not-yet-installed marketplace extension in the Extensions section of the side navigation."
+  },
+  "navigation.extensions.notInRegion": {
+    "defaultMessage": "Not in this Region",
+    "description": "Badge next to an extension in the Extensions section of the side navigation that is not published for the AWS Region of this deployment, so it cannot be installed here."
+  },
+  "navigation.extensions.notInstalled": {
+    "defaultMessage": "Not installed",
+    "description": "Badge, for a user who cannot install, next to an extension in the Extensions section of the side navigation that is not installed yet."
+  },
+  "navigation.extensions.section": {
+    "defaultMessage": "Extensions",
+    "description": "Side navigation section that lists the installed extensions and the ones the catalog offers."
+  },
+  "navigation.extensions.update": {
+    "defaultMessage": "Update",
+    "description": "Badge, for an Admin, next to an installed extension in the Extensions section of the side navigation whose catalog has a newer version."
+  },
+  "navigation.extensions.updateAvailable": {
+    "defaultMessage": "Update available",
+    "description": "Badge, for a user who cannot install, next to an installed extension in the Extensions section of the side navigation whose catalog has a newer version."
+  },
   "navigation.home.jobs": {
     "defaultMessage": "Jobs",
     "description": "Side-navigation link under Home to the list of bulk Skip All Reviews jobs (Admins and Reviewers)."
+  },
+  "navigation.home.queues": {
+    "defaultMessage": "Queues",
+    "description": "Side-navigation link under Home to the review queues that list the user as an Annotator."
+  },
+  "navigation.home.section": {
+    "defaultMessage": "Home",
+    "description": "First section of the side navigation, for every user: the Inbox, and for an Annotator the Tasks and Queues."
+  },
+  "navigation.home.tasks": {
+    "defaultMessage": "Tasks",
+    "description": "Side-navigation link under Home to the review items assigned to the user (Annotators)."
+  },
+  "navigation.home.tasksAssigned": {
+    "defaultMessage": "{count, plural, one {assigned} other {assigned}}",
+    "description": "Read by screen readers after the count badge of the Tasks link, as in \"3 assigned\". {count} is the number of review items assigned to the user; the badge itself shows the number."
+  },
+  "navigation.quickStart.button": {
+    "defaultMessage": "Quick Start",
+    "description": "Button above the side navigation that opens the Quick Start guide of the application."
+  },
+  "navigation.resources.blog": {
+    "defaultMessage": "Blog",
+    "description": "Side navigation link, in the Resources section, to the blog post about the solution (opens in a new tab)."
+  },
+  "navigation.resources.documentation": {
+    "defaultMessage": "Documentation",
+    "description": "Side navigation link, in the Resources section, to the published documentation of the solution (opens in a new tab)."
+  },
+  "navigation.resources.reportIssue": {
+    "defaultMessage": "Report an issue",
+    "description": "Side navigation link, in the Resources section, to the issue tracker of the solution on GitHub (opens in a new tab)."
+  },
+  "navigation.resources.section": {
+    "defaultMessage": "Resources",
+    "description": "Side navigation section of external links: the blog, the documentation, the source code and the issue tracker."
+  },
+  "navigation.resources.sourceCode": {
+    "defaultMessage": "Source Code",
+    "description": "Side navigation link, in the Resources section, to the source repository of the solution on GitHub (opens in a new tab)."
+  },
+  "navigation.reviewStudio.management": {
+    "defaultMessage": "Review Management",
+    "description": "Side-navigation link, in the Review Studio section, to the page where review queues are defined and work is assigned (Admins)."
+  },
+  "navigation.reviewStudio.section": {
+    "defaultMessage": "Review Studio",
+    "description": "Side-navigation section, for Admins, that holds Review Management."
+  },
+  "navigation.testStudio.executions": {
+    "defaultMessage": "Test Executions",
+    "description": "Side navigation link, in the Test Studio section, to the Test Executions tab, which lists the test runs."
+  },
+  "navigation.testStudio.section": {
+    "defaultMessage": "Test Studio",
+    "description": "Side navigation section that holds the test sets and the test executions. \"Test Studio\" is the name of that part of the application."
+  },
+  "navigation.testStudio.sets": {
+    "defaultMessage": "Test Sets",
+    "description": "Side navigation link, in the Test Studio section, to the Test Sets tab."
   },
   "pricing.layout.cannotSaveInvalidPrices": {
     "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",
