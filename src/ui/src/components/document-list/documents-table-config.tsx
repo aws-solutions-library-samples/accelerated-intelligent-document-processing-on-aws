@@ -492,6 +492,20 @@ const loadMessages = defineMessages<{
   },
 });
 
+/** The page title of the document list by document source; the header shows `title` when the page passes none. */
+export const listTitleMessages = defineMessages<{ title: NoMessageValues; titleTest: NoMessageValues }>({
+  title: {
+    id: 'documents.list.title',
+    defaultMessage: 'Documents',
+    description: 'Heading of the document list page in the Production view.',
+  },
+  titleTest: {
+    id: 'documents.list.titleTest',
+    defaultMessage: 'Test Studio Documents',
+    description: 'Heading of the document list page in the Test Studio view, which lists the documents submitted by test runs.',
+  },
+});
+
 /** The text in the UI's language; without `intl` (table cells, tests) the English source text. */
 const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
   intl ? intl.formatMessage(message) : String(message.defaultMessage);
@@ -945,7 +959,7 @@ export const isSendableToReview = (item: MappedDocument): boolean =>
   !(item.hitlTriggered && !item.hitlCompleted && !isQueueManaged(item.hitlStatus));
 
 export const DocumentsCommonHeader = ({
-  resourceName = 'Documents',
+  resourceName,
   selectedItems = [],
   onDelete,
   onReprocess,
@@ -1036,7 +1050,7 @@ export const DocumentsCommonHeader = ({
 
   return (
     <TableHeader
-      title={resourceName}
+      title={resourceName ?? intl.formatMessage(listTitleMessages.title)}
       actionButtons={
         <SpaceBetween size="xxs" direction="horizontal">
           <ButtonDropdown loading={props.loading} onItemClick={onPeriodToLoadChange} items={timePeriodItems}>

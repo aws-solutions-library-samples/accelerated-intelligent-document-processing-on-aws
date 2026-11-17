@@ -7,7 +7,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { fetchSharedAuthSession } from '../../api/auth-session';
 import { useNavigate } from 'react-router-dom';
-import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 
 interface DateRange {
   startDateTime: string;
@@ -45,7 +45,7 @@ import type { BulkResultRow } from '../review-bulk/BulkResultsTable';
 import SendToReviewModal from '../review-bulk/SendToReviewModal';
 import { buildReviewMenuItems } from '../review-bulk/review-menu-items';
 import useReviewActionSettings from '../review-bulk/use-review-action-settings';
-import { isHitlReviewFinished } from '../common/review-status';
+import { isHitlReviewFinished, LegacyHitlStatus, ReviewStatus } from '../common/review-status';
 import { jobDetailPath } from '../../routes/constants';
 import {
   DocumentsPreferences,
@@ -55,6 +55,7 @@ import {
   KEY_COLUMN_ID,
   UNIQUE_TRACK_ID,
   TEST_RUN_COLUMN_ID,
+  listTitleMessages,
   selectionLabels,
   DEFAULT_PREFERENCES,
   DEFAULT_SORT_COLUMN,
@@ -77,6 +78,18 @@ const messages = defineMessages<{
   sendToReviewResults: NoMessageValues;
   emptyTitle: NoMessageValues;
   emptyBody: NoMessageValues;
+  emptyReviewerTitle: NoMessageValues;
+  emptyReviewerBody: NoMessageValues;
+  emptyTestTitle: NoMessageValues;
+  emptyTestBody: { readonly link: MessageTag };
+  claimRefused: NoMessageValues;
+  releaseRefused: NoMessageValues;
+  exportHydrating: { readonly count: number };
+  exportLoadingDetails: NoMessageValues;
+  testViewDestructiveDisabled: NoMessageValues;
+  loading: NoMessageValues;
+  filterAriaLabel: NoMessageValues;
+  filterPlaceholder: NoMessageValues;
 }>({
   downloadFailed: {
     id: 'documents.list.downloadFailed',
@@ -113,7 +126,74 @@ const messages = defineMessages<{
     defaultMessage: 'No documents found.',
     description: 'Text under the heading of the empty Document List.',
   },
+  emptyReviewerTitle: {
+    id: 'documents.list.emptyReviewer.title',
+    defaultMessage: 'No pending reviews',
+    description: 'Heading of the empty Document List for a reviewer, who only sees documents waiting for review.',
+  },
+  emptyReviewerBody: {
+    id: 'documents.list.emptyReviewer.body',
+    defaultMessage: 'There are no documents waiting for your review at this time.',
+    description: 'Text under the heading of the empty Document List for a reviewer.',
+  },
+  emptyTestTitle: {
+    id: 'documents.list.emptyTest.title',
+    defaultMessage: 'No Test Studio documents',
+    description: 'Heading of the empty Document List in the Test Studio view.',
+  },
+  emptyTestBody: {
+    id: 'documents.list.emptyTest.body',
+    defaultMessage: 'No test run submitted documents in this time period. Widen the range with Load, or see <link>Test Executions</link>.',
+    description:
+      'Text under the heading of the empty Document List in the Test Studio view. "Load" is the button that chooses the period; the <link> phrase is the name of the Test Executions page and opens it.',
+  },
+  claimRefused: {
+    id: 'documents.list.claimRefused',
+    defaultMessage: 'Start Review was refused',
+    description:
+      'Heading of the error alert listing the documents the server refused to claim for review; "Start Review" is the menu action.',
+  },
+  releaseRefused: {
+    id: 'documents.list.releaseRefused',
+    defaultMessage: 'Release Review was refused',
+    description:
+      'Heading of the error alert listing the documents the server refused to release from review; "Release Review" is the menu action.',
+  },
+  exportHydrating: {
+    id: 'documents.list.export.hydrating',
+    defaultMessage: 'Loading details for {count, plural, one {# document} other {# documents}}…',
+    description: 'Progress line of the bulk export dialog while the selected documents are fetched. {count} is how many are selected.',
+  },
+  exportLoadingDetails: {
+    id: 'documents.list.export.loadingDetails',
+    defaultMessage: 'Loading document details…',
+    description: 'Progress line of the bulk export dialog after each batch of documents is fetched.',
+  },
+  testViewDestructiveDisabled: {
+    id: 'documents.list.testViewDestructiveDisabled',
+    defaultMessage: 'Test Studio documents are managed by their test run — use Test Executions to rerun or delete a run',
+    description:
+      'Tooltip of the disabled Abort, Reprocess and Delete buttons in the Test Studio view of the Document List. "Test Executions" is the name of a page.',
+  },
+  loading: {
+    id: 'documents.list.loading',
+    defaultMessage: 'Loading documents',
+    description: 'Text shown in the Document List table while the documents load.',
+  },
+  filterAriaLabel: {
+    id: 'documents.list.filterAriaLabel',
+    defaultMessage: 'Filter documents',
+    description: 'Screen-reader label of the search field above the Document List table.',
+  },
+  filterPlaceholder: {
+    id: 'documents.list.filterPlaceholder',
+    defaultMessage: 'Find documents',
+    description: 'Placeholder of the search field above the Document List table.',
+  },
 });
+
+/** The Excel export's file names (without the extension), by document source. */
+const EXCEL_EXPORT_NAMES = { production: 'Document-List', test: 'Test-Studio-Document-List' } as const;
 
 /**
  * Documents hydrated per round before a bulk export. Matches the exporter's own
@@ -241,9 +321,11 @@ const DocumentList = (): React.JSX.Element => {
         <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
           <SpaceBetween size="xxs">
             <div>
-              <b>No pending reviews</b>
+              <b>
+                <FormattedMessage {...messages.emptyReviewerTitle} />
+              </b>
               <Box variant="p" color="inherit">
-                There are no documents waiting for your review at this time.
+                <FormattedMessage {...messages.emptyReviewerBody} />
               </Box>
             </div>
           </SpaceBetween>
@@ -258,10 +340,14 @@ const DocumentList = (): React.JSX.Element => {
         <Box margin={{ vertical: 'xs' }} textAlign="center" color="inherit">
           <SpaceBetween size="xxs">
             <div>
-              <b>No Test Studio documents</b>
+              <b>
+                <FormattedMessage {...messages.emptyTestTitle} />
+              </b>
               <Box variant="p" color="inherit">
-                No test run submitted documents in this time period. Widen the range with Load, or see{' '}
-                <Link href={testExecutionsHref()}>Test Executions</Link>.
+                <FormattedMessage
+                  {...messages.emptyTestBody}
+                  values={{ link: (chunks) => <Link href={testExecutionsHref()}>{chunks}</Link> }}
+                />
               </Box>
             </div>
           </SpaceBetween>
@@ -389,7 +475,7 @@ const DocumentList = (): React.JSX.Element => {
 
     // Clear selection
     actions.setSelectedItems([]);
-    if (failures.length) setReviewRefusal({ header: 'Start Review was refused', messages: failures });
+    if (failures.length) setReviewRefusal({ header: intl.formatMessage(messages.claimRefused), messages: failures });
 
     // If the one selected document was claimed, navigate to its details
     if (navigateTo) {
@@ -422,7 +508,7 @@ const DocumentList = (): React.JSX.Element => {
 
     // Clear selection
     actions.setSelectedItems([]);
-    if (failures.length) setReviewRefusal({ header: 'Release Review was refused', messages: failures });
+    if (failures.length) setReviewRefusal({ header: intl.formatMessage(messages.releaseRefused), messages: failures });
   };
 
   /**
@@ -441,7 +527,7 @@ const DocumentList = (): React.JSX.Element => {
     setDownloadProgress({
       completed: 0,
       total: 1,
-      currentFile: `Loading details for ${selected.length} document${selected.length === 1 ? '' : 's'}…`,
+      currentFile: intl.formatMessage(messages.exportHydrating, { count: selected.length }),
       errors: [],
       documentsTotal: selected.length,
       documentsCompleted: 0,
@@ -476,7 +562,7 @@ const DocumentList = (): React.JSX.Element => {
         setDownloadProgress({
           completed: hydrated,
           total: objectKeys.length,
-          currentFile: 'Loading document details…',
+          currentFile: intl.formatMessage(messages.exportLoadingDetails),
           errors: [],
           documentsTotal: objectKeys.length,
           phase: 'preparing',
@@ -489,6 +575,7 @@ const DocumentList = (): React.JSX.Element => {
       const preflightErrors: ExportErrorEntry[] = selected
         .filter((row) => !detailByKey.has(row.objectKey))
         .map((row) => ({
+          // English on purpose: this entry is written into the archive's manifest.json.
           path: '(document details)',
           document: row.objectKey,
           message: 'Could not fetch document details — only document attributes were exported for this document',
@@ -614,7 +701,9 @@ const DocumentList = (): React.JSX.Element => {
           }}
           onFinished={(result) => {
             setBulkSkip(null);
-            patchRows(result.results, (r) => (r.outcome === 'SKIPPED' ? (r.kind === 'queue' ? 'complete' : 'Review Skipped') : null));
+            patchRows(result.results, (r) =>
+              r.outcome === 'SKIPPED' ? (r.kind === 'queue' ? ReviewStatus.COMPLETE : LegacyHitlStatus.REVIEW_SKIPPED) : null,
+            );
             setBulkResults({
               header: intl.formatMessage(messages.bulkSkipResults),
               counts: result.counts,
@@ -630,7 +719,7 @@ const DocumentList = (): React.JSX.Element => {
           onDismiss={() => setSendKeys(null)}
           onDone={(result) => {
             setSendKeys(null);
-            patchRows(result.results, (r) => (r.outcome === 'SENT' ? 'in_review' : null));
+            patchRows(result.results, (r) => (r.outcome === 'SENT' ? ReviewStatus.IN_REVIEW : null));
             setBulkResults({
               header: intl.formatMessage(messages.sendToReviewResults),
               counts: result.counts,
@@ -657,7 +746,7 @@ const DocumentList = (): React.JSX.Element => {
         {...collectionProps}
         header={
           <DocumentsCommonHeader
-            resourceName={isTestView ? 'Test Studio Documents' : 'Documents'}
+            resourceName={intl.formatMessage(isTestView ? listTitleMessages.titleTest : listTitleMessages.title)}
             documents={documents}
             selectedItems={collectionProps.selectedItems}
             totalItems={filteredDocumentList}
@@ -682,7 +771,7 @@ const DocumentList = (): React.JSX.Element => {
                 ...item,
                 configVersion: formatConfigVersionText(item.configVersion, versions),
               }));
-              exportToExcel(exportData, isTestView ? 'Test-Studio-Document-List' : 'Document-List');
+              exportToExcel(exportData, isTestView ? EXCEL_EXPORT_NAMES.test : EXCEL_EXPORT_NAMES.production);
             }}
             onDownloadSelected={handleDownloadSelected}
             isDownloadInProgress={isDownloadInProgress}
@@ -693,9 +782,7 @@ const DocumentList = (): React.JSX.Element => {
             // invalidate the results scored against them (and the confidence
             // calibration derived from those results). Test Studio owns that
             // lifecycle — rerun or delete the run there instead.
-            destructiveDisabledReason={
-              isTestView ? 'Test Studio documents are managed by their test run — use Test Executions to rerun or delete a run' : null
-            }
+            destructiveDisabledReason={isTestView ? intl.formatMessage(messages.testViewDestructiveDisabled) : null}
             onClaimReview={canReview ? handleClaimReview : null}
             onReleaseReview={isAdmin ? handleReleaseReview : null}
             reviewMenu={reviewMenu}
@@ -710,7 +797,7 @@ const DocumentList = (): React.JSX.Element => {
         columnDefinitions={COLUMN_DEFINITIONS_MAIN(versions, documentView, canWorkReviewQueues, intl)}
         items={items}
         loading={isDocumentsListLoading}
-        loadingText="Loading documents"
+        loadingText={intl.formatMessage(messages.loading)}
         selectionType="multi"
         ariaLabels={selectionLabels(intl)}
         filter={
@@ -724,8 +811,8 @@ const DocumentList = (): React.JSX.Element => {
             <div style={{ width: FILTER_WIDTH }}>
               <TextFilter
                 {...filterProps}
-                filteringAriaLabel="Filter documents"
-                filteringPlaceholder="Find documents"
+                filteringAriaLabel={intl.formatMessage(messages.filterAriaLabel)}
+                filteringPlaceholder={intl.formatMessage(messages.filterPlaceholder)}
                 countText={filterCounterText(intl, filteredItemsCount ?? 0)}
               />
             </div>

@@ -303,6 +303,10 @@
     "defaultMessage": "Circuit: recovering",
     "description": "Badge in the document list header when the Bedrock circuit breaker is half-open (probing whether Bedrock is back)."
   },
+  "documents.list.claimRefused": {
+    "defaultMessage": "Start Review was refused",
+    "description": "Heading of the error alert listing the documents the server refused to claim for review; \"Start Review\" is the menu action."
+  },
   "documents.list.downloadFailed": {
     "defaultMessage": "Download failed: {error}",
     "description": "Error notification when the bulk document export fails. {error} is the error message."
@@ -315,9 +319,61 @@
     "defaultMessage": "No documents",
     "description": "Heading of the empty Document List when the loaded period holds no document."
   },
+  "documents.list.emptyReviewer.body": {
+    "defaultMessage": "There are no documents waiting for your review at this time.",
+    "description": "Text under the heading of the empty Document List for a reviewer."
+  },
+  "documents.list.emptyReviewer.title": {
+    "defaultMessage": "No pending reviews",
+    "description": "Heading of the empty Document List for a reviewer, who only sees documents waiting for review."
+  },
+  "documents.list.emptyTest.body": {
+    "defaultMessage": "No test run submitted documents in this time period. Widen the range with Load, or see <link>Test Executions</link>.",
+    "description": "Text under the heading of the empty Document List in the Test Studio view. \"Load\" is the button that chooses the period; the <link> phrase is the name of the Test Executions page and opens it."
+  },
+  "documents.list.emptyTest.title": {
+    "defaultMessage": "No Test Studio documents",
+    "description": "Heading of the empty Document List in the Test Studio view."
+  },
+  "documents.list.export.hydrating": {
+    "defaultMessage": "Loading details for {count, plural, one {# document} other {# documents}}…",
+    "description": "Progress line of the bulk export dialog while the selected documents are fetched. {count} is how many are selected."
+  },
+  "documents.list.export.loadingDetails": {
+    "defaultMessage": "Loading document details…",
+    "description": "Progress line of the bulk export dialog after each batch of documents is fetched."
+  },
+  "documents.list.filterAriaLabel": {
+    "defaultMessage": "Filter documents",
+    "description": "Screen-reader label of the search field above the Document List table."
+  },
+  "documents.list.filterPlaceholder": {
+    "defaultMessage": "Find documents",
+    "description": "Placeholder of the search field above the Document List table."
+  },
+  "documents.list.loading": {
+    "defaultMessage": "Loading documents",
+    "description": "Text shown in the Document List table while the documents load."
+  },
+  "documents.list.releaseRefused": {
+    "defaultMessage": "Release Review was refused",
+    "description": "Heading of the error alert listing the documents the server refused to release from review; \"Release Review\" is the menu action."
+  },
   "documents.list.sendToReviewResults": {
     "defaultMessage": "Send to review results",
     "description": "Title of the results dialog of Send to review from the Document List."
+  },
+  "documents.list.testViewDestructiveDisabled": {
+    "defaultMessage": "Test Studio documents are managed by their test run — use Test Executions to rerun or delete a run",
+    "description": "Tooltip of the disabled Abort, Reprocess and Delete buttons in the Test Studio view of the Document List. \"Test Executions\" is the name of a page."
+  },
+  "documents.list.title": {
+    "defaultMessage": "Documents",
+    "description": "Heading of the document list page in the Production view."
+  },
+  "documents.list.titleTest": {
+    "defaultMessage": "Test Studio Documents",
+    "description": "Heading of the document list page in the Test Studio view, which lists the documents submitted by test runs."
   },
   "documents.list.unknownError": {
     "defaultMessage": "Unknown error",
@@ -882,6 +938,66 @@
   "guidedTour.tutorial.title": {
     "defaultMessage": "Get started with GenAI IDP",
     "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
+  },
+  "helpPanel.documents.docsCircuitBreaker": {
+    "defaultMessage": "Circuit Breaker",
+    "description": "Documentation link in the Documents help panel: the page about the circuit breaker that pauses processing."
+  },
+  "helpPanel.documents.docsHumanReview": {
+    "defaultMessage": "Human Review",
+    "description": "Documentation link in the Documents help panel: the page about human review of documents."
+  },
+  "helpPanel.documents.docsMonitoring": {
+    "defaultMessage": "Monitoring",
+    "description": "Documentation link in the Documents help panel: the page about monitoring."
+  },
+  "helpPanel.documents.docsWebUi": {
+    "defaultMessage": "Web UI",
+    "description": "Documentation link in the Documents help panel: the page about the web interface."
+  },
+  "helpPanel.documents.feature1": {
+    "defaultMessage": "View document processing status, classification, and confidence scores",
+    "description": "First item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature2": {
+    "defaultMessage": "Filter by date range, status, document type, or any field using the search bar",
+    "description": "Second item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature3": {
+    "defaultMessage": "Select documents to reprocess, delete, or abort active workflows",
+    "description": "Third item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature4": {
+    "defaultMessage": "Claim or release documents for human review",
+    "description": "Fourth item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature5": {
+    "defaultMessage": "Export filtered results to Excel for offline analysis",
+    "description": "Fifth item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature6": {
+    "defaultMessage": "Drill down into individual documents for detailed inspection",
+    "description": "Sixth item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature7": {
+    "defaultMessage": "Monitor the circuit breaker status and (admins only) pause, resume, or probe document processing",
+    "description": "Seventh item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.features": {
+    "defaultMessage": "Features",
+    "description": "Heading above the list of what the Document List page offers, in its help panel."
+  },
+  "helpPanel.documents.intro": {
+    "defaultMessage": "Track, search, filter, and manage all documents processed by the IDP system.",
+    "description": "First sentence of the Documents help panel. \"IDP\" is the product abbreviation and may stay as it is in the translation."
+  },
+  "helpPanel.documents.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Documents help panel."
+  },
+  "helpPanel.documents.title": {
+    "defaultMessage": "Documents",
+    "description": "Heading of the help panel of the Document List page."
   },
   "helpPanel.feedback.intro": {
     "defaultMessage": "Report bugs or suggest enhancements on GitHub — your deployment details are filled in automatically.",
