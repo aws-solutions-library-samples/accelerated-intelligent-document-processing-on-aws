@@ -13,7 +13,7 @@ import { buildFeaturesNavSection, COMING_SOON_HREF } from './feature-platform-na
 import useLatestVersion from '../../hooks/use-latest-version';
 import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
-import { TourHotspot } from '../../contexts/guidedTour';
+import { TourHotspot } from '../../contexts/tourHotspots';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
 import { isQuickStartEnabled } from '../../utils/quick-start-flag';

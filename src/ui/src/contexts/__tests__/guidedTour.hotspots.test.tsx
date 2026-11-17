@@ -20,7 +20,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 
-import { GuidedTourProvider, TOUR_WAIT_MS, TourHotspot, buildTutorial, useGuidedTour } from '../guidedTour';
+import { GuidedTourProvider, TOUR_WAIT_MS, buildTutorial, useGuidedTour } from '../guidedTour';
+import { TourHotspot } from '../tourHotspots';
 
 vi.mock('@cloudscape-design/components/annotation-context', () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -147,7 +148,7 @@ describe('the guided tour and the hotspots on the page', () => {
 describe('every hotspot is one the tour can see', () => {
   const SRC = join(__dirname, '..', '..');
   const files = (readdirSync(SRC, { recursive: true }) as string[])
-    .filter((file) => /\.tsx?$/.test(file) && !file.includes('__tests__') && file !== join('contexts', 'guidedTour.tsx'))
+    .filter((file) => /\.tsx?$/.test(file) && !file.includes('__tests__') && file !== join('contexts', 'tourHotspots.tsx'))
     .map((file) => [file, readFileSync(join(SRC, file), 'utf-8')] as const);
 
   it('reads the source tree', () => {

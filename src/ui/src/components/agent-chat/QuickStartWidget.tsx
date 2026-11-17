@@ -7,7 +7,7 @@ import { AgentChatProvider, useAgentChatContext } from '../../contexts/agentChat
 import AgentChatLayout from './AgentChatLayout';
 import { WELCOME_PATH } from '../../routes/constants';
 import { isQuickStartEnabled } from '../../utils/quick-start-flag';
-import { TourHotspot } from '../../contexts/guidedTour';
+import { TourHotspot } from '../../contexts/tourHotspots';
 import './QuickStartWidget.css';
 
 const WidgetHeaderTitle = (): React.JSX.Element => {

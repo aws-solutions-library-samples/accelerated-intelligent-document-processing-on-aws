@@ -4,7 +4,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { useNavigate } from 'react-router-dom';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
-import Hotspot, { type HotspotProps } from '@cloudscape-design/components/hotspot';
+import { HotspotRegistry, type RegisterHotspot } from './tourHotspots';
 import { DOCUMENTS_PATH } from '../routes/constants';
 import { isQuickStartEnabled } from '../utils/quick-start-flag';
 import './guidedTour.css';
@@ -23,23 +23,6 @@ interface GuidedTourContextValue {
 
 const GuidedTourContext = createContext<GuidedTourContextValue | null>(null);
 
-type RegisterHotspot = (hotspotId: string) => () => void;
-
-const HotspotRegistry = createContext<RegisterHotspot | null>(null);
-
-/**
- * A Cloudscape Hotspot the tour can see. A tour step whose hotspot is not on the page
- * cannot be shown, and Cloudscape then holds the tour on the step before it, so the
- * tour keeps only the steps whose hotspot is mounted. Render every hotspot through
- * this component so that it is counted.
- */
-export const TourHotspot = (props: HotspotProps): React.JSX.Element => {
-  const register = useContext(HotspotRegistry);
-  const { hotspotId } = props;
-  useEffect(() => register?.(hotspotId), [register, hotspotId]);
-  return <Hotspot {...props} />;
-};
-
 const DISMISS_LABEL = 'Dismiss tour';
 
 /** How long the tour waits after navigating, so the page under it has rendered. */
@@ -55,7 +38,6 @@ export const TOUR_WAIT_MS = 10_000;
 interface PendingTour {
   flags: TourFlags;
   ready: boolean;
-  giveUpAt: number;
 }
 
 const allSteps = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
@@ -207,10 +189,6 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
   const startPendingTour = useCallback(() => {
     const pending = pendingTour.current;
     if (!pending?.ready) return;
-    if (Date.now() > pending.giveUpAt) {
-      pendingTour.current = null;
-      return;
-    }
     const next = buildTutorial(pending.flags, new Set(mountedHotspots.current.keys()));
     if (next.tasks.length === 0) return;
     pendingTour.current = null;
@@ -229,12 +207,15 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
         quickStart: isQuickStartEnabled(),
       };
       navigate(DOCUMENTS_PATH);
-      const pending: PendingTour = { flags: resolved, ready: false, giveUpAt: Date.now() + TOUR_WAIT_MS };
+      const pending: PendingTour = { flags: resolved, ready: false };
       pendingTour.current = pending;
       window.setTimeout(() => {
         pending.ready = true;
         startPendingTour();
       }, TOUR_DELAY_MS);
+      window.setTimeout(() => {
+        if (pendingTour.current === pending) pendingTour.current = null;
+      }, TOUR_WAIT_MS);
     },
     [navigate, startPendingTour],
   );
