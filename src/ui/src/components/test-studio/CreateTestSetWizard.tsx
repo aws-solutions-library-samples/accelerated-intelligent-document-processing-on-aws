@@ -56,7 +56,7 @@ const messages = defineMessages<{ noConfigurationWithQuickStart: LinkTag; noConf
   noConfigurationWithQuickStart: {
     id: 'testStudio.createTestSetWizard.noConfigurationWithQuickStart',
     defaultMessage:
-      'No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or use Quick Start from the welcome page to describe them in your own words.',
+      'No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or open Quick Start from the side navigation to describe them in your own words.',
     description:
       'Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page.',
   },

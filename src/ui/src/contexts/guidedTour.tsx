@@ -1,12 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuthenticator } from '@aws-amplify/ui-react';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 import { DOCUMENTS_PATH } from '../routes/constants';
-import useQuickStartAvailable from '../hooks/use-quick-start-available';
 import './guidedTour.css';
 
 interface TourFlags {
@@ -136,9 +134,16 @@ const i18nStrings: AnnotationContextProps.I18nStrings = {
   labelDismissAnnotation: DISMISS_LABEL,
 };
 
-const GuidedTourScope = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
+/**
+ * The guided tour. Whether it shows and opens Quick Start is decided by whoever
+ * starts it, through the `quickStart` flag. This provider sits above the routes and
+ * mounts before the app has configured the session, so a role check here would
+ * read no session; the Welcome page starts the tour from inside the signed-in
+ * routes, where the role is known.
+ */
+export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
-  const quickStartAvailable = useQuickStartAvailable();
+  const opensQuickStartOnFinish = useRef(false);
   const navigate = useNavigate();
 
   const startTour = useCallback(
@@ -146,20 +151,21 @@ const GuidedTourScope = ({ children }: { children: React.ReactNode }): React.JSX
       const resolved: TourFlags = {
         customModels: flags?.customModels ?? false,
         capacityPlanning: flags?.capacityPlanning ?? true,
-        quickStart: quickStartAvailable,
+        quickStart: flags?.quickStart ?? false,
       };
+      opensQuickStartOnFinish.current = resolved.quickStart;
       navigate(DOCUMENTS_PATH);
       window.setTimeout(() => setTutorial(buildTutorial(resolved)), 350);
     },
-    [navigate, quickStartAvailable],
+    [navigate],
   );
   const exitTour = useCallback(() => setTutorial(null), []);
   const finishTour = useCallback(() => {
     setTutorial(null);
-    if (quickStartAvailable) {
+    if (opensQuickStartOnFinish.current) {
       window.dispatchEvent(new CustomEvent('openQuickStart'));
     }
-  }, [quickStartAvailable]);
+  }, []);
 
   useEffect(() => {
     const handler = (e: Event) => startTour((e as CustomEvent<Partial<TourFlags>>).detail);
@@ -194,17 +200,6 @@ const GuidedTourScope = ({ children }: { children: React.ReactNode }): React.JSX
       </AnnotationContext>
     </GuidedTourContext.Provider>
   );
-};
-
-/**
- * The tour, scoped to the signed-in user. It sits above the routes, so it mounts
- * before sign-in, and the role check behind Quick Start reads the session once per
- * mount. Keying the scope on the user remounts it at sign-in and sign-out, so an
- * Admin who signs in through the form gets the tour's Quick Start step.
- */
-export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
-  const { user } = useAuthenticator((context) => [context.user]);
-  return <GuidedTourScope key={user?.userId ?? 'signed-out'}>{children}</GuidedTourScope>;
 };
 
 export const useGuidedTour = (): GuidedTourContextValue => {

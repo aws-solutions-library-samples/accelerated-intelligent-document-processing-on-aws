@@ -30,7 +30,7 @@ describe('the configuration hint and Quick Start', () => {
   });
 
   it('names Quick Start in one message only', () => {
-    expect(defaultMessage('noConfigurationWithQuickStart')).toMatch(/use Quick Start from the welcome page/);
+    expect(defaultMessage('noConfigurationWithQuickStart')).toMatch(/open Quick Start from the side navigation/);
     expect(defaultMessage('noConfiguration')).not.toMatch(/Quick Start/);
     expect(defaultMessage('noConfiguration')).toMatch(/<link>Discovery<\/link>/);
   });

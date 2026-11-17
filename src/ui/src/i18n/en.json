@@ -1404,7 +1404,7 @@
     "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is not offered Quick Start. <link> wraps a link to the Discovery page."
   },
   "testStudio.createTestSetWizard.noConfigurationWithQuickStart": {
-    "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or use Quick Start from the welcome page to describe them in your own words.",
+    "defaultMessage": "No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or open Quick Start from the side navigation to describe them in your own words.",
     "description": "Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page."
   },
   "testStudio.itemEdit.regroupPending": {
@@ -1414,5 +1414,9 @@
   "testStudio.itemEdit.regroupRereadFailed": {
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
+  },
+  "welcome.content.noConfigurationDiscovery": {
+    "defaultMessage": "<b>No configuration yet?</b> <link>Discovery</link> infers classes and fields from example documents.",
+    "description": "Welcome page hint for a user who can create a configuration but is not offered Quick Start. <b> wraps the question; <link> wraps a link to the Discovery page."
   }
 }

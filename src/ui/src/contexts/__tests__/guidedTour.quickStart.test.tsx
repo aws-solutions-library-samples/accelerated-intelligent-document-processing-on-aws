@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT-0
 
 import React from 'react';
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,10 +10,9 @@ import { GuidedTourProvider, buildTutorial } from '../guidedTour';
 
 const { annotation, role } = vi.hoisted(() => ({
   annotation: { onFinish: undefined as undefined | (() => void) },
-  role: { isAdmin: true },
+  role: { isAdmin: false },
 }));
 vi.mock('../../hooks/use-user-role', () => ({ default: () => role }));
-vi.mock('@aws-amplify/ui-react', () => ({ useAuthenticator: () => ({ user: { userId: 'u1' } }) }));
 vi.mock('@cloudscape-design/components/annotation-context', () => ({
   default: ({ onFinish, children }: { onFinish: () => void; children: React.ReactNode }) => {
     annotation.onFinish = onFinish;
@@ -26,7 +25,7 @@ const hotspots = (quickStart: boolean) =>
     task.steps.map((step) => step.hotspotId),
   );
 
-const finishTourCountingQuickStartOpens = () => {
+const startThenFinishCountingQuickStartOpens = (detail?: Record<string, boolean>) => {
   const opened = vi.fn();
   window.addEventListener('openQuickStart', opened);
   render(
@@ -36,7 +35,10 @@ const finishTourCountingQuickStartOpens = () => {
       </GuidedTourProvider>
     </MemoryRouter>,
   );
-  annotation.onFinish?.();
+  act(() => {
+    window.dispatchEvent(new CustomEvent('startTutorial', { detail }));
+  });
+  act(() => annotation.onFinish?.());
   window.removeEventListener('openQuickStart', opened);
   return opened.mock.calls.length;
 };
@@ -44,7 +46,7 @@ const finishTourCountingQuickStartOpens = () => {
 describe('the guided tour and Quick Start', () => {
   afterEach(() => {
     vi.unstubAllEnvs();
-    role.isAdmin = true;
+    role.isAdmin = false;
   });
 
   it('ends at the Quick Start button when Quick Start is on', () => {
@@ -60,16 +62,17 @@ describe('the guided tour and Quick Start', () => {
     expect(tutorial.completedScreenDescription).not.toContain('Quick Start');
   });
 
-  it('opens Quick Start on Finish only when Quick Start is on', () => {
-    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
-    expect(finishTourCountingQuickStartOpens()).toBe(1);
-    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'false');
-    expect(finishTourCountingQuickStartOpens()).toBe(0);
+  it('opens Quick Start on Finish only when the tour was started with Quick Start', () => {
+    expect(startThenFinishCountingQuickStartOpens({ quickStart: true })).toBe(1);
+    expect(startThenFinishCountingQuickStartOpens({ quickStart: false })).toBe(0);
+    expect(startThenFinishCountingQuickStartOpens()).toBe(0);
   });
 
-  it('never opens Quick Start on Finish for a user who is not an Admin', () => {
+  it('takes Quick Start from whoever starts the tour, not from its own role check', () => {
     vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
     role.isAdmin = false;
-    expect(finishTourCountingQuickStartOpens()).toBe(0);
+    expect(startThenFinishCountingQuickStartOpens({ quickStart: true })).toBe(1);
+    role.isAdmin = true;
+    expect(startThenFinishCountingQuickStartOpens({ quickStart: false })).toBe(0);
   });
 });

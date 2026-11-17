@@ -2,8 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { defineMessages, FormattedMessage, type MessageTag } from 'react-intl';
 import { Box, Button, Container, Header, SpaceBetween, Link } from '@cloudscape-design/components';
-import { DOCUMENTS_PATH, MY_TASKS_PATH, CONFIGURATION_PATH, UPLOAD_DOCUMENT_PATH, WELCOME_DISMISSED_KEY } from '../../routes/constants';
+import {
+  DOCUMENTS_PATH,
+  DISCOVERY_PATH,
+  MY_TASKS_PATH,
+  CONFIGURATION_PATH,
+  UPLOAD_DOCUMENT_PATH,
+  WELCOME_DISMISSED_KEY,
+} from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import useQuickStartAvailable from '../../hooks/use-quick-start-available';
@@ -14,10 +22,21 @@ interface WelcomeContentProps {
   onDismiss?: () => void;
 }
 
+const messages = defineMessages<{ noConfigurationDiscovery: { readonly b: MessageTag; readonly link: MessageTag } }>({
+  noConfigurationDiscovery: {
+    id: 'welcome.content.noConfigurationDiscovery',
+    defaultMessage: '<b>No configuration yet?</b> <link>Discovery</link> infers classes and fields from example documents.',
+    description:
+      'Welcome page hint for a user who can create a configuration but is not offered Quick Start. <b> wraps the question; <link> wraps a link to the Discovery page.',
+  },
+});
+
+const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
+
 const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps): React.JSX.Element => {
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
-  const { isAnnotatorOnly } = useUserRole();
+  const { isAnnotatorOnly, canWrite } = useUserRole();
   const quickStart = useQuickStartAvailable();
 
   const openQuickStart = useCallback(() => {
@@ -30,9 +49,10 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
     const detail = {
       customModels: (import.meta.env.VITE_AWS_REGION as string | undefined) === 'us-east-1',
       capacityPlanning: !pattern || /pattern[\s\-_]?2/.test(pattern) || pattern.includes('unified'),
+      quickStart,
     };
     window.dispatchEvent(new CustomEvent('startTutorial', { detail }));
-  }, [settings?.IDPPattern]);
+  }, [settings?.IDPPattern, quickStart]);
 
   const enterConsole = useCallback(() => {
     // An Annotator cannot read the document list, so sending them there would be
@@ -79,6 +99,17 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
                 <Box variant="p">
                   <b>No configuration yet?</b> Use <Link onFollow={openQuickStart}>Quick Start</Link> to describe your document type (or
                   upload an example) and we&apos;ll build a config for you.
+                </Box>
+              )}
+              {!quickStart && canWrite && (
+                <Box variant="p">
+                  <FormattedMessage
+                    {...messages.noConfigurationDiscovery}
+                    values={{
+                      b: bold,
+                      link: (chunks: React.ReactNode[]) => <Link onFollow={() => navigate(DISCOVERY_PATH)}>{chunks}</Link>,
+                    }}
+                  />
                 </Box>
               )}
               <Box variant="p">
