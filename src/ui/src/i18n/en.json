@@ -1903,9 +1903,85 @@
     "defaultMessage": "Sent to review: {reason}",
     "description": "Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it."
   },
+  "routes.auth.signOut": {
+    "defaultMessage": "Sign Out",
+    "description": "The one button of the /logout page, which signs the user out."
+  },
   "routes.myWork.jobCrumb": {
     "defaultMessage": "Job",
     "description": "Last breadcrumb on the page of one bulk Skip All Reviews job, after Home › Jobs."
+  },
+  "routes.requireRole.body": {
+    "defaultMessage": "Your role doesn't include this page.",
+    "description": "Body of the notice shown in place of a page the user’s role does not include; followed by the link to the home page."
+  },
+  "routes.requireRole.header": {
+    "defaultMessage": "You don't have access to this page",
+    "description": "Header of the notice shown in place of a page the user’s role does not include."
+  },
+  "routes.requireRole.homeLink": {
+    "defaultMessage": "Go to your home page",
+    "description": "Link in the notice shown in place of a page the user’s role does not include; opens the user’s home page."
+  },
+  "routes.reviewQueues.testSetCrumb": {
+    "defaultMessage": "Test set: {name}",
+    "description": "Breadcrumb of a test set’s queue page, after Review Management or Home › Queues. {name} is the test set’s name."
+  },
+  "routes.session.errorBody": {
+    "defaultMessage": "You are signed in, but the app could not obtain AWS credentials for your session. This is usually temporary — retrying or reloading normally resolves it. If it persists, sign out and sign in again.",
+    "description": "Body of the error notice shown when the app could not obtain AWS credentials after a valid sign-in."
+  },
+  "routes.session.errorHeader": {
+    "defaultMessage": "Could not establish your session",
+    "description": "Header of the error notice shown when the app could not obtain AWS credentials after a valid sign-in."
+  },
+  "routes.session.infoIconAriaLabel": {
+    "defaultMessage": "Info",
+    "description": "Screen-reader label of the status icon of the no-role notice."
+  },
+  "routes.session.loading": {
+    "defaultMessage": "Establishing your session…",
+    "description": "Text under the spinner shown after sign-in while the app waits for the AWS credentials of the session."
+  },
+  "routes.session.noRoleBody": {
+    "defaultMessage": "Your sign-in worked, but your account has not been given a role yet, so there is nothing for you to view. Ask an administrator to grant you one — Admin, Author, Reviewer, Annotator or Viewer. If your organization signs you in through its own identity provider, the role comes from your group membership there rather than from this application. Reload this page once it has been granted.",
+    "description": "Body of the notice shown to a signed-in user whose account is in no Cognito group. Admin, Author, Reviewer, Annotator and Viewer are the names of the application roles."
+  },
+  "routes.session.noRoleHeader": {
+    "defaultMessage": "Your account has not been granted access yet",
+    "description": "Header of the notice shown to a signed-in user whose account is in no Cognito group, so no page can be shown."
+  },
+  "routes.session.reloadPage": {
+    "defaultMessage": "Reload the page",
+    "description": "Button of the session error notice and of the no-role notice that reloads the browser page."
+  },
+  "routes.session.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the session error notice that requests the credentials again."
+  },
+  "routes.session.signOut": {
+    "defaultMessage": "Sign out",
+    "description": "Button of the no-role notice that signs the user out."
+  },
+  "routes.unauth.emailRequired": {
+    "defaultMessage": "Email is required",
+    "description": "Validation error of the sign-up form when the e-mail field is left empty."
+  },
+  "routes.unauth.federatedSignIn": {
+    "defaultMessage": "Sign in with {provider}",
+    "description": "Button above the sign-in form that signs in through the external identity provider. {provider} is its configured name."
+  },
+  "routes.unauth.header": {
+    "defaultMessage": "Welcome to GenAI Intelligent Document Processing!",
+    "description": "Heading above the sign-in form. \"GenAI Intelligent Document Processing\" is the product name and may stay as it is in the translation."
+  },
+  "routes.unauth.orUsername": {
+    "defaultMessage": "— or sign in with username —",
+    "description": "Separator between the external identity provider button and the username and password form below it."
+  },
+  "routes.unauth.redirecting": {
+    "defaultMessage": "Redirecting to {provider}...",
+    "description": "Text shown instead of the sign-in form while the browser is sent to the external identity provider. {provider} is its configured name."
   },
   "testStudio.addProcessedDocuments.notCompletedBody": {
     "defaultMessage": "Only documents that finished processing can be added to a test set.",

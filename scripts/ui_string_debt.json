@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 246,
-    "findings": 6216
+    "files": 240,
+    "findings": 6181
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -268,12 +268,6 @@
     "src/ui/src/hooks/useSchemaDesigner.ts": 1,
     "src/ui/src/hooks/useSchemaValidation.ts": 15,
     "src/ui/src/hooks/utils/graphql-error.ts": 3,
-    "src/ui/src/routes/AuthRoutes.tsx": 1,
-    "src/ui/src/routes/MyWorkRoutes.tsx": 2,
-    "src/ui/src/routes/RequireRole.tsx": 3,
-    "src/ui/src/routes/ReviewQueuesRoutes.tsx": 14,
-    "src/ui/src/routes/SessionStates.tsx": 10,
-    "src/ui/src/routes/UnauthRoutes.tsx": 5,
     "src/ui/src/routes/constants.ts": 6,
     "src/ui/src/utils/config-prefix-key.ts": 3,
     "src/ui/src/utils/date-time.ts": 1,

@@ -6,6 +6,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 
 import { Button, useAuthenticator } from '@aws-amplify/ui-react';
 import { Spinner } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 
 import { SettingsContext } from '../contexts/settings';
 import { InboxProvider } from '../contexts/inbox';
@@ -48,6 +49,14 @@ import {
 } from './constants';
 
 const logger = new ConsoleLogger('AuthRoutes');
+
+const messages = defineMessages<{ signOut: NoMessageValues }>({
+  signOut: {
+    id: 'routes.auth.signOut',
+    defaultMessage: 'Sign Out',
+    description: 'The one button of the /logout page, which signs the user out.',
+  },
+});
 
 // Who opens Test Studio. A Reviewer works Production review queues only.
 const TEST_STUDIO_ROLES = ['Admin', 'Author', 'Annotator', 'Viewer'] as const;
@@ -148,7 +157,16 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
       element={<Navigate to={!redirectParam || redirectParam === LOGIN_PATH ? landingPath : `${redirectParam}`} replace />}
     />
   );
-  const logoutRoute = <Route path={LOGOUT_PATH} element={<Button onClick={signOut}>Sign Out</Button>} />;
+  const logoutRoute = (
+    <Route
+      path={LOGOUT_PATH}
+      element={
+        <Button onClick={signOut}>
+          <FormattedMessage {...messages.signOut} />
+        </Button>
+      }
+    />
+  );
 
   // An Annotator-only user's shell: Home (Inbox, Tasks, Queues), the queue pages and
   // Test Studio items (under /review-queues), and a document's edit page (where Inbox
