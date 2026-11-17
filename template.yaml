@@ -3578,7 +3578,6 @@ Resources:
 
         # Background worker ARNs
         AgentChatProcessorFunctionArn: !GetAtt AgentChatProcessorFunction.Arn
-        EnableQuickStartWidget: !Ref EnableQuickStartWidget
         ChatWithDocumentProcessorFunctionArn: !GetAtt ChatWithDocumentProcessorFunction.Arn
         AgentProcessorFunctionArn: !GetAtt AgentProcessorFunction.Arn
         TestExecutionAggregationFunctionArn: !GetAtt PATTERNSTACK.Outputs.TestExecutionAggregationFunctionArn
@@ -3652,6 +3651,7 @@ Resources:
         DataRetentionInDays: !Ref DataRetentionInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        EnableQuickStartWidget: !Ref EnableQuickStartWidget
         
         # Conditional parameters
         HasGuardrailConfig: !If [HasGuardrailConfig, "true", "false"]
