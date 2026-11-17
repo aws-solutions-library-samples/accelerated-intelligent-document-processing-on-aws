@@ -23,6 +23,12 @@ directories including none, a trailing ``/**`` everything beneath, and ``*`` sta
 inside one path segment. A glob using any other syntax (braces, brackets, ``?``, a
 leading ``!``, or ``**`` anywhere else) is refused as unsupported here rather than
 reported as matching nothing, because this matcher would read it literally.
+
+That reading is an assumption about how Claude Code matches ``paths:``, written down
+from the shapes the rules use and pinned only by this file's own table: nothing in
+the tree runs the loader's matcher against it. A glob this test accepts could still
+be read differently by Claude Code, so a new glob shape is worth checking against
+the loader's documentation before relying on it.
 """
 
 from __future__ import annotations
