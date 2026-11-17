@@ -42,6 +42,22 @@ export const TourHotspot = (props: HotspotProps): React.JSX.Element => {
 
 const DISMISS_LABEL = 'Dismiss tour';
 
+/** How long the tour waits after navigating, so the page under it has rendered. */
+const TOUR_DELAY_MS = 350;
+
+/**
+ * How long a started tour waits for the side navigation to show a link it points at.
+ * The navigation renders no links until it knows the caller's role, which it reads
+ * on every mount, and the Welcome page that starts the tour has no navigation.
+ */
+export const TOUR_WAIT_MS = 10_000;
+
+interface PendingTour {
+  flags: TourFlags;
+  ready: boolean;
+  giveUpAt: number;
+}
+
 const allSteps = (flags: TourFlags): AnnotationContextProps.Tutorial => ({
   title: 'Get started with GenAI IDP',
   description: 'A quick walkthrough of the main areas of the console.',
@@ -153,6 +169,7 @@ const keepMountedSteps = (tutorial: AnnotationContextProps.Tutorial, mounted: Re
 /**
  * The tour for these flags. Given the hotspots on the page, it keeps only the steps
  * that point at one, so a role whose navigation lacks a page skips that page's step.
+ * Without them, it keeps every step these flags select.
  */
 export const buildTutorial = (flags: TourFlags, mounted?: ReadonlySet<string>): AnnotationContextProps.Tutorial => {
   const tutorial = allSteps(flags);
@@ -173,16 +190,36 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
   const navigate = useNavigate();
   const mountedHotspots = useRef(new Map<string, number>());
+  const pendingTour = useRef<PendingTour | null>(null);
+  const [hotspotsMounted, setHotspotsMounted] = useState(0);
 
   const registerHotspot = useCallback<RegisterHotspot>((hotspotId) => {
     const counts = mountedHotspots.current;
     counts.set(hotspotId, (counts.get(hotspotId) ?? 0) + 1);
+    if (pendingTour.current) setHotspotsMounted((mounted) => mounted + 1);
     return () => {
       const left = (counts.get(hotspotId) ?? 1) - 1;
       if (left > 0) counts.set(hotspotId, left);
       else counts.delete(hotspotId);
     };
   }, []);
+
+  const startPendingTour = useCallback(() => {
+    const pending = pendingTour.current;
+    if (!pending?.ready) return;
+    if (Date.now() > pending.giveUpAt) {
+      pendingTour.current = null;
+      return;
+    }
+    const next = buildTutorial(pending.flags, new Set(mountedHotspots.current.keys()));
+    if (next.tasks.length === 0) return;
+    pendingTour.current = null;
+    setTutorial(next);
+  }, []);
+
+  useEffect(() => {
+    startPendingTour();
+  }, [hotspotsMounted, startPendingTour]);
 
   const startTour = useCallback(
     (flags?: Partial<TourFlags>) => {
@@ -192,12 +229,14 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
         quickStart: isQuickStartEnabled(),
       };
       navigate(DOCUMENTS_PATH);
+      const pending: PendingTour = { flags: resolved, ready: false, giveUpAt: Date.now() + TOUR_WAIT_MS };
+      pendingTour.current = pending;
       window.setTimeout(() => {
-        const next = buildTutorial(resolved, new Set(mountedHotspots.current.keys()));
-        if (next.tasks.length > 0) setTutorial(next);
-      }, 350);
+        pending.ready = true;
+        startPendingTour();
+      }, TOUR_DELAY_MS);
     },
-    [navigate],
+    [navigate, startPendingTour],
   );
   const exitTour = useCallback(() => setTutorial(null), []);
   const finishTour = useCallback(() => {

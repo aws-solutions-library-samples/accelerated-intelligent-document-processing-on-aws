@@ -7,7 +7,9 @@
  * Cloudscape cannot show a step whose hotspot is not mounted, and holds the tour on
  * the step before it, so a role whose navigation lacks a page (an Author has no
  * Knowledge Base link) used to stop at step 2. Hotspots register with the tour
- * provider through TourHotspot, and the tour keeps the steps that point at one.
+ * provider through TourHotspot, and the tour keeps the steps that point at one. The
+ * side navigation shows no links until it knows the caller's role, so a started tour
+ * waits for them, for a bounded time.
  */
 
 import React from 'react';
@@ -18,13 +20,17 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
 
-import { GuidedTourProvider, TourHotspot, buildTutorial, useGuidedTour } from '../guidedTour';
+import { GuidedTourProvider, TOUR_WAIT_MS, TourHotspot, buildTutorial, useGuidedTour } from '../guidedTour';
 
 vi.mock('@cloudscape-design/components/annotation-context', () => ({
   default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+const { hotspotProps } = vi.hoisted(() => ({ hotspotProps: [] as Array<Record<string, unknown>> }));
 vi.mock('@cloudscape-design/components/hotspot', () => ({
-  default: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  default: ({ children, ...props }: { children?: React.ReactNode }) => {
+    hotspotProps.push(props);
+    return <>{children}</>;
+  },
 }));
 
 const FLAGS = { customModels: false, capacityPlanning: true, quickStart: false };
@@ -98,6 +104,32 @@ describe('the guided tour and the hotspots on the page', () => {
     rerender(<Page hotspots={EVERY_STEP.filter((id) => id !== 'nav-pricing')} />);
     startTour();
     expect(stepIds(shown.tutorial)).not.toContain('nav-pricing');
+  });
+
+  it('waits for the side navigation to show its links, then starts', () => {
+    const { rerender } = render(<Page hotspots={[]} />);
+    startTour();
+    expect(shown.tutorial).toBeNull();
+
+    rerender(<Page hotspots={EVERY_STEP} />);
+    expect(stepIds(shown.tutorial)).toEqual(EVERY_STEP);
+  });
+
+  it('gives up when no link it points at appears in time', () => {
+    const { rerender } = render(<Page hotspots={[]} />);
+    startTour();
+    act(() => {
+      vi.advanceTimersByTime(TOUR_WAIT_MS);
+    });
+
+    rerender(<Page hotspots={EVERY_STEP} />);
+    expect(shown.tutorial).toBeNull();
+  });
+
+  it('passes what it is given on to the Cloudscape hotspot', () => {
+    hotspotProps.length = 0;
+    render(<TourHotspot hotspotId="nav-pricing" side="left" />);
+    expect(hotspotProps).toEqual([{ hotspotId: 'nav-pricing', side: 'left' }]);
   });
 
   it('starts no tour when no step has a hotspot on the page', () => {
