@@ -19,8 +19,10 @@ the resolver forwards.
 import importlib.util
 import json
 import os
+import re
 import sys
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -200,6 +202,16 @@ def test_every_route_names_quick_starts_agent_by_its_registered_id(
     assert list_agents_index._QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
     assert agent_request_index[0]._QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
     assert analytics_processor.QUICK_START_AGENT_ID == QUICK_START_AGENT_ID
+    registry = (
+        Path(__file__).resolve().parents[2]
+        / "idp_common"
+        / "agents"
+        / "factory"
+        / "registry.py"
+    ).read_text(encoding="utf-8")
+    assert re.search(
+        rf"agent_id=[\"']{re.escape(QUICK_START_AGENT_ID)}[\"']", registry
+    ), "the agent registry no longer registers Quick Start under the id the gates match"
 
 
 @pytest.mark.unit
@@ -542,5 +554,5 @@ def test_processor_allows_quick_start_to_an_admin(agent_chat_processor, monkeypa
 @pytest.mark.unit
 def test_processor_and_resolver_agree_on_quick_starts_groups(agent_chat_processor):
     resolver = _load("agent_chat_resolver_qs_groups", "agent_chat_resolver/index.py")
-    assert agent_chat_processor._QUICK_START_GROUPS == resolver._QUICK_START_GROUPS
-    assert agent_chat_processor._QUICK_START_GROUPS == ("Admin",)
+    assert agent_chat_processor._QUICK_START_ROLES == resolver._QUICK_START_ROLES
+    assert agent_chat_processor._QUICK_START_ROLES == ("Admin",)
