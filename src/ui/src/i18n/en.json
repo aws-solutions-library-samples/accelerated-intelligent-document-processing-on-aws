@@ -271,6 +271,142 @@
     "defaultMessage": "Unknown error",
     "description": "Used as the error of a failed bulk document export when there is no error message."
   },
+  "documents.reviewStatus.completed": {
+    "defaultMessage": "Review Completed",
+    "description": "Review Status of a document whose human review is finished."
+  },
+  "documents.reviewStatus.failed": {
+    "defaultMessage": "Review Failed",
+    "description": "Review Status of a document whose human review step failed."
+  },
+  "documents.reviewStatus.inProgress": {
+    "defaultMessage": "Review In Progress",
+    "description": "Review Status of a document a human reviewer is working on (legacy review flow)."
+  },
+  "documents.reviewStatus.inReview": {
+    "defaultMessage": "In Review",
+    "description": "Review Status of a document that is waiting in a review queue for a human reviewer."
+  },
+  "documents.reviewStatus.inReviewLinkAriaLabel": {
+    "defaultMessage": "In Review: open the review queue item",
+    "description": "Accessible name of the In Review status when it links to the document in its review queue."
+  },
+  "documents.reviewStatus.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Review Status of a document that never needed a human review."
+  },
+  "documents.reviewStatus.pending": {
+    "defaultMessage": "Review Pending",
+    "description": "Review Status of a document that needs a human review nobody has started."
+  },
+  "documents.reviewStatus.rejected": {
+    "defaultMessage": "Review Rejected",
+    "description": "Review Status of a document a human reviewer rejected."
+  },
+  "documents.reviewStatus.skipped": {
+    "defaultMessage": "Review Skipped",
+    "description": "Review Status of a document whose human review was skipped."
+  },
+  "documents.status.aborted": {
+    "defaultMessage": "ABORTED",
+    "description": "Document status ABORTED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.assessing": {
+    "defaultMessage": "ASSESSING",
+    "description": "Document status ASSESSING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.classifying": {
+    "defaultMessage": "CLASSIFYING",
+    "description": "Document status CLASSIFYING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.completed": {
+    "defaultMessage": "COMPLETED",
+    "description": "Document status COMPLETED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.evaluating": {
+    "defaultMessage": "EVALUATING",
+    "description": "Document status EVALUATING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.extracting": {
+    "defaultMessage": "EXTRACTING",
+    "description": "Document status EXTRACTING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.failed": {
+    "defaultMessage": "FAILED",
+    "description": "Document status FAILED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.hitlInProgress": {
+    "defaultMessage": "HITL_IN_PROGRESS",
+    "description": "Document status HITL_IN_PROGRESS as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.inProgress": {
+    "defaultMessage": "IN_PROGRESS",
+    "description": "Document status IN_PROGRESS as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.malwareScanFailed": {
+    "defaultMessage": "MALWARE_SCAN_FAILED",
+    "description": "Document status MALWARE_SCAN_FAILED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.malwareScanning": {
+    "defaultMessage": "MALWARE_SCANNING",
+    "description": "Document status MALWARE_SCANNING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ocr": {
+    "defaultMessage": "OCR",
+    "description": "Document status OCR as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.pendingUpload": {
+    "defaultMessage": "PENDING_UPLOAD",
+    "description": "Document status PENDING_UPLOAD as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.postprocessing": {
+    "defaultMessage": "POSTPROCESSING",
+    "description": "Document status POSTPROCESSING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.preprocessing": {
+    "defaultMessage": "PREPROCESSING",
+    "description": "Document status PREPROCESSING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.quarantined": {
+    "defaultMessage": "QUARANTINED",
+    "description": "Document status QUARANTINED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.queued": {
+    "defaultMessage": "QUEUED",
+    "description": "Document status QUEUED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.redactedSuperseded": {
+    "defaultMessage": "REDACTED_SUPERSEDED",
+    "description": "Document status REDACTED_SUPERSEDED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.rejected": {
+    "defaultMessage": "REJECTED",
+    "description": "Document status REJECTED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ruleValidation": {
+    "defaultMessage": "RULE_VALIDATION",
+    "description": "Document status RULE_VALIDATION as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ruleValidationOrchestrator": {
+    "defaultMessage": "RULE_VALIDATION_ORCHESTRATOR",
+    "description": "Document status RULE_VALIDATION_ORCHESTRATOR as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ruleValidationPolicyClassification": {
+    "defaultMessage": "RULE_VALIDATION_POLICY_CLASSIFICATION",
+    "description": "Document status RULE_VALIDATION_POLICY_CLASSIFICATION as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.running": {
+    "defaultMessage": "RUNNING",
+    "description": "Document status RUNNING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.summarizing": {
+    "defaultMessage": "SUMMARIZING",
+    "description": "Document status SUMMARIZING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.unknown": {
+    "defaultMessage": "Unknown",
+    "description": "Status column text for a document row whose stored status is empty."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."
