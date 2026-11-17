@@ -14,8 +14,8 @@ Short, normative project rules live in [`.claude/rules/`](.claude/rules/README.m
 Lambda and library code, web UI, infrastructure, API authorization, SDK/CLI/MCP,
 agents, Quick Start, configuration and models, testing, lint and gates,
 documentation, security and published text, and the Feature Platform. Path-scoped
-files load when you work on matching files. The rules summarize this file and the skill files, and link to
-them for procedures and detail.
+files load when you work on matching files. The rules summarize this file and the
+skill files, and link to them for procedures and detail.
 
 ## Build & Development Commands
 

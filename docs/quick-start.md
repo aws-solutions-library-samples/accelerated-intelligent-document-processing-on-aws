@@ -57,7 +57,12 @@ https://github.com/user-attachments/assets/7096c812-08be-4716-ad37-7ae4f3797fa7
 
 ## Web UI
 
-When `EnableQuickStartWidget=true` (the default), you can open Quick Start from:
+Quick Start is for **Admins**: it creates and activates a configuration profile,
+which only an Admin may create (see [Role-based access control](rbac.md#permission-matrix)).
+Other roles are not offered it, and the chat routes refuse a Quick Start message
+from them.
+
+When `EnableQuickStartWidget=true` (the default), an Admin can open Quick Start from:
 
 - **The side navigation** — the **Quick Start** button at the top, on every page.
 - **The Welcome page** — new users land on a Welcome screen with a **Quick Start**

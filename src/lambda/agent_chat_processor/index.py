@@ -70,6 +70,7 @@ _DATA_RETENTION_DAYS = int(os.environ.get("DATA_RETENTION_DAYS", "30"))
 # agent_chat_resolver — the two enforce the same operation on two different entry
 # paths.
 _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
+_QUICK_START_ROLES = ("Admin",)
 
 
 def _caller_in_groups(event, allowed):
@@ -89,7 +90,8 @@ def _caller_in_groups(event, allowed):
 
 
 def _enforce_agent_chat_groups(event):
-    """Reject a caller who is not in a group permitted to use Agent Chat.
+    """Reject a caller who is not in a group permitted to use Agent Chat, and a
+    Quick Start turn (``method`` ``quick_start``) from anyone but an Admin.
 
     The resolver in front of the dispatcher path already applies this check; this
     is the same gate applied where the work actually happens, so an invocation
@@ -112,10 +114,11 @@ def _enforce_agent_chat_groups(event):
     real 403 before the response is committed. This copy of the check remains the
     last line of defence for any invocation that reaches the function directly.
 
-    Invocations with no ``identity`` are not group-checked: they are the backend
-    paths (a direct ``lambda:InvokeFunction``, and the streaming Function URL,
-    whose transport forwards no Cognito group claim — see ``_caller_identity`` in
-    src/lambda/chat_stream_processor/app.py). Those are gated by IAM instead.
+    Invocations with no ``identity`` are not group-checked: they are backend
+    paths (a direct ``lambda:InvokeFunction``), gated by IAM instead. Both chat
+    routes forward one: the resolver from the dispatcher's claims, and the
+    streaming route from the verified ID token (``_caller_identity`` in
+    src/lambda/chat_stream_processor/app.py).
     """
     if event.get("identity") is None:
         return
@@ -136,6 +139,11 @@ def _enforce_agent_chat_groups(event):
             "Agent Chat (which reads across every tenant's documents) is limited to "
             "the Admin group"
         )
+    if event.get("method") == "quick_start" and not _caller_in_groups(
+        event, _QUICK_START_ROLES
+    ):
+        logger.warning("Rejecting Quick Start: caller is not an Admin")
+        raise PermissionError("Unauthorized: Quick Start requires the Admin group")
 
 
 def _owner_sub(event):
