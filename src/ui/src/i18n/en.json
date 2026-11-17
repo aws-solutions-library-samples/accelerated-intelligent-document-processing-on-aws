@@ -283,6 +283,170 @@
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
   },
+  "guidedTour.i18n.closeAnnotation": {
+    "defaultMessage": "Close annotation",
+    "description": "Screen-reader label of the marker of the current guided tour step while its popover is open; clicking it closes the popover."
+  },
+  "guidedTour.i18n.dismiss": {
+    "defaultMessage": "Dismiss tour",
+    "description": "Screen-reader label of the close (X) button of a guided tour step, which exits the tour."
+  },
+  "guidedTour.i18n.finish": {
+    "defaultMessage": "Finish",
+    "description": "Button of the last guided tour step that ends the tour."
+  },
+  "guidedTour.i18n.next": {
+    "defaultMessage": "Next",
+    "description": "Button of a guided tour step that moves to the next step."
+  },
+  "guidedTour.i18n.openAnnotation": {
+    "defaultMessage": "Open annotation",
+    "description": "Screen-reader label of the marker of a guided tour step while its popover is closed; clicking it opens the popover."
+  },
+  "guidedTour.i18n.previous": {
+    "defaultMessage": "Previous",
+    "description": "Button of a guided tour step that moves back to the previous step."
+  },
+  "guidedTour.i18n.stepCounter": {
+    "defaultMessage": "Step {stepNumber} of {totalStepCount}",
+    "description": "Step counter in the footer of a guided tour step. {stepNumber} is the 1-based number of the current step, {totalStepCount} the number of steps in the tour."
+  },
+  "guidedTour.i18n.taskTitle": {
+    "defaultMessage": "Task {taskNumber}: {taskTitle}",
+    "description": "Header of a guided tour step. {taskNumber} is the 1-based number of the task, {taskTitle} its title (guidedTour.task.findYourWay)."
+  },
+  "guidedTour.step.agentChat.content": {
+    "defaultMessage": "Chat with the IDP assistant for help with analytics, errors, and questions about your documents and the system.",
+    "description": "Text of the guided tour step that points at the Agent Chat entry of the side navigation."
+  },
+  "guidedTour.step.agentChat.title": {
+    "defaultMessage": "Agent Chat",
+    "description": "Title of the guided tour step that points at the Agent Chat entry of the side navigation."
+  },
+  "guidedTour.step.capacityPlanning.content": {
+    "defaultMessage": "Analyze throughput, predict resource needs, and get AWS service-quota recommendations for your workload.",
+    "description": "Text of the guided tour step that points at the Capacity Planning entry of the side navigation."
+  },
+  "guidedTour.step.capacityPlanning.title": {
+    "defaultMessage": "Capacity Planning",
+    "description": "Title of the guided tour step that points at the Capacity Planning entry of the side navigation."
+  },
+  "guidedTour.step.configuration.content": {
+    "defaultMessage": "Review, edit, and activate configuration profiles — the document classes and fields IDP extracts.",
+    "description": "Text of the guided tour step that points at the configuration entry of the side navigation."
+  },
+  "guidedTour.step.configuration.title": {
+    "defaultMessage": "View / edit configuration",
+    "description": "Title of the guided tour step that points at the configuration entry of the side navigation."
+  },
+  "guidedTour.step.customModels.content": {
+    "defaultMessage": "Fine-tune specialized classification models on your own document types for higher accuracy.",
+    "description": "Text of the guided tour step that points at the Custom Models entry of the side navigation."
+  },
+  "guidedTour.step.customModels.title": {
+    "defaultMessage": "Custom Models",
+    "description": "Title of the guided tour step that points at the Custom Models entry of the side navigation."
+  },
+  "guidedTour.step.discovery.content": {
+    "defaultMessage": "Infer document classes and a schema automatically from a set of example documents.",
+    "description": "Text of the guided tour step that points at the Discovery entry of the side navigation."
+  },
+  "guidedTour.step.discovery.title": {
+    "defaultMessage": "Discovery",
+    "description": "Title of the guided tour step that points at the Discovery entry of the side navigation."
+  },
+  "guidedTour.step.documents.content": {
+    "defaultMessage": "Your processed documents live here — each with status, extracted fields, and confidence scores.",
+    "description": "Text of the guided tour step that points at the Documents entry of the side navigation."
+  },
+  "guidedTour.step.documents.title": {
+    "defaultMessage": "Documents",
+    "description": "Title of the guided tour step that points at the Documents entry of the side navigation."
+  },
+  "guidedTour.step.extensions.content": {
+    "defaultMessage": "IDP is extensible. Browse and install optional add-ons here — this list grows as new extensions become available, so capabilities can be added without redeploying.",
+    "description": "Text of the guided tour step that points at the Extensions entry of the side navigation."
+  },
+  "guidedTour.step.extensions.title": {
+    "defaultMessage": "Extensions",
+    "description": "Title of the guided tour step that points at the Extensions entry of the side navigation."
+  },
+  "guidedTour.step.getStarted.content": {
+    "defaultMessage": "Open the Quick Start assistant any time to set up a configuration or ask questions. Click Finish to open it now.",
+    "description": "Text of the last guided tour step, which points at the Quick Start assistant button. \"Finish\" is the label of the button that ends the tour (guidedTour.i18n.finish)."
+  },
+  "guidedTour.step.getStarted.title": {
+    "defaultMessage": "Get started",
+    "description": "Title of the last guided tour step, which points at the Quick Start assistant button."
+  },
+  "guidedTour.step.knowledgeBase.content": {
+    "defaultMessage": "Ask natural-language questions about your processed documents using the document knowledge base.",
+    "description": "Text of the guided tour step that points at the document Knowledge Base entry of the side navigation."
+  },
+  "guidedTour.step.knowledgeBase.title": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Title of the guided tour step that points at the document Knowledge Base entry of the side navigation."
+  },
+  "guidedTour.step.pricing.content": {
+    "defaultMessage": "Review and adjust the per-service pricing used for document cost estimates.",
+    "description": "Text of the guided tour step that points at the pricing entry of the side navigation."
+  },
+  "guidedTour.step.pricing.title": {
+    "defaultMessage": "View / Edit Pricing",
+    "description": "Title of the guided tour step that points at the pricing entry of the side navigation."
+  },
+  "guidedTour.step.testExecutions.content": {
+    "defaultMessage": "Run a configuration against a test set and review accuracy and confidence results here.",
+    "description": "Text of the guided tour step that points at the Test executions entry of the side navigation."
+  },
+  "guidedTour.step.testExecutions.title": {
+    "defaultMessage": "Test executions",
+    "description": "Title of the guided tour step that points at the Test executions entry of the side navigation."
+  },
+  "guidedTour.step.testSets.content": {
+    "defaultMessage": "Manage labeled test sets to measure extraction accuracy.",
+    "description": "Text of the guided tour step that points at the Test sets entry of the side navigation."
+  },
+  "guidedTour.step.testSets.title": {
+    "defaultMessage": "Test sets",
+    "description": "Title of the guided tour step that points at the Test sets entry of the side navigation."
+  },
+  "guidedTour.step.upload.content": {
+    "defaultMessage": "Upload one or more documents to run them through your active configuration.",
+    "description": "Text of the guided tour step that points at the Upload documents entry of the side navigation."
+  },
+  "guidedTour.step.upload.title": {
+    "defaultMessage": "Upload documents",
+    "description": "Title of the guided tour step that points at the Upload documents entry of the side navigation."
+  },
+  "guidedTour.step.userManagement.content": {
+    "defaultMessage": "Manage users and their roles (Admin, Author, Reviewer, Viewer) for the console.",
+    "description": "Text of the guided tour step that points at the User Management entry of the side navigation. The role names in parentheses are the console roles."
+  },
+  "guidedTour.step.userManagement.title": {
+    "defaultMessage": "User Management",
+    "description": "Title of the guided tour step that points at the User Management entry of the side navigation."
+  },
+  "guidedTour.task.findYourWay": {
+    "defaultMessage": "Find your way around",
+    "description": "Title of the single task of the guided tour, which walks through the side navigation. Shown in the header of every tour step."
+  },
+  "guidedTour.tutorial.completed": {
+    "defaultMessage": "That's the tour!",
+    "description": "Text shown when the guided tour is completed on a deployment where the Quick Start assistant is turned off."
+  },
+  "guidedTour.tutorial.completedWithQuickStart": {
+    "defaultMessage": "That's the tour! Open the Quick Start assistant any time to build a configuration or get help.",
+    "description": "Text shown when the guided tour is completed on a deployment where the Quick Start assistant is enabled. \"Quick Start\" is the name of the assistant."
+  },
+  "guidedTour.tutorial.description": {
+    "defaultMessage": "A quick walkthrough of the main areas of the console.",
+    "description": "One-sentence description of the guided tour, shown under its title."
+  },
+  "guidedTour.tutorial.title": {
+    "defaultMessage": "Get started with GenAI IDP",
+    "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
+  },
   "helpPanel.feedback.intro": {
     "defaultMessage": "Report bugs or suggest enhancements on GitHub — your deployment details are filled in automatically.",
     "description": "Sentence under the heading of the feedback block, above its three links."

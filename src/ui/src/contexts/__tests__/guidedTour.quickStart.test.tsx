@@ -4,6 +4,7 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { createIntl, IntlProvider } from 'react-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { GuidedTourProvider, buildTutorial } from '../guidedTour';
@@ -16,8 +17,16 @@ vi.mock('@cloudscape-design/components/annotation-context', () => ({
   },
 }));
 
+const intl = createIntl({ locale: 'en', defaultLocale: 'en' });
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const hotspots = (quickStart: boolean) =>
-  buildTutorial({ customModels: false, capacityPlanning: true, quickStart }).tasks.flatMap((task) =>
+  buildTutorial(intl, { customModels: false, capacityPlanning: true, quickStart }).tasks.flatMap((task) =>
     task.steps.map((step) => step.hotspotId),
   );
 
@@ -30,6 +39,7 @@ const finishTourCountingQuickStartOpens = () => {
         <div />
       </GuidedTourProvider>
     </MemoryRouter>,
+    { wrapper: English },
   );
   annotation.onFinish?.();
   window.removeEventListener('openQuickStart', opened);
@@ -42,13 +52,13 @@ describe('the guided tour and Quick Start', () => {
   });
 
   it('ends at the Quick Start button when Quick Start is on', () => {
-    const tutorial = buildTutorial({ customModels: false, capacityPlanning: true, quickStart: true });
+    const tutorial = buildTutorial(intl, { customModels: false, capacityPlanning: true, quickStart: true });
     expect(hotspots(true).at(-1)).toBe('nav-quick-start');
     expect(tutorial.completedScreenDescription).toContain('Quick Start');
   });
 
   it('never points at Quick Start when the stack turns it off', () => {
-    const tutorial = buildTutorial({ customModels: false, capacityPlanning: true, quickStart: false });
+    const tutorial = buildTutorial(intl, { customModels: false, capacityPlanning: true, quickStart: false });
     expect(hotspots(false)).not.toContain('nav-quick-start');
     expect(hotspots(false)).toEqual(hotspots(true).slice(0, -1));
     expect(tutorial.completedScreenDescription).not.toContain('Quick Start');
