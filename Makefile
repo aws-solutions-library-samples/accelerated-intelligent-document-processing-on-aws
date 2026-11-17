@@ -156,6 +156,10 @@ setup: lock-constraints ## Install all packages into current Python environment 
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
+	@# The Node side (src/ui, docs-site, basedpyright) when Node is available; a
+	@# visible warning otherwise. Deploy-only users need no Node, so this never fails
+	@# the target. `make setup-node` is the strict form.
+	@scripts/setup_node.sh auto
 
 setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
@@ -197,7 +201,10 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
 	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
-	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
+	@scripts/setup_node.sh auto
+
+setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 22.12+; fails on any error)
+	@scripts/setup_node.sh required
 
 ##@ Code Quality
 lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.

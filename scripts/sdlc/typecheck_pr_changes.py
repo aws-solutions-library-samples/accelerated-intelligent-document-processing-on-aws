@@ -86,8 +86,8 @@ TOOL_MISSING_EXIT = 127
 
 TOOL_MISSING_MESSAGE = (
     "❌ basedpyright is not on PATH, so no type checking was performed.\n"
-    "   It is an npm devDependency of the root package.json and is not\n"
-    "   installed by 'make setup' or 'make setup-venv'. Install it with:\n"
+    "   It is an npm package. 'make setup-node' installs it (as do 'make\n"
+    "   setup' and 'make setup-venv' when Node is available), or run:\n"
     "       npm install -g basedpyright\n"
     "   (this is what both CI systems do). If you used 'make setup-venv',\n"
     "   also run 'source .venv/bin/activate' so the other gate tools\n"
