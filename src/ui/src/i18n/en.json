@@ -503,6 +503,122 @@
     "defaultMessage": "{count, plural, =0 {Delete Document} one {Delete Document} other {Delete Documents}}",
     "description": "Title of the dialog that deletes documents. {count} is the number of documents selected."
   },
+  "documents.downloadOptions.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the download options dialog without downloading."
+  },
+  "documents.downloadOptions.includePageImages": {
+    "defaultMessage": "Include page images (can significantly increase archive size)",
+    "description": "Checkbox in the download options dialog that adds the page images to the archive."
+  },
+  "documents.downloadOptions.includeSource": {
+    "defaultMessage": "Include source document (original uploaded file from the input bucket)",
+    "description": "Checkbox in the download options dialog that adds the uploaded file to the archive."
+  },
+  "documents.downloadOptions.largeBody": {
+    "defaultMessage": "Large exports are assembled in browser memory and may take several minutes. Consider exporting in smaller batches, and leave page images out unless you need them.",
+    "description": "Body of the warning about a large export in the download options dialog."
+  },
+  "documents.downloadOptions.largeTitle": {
+    "defaultMessage": "{count, plural, one {# document selected} other {# documents selected}}",
+    "description": "Heading of the warning about a large export. {count} is the number of selected documents (more than 25)."
+  },
+  "documents.downloadOptions.layout": {
+    "defaultMessage": "{scope} Folder structure mirrors the S3 buckets (<code>output/</code>, <code>baseline/</code>, <code>input/</code>).",
+    "description": "Describes a one-document ZIP archive. {scope} is the sentence saying what the export contains; the folder names in <code> stay as written."
+  },
+  "documents.downloadOptions.layoutBulk": {
+    "defaultMessage": "{scope} Folder structure mirrors the S3 buckets (<code>output/</code>, <code>baseline/</code>, <code>input/</code>), with one top-level folder per document and a root <code>manifest.json</code> index.",
+    "description": "Describes a several-document ZIP archive. {scope} is the sentence saying what the export contains; the folder and file names in <code> stay as written."
+  },
+  "documents.downloadOptions.scope.all": {
+    "defaultMessage": "Packages the document summary, section predictions, baselines (when available), per-page text, and confidence into a single ZIP archive.",
+    "description": "What the Download All export contains, in the download options dialog."
+  },
+  "documents.downloadOptions.scope.baselines": {
+    "defaultMessage": "Packages the evaluation baseline (ground truth) JSON into a single ZIP archive.",
+    "description": "What the Download Baselines export contains, in the download options dialog."
+  },
+  "documents.downloadOptions.scope.predictions": {
+    "defaultMessage": "Packages the extracted section predictions (the model's output JSON) into a single ZIP archive.",
+    "description": "What the Download Predictions export contains, in the download options dialog."
+  },
+  "documents.downloadOptions.start": {
+    "defaultMessage": "Start download",
+    "description": "Button of the download options dialog that starts building the ZIP archive."
+  },
+  "documents.downloadOptions.title": {
+    "defaultMessage": "Download all document data",
+    "description": "Title of the download options dialog for one document."
+  },
+  "documents.downloadOptions.titleBulk": {
+    "defaultMessage": "Download data for {count, plural, one {# document} other {# documents}}",
+    "description": "Title of the download options dialog for several documents. {count} is the number of selected documents (2 or more)."
+  },
+  "documents.downloadProgress.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the download progress dialog that stops the export."
+  },
+  "documents.downloadProgress.cancelling": {
+    "defaultMessage": "Cancelling…",
+    "description": "Cancel button of the download progress dialog once cancelling is requested."
+  },
+  "documents.downloadProgress.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the download progress dialog once the download is complete."
+  },
+  "documents.downloadProgress.done": {
+    "defaultMessage": "Download complete",
+    "description": "Title of the download progress dialog once the archive is ready."
+  },
+  "documents.downloadProgress.errorsBody": {
+    "defaultMessage": "These entries were skipped and recorded in the archive's <code>manifest.json</code>:",
+    "description": "Introduces the list of files left out of the archive; the file name in <code> stays as written."
+  },
+  "documents.downloadProgress.errorsTitle": {
+    "defaultMessage": "{count, plural, one {# item} other {# items}} could not be included",
+    "description": "Heading of the list of files left out of the archive. {count} is the number of files."
+  },
+  "documents.downloadProgress.files": {
+    "defaultMessage": "{completed, number} of {total, plural, one {# file} other {# files}} processed",
+    "description": "Progress of a one-document export. {completed} and {total} count the files (and the final archive step)."
+  },
+  "documents.downloadProgress.filesAndDocuments": {
+    "defaultMessage": "{completed, number} of {total, plural, one {# file} other {# files}} processed · {documentsCompleted, number} of {documentsTotal, plural, one {# document} other {# documents}}",
+    "description": "Progress of a several-document export. {completed} and {total} count files; {documentsCompleted} and {documentsTotal} count documents."
+  },
+  "documents.downloadProgress.label": {
+    "defaultMessage": "Export progress",
+    "description": "Label of the progress bar in the download progress dialog."
+  },
+  "documents.downloadProgress.loaded": {
+    "defaultMessage": "{completed, number} of {total, plural, one {# document} other {# documents}} loaded",
+    "description": "Progress of loading the selected documents before a bulk export. {completed} and {total} count documents."
+  },
+  "documents.downloadProgress.more": {
+    "defaultMessage": "…and {count, number} more",
+    "description": "Last line of the list of files left out of the archive. {count} is the number of entries not listed."
+  },
+  "documents.downloadProgress.preparing": {
+    "defaultMessage": "Preparing download",
+    "description": "Title of the download progress dialog while the archive is being built."
+  },
+  "documents.downloadProgress.stage.done": {
+    "defaultMessage": "Done",
+    "description": "Shown under the export progress bar once the archive is ready."
+  },
+  "documents.downloadProgress.stage.generating": {
+    "defaultMessage": "Generating archive…",
+    "description": "Shown under the export progress bar when the ZIP archive starts being built."
+  },
+  "documents.downloadProgress.stage.generatingPercent": {
+    "defaultMessage": "Generating archive… {ratio, number, ::percent}",
+    "description": "Shown under the export progress bar while the ZIP archive is built. {ratio} is how far it is (0 to 1)."
+  },
+  "documents.downloadProgress.stage.preparing": {
+    "defaultMessage": "Preparing download…",
+    "description": "Shown under the export progress bar while the download links are being prepared."
+  },
   "documents.fileViewer.cannotDisplay": {
     "defaultMessage": "Unable to display document.",
     "description": "Shown in the source view when the document cannot be shown."
@@ -1574,6 +1690,66 @@
   "documents.table.source.testStudio": {
     "defaultMessage": "Test Studio",
     "description": "Document source option: documents submitted by Test Studio runs."
+  },
+  "documents.troubleshoot.analyzing": {
+    "defaultMessage": "Analyzing document: <strong>{objectKey}</strong>",
+    "description": "Notice at the top of the Troubleshoot dialog. {objectKey} is the document key, shown as is."
+  },
+  "documents.troubleshoot.analyzingFailure": {
+    "defaultMessage": "Analyzing document failure...",
+    "description": "Shown under the spinner while the troubleshooting request is being sent."
+  },
+  "documents.troubleshoot.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the Troubleshoot dialog."
+  },
+  "documents.troubleshoot.copied": {
+    "defaultMessage": "Copied",
+    "description": "Copy full details button of the Troubleshoot dialog, just after copying."
+  },
+  "documents.troubleshoot.copy": {
+    "defaultMessage": "Copy full details",
+    "description": "Button of the Troubleshoot dialog that copies the findings and deployment details."
+  },
+  "documents.troubleshoot.jobFailed": {
+    "defaultMessage": "Job processing failed",
+    "description": "Error in the Troubleshoot dialog when the troubleshooting job failed and gave no reason."
+  },
+  "documents.troubleshoot.minimize": {
+    "defaultMessage": "Minimize",
+    "description": "Button of the Troubleshoot dialog that collapses it to a chip while the analysis runs."
+  },
+  "documents.troubleshoot.ready": {
+    "defaultMessage": "Troubleshoot results ready",
+    "description": "Text of the minimized Troubleshoot chip once the analysis has finished."
+  },
+  "documents.troubleshoot.report": {
+    "defaultMessage": "Report this issue on GitHub",
+    "description": "Button of the Troubleshoot dialog that opens a prefilled GitHub issue."
+  },
+  "documents.troubleshoot.restoreAriaLabel": {
+    "defaultMessage": "Restore Troubleshoot window",
+    "description": "Screen-reader label of the chip that reopens the minimized Troubleshoot dialog."
+  },
+  "documents.troubleshoot.runAgain": {
+    "defaultMessage": "Run again",
+    "description": "Button of the Troubleshoot dialog that starts a new analysis."
+  },
+  "documents.troubleshoot.running": {
+    "defaultMessage": "Troubleshooting…",
+    "description": "Text of the minimized Troubleshoot chip while the analysis runs."
+  },
+  "documents.troubleshoot.status": {
+    "defaultMessage": "Status: {status}",
+    "description": "Status of the troubleshooting job. {status} is the job status code (PENDING, PROCESSING, COMPLETED), shown as is."
+  },
+  "documents.troubleshoot.submitFailed": {
+    "defaultMessage": "Failed to submit troubleshoot query",
+    "description": "Error in the Troubleshoot dialog when the troubleshooting request could not be sent and gave no reason."
+  },
+  "documents.troubleshoot.title": {
+    "defaultMessage": "Troubleshoot Document",
+    "description": "Title of the Troubleshoot dialog, which asks an agent why a document failed."
   },
   "documents.upload.autoImport.alreadyImported": {
     "defaultMessage": "This sample is tuned for the already-imported “{configId}” configuration profile, which has been pre-selected above. You can choose a different version if you prefer.",

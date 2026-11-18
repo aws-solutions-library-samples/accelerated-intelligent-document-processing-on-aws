@@ -11,6 +11,7 @@
 import React from 'react';
 import { act, render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
@@ -25,6 +26,12 @@ import TroubleshootModal from '../TroubleshootModal';
 
 const sent = (op: string) => graphql.mock.calls.filter(([arg]) => String(arg.query).includes(op)).length;
 const DOC = { objectKey: 'in/a.pdf', objectStatus: 'FAILED' };
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 beforeEach(() => {
   document.body.innerHTML = '';
@@ -51,6 +58,7 @@ describe('Troubleshoot reopened', () => {
         documentItem={DOC}
         existingJob={{ jobId: 'job-1', status: 'COMPLETED', result: 'The OCR step timed out.' }}
       />,
+      { wrapper: English },
     );
     await waitFor(() => expect(document.querySelector('[data-testid="agent-result"]')?.textContent).toBe('The OCR step timed out.'));
     expect(sent('listAvailableAgents')).toBe(0);
@@ -67,6 +75,7 @@ describe('Troubleshoot reopened', () => {
         documentItem={DOC}
         existingJob={{ jobId: 'job-1', status: 'FAILED', error: 'Agent unavailable' }}
       />,
+      { wrapper: English },
     );
     await waitFor(() => expect(document.body.textContent).toContain('Agent unavailable'));
     expect(sent('submitAgentQuery')).toBe(0);
@@ -74,14 +83,16 @@ describe('Troubleshoot reopened', () => {
   });
 
   it('resumes a job still running', async () => {
-    render(<TroubleshootModal visible onDismiss={vi.fn()} documentItem={DOC} existingJob={{ jobId: 'job-1', status: 'PROCESSING' }} />);
+    render(<TroubleshootModal visible onDismiss={vi.fn()} documentItem={DOC} existingJob={{ jobId: 'job-1', status: 'PROCESSING' }} />, {
+      wrapper: English,
+    });
     await waitFor(() => expect(document.body.textContent).toContain('Status: PROCESSING'));
     expect(sent('submitAgentQuery')).toBe(0);
     expect(runAgain()).toBeUndefined();
   });
 
   it('starts one job when there is none yet', async () => {
-    render(<TroubleshootModal visible onDismiss={vi.fn()} documentItem={DOC} />);
+    render(<TroubleshootModal visible onDismiss={vi.fn()} documentItem={DOC} />, { wrapper: English });
     await waitFor(() => expect(sent('submitAgentQuery')).toBe(1));
   });
 });
