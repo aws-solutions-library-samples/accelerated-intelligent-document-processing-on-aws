@@ -42,6 +42,7 @@ from botocore.httpsession import URLLib3Session
 
 from idp_common import bedrock
 from idp_common.bedrock.client import DEFAULT_MAX_RETRIES, BedrockClient
+from idp_common.lambda_deadline import set_lambda_deadline_epoch
 from idp_common.utils.transient_errors import TransientError
 from tests.unit.classification.test_split_then_classify import (
     _document,
@@ -50,6 +51,19 @@ from tests.unit.classification.test_split_then_classify import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _no_lambda_deadline():
+    """Clear the process-wide Lambda deadline around each test.
+
+    The retry ladders stop at once when a deadline is in the past, and a test
+    elsewhere in the same worker can leave one set, which made these counts flaky.
+    """
+    set_lambda_deadline_epoch(None)
+    yield
+    set_lambda_deadline_epoch(None)
+
 
 #: botocore's real transport, captured at import, before the suite's autouse
 #: no-outbound fixture replaces it for each test. It is put back only while urllib3's
@@ -204,12 +218,17 @@ class TestSplitThenClassifySectionPool:
         assert "segment 2 (pages 3-4)" in str(caught.value)
         assert "(reached max retries: 0)" in str(caught.value)
         assert TOO_MANY_TOKENS in str(caught.value)
-        section_calls = {k: n for k, n in first.sent.items() if k[1] != "?"}
-        # The burst was absorbed: the other segments were sent BURST + 1 times and
-        # answered; the throttled one used every attempt the ladder allows.
-        assert first.sent[("section classification system", "3")] == PAST_THE_LADDER
-        assert first.answered[("section classification system", "3")] == 0
-        assert len(section_calls) == 4  # the splitting call and three segments
+        # The throttled call used every attempt the ladder allows. Every other call
+        # that was sent absorbed its burst and was answered. A segment the pool had
+        # not started when the throttle was recorded is cancelled and never sent,
+        # because the step's retry makes it anyway, so it is not counted here.
+        throttled = ("section classification system", "3")
+        assert first.sent[throttled] == PAST_THE_LADDER
+        assert first.answered[throttled] == 0
+        others = {k: n for k, n in first.sent.items() if k != throttled}
+        assert ("splitting packet system", "1") in others
+        assert all(n == BURST + 1 for n in others.values()), first.sent
+        assert all(first.answered[k] == 1 for k in others), first.answered
 
         # Attempt 2, the step's retry: a fresh document, the burst and nothing more.
         second = _FakeBedrockRuntime(

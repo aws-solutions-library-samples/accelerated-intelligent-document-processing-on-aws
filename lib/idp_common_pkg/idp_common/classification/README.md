@@ -205,9 +205,11 @@ exhausts its retries gets `fallback_class` (which may be a real class), and
 `classification_invalid_class_fallback`, as the page-level path does.
 
 A call that fails with a throttle or another transient error (`is_transient_error`)
-is not recorded on its section. This holds for a section classification call, by
-either method, for a splitting call at page granularity, and for a packet window at
-either stage. In a pool of calls, the first transient failure cancels the calls not
+is not recorded on its section. This holds for a section classification call, for a
+splitting call at page granularity, and for a packet window at either stage. For the
+decision-model method the client decides instead: only a failure it reports as
+`retry_later` (a request that never ran) is transient, so a read timeout or a dropped
+connection still fails the section. In a pool of calls, the first transient failure cancels the calls not
 yet started, and once the running ones finish it is raised as `TransientError`. A
 packet window raises at once, so the windows after it are never sent. The
 classification Lambda reports it under that name, which `ClassificationStep` retries

@@ -25,12 +25,18 @@ from typing import Any, Dict, List
 from unittest.mock import patch
 
 import pytest
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    ConnectTimeoutError,
+    ReadTimeoutError,
+)
 
 from idp_common.classification import service as service_module
 from idp_common.classification.service import ClassificationService
 from idp_common.config.schema_constants import UNCLASSIFIED_CLASS
 from idp_common.decision_model import DecisionModelUnavailable
+from idp_common.lambda_deadline import set_lambda_deadline_epoch
 from idp_common.utils.transient_errors import TransientError
 from tests.unit.classification.test_decision_model_section_classification import (
     FakeDecider,
@@ -48,6 +54,19 @@ from tests.unit.classification.test_split_then_classify import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _no_lambda_deadline():
+    """Clear the process-wide Lambda deadline around each test.
+
+    The retry ladders stop at once when a deadline is in the past, and a test
+    elsewhere in the same worker can leave one set, which made these counts flaky.
+    """
+    set_lambda_deadline_epoch(None)
+    yield
+    set_lambda_deadline_epoch(None)
+
 
 SPLITTING = ClassificationService.STAGE_SPLITTING
 SECTION_CLASSIFICATION = ClassificationService.STAGE_SECTION_CLASSIFICATION
@@ -345,14 +364,18 @@ class TestCombinedPacketClassification:
 
 
 class _LambdaErrorDecider(FakeDecider):
-    """A decision-model Lambda whose every invocation fails with one Lambda error."""
+    """A decision-model Lambda whose every invocation fails the same way: with a
+    Lambda error ``code``, or by raising what ``fail`` builds."""
 
-    def __init__(self, code: str):
+    def __init__(self, code: str = "", fail=None):
         super().__init__([])
         self.code = code
+        self.fail = fail
 
     def invoke(self, FunctionName, InvocationType, Payload):
         self.requests.append(json.loads(Payload))
+        if self.fail is not None:
+            raise self.fail()
         raise _client_error(self.code, "Rate exceeded", "Invoke")
 
 
@@ -382,6 +405,66 @@ class TestDecisionModelSectionClassification:
         assert isinstance(unavailable, DecisionModelUnavailable)
         assert isinstance(unavailable.__cause__, ClientError)
         assert "TooManyRequestsException" in str(caught.value)
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "TooManyRequestsException",
+            "EC2ThrottledException",
+            # Retried by the client but outside the shared transient vocabulary.
+            "ServiceException",
+            "ResourceConflictException",
+            "ResourceNotReadyException",
+        ],
+    )
+    def test_every_code_the_client_retries_retries_the_step_once_exhausted(self, code):
+        """The request never ran, so the step's retry re-runs no paid work."""
+        decider = _LambdaErrorDecider(code)
+
+        with pytest.raises(TransientError) as caught:
+            _run_decision_model(decider, page_count=1)
+
+        assert code in str(caught.value)
+        assert caught.value.__cause__.retry_later is True
+        assert len(decider.requests) == 5  # the client's own attempts, all used
+
+    def test_a_connection_that_never_opened_retries_the_step_once_exhausted(self):
+        decider = _LambdaErrorDecider(
+            fail=lambda: ConnectTimeoutError(endpoint_url="https://lambda")
+        )
+
+        with pytest.raises(TransientError):
+            _run_decision_model(decider, page_count=1)
+
+    @pytest.mark.parametrize(
+        "fail",
+        [
+            lambda: ReadTimeoutError(endpoint_url="https://lambda"),
+            lambda: ConnectionClosedError(endpoint_url="https://lambda"),
+        ],
+        ids=["read-timeout", "connection-closed"],
+    )
+    def test_a_call_that_may_still_be_running_fails_only_its_section(self, fail):
+        """The client does not retry these, because the invocation may still be
+        running and billing, and a retry of the whole step would start it again."""
+        decider = _LambdaErrorDecider(fail=fail)
+
+        result, calls = _run_decision_model(decider, page_count=1)
+
+        assert result.sections[0].classification == UNCLASSIFIED_CLASS
+        assert any("Section classification failed" in e for e in result.errors)
+        assert len(decider.requests) == 1
+        assert calls == [SPLITTING]
+
+    def test_an_environment_that_keeps_crashing_fails_only_its_section(self):
+        decider = FakeDecider(
+            [], error={"errorType": "Runtime.ExitError", "errorMessage": "exited"}
+        )
+
+        result, _ = _run_decision_model(decider, page_count=1)
+
+        assert result.sections[0].classification == UNCLASSIFIED_CLASS
+        assert len(decider.requests) == 5
 
     def test_a_deterministic_lambda_error_still_fails_only_its_section(self):
         """The control: access denied is not transient and is not retried."""

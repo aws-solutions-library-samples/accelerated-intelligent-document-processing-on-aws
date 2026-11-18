@@ -65,6 +65,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_PAGE_CONTENT_REGEX,
 )
 from idp_common.config.schema_utils import deref_schema
+from idp_common.decision_model import DecisionModelError
 from idp_common.models import Document, ProcessingIssue, Section, Status
 from idp_common.prompt_comments import strip_prompt_comments
 from idp_common.utils import (
@@ -6227,8 +6228,10 @@ class ClassificationService:
         A call that fails with a throttle or another transient error is not
         recorded that way. The calls not yet started are cancelled, and once the
         running ones finish the first transient failure is raised as
-        ``TransientError``, so the classification step is retried (#2034). This
-        holds for the LLM and the decision-model methods alike.
+        ``TransientError``, so the classification step is retried (#2034). For
+        the decision-model method only a failure its client reports as
+        ``retry_later`` is transient; ``DecisionModelSectionLabeler`` raises those
+        as ``TransientError``.
         """
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
@@ -6315,7 +6318,10 @@ class ClassificationService:
                         f"Section classification of segment {index + 1} "
                         f"(pages {segment.start_page}-{segment.end_page})"
                     )
-                    if is_transient_error(e):
+                    # A decision-model error reaching here is one its client did not
+                    # report as retry_later (the labeler raises those as
+                    # TransientError), so its cause chain is not consulted.
+                    if is_transient_error(e) and not isinstance(e, DecisionModelError):
                         # Raised after the pool, so the step is retried (#2034).
                         transient.record(where, e)
                         continue

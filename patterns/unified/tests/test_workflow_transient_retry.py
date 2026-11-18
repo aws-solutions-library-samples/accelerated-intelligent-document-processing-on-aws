@@ -543,6 +543,29 @@ def test_no_exemption_is_dead(bedrock_capable_states, states):
     )
 
 
+def test_the_registry_entry_describes_only_the_states_still_exempt():
+    """``gate_exemptions.json`` summarises this constant's members in prose, and
+    nothing tied the two: ClassificationStep converted (#2034) and left the dict,
+    while the entry kept naming it and its reason. Every member must be named there,
+    and no state that now converts."""
+    registry = json.loads(
+        (ASL_PATH.parents[3] / "scripts/tests/gate_exemptions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entry = registry["exemptions"][
+        "patterns/unified/tests/test_workflow_transient_retry.py"
+        "::TRANSIENT_CONVERSION_EXEMPT"
+    ]
+    prose = f"{entry['turnsOff']} {entry['reason']}"
+    missing = [name for name in TRANSIENT_CONVERSION_EXEMPT if name not in prose]
+    assert not missing, f"the registry entry does not describe {missing}"
+    converting = [name for name in TASKS if re.search(rf"\b{name}\b", prose)]
+    assert not converting, (
+        f"the registry entry still describes {converting}, which now convert"
+    )
+
+
 def test_every_exemption_carries_a_reason():
     """A reason per member, not one attached to the set wearing per-member clothing.
 

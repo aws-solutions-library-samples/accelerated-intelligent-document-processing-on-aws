@@ -88,7 +88,19 @@ class DecisionModelRefused(DecisionModelError):
 
 
 class DecisionModelUnavailable(DecisionModelError):
-    """The call did not complete."""
+    """The call did not complete.
+
+    ``retry_later`` is True only when the request never ran (Lambda throttled it or
+    refused it for capacity, or the connection never opened) and this client's
+    retries ran out. Another attempt later re-runs no paid work, so a caller may
+    retry its whole step. A read timeout, a closed connection, a crashed execution
+    environment and a malformed response are never ``retry_later``: the invocation
+    may have run, and may still be running and billing.
+    """
+
+    def __init__(self, message: str, *, retry_later: bool = False):
+        super().__init__(message)
+        self.retry_later = retry_later
 
 
 def function_name(endpoint: str) -> str:
@@ -211,16 +223,16 @@ class DecisionModelClient:
                 worst_attempt_seconds = max(
                     worst_attempt_seconds, time.time() - attempt_start_time
                 )
-                # ``from retry.cause``: the throttle or connect error that made
-                # the attempt retryable stays the ``__cause__``, which is what lets
-                # ``is_transient_error`` tell a throttle that outlasted these
-                # retries from a refusal, so the classification step is retried
-                # rather than the section failed (#2034).
+                # A retry with a cause never ran (throttled, refused for capacity,
+                # or the connection never opened), so it is ``retry_later``; a
+                # crashed environment has no cause and is not. The cause stays the
+                # ``__cause__`` for the log and for ``is_transient_error`` (#2034).
                 if attempt >= self.max_retries:
                     self._put_metric("DecisionModelRequestsFailed", 1)
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason} after "
-                        f"{attempt + 1} attempts"
+                        f"{attempt + 1} attempts",
+                        retry_later=retry.cause is not None,
                     ) from retry.cause
                 backoff = self._backoff_within_invocation(attempt)
                 if attempt_cannot_finish(
@@ -230,7 +242,8 @@ class DecisionModelClient:
                     self._put_metric("DecisionModelRetryAbandonedOutOfTime", 1)
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason}; no time left in "
-                        "this invocation for another attempt"
+                        "this invocation for another attempt",
+                        retry_later=retry.cause is not None,
                     ) from retry.cause
                 logger.warning(
                     "Decision model %s: %s; retrying in %.1fs (attempt %d of %d)",
@@ -376,6 +389,7 @@ class _Retry(Exception):
     def __init__(self, reason: str, cause: Optional[BaseException] = None):
         super().__init__(reason)
         self.reason = reason
-        #: The exception that made the attempt retryable, when there was one. A
-        #: crashed execution environment has none: it arrives as a function error.
+        #: The exception that made the attempt retryable: a throttle or capacity
+        #: refusal, or a connection that never opened. A crashed execution
+        #: environment has none, because it arrives as a function error.
         self.cause = cause

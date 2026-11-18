@@ -78,7 +78,7 @@ model without one is refused when it is loaded.
 | Exception | Meaning | Retried |
 |---|---|---|
 | `DecisionModelRefused` | the model refused the request: over its context window or request limit, too many images, malformed | never: the same request gets the same answer |
-| `DecisionModelUnavailable` | the call did not complete: throttling past the retries, a timeout, a bad response | throttling and a crashed execution environment are retried, with bounded backoff that stays inside the calling Lambda's deadline; a read timeout is not, because the invocation may still be running and billing. Once throttling or a connection that never opened outlasts the retries, that error is kept as the `__cause__`, so `is_transient_error` reads the failure as transient |
+| `DecisionModelUnavailable` | the call did not complete: throttling past the retries, a timeout, a bad response | throttling and a crashed execution environment are retried, with bounded backoff that stays inside the calling Lambda's deadline; a read timeout is not, because the invocation may still be running and billing. When throttling, a capacity refusal or a connection that never opened outlasts the retries, the error carries `retry_later=True` and keeps that failure as its `__cause__`: the request never ran, so a caller may retry its whole step. A read timeout, a closed connection, a crashed environment and a malformed response are never `retry_later` |
 
 Neither is ever converted into a call to another model. A configuration that selects
 a decision model uses only the decision model. What a caller does with the error is
