@@ -21,6 +21,7 @@ from idp_common.decision_model import (
     DecisionModelClient,
     DecisionModelRefused,
     DecisionModelUnavailable,
+    NoulAnswer,
     NoulQuestion,
     SystemOneRequest,
     client_from_config,
@@ -172,6 +173,44 @@ def test_decide_many_keeps_order_and_merges_metering():
     assert len(results) == 3
     merged = merge_metering(results)
     assert merged["Ctx/decision_model/GENAIIDP-decider"]["requests"] == 3
+
+
+class StateKeyedLambda:
+    """Answers each request with the outcome named by its state, so a result can
+    be traced to its request whatever order worker threads send them in."""
+
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+
+    def invoke(self, **kwargs):
+        outcome = self.outcomes[json.loads(kwargs["Payload"])["state"]]()
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.parametrize("concurrency", [1, 3])
+def test_decide_each_puts_each_failure_in_its_requests_slot(concurrency):
+    """A caller can say WHICH request failed, and the others still answer."""
+    fake = StateKeyedLambda(
+        {
+            "a": _ok,
+            "b": lambda: _function_error(
+                "ValueError", "prompt of 5000 tokens exceeds 4096"
+            ),
+            "c": lambda: _client_error("AccessDeniedException"),
+        }
+    )
+    requests = [
+        SystemOneRequest(state=s, questions={"ok": NoulQuestion(instructions="Ok?")})
+        for s in ("a", "b", "c")
+    ]
+    results = _client(fake, max_concurrency=concurrency).decide_each(requests, "Ctx")
+
+    assert isinstance(results[0].response.answers["ok"], NoulAnswer)
+    assert isinstance(results[1], DecisionModelRefused)
+    assert "5000 tokens" in str(results[1])
+    assert isinstance(results[2], DecisionModelUnavailable)
 
 
 def test_function_name_forms():

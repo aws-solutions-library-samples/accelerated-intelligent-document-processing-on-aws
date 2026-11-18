@@ -111,6 +111,15 @@ def wired(monkeypatch):
         "get_json_content",
         lambda uri: {"inference_result": {"transactions": [{"amount": "1.00"}]}},
     )
+    # A degrade writes its issue into that result for the Processing Report.
+    doc_service.result_writes = []
+    monkeypatch.setattr(
+        assessment_index.s3,
+        "write_content",
+        lambda content, bucket, key, **kw: doc_service.result_writes.append(
+            (content, bucket, key)
+        ),
+    )
     return doc_service
 
 
@@ -143,8 +152,10 @@ def test_deterministic_failure_keeps_the_extraction(wired, monkeypatch):
 
     document = Document.from_dict(result["document"])
     assert document.status != Status.FAILED
-    # The extraction results are still referenced (and were never rewritten).
+    # The extraction results are still referenced, and their values untouched.
     assert document.sections[0].extraction_result_uri == _EXTRACTION_URI
+    ((written, _bucket, _key),) = wired.result_writes
+    assert written["inference_result"] == {"transactions": [{"amount": "1.00"}]}
 
     issues = document.sections[0].processing_issues
     assert [i.code for i in issues] == ["assessment_failed_confidence_unavailable"]
@@ -192,6 +203,120 @@ def test_deterministic_failure_keeps_extraction_issues_from_extraction_stage(
         "assessment_failed_confidence_unavailable",
     ]
     assert document.status != Status.FAILED
+
+
+_CONFIDENCE_DETAIL = "decision model GENAIIDP-decider · text, one request per page"
+
+
+def _extraction_result_with_report():
+    """A result.json as extraction writes it: the Confidence stage looks done."""
+    return {
+        "inference_result": {"Total": "100.00"},
+        "metadata": {
+            "processing_issues": [
+                {"stage": "extraction", "code": "extraction_incomplete"}
+            ],
+            "processing_flow": {
+                "stages": [
+                    {"key": "extract", "label": "Extract", "status": "ok"},
+                    {
+                        "key": "confidence",
+                        "label": "Confidence",
+                        "detail": _CONFIDENCE_DETAIL,
+                        "status": "ok",
+                        "fanout": 0,
+                        "model": "GENAIIDP-decider",
+                    },
+                ]
+            },
+        },
+        "processing_report": (
+            "=== EXTRACTION PROCESSING REPORT ===\n\nProcessing Flow:\n"
+            "  ✓ Extract: single LLM pass\n"
+            f"  ✓ Confidence: {_CONFIDENCE_DETAIL}\n"
+        ),
+    }
+
+
+def test_a_decision_model_refusal_shows_in_the_processing_report(wired, monkeypatch):
+    """A refused page degrades the section, and the Processing Report (which
+    extraction wrote before the pass) stops showing a Confidence stage that
+    scored it: the issue is written into the result and the stage marked."""
+    from idp_common.decision_model import DecisionModelRefused
+
+    monkeypatch.setattr(
+        assessment_index.s3,
+        "get_json_content",
+        lambda uri: _extraction_result_with_report(),
+    )
+    error = DecisionModelRefused(
+        "The decision model refused 1 of 2 confidence requests, for page 2, so "
+        "the section has no decision-model confidence. First refusal: "
+        "GENAIIDP-decider refused the request: ValueError: 5000 tokens > 4096"
+    )
+    result = _invoke_with_failure(monkeypatch, error)
+
+    (issue,) = Document.from_dict(result["document"]).sections[0].processing_issues
+    assert issue.code == "assessment_failed_confidence_unavailable"
+    assert "decision_model.max_input_tokens or set its input" in issue.message
+    assert "list_batch_size" not in issue.message
+    assert "page 2" in (issue.root_cause or "")
+
+    ((written, bucket, key),) = wired.result_writes
+    assert (bucket, key) == ("out", "doc.pdf/1/result.json")
+    assert written["inference_result"] == {"Total": "100.00"}
+    codes = [pi["code"] for pi in written["metadata"]["processing_issues"]]
+    assert codes == [
+        "extraction_incomplete",
+        "assessment_failed_confidence_unavailable",
+    ]
+    stage = written["metadata"]["processing_flow"]["stages"][1]
+    assert stage["status"] == "warning"
+    assert "no confidence scores" in stage["detail"]
+    assert "model" not in stage
+    report = written["processing_report"]
+    assert f"✓ Confidence: {_CONFIDENCE_DETAIL}" not in report
+    assert "⚠ Confidence: no confidence scores" in report
+    assert "[assessment_failed_confidence_unavailable]" in report
+    assert "✓ Extract: single LLM pass" in report
+
+
+def test_a_report_that_cannot_be_written_still_degrades(wired, monkeypatch):
+    """The report write is best effort: the degrade path exists so the document
+    completes, so an S3 failure there leaves the issue on the section only."""
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("S3 is down")
+
+    monkeypatch.setattr(assessment_index.s3, "write_content", _fail)
+    result = _invoke_with_failure(monkeypatch, ValueError("deterministic boom"))
+    document = Document.from_dict(result["document"])
+    assert document.status != Status.FAILED
+    assert [i.code for i in document.sections[0].processing_issues] == [
+        "assessment_failed_confidence_unavailable"
+    ]
+    assert wired.update_document_section.called
+
+
+def test_a_section_with_no_readable_result_writes_nothing(monkeypatch):
+    """No result URI, or a result that is not a JSON object: nothing is written
+    over it, and the caller is told so."""
+    from idp_common import s3
+    from idp_common.assessment.degradation import record_no_confidence_in_result
+    from idp_common.models import ProcessingIssue
+
+    writes = []
+    monkeypatch.setattr(s3, "write_content", lambda *a, **kw: writes.append(a))
+    issue = ProcessingIssue(stage="assessment", severity="error", code="c", message="m")
+
+    monkeypatch.setattr(
+        s3, "get_json_content", lambda uri: pytest.fail("read without a URI")
+    )
+    assert record_no_confidence_in_result(None, issue) is False
+
+    monkeypatch.setattr(s3, "get_json_content", lambda uri: ["not", "an", "object"])
+    assert record_no_confidence_in_result(_EXTRACTION_URI, issue) is False
+    assert writes == []
 
 
 def test_transient_failure_still_raises_for_step_functions(wired, monkeypatch):

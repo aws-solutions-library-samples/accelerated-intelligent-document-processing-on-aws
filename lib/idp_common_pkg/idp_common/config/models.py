@@ -1023,13 +1023,24 @@ class ExternalModelConfig(BaseModel):
 #: is a request, so this bounds how many one section fans out to.
 DECISION_MODEL_MAX_CONFIDENCE_PAGES = 50
 
+#: The default ``decision_model.max_input_tokens``: the decider's 4,096-token window
+#: less the 512 reserved for its own prompt. Stated here rather than imported,
+#: because ``idp_common.decision_model`` imports this module; a test keeps it equal
+#: to ``idp_common.decision_model.DEFAULT_MAX_INPUT_TOKENS``.
+DECISION_MODEL_MAX_INPUT_TOKENS = 3584
+
+#: The least ``max_input_tokens`` accepted, so a request keeps room for a question.
+DECISION_MODEL_MIN_INPUT_TOKENS = 256
+
 
 class ConfidenceDecisionModelConfig(ExternalModelConfig):
     """Extraction confidence by a decision model: one ``noul`` question per field.
 
-    Each page of the section is one request, with that page as the state and one
+    Each page of the section is one request, with that page as the state (its
+    image, its OCR text cut to ``max_input_tokens``, or both, per ``input``) and one
     question per extracted value; a value's confidence is its highest P(yes) over
-    the pages. See ``idp_common.assessment.decision_model_confidence``.
+    the pages, and an empty value's is 1 minus the highest P(a page shows a
+    value). See ``idp_common.assessment.decision_model_confidence``.
     """
 
     backend: str = Field(
@@ -1082,6 +1093,20 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             "request limit."
         ),
     )
+    max_input_tokens: int = Field(
+        default=DECISION_MODEL_MAX_INPUT_TOKENS,
+        ge=DECISION_MODEL_MIN_INPUT_TOKENS,
+        description=(
+            "The most tokens one request may hold: a page's OCR text, its image and "
+            "the longest question together. An estimate from characters, not the "
+            "model's own count. With input text or both, a page's text beyond the "
+            "limit is cut from the end and never read by the decision model, so a "
+            "value that appears only in the cut part is not seen: it scores low, "
+            "and an empty field is not checked against that part. Default "
+            f"{DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's 4,096-token "
+            "window less 512 for its own prompt."
+        ),
+    )
 
     @field_validator("instructions", mode="before")
     @classmethod
@@ -1130,7 +1155,9 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             )
         return v_str
 
-    @field_validator("max_pages", "max_questions_per_request", mode="before")
+    @field_validator(
+        "max_pages", "max_questions_per_request", "max_input_tokens", mode="before"
+    )
     @classmethod
     def parse_ints(cls, v: Any, info: ValidationInfo) -> int:
         return _parse_required_int(v, info, cls)
@@ -2610,6 +2637,20 @@ class DecisionModelConfig(ExternalModelConfig):
             "confidence."
         ),
     )
+    max_input_tokens: int = Field(
+        default=DECISION_MODEL_MAX_INPUT_TOKENS,
+        ge=DECISION_MODEL_MIN_INPUT_TOKENS,
+        description=(
+            "The most tokens one request may hold: the section's OCR text, its page "
+            "images and the class question with every class description together. "
+            "An estimate from characters, not the model's own count. With input "
+            "text or both, the section's text beyond the limit is cut from the end "
+            "and never read by the decision model, so a class cue that appears only "
+            "in the cut part is not seen. The first page is kept whole when it "
+            f"fits. Default {DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's "
+            "4,096-token window less 512 for its own prompt."
+        ),
+    )
     label_map: Dict[str, str] = Field(
         default_factory=dict,
         description="Model label → configured class (or 'unclassified').",
@@ -2673,6 +2714,11 @@ class DecisionModelConfig(ExternalModelConfig):
     @classmethod
     def parse_max_pages(cls, v: Any) -> int:
         return _parse_int_param(v, 1) or 1
+
+    @field_validator("max_input_tokens", mode="before")
+    @classmethod
+    def parse_max_input_tokens(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_required_int(v, info, cls)
 
     @field_validator("score_calibration", mode="before")
     @classmethod

@@ -746,6 +746,9 @@ class ExtractionService:
                         "assess_page_images": self._cap_agent_images(
                             self._slice_images(saved_images, shard.start, shard.end)
                         ),
+                        # The same pages' text one page at a time, for a decision
+                        # model, which reads a page per request.
+                        "assess_page_texts": list(shard_page_texts),
                         # Integrated mode: tell the shard agent to emit per-field
                         # confidence/bbox inline (one inference, no second pass).
                         "emit_field_assessment": self._integrated_assessment_enabled(),
@@ -5176,6 +5179,19 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
             c_status = "ok"
+            # Who scores the separate pass. With method decision_model that is
+            # the decision model, one request per page; the confidence LLM is
+            # never called, so naming it would report a model that scored nothing.
+            if conf_cfg.method == "decision_model":
+                from idp_common.decision_model import function_name
+
+                conf_model = function_name(conf_cfg.decision_model.endpoint or "")
+                conf_name = f"decision model {conf_model}".strip()
+                one_pass = f"{conf_cfg.decision_model.input}, one request per page"
+            else:
+                conf_model = conf_cfg.model
+                conf_name = conf_cfg.model or "model"
+                one_pass = "1 pass"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
                 # Report what HAPPENED, not what was configured; the full reason
@@ -5193,12 +5209,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
             elif batch_count and batch_count > 1:
-                c_detail = f"{conf_cfg.model or 'model'} · {batch_count} batches"
+                c_detail = f"{conf_name} · {batch_count} batches"
                 if concurrent and concurrent > 1:
                     c_detail += f" · {concurrent}× concurrent"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
             else:
-                c_detail = f"{conf_cfg.model or 'model'} · 1 pass"
+                c_detail = f"{conf_name} · {one_pass}"
                 fan = 0
             stages.append(
                 {
@@ -5207,7 +5223,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "detail": c_detail,
                     "status": c_status,
                     "fanout": fan,
-                    "model": conf_cfg.model,
+                    "model": conf_model,
                 }
             )
 
@@ -8714,6 +8730,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         extraction_results: dict[str, Any],
         document_text: str,
         page_images: list[bytes],
+        page_texts: list[str] | None = None,
     ) -> dict[str, Any]:
         """Assess one scope, batching large list fields across multiple inferences.
 
@@ -8736,6 +8753,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             extraction_results=extraction_results,
             document_text=document_text,
             page_images=page_images,
+            page_texts=page_texts,
             batch_size=confidence_cfg.list_batch_size,
             confidence_model_id=confidence_cfg.model,
             geometry_mode=self.config.extraction.geometry.mode,
@@ -8794,6 +8812,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return None
             document_text = payload.get("assess_document_text", "") or ""
             page_images = payload.get("assess_page_images", []) or []
+            page_texts = payload.get("assess_page_texts")
 
             # assess_results does Bedrock I/O; run it off the event loop so the
             # concurrent shard scheduler is not blocked.
@@ -8810,6 +8829,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     extraction_results=extraction_results,
                     document_text=document_text,
                     page_images=page_images,
+                    page_texts=page_texts,
                 )
                 shard_assessment = result.get("assessment") or {}
                 if ground_in_shard:
@@ -8947,6 +8967,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extraction_results=extracted_fields,
                 document_text=self._document_text,
                 page_images=self._page_images,
+                page_texts=self._page_texts,
             )
             metering["_merged_assessment"] = batched["assessment"]
             metering["_merged_assessment_alerts"] = batched["alerts"]

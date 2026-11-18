@@ -1639,11 +1639,10 @@ extraction:
 > Transient failures (throttling, read timeouts, 5xx) are unchanged — they still
 > raise so Step Functions retries the section. ⚠️ Because confidence is absent on a
 > degraded section, HITL confidence routing and the UI threshold signals do not
-> apply to it; check the **Status** column of the Sections panel — that is where this
-> particular issue shows. It is written to the section record only, not into the
-> section's `result.json`, so unlike issues from a *successful* assessment run it
-> does **not** appear in the edit page's **Reports › Processing Report** (which renders
-> `metadata.processing_issues` from that file). Re-batching the oversized
+> apply to it; check the **Status** column of the Sections panel. The issue is also
+> written into the section's `result.json`, so the edit page's **Reports › Processing
+> Report** shows it and its Confidence stage reads *no confidence scores*. That write
+> is best effort; if it fails, the Status column still has the issue. Re-batching the oversized
 > confidence input so the pass *succeeds* rather than degrading is still open as
 > part of #901.
 >

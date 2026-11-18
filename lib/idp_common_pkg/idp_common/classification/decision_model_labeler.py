@@ -9,6 +9,12 @@ classes. Its top probability is the section's confidence and the whole distribut
 is its ``classification_candidates``, in the shape the LLM path writes, so section
 forming, HITL and extraction do not change.
 
+With ``input`` ``text`` or ``both`` the section's pages are joined into one state,
+cut from the end so the request fits ``decision_model.max_input_tokens`` (an
+estimate; see ``idp_common.decision_model.budget``). The first page is kept whole
+when it fits. Text past the cut is never sent, so a class cue only there is not
+seen.
+
 A failed call fails its section: the segment keeps no class and the error is
 recorded on it, exactly as an LLM labeling call that fails. It is never converted
 into an LLM call. ``low_confidence`` is the only route to another labeler. It
@@ -18,6 +24,7 @@ its default of 0.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -29,6 +36,9 @@ from idp_common.decision_model import (
     SystemOneRequest,
     client_from_config,
     encode_image,
+    estimate_tokens,
+    state_budget,
+    truncate_to_tokens,
 )
 
 if TYPE_CHECKING:
@@ -105,15 +115,37 @@ class DecisionModelSectionLabeler:
                     f"loaded for pages {', '.join(page_ids)}"
                 )
             images = [encode_image(image_bytes) for _, image_bytes in loaded]
-        return SystemOneRequest(
-            state=state,
-            images=images,
-            questions={
-                QUESTION_NAME: ChoiceQuestion(
-                    instructions=self.cfg.instructions, criteria=self.criteria
-                )
-            },
+        question = ChoiceQuestion(
+            instructions=self.cfg.instructions, criteria=self.criteria
         )
+        return SystemOneRequest(
+            state=self._fit(state, question, len(images), page_ids),
+            images=images,
+            questions={QUESTION_NAME: question},
+        )
+
+    def _fit(
+        self, state: str, question: ChoiceQuestion, images: int, page_ids: List[str]
+    ) -> str:
+        """The section's text cut from the end so the request fits max_input_tokens.
+
+        The question counts in full, every class description with it, and so do
+        the images. Cutting from the end keeps the first page whole whenever it
+        fits; text past the cut is never sent, so the model never reads it.
+        """
+        question_tokens = estimate_tokens(json.dumps(question.model_dump(mode="json")))
+        budget = state_budget(int(self.cfg.max_input_tokens), question_tokens, images)
+        kept, dropped = truncate_to_tokens(state, budget)
+        if dropped:
+            logger.info(
+                "Dropped %d of %d characters from the end of the text of pages %s "
+                "so the decision-model request fits max_input_tokens; the decision "
+                "model does not read them",
+                dropped,
+                len(state),
+                ", ".join(page_ids),
+            )
+        return kept
 
     def label(
         self,

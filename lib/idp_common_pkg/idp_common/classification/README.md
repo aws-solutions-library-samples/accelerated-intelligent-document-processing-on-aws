@@ -204,6 +204,26 @@ exhausts its retries gets `fallback_class` (which may be a real class), and
 `_invoke_with_class_validation` returns the validation error so the section records
 `classification_invalid_class_fallback`, as the page-level path does.
 
+#### Section classification by a decision model
+
+With `section_classification.method: decision_model`,
+`DecisionModelSectionLabeler` (`decision_model_labeler.py`) asks each section one
+`choice` question whose options are the classes and their descriptions. With
+`decision_model.input` `text` or `both` it joins the section's first `max_pages`
+pages into one state (`Page 1:` and its text, then `Page 2:`, and so on).
+
+**That text is cut from the end to fit `decision_model.max_input_tokens`** (#2032),
+which counts the text, the page images and the question with every class
+description together (default 3584: the 4,096-token window less 512 for the
+model's own prompt). Cutting from the end keeps the first page whole whenever it
+fits, the cut falls at a line break where it can, and each cut is logged at info
+with the pages and the characters dropped. **Text beyond the limit is cut and never
+read by the decision model**, so a class cue that appears only in the cut part is
+not seen. The counts are estimates from characters
+(`idp_common.decision_model.estimate_tokens`); see the
+[decision_model README](../decision_model/README.md#fitting-the-window-max_input_tokens).
+With `input: images` there is no text and nothing is cut.
+
 #### Which placeholders a stage is allowed to render
 
 The prefix saving is the whole justification for split-then-classify, so **the

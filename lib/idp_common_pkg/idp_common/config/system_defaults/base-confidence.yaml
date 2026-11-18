@@ -74,6 +74,10 @@ extraction:
       max_pages: 20
       instructions: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
       max_questions_per_request: 100
+      # The most tokens one request holds (page text, image, longest question), an
+      # estimate from characters. Page text past it is cut and never read, so a
+      # value only in the cut part is not seen. 4,096-token window less 512.
+      max_input_tokens: 3584
       timeout_ms: 300000
       max_concurrency: 4
       # For metering GB-seconds; the Strands Decider's Lambda runs at 10240.
