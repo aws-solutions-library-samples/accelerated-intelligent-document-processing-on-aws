@@ -16,6 +16,7 @@ SPDX-License-Identifier: MIT-0
 ### Changed
 
 - **Quick Start is for Admins.** Quick Start creates and activates a configuration profile, which only an Admin may create, so only Admins see its side navigation button, Welcome page entry, guided-tour step and chat panel, both chat routes refuse a Quick Start message from any other group, and Document Analytics no longer lists or runs Quick Start's agent. See [Quick Start](docs/quick-start.md#web-ui).
+- **`EnableQuickStartWidget=false` now turns Quick Start off on the server too.** Both chat routes refuse a Quick Start message on a stack deployed with it, as the web UI already hides Quick Start there; `idp-cli bootstrap` is unaffected. See [Quick Start](docs/quick-start.md#web-ui).
 - **Amounts in the web UI now read `US$` instead of `$`, in every language.** The document page's Estimated Cost table and modal, Test Studio's cost columns, summary boxes and comparison tables, and the synthetic-document estimate show the explicit symbol, so a reader in a locale with another dollar never has to guess the currency. Decimal places are unchanged, except that the document page now shows unit prices the way Test Studio already does (`US$0.00000024`, never `$2.4e-7`); amounts of 1,000 or more gain a thousands separator (`US$1,234.5000`), and downloaded CSV comparisons keep `$` and write counts as plain digits (https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
 
 ### Fixed

@@ -491,7 +491,11 @@ installed, enqueue generation on that extension's queue. Because it creates a
 configuration profile, which only an Admin may create, a `quick_start` turn is
 Admin only: the `agent_chat_resolver` refuses it from any other group with a 403,
 and the processor's `_enforce_agent_chat_groups` refuses it again from the groups
-either chat route forwards (`_QUICK_START_ROLES`).
+either chat route forwards (`_QUICK_START_ROLES`). On a stack deployed with
+`EnableQuickStartWidget=false`, both refuse a `quick_start` turn from everyone: the
+template passes the parameter to the resolver and to both processors as
+`QUICK_START_ENABLED`, and an unset variable reads as the parameter's default,
+`true`.
 
 Its system prompt names screens and navigation paths (Upload Documents,
 Configuration › View/Edit Configuration, Test Studio › Test Sets, Agent Chat), so a

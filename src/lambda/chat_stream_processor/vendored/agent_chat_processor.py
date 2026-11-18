@@ -89,9 +89,19 @@ def _caller_in_groups(event, allowed):
     return bool(set(allowed).intersection(groups))
 
 
+def _quick_start_enabled():
+    """Whether this deployment offers Quick Start: ``EnableQuickStartWidget``.
+
+    The template sets ``QUICK_START_ENABLED`` from that parameter on every function
+    that can run a Quick Start turn. Unset reads as the parameter's default.
+    """
+    return os.environ.get("QUICK_START_ENABLED", "true").strip().lower() != "false"
+
+
 def _enforce_agent_chat_groups(event):
     """Reject a caller who is not in a group permitted to use Agent Chat, and a
-    Quick Start turn (``method`` ``quick_start``) from anyone but an Admin.
+    Quick Start turn (``method`` ``quick_start``) from anyone but an Admin, or from
+    anyone at all on a deployment that turns Quick Start off.
 
     The resolver in front of the dispatcher path already applies this check; this
     is the same gate applied where the work actually happens, so an invocation
@@ -120,6 +130,9 @@ def _enforce_agent_chat_groups(event):
     streaming route from the verified ID token (``_caller_identity`` in
     src/lambda/chat_stream_processor/app.py).
     """
+    if event.get("method") == "quick_start" and not _quick_start_enabled():
+        logger.warning("Rejecting Quick Start: it is turned off for this deployment")
+        raise PermissionError("Quick Start is turned off for this deployment")
     if event.get("identity") is None:
         return
     if not _caller_in_groups(event, _AGENT_CHAT_GROUPS):

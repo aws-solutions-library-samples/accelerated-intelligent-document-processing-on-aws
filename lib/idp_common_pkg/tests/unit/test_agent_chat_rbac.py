@@ -513,6 +513,29 @@ def test_resolver_still_allows_ordinary_agent_chat_to_non_admins(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("identity", [True, False], ids=["signed-in", "backend"])
+def test_resolver_refuses_quick_start_when_the_stack_turns_it_off(
+    agent_chat_index, monkeypatch, identity
+):
+    monkeypatch.setenv("QUICK_START_ENABLED", "false")
+    event = _quick_start_event("Admin")
+    if not identity:
+        del event["identity"]
+    with pytest.raises(PermissionError, match="Quick Start is turned off"):
+        agent_chat_index.handler(event, None)
+
+
+@pytest.mark.unit
+def test_resolver_keeps_agent_chat_when_quick_start_is_off(
+    agent_chat_index, monkeypatch
+):
+    monkeypatch.setenv("QUICK_START_ENABLED", "false")
+    event = _quick_start_event("Viewer")
+    event["arguments"]["method"] = "chat"
+    assert agent_chat_index.handler(event, None)["sessionId"] == "s1"
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("group", ["Author", "Viewer"])
 def test_processor_refuses_quick_start_to_a_non_admin_before_any_work(
     agent_chat_processor, monkeypatch, group
@@ -556,3 +579,18 @@ def test_processor_and_resolver_agree_on_quick_starts_groups(agent_chat_processo
     resolver = _load("agent_chat_resolver_qs_groups", "agent_chat_resolver/index.py")
     assert agent_chat_processor._QUICK_START_ROLES == resolver._QUICK_START_ROLES
     assert agent_chat_processor._QUICK_START_ROLES == ("Admin",)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["true", "TRUE", " false ", "False", "", None])
+def test_processor_and_resolver_read_the_quick_start_flag_alike(
+    agent_chat_processor, monkeypatch, value
+):
+    resolver = _load("agent_chat_resolver_qs_flag", "agent_chat_resolver/index.py")
+    if value is None:
+        monkeypatch.delenv("QUICK_START_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("QUICK_START_ENABLED", value)
+    assert (
+        agent_chat_processor._quick_start_enabled() == resolver._quick_start_enabled()
+    )

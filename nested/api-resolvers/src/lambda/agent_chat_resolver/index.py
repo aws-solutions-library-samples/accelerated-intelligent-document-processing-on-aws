@@ -59,6 +59,15 @@ _AGENT_CHAT_GROUPS = ("Admin", "Author", "Viewer")
 _QUICK_START_ROLES = ("Admin",)
 
 
+def _quick_start_enabled():
+    """Whether this deployment offers Quick Start: ``EnableQuickStartWidget``.
+
+    Same reading as ``_quick_start_enabled`` in the agent chat processor, which
+    applies it again where the turn runs. Unset reads as the parameter's default.
+    """
+    return os.environ.get("QUICK_START_ENABLED", "true").strip().lower() != "false"
+
+
 def _unscoped_is_denied():
     """Whether tenant isolation is enforced: ``TenantIsolationMode=Strict``, or
     tenants granted by the identity provider or an entitlement system.
@@ -195,6 +204,10 @@ def handler(event, context):
         f"Received agent chat event: {json.dumps(sanitize_event_for_logging(event))}"
     )
 
+    is_quick_start = (event.get("arguments") or {}).get("method") == "quick_start"
+    if is_quick_start and not _quick_start_enabled():
+        logger.warning("Rejecting Quick Start: it is turned off for this deployment")
+        raise PermissionError("Quick Start is turned off for this deployment")
     # Defense-in-depth RBAC: Reviewer and Annotator are both excluded from Agent
     # Chat. Raise so the dispatcher maps it to 403/Unauthorized (not an opaque 500
     # or a 200 error dict). Backend publish-path invocations have no identity and
@@ -223,7 +236,7 @@ def handler(event, context):
         )
     if (
         event.get("identity") is not None
-        and (event.get("arguments") or {}).get("method") == "quick_start"
+        and is_quick_start
         and not _caller_in_groups(event, _QUICK_START_ROLES)
     ):
         logger.warning("Rejecting Quick Start: caller is not an Admin")
