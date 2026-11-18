@@ -311,6 +311,16 @@ class _TransientCallFailure:
         reraise_if_transient(exc, where=where)
 
 
+class UnusablePacketReply(ValueError):
+    """A packet call's reply that arrived, was billed, and cannot be used.
+
+    Raised by ``ClassificationService._run_packet_window_call`` with the call's
+    metering attached (``utils.attach_failure_metering``), so the window loop can
+    count it and, when an earlier answer is in hand, keep that answer (#2035). A
+    ``ValueError`` because the plain ``ValueError`` it replaces was one.
+    """
+
+
 class ClassificationService:
     """Service for classifying documents using various backends."""
 
@@ -5403,6 +5413,11 @@ class ClassificationService:
                     forced_class=forced_class,
                 )
             except Exception as e:
+                # Replies the window received before it failed were billed, so
+                # count them whether the window is split or reported (#2035).
+                received = utils.failure_metering(e)
+                if received:
+                    metering = utils.merge_metering_data(metering, received)
                 # Two refusals that a smaller window fixes: the input is too
                 # long, or the request carries too many page images (Bedrock
                 # caps images per request, so a window above that cap with
@@ -5637,13 +5652,23 @@ class ClassificationService:
             and self._class_validation_enforced()
         )
         max_retries = self._class_validation_retries() if validates else 0
+        # A reply that is not JSON at all gets one re-prompt asking for the JSON
+        # only, on this same loop and whatever the validation settings, so the
+        # splitting call gets it too. It used to fail the window, and with it a
+        # one-window document, on the first such reply (#2035).
+        parse_retries = 1
 
         attempt_content = content
         window_metering: Dict[str, Any] = {}
         segments: List[Segment] = []
         invalid: List[Segment] = []
         answered = 0
-        for attempt in range(max_retries + 1):
+        requests = 0
+        # Why the loop kept an earlier answer, when a re-prompt's reply was unusable.
+        kept_reason: Optional[str] = None
+        attempt = 0
+        while attempt <= max_retries:
+            requests += 1
             try:
                 segments, attempt_metering = self._run_packet_window_call(
                     attempt_content,
@@ -5652,11 +5677,65 @@ class ClassificationService:
                     window_page_ids,
                     forced_class,
                 )
+            except json.JSONDecodeError as e:
+                # Counted here, once: the call returned, so it was billed.
+                window_metering = utils.merge_metering_data(
+                    window_metering, utils.failure_metering(e)
+                )
+                if answered:
+                    # The reply to a class re-prompt. The previous answer is in
+                    # hand, so keep it, as when the re-prompt overflows below.
+                    kept_reason = (
+                        f"the reply to the validation re-prompt could not be "
+                        f"parsed as JSON ({e})"
+                    )
+                    break
+                if not parse_retries:
+                    raise utils.attach_failure_metering(
+                        ValueError(
+                            f"Document {document.id}: the model's reply could not "
+                            f"be parsed as JSON, including after a re-prompt "
+                            f"asking for JSON only ({e})"
+                        ),
+                        window_metering,
+                    ) from e
+                parse_retries -= 1
+                logger.warning(
+                    "Packet window %s: the model's reply for document %s could "
+                    "not be parsed as JSON (%s); re-prompting for JSON only.",
+                    window_label,
+                    document.id,
+                    e,
+                )
+                # Single-turn, like the class re-prompt: the model never sees the
+                # reply that failed, so the instruction must not refer to it.
+                attempt_content = content + [
+                    {
+                        "text": (
+                            "Reply with only the JSON object, in the format asked "
+                            "for above, with no other text before or after it."
+                        )
+                    }
+                ]
+                continue
+            except UnusablePacketReply as e:
+                # Billed like any reply, so counted here, once.
+                window_metering = utils.merge_metering_data(
+                    window_metering, utils.failure_metering(e)
+                )
+                if answered:
+                    kept_reason = (
+                        f"the reply to the validation re-prompt was unusable ({e})"
+                    )
+                    break
+                raise utils.attach_failure_metering(e, window_metering)
             except Exception as e:
                 from idp_common.utils.bedrock_utils import is_input_token_overflow
 
                 if attempt == 0 or not is_input_token_overflow(e):
-                    raise
+                    # Carries the usage of any reply already received, which
+                    # the caller counts even though the window failed.
+                    raise utils.attach_failure_metering(e, window_metering)
                 # The re-prompt is longer than the first request, so it can be
                 # the one that does not fit. Raising here would make the caller
                 # split the window and drop this window's billed first attempt
@@ -5701,16 +5780,28 @@ class ClassificationService:
                         )
                     }
                 ]
+            attempt += 1
 
         fallback = self._fallback_class()
-        logger.error(
-            "Packet window %s still returned invalid class(es) after %d attempt(s); "
-            "assigned fallback '%s' to %d segment(s).",
-            window_label,
-            answered,
-            fallback,
-            len(invalid),
-        )
+        if kept_reason:
+            logger.error(
+                "Packet window %s: %s after %d request(s); kept the previous answer "
+                "and assigned fallback '%s' to its %d invalid segment(s).",
+                window_label,
+                kept_reason,
+                requests,
+                fallback,
+                len(invalid),
+            )
+        else:
+            logger.error(
+                "Packet window %s still returned invalid class(es) after %d "
+                "attempt(s); assigned fallback '%s' to %d segment(s).",
+                window_label,
+                answered,
+                fallback,
+                len(invalid),
+            )
         for seg in invalid:
             # The fallback is not a prediction, so it carries no score.
             seg.doc_class = fallback
@@ -5726,13 +5817,27 @@ class ClassificationService:
         window_page_ids: List[str],
         forced_class: Optional[str],
     ) -> tuple[List[Segment], Dict[str, Any]]:
-        """One packet request and its parse. Split out so validation can retry."""
+        """One packet request and its parse. Split out so validation can retry.
+
+        Every failure after the call returned carries the call's metering
+        (``utils.failure_metering``): a reply that is not JSON raises
+        ``json.JSONDecodeError``, for the caller's re-prompt, and any other reply
+        that cannot be used, including one cut off at ``max_tokens``, raises
+        :class:`UnusablePacketReply`.
+        """
         response_with_metering = self._invoke_bedrock_model(
             content=content, config=config
         )
 
         response = response_with_metering["response"]
         window_metering = response_with_metering.get("metering", {})
+
+        def unusable(message: str) -> BaseException:
+            # The call was billed whatever its reply, so its usage travels with
+            # the failure for the window loop to count (#2035).
+            return utils.attach_failure_metering(
+                UnusablePacketReply(message), window_metering
+            )
 
         # Defensive: handle the case where the LLM returns an empty content array
         content_array = response["output"]["message"].get("content", [])
@@ -5741,9 +5846,7 @@ class ClassificationService:
                 "LLM returned empty content array in packet classification response",
                 extra={"response": response},
             )
-            raise ValueError(
-                "Packet classification failed: LLM returned empty response"
-            )
+            raise unusable("Packet classification failed: LLM returned empty response")
 
         # Reasoning models (Claude Sonnet 5 / 4.6+, extended thinking on) emit
         # reasoningContent block(s) before the answer text block, so content[0]
@@ -5755,11 +5858,23 @@ class ClassificationService:
         )
 
         classification_json = extract_json_from_text(classification_text)
-        classification_data = json.loads(classification_json)
+        try:
+            classification_data = json.loads(classification_json)
+        except json.JSONDecodeError as e:
+            from idp_common.utils.bedrock_utils import is_output_token_truncation
+
+            if is_output_token_truncation(response_with_metering):
+                # A re-prompt has the same max_tokens and would be cut off too.
+                raise unusable(
+                    f"Document {document.id}: the model's reply was cut off at "
+                    f"max_tokens ({config.get('max_tokens')}) before its JSON was "
+                    f"complete"
+                ) from e
+            raise utils.attach_failure_metering(e, window_metering)
         raw_segments = classification_data.get("segments", [])
 
         if not raw_segments:
-            raise ValueError("No segments found in the classification result")
+            raise unusable("No segments found in the classification result")
 
         if forced_class:
             # The document's NAME already asserts the class; the model was
@@ -5781,7 +5896,7 @@ class ClassificationService:
             require_class=config.get("stage") != self.STAGE_SPLITTING,
         )
         if not segments:
-            raise ValueError(
+            raise unusable(
                 "Every segment the model returned was unusable (see warnings above)"
             )
         return segments, window_metering

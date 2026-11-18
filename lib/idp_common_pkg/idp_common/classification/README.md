@@ -164,6 +164,18 @@ a reply naming an invalid class re-prompts the window up to
 `validation.maxValidationRetries` times, and a segment still invalid afterwards is
 given `fallback_class`.
 
+A packet call's reply that is not JSON — combined, or the splitting call at packet
+granularity — is re-prompted once on the same loop: the request is re-sent with a
+line asking for the JSON only, whatever the validation settings. A second reply that
+is not JSON fails the window with an error naming the document and saying the reply
+could not be parsed, so a one-window document fails with it. A reply cut off at
+`max_tokens` is not re-prompted, because the re-prompt would be cut off too: the
+window fails with an error saying so. A reply to a class re-prompt that cannot be
+used (not JSON, no segments, or no usable segment) keeps the answer already
+received, as an overflowing re-prompt does. Every reply a window received is
+metered, including those of a window that then failed (#2035). The page and section classification paths are unchanged: an
+unparseable reply there is read as text, or handled as an invalid class.
+
 ### The segments contract
 
 Every path produces `list[Segment]` and one builder reads it:

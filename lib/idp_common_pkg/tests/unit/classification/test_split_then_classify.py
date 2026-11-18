@@ -1332,3 +1332,59 @@ class TestADeclaredDocumentShapeSkipsSplitting:
         self._run(service, _document(2), router)
 
         assert self._stages(router).count(ClassificationService.STAGE_SPLITTING) == 2
+
+
+@pytest.mark.unit
+class TestAnUnparseableSplittingReplyIsRetried:
+    """#2035: the packet splitting call shares the combined call's window loop, so
+    a splitting reply that is not JSON gets the same one re-prompt for the JSON
+    only, and both calls are metered."""
+
+    def test_the_packet_is_split_after_one_re_prompt(self):
+        service = _service(granularity="packet")
+        router = _Router(
+            packet_segments=[{"ordinal_start_page": 1, "ordinal_end_page": 2}],
+            labels=["invoice"],
+        )
+        prose_sent: List[int] = []
+
+        def first_splitting_reply_is_prose(content, config):
+            if config.get("stage") == ClassificationService.STAGE_SPLITTING and (
+                not prose_sent
+            ):
+                prose_sent.append(1)
+                router.calls.append((config.get("stage"), content))
+                return {
+                    "response": {
+                        "output": {
+                            "message": {
+                                "content": [{"text": "One document, pages 1-2."}]
+                            }
+                        }
+                    },
+                    "metering": {"Splitting/bedrock/nova": {"inputTokens": 10}},
+                }
+            return router(content, config)
+
+        with (
+            patch("idp_common.s3.get_text_content", return_value="text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(
+                service,
+                "_invoke_bedrock_model",
+                side_effect=first_splitting_reply_is_prose,
+            ),
+        ):
+            result = service.split_then_classify_document(_document(2))
+
+        splitting = [
+            content
+            for stage, content in router.calls
+            if stage == ClassificationService.STAGE_SPLITTING
+        ]
+        assert len(splitting) == 2, "one re-prompt"
+        assert "Reply with only the JSON object" in splitting[1][-1]["text"]
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice")
+        ]
+        assert result.metering["Splitting/bedrock/nova"]["inputTokens"] == 20
