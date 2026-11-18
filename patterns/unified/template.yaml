@@ -2818,9 +2818,16 @@ Resources:
                         type: string
                         title: Question
                         format: textarea
-                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default. An empty extracted value is asked instead whether the page shows a value for the field."
+                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default. A value the extraction left empty is asked the question below instead."
                         default: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
                         order: 3
+                      empty_value_instructions:
+                        type: string
+                        title: Question for an empty value
+                        format: textarea
+                        description: "The yes/no question for a value the extraction left empty, asking whether the page shows a value for the field. {FIELD} is the field's path, {DESCRIPTION} its schema description. The empty value's confidence is 1 minus the highest answer over the pages, so yes must mean a value is shown. Empty uses this default."
+                        default: 'The system found no value for the field "{FIELD}" ({DESCRIPTION}). Does the page show a value for it?'
+                        order: 3.5
                       max_questions_per_request:
                         type: integer
                         title: Maximum questions per request

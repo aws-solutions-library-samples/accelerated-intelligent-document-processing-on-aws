@@ -13,7 +13,9 @@ With ``input`` ``text`` or ``both`` the section's pages are joined into one stat
 cut from the end so the request fits ``decision_model.max_input_tokens`` (an
 estimate; see ``idp_common.decision_model.budget``). The first page is kept whole
 when it fits. Text past the cut is never sent, so a class cue only there is not
-seen.
+seen. A section whose text would be cut to nothing (the question and images fill
+the limit) is not sent: the call is refused and the section fails like any refused
+call, rather than being classified from no evidence.
 
 A failed call fails its section: the segment keeps no class and the error is
 recorded on it, exactly as an LLM labeling call that fails. It is never converted
@@ -37,8 +39,8 @@ from idp_common.decision_model import (
     client_from_config,
     encode_image,
     estimate_tokens,
+    fit_text,
     state_budget,
-    truncate_to_tokens,
 )
 
 if TYPE_CHECKING:
@@ -118,34 +120,19 @@ class DecisionModelSectionLabeler:
         question = ChoiceQuestion(
             instructions=self.cfg.instructions, criteria=self.criteria
         )
+        # The question counts in full, every class description with it, and so do
+        # the images. Cutting from the end keeps the first page whole whenever it
+        # fits; text past the cut is never sent, so the model never reads it, and
+        # text that would be cut to nothing is refused rather than sent empty.
+        question_tokens = estimate_tokens(json.dumps(question.model_dump(mode="json")))
+        budget = state_budget(
+            int(self.cfg.max_input_tokens), question_tokens, len(images)
+        )
         return SystemOneRequest(
-            state=self._fit(state, question, len(images), page_ids),
+            state=fit_text(state, budget, f"the text of pages {', '.join(page_ids)}"),
             images=images,
             questions={QUESTION_NAME: question},
         )
-
-    def _fit(
-        self, state: str, question: ChoiceQuestion, images: int, page_ids: List[str]
-    ) -> str:
-        """The section's text cut from the end so the request fits max_input_tokens.
-
-        The question counts in full, every class description with it, and so do
-        the images. Cutting from the end keeps the first page whole whenever it
-        fits; text past the cut is never sent, so the model never reads it.
-        """
-        question_tokens = estimate_tokens(json.dumps(question.model_dump(mode="json")))
-        budget = state_budget(int(self.cfg.max_input_tokens), question_tokens, images)
-        kept, dropped = truncate_to_tokens(state, budget)
-        if dropped:
-            logger.info(
-                "Dropped %d of %d characters from the end of the text of pages %s "
-                "so the decision-model request fits max_input_tokens; the decision "
-                "model does not read them",
-                dropped,
-                len(state),
-                ", ".join(page_ids),
-            )
-        return kept
 
     def label(
         self,

@@ -77,6 +77,7 @@ setting (#2032). `budget.py` holds the pieces:
 | `IMAGE_TOKENS` | 256 counted per image (196 for a square page at 448 px) |
 | `state_budget(max_input_tokens, question_tokens, images)` | the text a request can carry beside its question and images |
 | `truncate_to_tokens(text, budget)` | `(kept, characters dropped)`: the text cut from the end, at its last line break where it has one; unchanged when it fits |
+| `fit_text(text, budget, what)` | what both call sites send: the text cut by `truncate_to_tokens`, each cut logged at info naming `what`. Text with content that would be cut to nothing raises `DecisionModelRefused` (logged at warning) instead of being sent empty |
 
 **Text beyond the limit is cut and never read by the decision model**, so a value
 or class cue that appears only in the cut part is not seen. Extraction confidence
@@ -84,7 +85,7 @@ cuts each page's text on its own
 ([assessment README](../assessment/README.md#confidence-by-a-decision-model-assessmentdecision_model_confidencepy));
 section classification cuts the section's joined text from the end, so its first
 page stays whole when it fits (`classification/decision_model_labeler.py`). Both
-log each cut at info.
+go through `fit_text`.
 
 ## Backends
 

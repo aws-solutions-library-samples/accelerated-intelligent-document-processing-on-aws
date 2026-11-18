@@ -16,6 +16,7 @@ from idp_common.decision_model.budget import (
     IMAGE_TOKENS,
     PROMPT_RESERVE_TOKENS,
     estimate_tokens,
+    fit_text,
     state_budget,
     truncate_to_tokens,
 )
@@ -128,6 +129,7 @@ __all__ = [
     "client_from_config",
     "encode_image",
     "estimate_tokens",
+    "fit_text",
     "function_name",
     "merge_metering",
     "resolve_endpoint",

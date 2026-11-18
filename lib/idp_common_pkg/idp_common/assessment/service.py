@@ -39,6 +39,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_LIST_ITEM_DESCRIPTION,
 )
 from idp_common.config.schema_utils import deref_schema
+from idp_common.decision_model import DecisionModelRefused
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -2044,8 +2045,6 @@ class AssessmentService:
             )
 
         except Exception as e:
-            from idp_common.decision_model import DecisionModelRefused
-
             if isinstance(e, DecisionModelRefused):
                 # Deterministic, so the caller degrades the section rather than
                 # retrying it. The error names the refused pages; this names the

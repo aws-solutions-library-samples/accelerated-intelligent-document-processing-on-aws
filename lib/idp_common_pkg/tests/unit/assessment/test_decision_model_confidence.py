@@ -439,7 +439,7 @@ def test_a_long_page_is_cut_from_the_end_to_fit_max_input_tokens(caplog):
             0.95 if '"Total"' in q and "Total due 100.00" in r["state"] else 0.1
         )
     )
-    with caplog.at_level(logging.INFO, logger=dmc.__name__):
+    with caplog.at_level(logging.INFO):
         core = _score(
             _service(input="text", max_concurrency=1), decider, page_texts=[page]
         )
@@ -485,12 +485,12 @@ def test_a_lowered_max_input_tokens_is_honoured_beside_the_image():
 
 def test_a_request_with_no_text_or_text_that_fits_is_untouched(caplog):
     decider = ScriptedDecider()
-    with caplog.at_level(logging.INFO, logger=dmc.__name__):
+    with caplog.at_level(logging.INFO):
         # Images only: there is no text to cut.
         _score(_service(), decider, page_texts=["", ""], page_images=_pages(2))
         # Pages without text stay empty even when the limit leaves no room at all.
         _score(
-            _service(input="both", max_input_tokens=256),
+            _service(input="both", max_input_tokens=320),
             decider,
             page_texts=["", ""],
             page_images=_pages(2),
@@ -710,3 +710,76 @@ def test_the_assessment_step_names_the_section_when_a_page_is_refused(caplog):
     assert len(section_warnings) == 1
     assert "page 2" in section_warnings[0]
     assert "no confidence scores" in section_warnings[0]
+
+
+# --- Review follow-ups on PR #2044 ---------------------------------------------
+
+
+def test_a_page_whose_text_has_no_room_is_refused_rather_than_sent_empty(caplog):
+    """When the question alone fills max_input_tokens, the page text would be cut
+    to nothing and an empty field scored about 1.0 from no evidence. The request is
+    not sent; the pass fails like a refusal, so the section degrades."""
+    extracted = {"Total": None, "Notes": "remark " * 120}
+    decider = ScriptedDecider()
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(DecisionModelRefused, match="page 1") as raised,
+    ):
+        _score(
+            _service(input="text", max_input_tokens=256),
+            decider,
+            page_texts=["Total due 100.00"],
+            extracted=extracted,
+        )
+    assert decider.requests == []
+    assert "max_input_tokens" in str(raised.value)
+    assert any(
+        r.levelno == logging.WARNING and "page 1" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_a_limit_with_no_room_for_text_is_refused_when_the_configuration_loads():
+    from idp_common.config.models import IDPConfig
+
+    def confidence(**decision_model):
+        return IDPConfig.model_validate(
+            {"extraction": {"confidence": {"decision_model": decision_model}}}
+        )
+
+    # In 'both' the page image alone takes 256, so 256 leaves no room for text.
+    with pytest.raises(Exception, match="max_input_tokens"):
+        confidence(input="both", max_input_tokens=256)
+    # 'images' sends no text, so the same limit is accepted.
+    assert confidence(input="images", max_input_tokens=256)
+    assert confidence(input="text", max_input_tokens=256)
+
+
+def test_the_empty_value_question_is_a_setting():
+    from idp_common.config.models import IDPConfig
+
+    question = 'Is a value for "{FIELD}" ({DESCRIPTION}) printed on this page?'
+    decider = ScriptedDecider()
+    _score(
+        _service(empty_value_instructions=question),
+        decider,
+        page_texts=[""],
+        page_images=_pages(1),
+        extracted={"Total": None},
+    )
+    (asked,) = [
+        q["instructions"] for r in decider.requests for q in r["questions"].values()
+    ]
+    assert asked == 'Is a value for "Total" (The invoice total) printed on this page?'
+    # Empty is the shipped question, as for `instructions`.
+    shipped = IDPConfig.model_validate(
+        {
+            "extraction": {
+                "confidence": {"decision_model": {"empty_value_instructions": ""}}
+            }
+        }
+    ).extraction.confidence.decision_model.empty_value_instructions
+    assert shipped == (
+        'The system found no value for the field "{FIELD}" ({DESCRIPTION}). '
+        "Does the page show a value for it?"
+    )

@@ -36,7 +36,8 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from idp_common import metrics
+from idp_common import metrics, s3, utils
+from idp_common.decision_model import DecisionModelRefused, DecisionModelUnavailable
 from idp_common.models import Document, ProcessingIssue
 
 logger = logging.getLogger(__name__)
@@ -170,15 +171,23 @@ def degrade_section_to_no_confidence(
 
     Returns the recorded ``ProcessingIssue``.
     """
-    if _is_decision_model_error(error):
-        # The LLM remedies below do not apply: the decision model's window is
-        # fixed, and list_batch_size does not change what one page holds.
+    # The LLM remedies at the end do not apply to a decision model: its window is
+    # fixed, and list_batch_size does not change what one page holds.
+    if isinstance(error, DecisionModelRefused):
         remedy = (
-            "The decision model did not answer. A refusal is not retried, and the "
-            "root cause names the refused pages; if it refused a page as too long "
-            "for its context window, lower "
-            "extraction.confidence.decision_model.max_input_tokens or set its input "
-            "to images."
+            "The decision model refused a request, or a request was not sent "
+            "because it left no room for page text; a refusal is not retried, and "
+            "the root cause names the pages. If a request was over the model's "
+            "window, lower extraction.confidence.decision_model.max_input_tokens or "
+            "set its input to images; if it left no room for text, raise "
+            "max_input_tokens."
+        )
+    elif isinstance(error, DecisionModelUnavailable):
+        remedy = (
+            "The decision model could not be reached or did not answer, and this "
+            "failure was not retried. The root cause names the error: check the "
+            "function ARN (its name must start with GENAIIDP-), the pipeline's "
+            "permission to invoke it, and the function's own logs."
         )
     else:
         remedy = (
@@ -201,15 +210,6 @@ def degrade_section_to_no_confidence(
         section_id=section_id,
     )
     return record_confidence_unavailable(document, section_id, issue)
-
-
-def _is_decision_model_error(error: BaseException) -> bool:
-    """True for a failure of the decision-model client (refused or unavailable)."""
-    try:
-        from idp_common.decision_model import DecisionModelError
-    except ImportError:  # pragma: no cover - the package ships with idp_common
-        return False
-    return isinstance(error, DecisionModelError)
 
 
 #: How a report line marks each issue severity.
@@ -270,6 +270,16 @@ def record_no_confidence_in_result(
     section. This writes ``issue`` into that file the way a successful pass writes
     its own issues, and marks the Confidence stage as having produced no scores.
 
+    A result that already holds ``explainability_info`` is left alone: the failure
+    came after the pass wrote its scores, and marking that file "no confidence
+    scores" would contradict the scores beside it.
+
+    The text report's Confidence line is rewritten in place rather than the report
+    re-rendered. The renderer is ``ExtractionService._generate_processing_report``,
+    and importing the extraction package here would bring strands into the
+    Assessment Lambda, which does not install it. The line's format is pinned to
+    that renderer by a test.
+
     Returns whether the file was updated. Never raises: the degrade path exists so
     the document completes, so a failure here is logged and the issue stays on the
     section record, where the Sections panel shows it.
@@ -277,10 +287,17 @@ def record_no_confidence_in_result(
     if not extraction_result_uri:
         return False
     try:
-        from idp_common import s3, utils
-
         data = s3.get_json_content(extraction_result_uri)
         if not isinstance(data, dict):
+            return False
+        if data.get("explainability_info"):
+            logger.warning(
+                "Not marking %s as having no confidence scores: it already holds "
+                "the pass's scores, so the %s failure came after they were written. "
+                "The issue is on the section record.",
+                extraction_result_uri,
+                issue.code,
+            )
             return False
         merge_assessment_issues_into_result(data, [issue])
         flow = (data.get("metadata") or {}).get("processing_flow") or {}

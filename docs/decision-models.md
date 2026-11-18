@@ -133,7 +133,8 @@ extraction:
 |---|---|---|
 | `input` | `images` | What each request reads; every mode is one request per page. `images`: the page image, which measured best. `text`: that page's OCR text. `both`: the page image with that page's OCR text. Adding the OCR text or the extraction to the state measured worse. |
 | `max_pages` | `20` | The most pages read per section. A value that appears only on a later page scores low and goes to review, and an empty value is checked against the pages read only. |
-| `instructions` | the question above | `{FIELD}` is the field's path (`Lines[2].Amount`), `{DESCRIPTION}` its schema description, `{VALUE}` the extracted value. An empty value is asked a fixed question instead, whether the page shows a value for the field. |
+| `instructions` | the question above | `{FIELD}` is the field's path (`Lines[2].Amount`), `{DESCRIPTION}` its schema description, `{VALUE}` the extracted value. A value the extraction left empty is asked `empty_value_instructions` instead. |
+| `empty_value_instructions` | the question above | The question for an empty value: whether the page shows a value for the field. `{FIELD}` and `{DESCRIPTION}` as above. Yes must mean a value is shown, because the empty value's confidence is one minus the highest answer. |
 | `max_questions_per_request` | `100` | A page with more values is asked in several requests, inside the model's request limit. |
 | `max_input_tokens` | `3584` | The most tokens one request may hold: a page's OCR text, its image and the longest question. See [Text longer than the window](#text-longer-than-the-window). |
 
@@ -166,6 +167,14 @@ class cue that appears only in the cut part is not seen: such a value scores low
 goes to review, an empty field is not checked against that part, and a class cue
 there does not count. The cut falls at a line break where it can, and each cut is
 logged with the page and the number of characters dropped.
+
+A request whose text would be cut to nothing, because its question and images
+already fill the limit, is **not sent**: it fails like a refused request, so
+extraction confidence degrades the section to no confidence scores and section
+classification labels the section `unclassified`. Answering it with no text would
+mean scoring an empty field, or picking a class, from no evidence. A limit that
+the question and images fill on their own is refused when the configuration is
+saved.
 
 `max_input_tokens` counts the request's text, its images and its question (for
 classification, every class description) together. The count is an estimate from

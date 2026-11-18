@@ -38,6 +38,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
+from idp_common.decision_model import function_name
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -288,6 +289,12 @@ class ExtractionService:
         # Per-page OCR text in section order, populated per section. Used to
         # shard the input by page range for concurrent agentic extraction.
         self._page_texts: list[str] = []
+        # The page ids _load_document_images loaded an image for, and each one's
+        # OCR text, in that order: what the confidence pass pairs image i with.
+        # ``_page_texts`` keeps a "" for a section page the document lacks, which
+        # has no image, so it cannot be paired with the images directly.
+        self._image_page_ids: list[str] = []
+        self._image_page_texts: list[str] = []
         # Optional checkpoint callback for incremental saves during agentic extraction.
         # When set, called after each successful extraction_tool or apply_json_patches
         # invocation with the current extraction dict, enabling resume on Lambda timeout.
@@ -746,9 +753,12 @@ class ExtractionService:
                         "assess_page_images": self._cap_agent_images(
                             self._slice_images(saved_images, shard.start, shard.end)
                         ),
-                        # The same pages' text one page at a time, for a decision
-                        # model, which reads a page per request.
-                        "assess_page_texts": list(shard_page_texts),
+                        # The text of each page in assess_page_images, sliced the
+                        # same way from a list built over the same page ids, for a
+                        # decision model, which pairs each image with its text.
+                        "assess_page_texts": self._image_page_texts[
+                            shard.start : shard.end
+                        ],
                         # Integrated mode: tell the shard agent to emit per-field
                         # confidence/bbox inline (one inference, no second pass).
                         "emit_field_assessment": self._integrated_assessment_enabled(),
@@ -1401,6 +1411,8 @@ class ExtractionService:
         self._wire_class_schema = {}
         self._instance_probe_requested = False
         self._page_images = []
+        self._image_page_ids = []
+        self._image_page_texts = []
         self._image_uris = []
         self._pending_image_fit_metadata = None
         self._pending_cache_marker_seen = False
@@ -1816,6 +1828,7 @@ class ExtractionService:
         max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
+        loaded_page_ids: list[str] = []
         for page_id in sorted_page_ids:
             if page_id not in document.pages:
                 continue
@@ -1838,10 +1851,12 @@ class ExtractionService:
                     {"page_id": page_id, **fit.to_dict()}
                 )
             page_images.append(image_content)
+            loaded_page_ids.append(page_id)
 
         t1 = time.time()
         logger.info(f"Time taken to read images: {t1 - t0:.2f} seconds")
 
+        self._image_page_ids = loaded_page_ids
         return page_images
 
     def _initialize_extraction_context(
@@ -5183,8 +5198,6 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             # the decision model, one request per page; the confidence LLM is
             # never called, so naming it would report a model that scored nothing.
             if conf_cfg.method == "decision_model":
-                from idp_common.decision_model import function_name
-
                 conf_model = function_name(conf_cfg.decision_model.endpoint or "")
                 conf_name = f"decision model {conf_model}".strip()
                 one_pass = f"{conf_cfg.decision_model.input}, one request per page"
@@ -8528,6 +8541,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         page_images = self._load_document_images(
             document, section_info.sorted_page_ids, page_texts=self._page_texts
         )
+        # The text of each page an image was just loaded for, from the same ids.
+        self._image_page_texts = [
+            page_id_to_text.get(pid, "") for pid in self._image_page_ids
+        ]
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(
@@ -8967,7 +8984,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extraction_results=extracted_fields,
                 document_text=self._document_text,
                 page_images=self._page_images,
-                page_texts=self._page_texts,
+                page_texts=self._image_page_texts,
             )
             metering["_merged_assessment"] = batched["assessment"]
             metering["_merged_assessment_alerts"] = batched["alerts"]

@@ -10,9 +10,10 @@ state is encoded once and each question reads that encoding.
 * A **value** is asked "the system says <field> is <value>; is that the correct
   value?". Its confidence is its **highest P(yes) over the pages**: a value is
   supported by the document if some page supports it.
-* An **empty value** is asked whether the page shows a value for the field. Its
-  confidence is **1 - the highest P(yes) over the pages**: "no value" is right only
-  if no page shows one, so a field the extraction missed scores low.
+* An **empty value** is asked ``empty_value_instructions``: whether the page shows
+  a value for the field. Its confidence is **1 - the highest P(yes) over the
+  pages**: "no value" is right only if no page shows one, so a field the
+  extraction missed scores low.
 
 ``decision_model.input`` picks the state: the page image (``images``), the page's
 OCR text (``text``), or the page image with that page's own text (``both``). Pages
@@ -20,7 +21,9 @@ keep their position in the section, and at most ``max_pages`` are read. A page's
 text is cut from the end so its request fits ``max_input_tokens`` (an estimate; see
 ``idp_common.decision_model.budget``). Text past the cut is never sent, so the
 decision model never reads it: a value only there is not seen, and scores low, and
-an empty value is not checked against it.
+an empty value is not checked against it. A page whose text would be cut to nothing
+(the question and image already fill the limit) is not sent: the pass is refused,
+because a request with no text would score an empty value from no evidence.
 
 The output has the shape the LLM confidence call's parsed response has, so the
 threshold, alert, explainability and HITL code that follows is unchanged. Extra
@@ -57,23 +60,15 @@ from idp_common.decision_model import (
     client_from_config,
     encode_image,
     estimate_tokens,
+    fit_text,
     merge_metering,
     state_budget,
-    truncate_to_tokens,
 )
 
 logger = logging.getLogger(__name__)
 
 #: The metering context, beside ``Assessment/bedrock/...``.
 METERING_CONTEXT = "Assessment"
-
-#: The question for a value the extraction left empty. Phrased as the value
-#: question is, but it asks whether the page shows a value at all, so its answer
-#: is P(a value is shown) and "empty" scores 1 minus the highest of it.
-EMPTY_VALUE_INSTRUCTIONS = (
-    'The system found no value for the field "{FIELD}" ({DESCRIPTION}). '
-    "Does the page show a value for it?"
-)
 
 
 @dataclass
@@ -157,21 +152,6 @@ def _set(tree: Any, path: Tuple[Any, ...], leaf: Dict[str, Any]) -> Any:
     return tree
 
 
-def _fit(name: str, text: str, budget: float) -> str:
-    """``text`` cut from the end to ``budget`` estimated tokens, logging what went."""
-    kept, dropped = truncate_to_tokens(text, budget)
-    if dropped:
-        logger.info(
-            "Dropped %d of %d characters from the end of %s's OCR text so its "
-            "decision-model request fits max_input_tokens; the decision model does "
-            "not read them",
-            dropped,
-            len(text),
-            name,
-        )
-    return kept
-
-
 def _pages(count: int) -> str:
     return "1 page" if count == 1 else f"{count} pages"
 
@@ -184,7 +164,9 @@ class DecisionModelConfidenceScorer:
         self.client = client_from_config(self.cfg, region=region)
 
     def _question(self, leaf: _Leaf) -> NoulQuestion:
-        template = EMPTY_VALUE_INSTRUCTIONS if leaf.empty else self.cfg.instructions
+        template = (
+            self.cfg.empty_value_instructions if leaf.empty else self.cfg.instructions
+        )
         text = (
             template.replace("{FIELD}", leaf.display)
             .replace("{DESCRIPTION}", leaf.description or leaf.display)
@@ -392,7 +374,10 @@ class DecisionModelConfidenceScorer:
                 )
             named = self._first_pages(named, "with OCR text")
             budget = self._budget(question_tokens, images=0)
-            states = [(name, _fit(name, text, budget), []) for name, text in named]
+            states = [
+                (name, fit_text(text, budget, f"{name}'s OCR text"), [])
+                for name, text in named
+            ]
             return states, len(named)
 
         images = [
@@ -426,6 +411,10 @@ class DecisionModelConfidenceScorer:
             text = page_texts[index - 1] if index <= len(page_texts) else ""
             name = f"page {index}"
             states.append(
-                (name, _fit(name, text or "", budget), [encode_image(bytes(img))])
+                (
+                    name,
+                    fit_text(text or "", budget, f"{name}'s OCR text"),
+                    [encode_image(bytes(img))],
+                )
             )
         return states, len(images)

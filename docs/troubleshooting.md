@@ -179,7 +179,11 @@ issue's root cause names the refused pages. The decision model reads one page pe
 request in every input mode, and a page's text is cut to fit
 `extraction.confidence.decision_model.max_input_tokens` (text past the cut is never
 read). A refusal for length means that estimate fell short on that page: lower
-`max_input_tokens`, or set `input` to `images`. See
+`max_input_tokens`, or set `input` to `images`. A root cause that begins **Not sent**
+means the opposite: the question and image filled the limit and left no room for
+the page's text, so raise `max_input_tokens` or shorten the field descriptions. A
+root cause from `DecisionModelUnavailable` means the call did not complete: check
+the function ARN, the invoke permission and the function's logs. See
 [Decision models](./decision-models.md#text-longer-than-the-window).
 
 **`assessment_skipped_confidence_unavailable` on a section.** The sibling of the

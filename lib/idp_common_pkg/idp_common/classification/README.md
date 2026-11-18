@@ -222,7 +222,11 @@ read by the decision model**, so a class cue that appears only in the cut part i
 not seen. The counts are estimates from characters
 (`idp_common.decision_model.estimate_tokens`); see the
 [decision_model README](../decision_model/README.md#fitting-the-window-max_input_tokens).
-With `input: images` there is no text and nothing is cut.
+With `input: images` there is no text and nothing is cut. A section whose text would
+be cut to nothing, because the question and images already fill the limit, is not
+sent: `fit_text` raises `DecisionModelRefused`, and the section fails like any
+refused call, so it is labelled `unclassified` rather than classified from no
+evidence.
 
 #### Which placeholders a stage is allowed to render
 

@@ -14,9 +14,13 @@ decision model never reads it.
 
 from __future__ import annotations
 
+import logging
 from typing import Tuple
 
+from idp_common.decision_model.invoker import DecisionModelRefused
 from idp_common.decision_model.wire import CONTEXT_WINDOW_TOKENS
+
+logger = logging.getLogger(__name__)
 
 #: Reserved in every request for the decision model's own prompt around the state
 #: and the question. ``max_input_tokens`` defaults to the window less this.
@@ -71,3 +75,33 @@ def truncate_to_tokens(text: str, budget: float) -> Tuple[str, int]:
     if line_end > 0:
         kept = kept[: line_end + 1]
     return kept, len(text) - len(kept)
+
+
+def fit_text(text: str, budget: float, what: str) -> str:
+    """``text`` cut to ``budget`` for a request about to be sent; ``what`` names it.
+
+    Each cut is logged at info. Text that has content but would be cut to nothing
+    is refused instead (:class:`DecisionModelRefused`, logged at warning): the
+    request's question and images already fill ``max_input_tokens``, and a request
+    with no text would be answered from no evidence, which for an empty field is a
+    confident "no value". Empty text is returned unchanged.
+    """
+    kept, dropped = truncate_to_tokens(text, budget)
+    if dropped and text.strip() and not kept.strip():
+        message = (
+            f"Not sent: {what} would be cut to nothing, because the question and "
+            "images already fill the request's max_input_tokens. Raise "
+            "max_input_tokens, shorten the question (or the field or class "
+            "descriptions it carries), or set input to images."
+        )
+        logger.warning(message)
+        raise DecisionModelRefused(message)
+    if dropped:
+        logger.info(
+            "Dropped %d of %d characters from the end of %s so the decision-model "
+            "request fits max_input_tokens; the decision model does not read them",
+            dropped,
+            len(text),
+            what,
+        )
+    return kept

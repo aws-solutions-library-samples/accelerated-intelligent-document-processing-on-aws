@@ -319,6 +319,70 @@ def test_a_section_with_no_readable_result_writes_nothing(monkeypatch):
     assert writes == []
 
 
+def test_a_result_that_already_has_scores_is_not_marked_unscored(wired, monkeypatch):
+    """A failure raised after the pass wrote its scores into result.json must not
+    then write "no confidence scores" beside them."""
+    scored = _extraction_result_with_report()
+    scored["explainability_info"] = [{"Total": {"confidence": 0.93}}]
+    # The handler's own first read sees the result before the pass ran; every
+    # read after it sees what the pass wrote.
+    reads = iter([_extraction_result_with_report()])
+    monkeypatch.setattr(
+        assessment_index.s3, "get_json_content", lambda uri: next(reads, scored)
+    )
+    _invoke_with_failure(monkeypatch, ValueError("failed after the write"))
+
+    assert next(reads, None) is None  # the handler did read before the pass
+    assert wired.result_writes == []
+    stage = scored["metadata"]["processing_flow"]["stages"][1]
+    assert stage["status"] == "ok" and stage["model"] == "GENAIIDP-decider"
+
+
+def test_an_unavailable_decision_model_gets_its_own_remedy():
+    """Throttling past the retries, a timeout or access denied is not a request
+    over the window, so the window remedy would send the operator the wrong way."""
+    from idp_common.assessment.degradation import degrade_section_to_no_confidence
+    from idp_common.decision_model import DecisionModelUnavailable
+
+    issue = degrade_section_to_no_confidence(
+        _document(),
+        "1",
+        DecisionModelUnavailable("GENAIIDP-decider: AccessDeniedException: denied"),
+    )
+    assert "max_input_tokens" not in issue.message
+    assert "could not be reached or did not answer" in issue.message
+    assert "AccessDeniedException" in (issue.root_cause or "")
+
+
+def test_the_report_line_rewritten_after_a_degrade_is_the_one_extraction_renders():
+    """The degrade path rewrites the Confidence line of a report it did not
+    render. This pins that line's format to the real renderer, so a change there
+    fails here instead of silently leaving the old line in place."""
+    from idp_common import s3
+    from idp_common.assessment.degradation import record_no_confidence_in_result
+    from idp_common.extraction.service import ExtractionService
+    from idp_common.models import ProcessingIssue
+
+    metadata = _extraction_result_with_report()["metadata"]
+    report = ExtractionService(
+        region="us-west-2", config={}
+    )._generate_processing_report({**metadata, "parsing_succeeded": True})
+    assert f"✓ Confidence: {_CONFIDENCE_DETAIL}" in report
+
+    written = []
+    result = {"metadata": metadata, "processing_report": report}
+    issue = ProcessingIssue(stage="assessment", severity="error", code="c", message="m")
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(s3, "get_json_content", lambda uri: result)
+        mp.setattr(
+            s3, "write_content", lambda content, *a, **kw: written.append(content)
+        )
+        assert record_no_confidence_in_result(_EXTRACTION_URI, issue) is True
+    (rewritten,) = written
+    assert f"✓ Confidence: {_CONFIDENCE_DETAIL}" not in rewritten["processing_report"]
+    assert "⚠ Confidence: no confidence scores" in rewritten["processing_report"]
+
+
 def test_transient_failure_still_raises_for_step_functions(wired, monkeypatch):
     """A read timeout is retryable, so it must still surface as TransientError —
     the degrade path must not swallow failures a retry could fix."""

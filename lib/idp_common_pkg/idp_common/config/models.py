@@ -1032,6 +1032,35 @@ DECISION_MODEL_MAX_INPUT_TOKENS = 3584
 #: The least ``max_input_tokens`` accepted, so a request keeps room for a question.
 DECISION_MODEL_MIN_INPUT_TOKENS = 256
 
+#: The placeholders a decision-model question template is filled with per request.
+_QUESTION_PLACEHOLDERS = re.compile(r"\{(?:FIELD|DESCRIPTION|VALUE)\}")
+
+
+def _require_room_for_text(
+    max_input_tokens: int, templates: List[str], images: int, path: str
+) -> None:
+    """Refuse a ``max_input_tokens`` that the question and images fill on their own.
+
+    Only a template's fixed words are known when a configuration loads, not the
+    field names, descriptions, values or class descriptions it is filled with, so
+    this catches the limits that can never work. A request that still runs out of
+    room at run time is refused there instead of being sent with no text.
+    """
+    # Imported here: idp_common.decision_model imports this module.
+    from idp_common.decision_model.budget import IMAGE_TOKENS, estimate_tokens
+
+    question = max(
+        estimate_tokens(_QUESTION_PLACEHOLDERS.sub("", t)) for t in templates
+    )
+    reserved = question + images * IMAGE_TOKENS
+    if max_input_tokens <= reserved:
+        raise ValueError(
+            f"{path}.max_input_tokens is {max_input_tokens}, but its question and "
+            f"{images} page image(s) alone take about {math.ceil(reserved)} tokens, "
+            "which leaves no room for page text with input 'text' or 'both'. Raise "
+            "max_input_tokens or set input to 'images'."
+        )
+
 
 class ConfidenceDecisionModelConfig(ExternalModelConfig):
     """Extraction confidence by a decision model: one ``noul`` question per field.
@@ -1073,6 +1102,19 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             "{DESCRIPTION} its schema description, {VALUE} the extracted value."
         ),
     )
+    empty_value_instructions: str = Field(
+        default=(
+            'The system found no value for the field "{FIELD}" ({DESCRIPTION}). '
+            "Does the page show a value for it?"
+        ),
+        description=(
+            "The yes/no question for a value the extraction left empty, asking "
+            "whether the page shows a value for the field. {FIELD} is the field's "
+            "path, {DESCRIPTION} its schema description. The empty value's "
+            "confidence is 1 minus the highest answer over the pages, so phrase it "
+            "so that yes means a value is shown."
+        ),
+    )
     max_pages: int = Field(
         default=20,
         ge=1,
@@ -1108,13 +1150,25 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
         ),
     )
 
-    @field_validator("instructions", mode="before")
+    @field_validator("instructions", "empty_value_instructions", mode="before")
     @classmethod
     def empty_instructions_is_the_default(cls, v: Any, info: ValidationInfo) -> str:
         """An empty question is the shipped one, never an empty question sent."""
         if v is None or (isinstance(v, str) and not v.strip()):
             return cls.model_fields[info.field_name].default
         return str(v)
+
+    @model_validator(mode="after")
+    def max_input_tokens_leaves_room_for_text(self) -> Self:
+        """A limit the question and page image fill alone could never send text."""
+        if self.input in ("text", "both"):
+            _require_room_for_text(
+                self.max_input_tokens,
+                [self.instructions, self.empty_value_instructions],
+                1 if self.input == "both" else 0,
+                "extraction.confidence.decision_model",
+            )
+        return self
 
     @field_validator("price_per_request", mode="before")
     @classmethod
@@ -2733,6 +2787,24 @@ class DecisionModelConfig(ExternalModelConfig):
                 "not yet implemented"
             )
         return v_str
+
+    @model_validator(mode="after")
+    def max_input_tokens_leaves_room_for_text(self) -> Self:
+        """A limit the question and page images fill alone could never send text.
+
+        The class descriptions also count against the limit, but they live in
+        ``classes``, not here; a section they leave no room for is refused when
+        it is classified.
+        """
+        if self.input in ("text", "both"):
+            _require_room_for_text(
+                self.max_input_tokens,
+                [self.instructions],
+                self.max_pages if self.input == "both" else 0,
+                "classification.split_then_classify.section_classification."
+                "decision_model",
+            )
+        return self
 
 
 class LowConfidenceConfig(BaseModel):

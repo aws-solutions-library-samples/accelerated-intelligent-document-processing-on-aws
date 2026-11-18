@@ -204,8 +204,8 @@ chunks of `max_questions_per_request`.
   description and value substituted. Its confidence is its highest P(yes) over the
   pages.
 - **An empty value** (absent by `presence.has_extracted_value`: null, blank, or an
-  empty container) is asked `EMPTY_VALUE_INSTRUCTIONS`, whether the page shows a
-  value for the field. Its confidence is 1 − the highest P(yes) over the pages, so a
+  empty container) is asked `decision_model.empty_value_instructions`, whether the
+  page shows a value for the field. Its confidence is 1 − the highest P(yes) over the pages, so a
   value the extraction missed scores low. Its reason says no value was extracted
   and names the page most likely to show one. Like any absent value it raises no
   confidence alert
@@ -231,14 +231,17 @@ its own text.
 **A page's text is cut to fit `decision_model.max_input_tokens`** (#2032), which
 counts the page's text, its image and the longest question together (default 3584:
 the 4,096-token window less 512 for the model's own prompt). The text is cut from
-the end, at a line break where it can, by `decision_model.truncate_to_tokens`, and
-each cut is logged at info with the page and the characters dropped. **Text beyond
+the end, at a line break where it can, by `decision_model.fit_text`, and each
+cut is logged at info with the page and the characters dropped. **Text beyond
 the limit is cut and never read by the decision model**, so a value that appears
 only in the cut part is not seen: it scores low, and an empty field is not checked
 against that part. The counts are estimates: the package has no tokenizer, so
 `decision_model.estimate_tokens` counts one token per digit or non-ASCII character
 and one per two other characters, which errs high. A request with no text is sent
-unchanged.
+unchanged. A page whose text would be cut to nothing, because the question and
+image already fill the limit, is not sent: `fit_text` raises `DecisionModelRefused`,
+so the section degrades like any refusal instead of an empty field scoring about
+1.0 from no evidence.
 
 The result has the LLM path's parsed shape and goes through the same
 `_finalize_assessment`, so thresholds, alerts and explainability are unchanged;

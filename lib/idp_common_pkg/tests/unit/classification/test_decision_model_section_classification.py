@@ -296,7 +296,7 @@ def test_the_first_page_stays_whole_when_the_section_text_is_cut(caplog):
     service = _service(decision_model={"max_pages": 3, "input": "text"})
     decider = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
     bedrock, _ = _split((1, 3))
-    with caplog.at_level(logging.INFO, logger="idp_common.classification"):
+    with caplog.at_level(logging.INFO):
         _run_with_texts(service, _document(3), decider, bedrock, [first, second, third])
 
     (request,) = decider.requests
@@ -329,7 +329,7 @@ def test_a_lowered_max_input_tokens_is_honoured_for_a_section():
 def test_a_section_request_with_no_text_or_text_that_fits_is_untouched(caplog):
     images_only = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
     short_text = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
-    with caplog.at_level(logging.INFO, logger="idp_common.classification"):
+    with caplog.at_level(logging.INFO):
         bedrock, _ = _split((1, 1))
         _run_with_texts(
             _service(decision_model={"max_input_tokens": 256}),
@@ -350,3 +350,42 @@ def test_a_section_request_with_no_text_or_text_that_fits_is_untouched(caplog):
     assert len(images_only.requests[0]["images"]) == 1
     assert short_text.requests[0]["state"] == "Page 1:\nA short page.\n"
     assert not any("Dropped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_section_whose_text_has_no_room_is_failed_rather_than_sent_empty():
+    """Twelve class descriptions fill max_input_tokens, so the section's text
+    would be cut to nothing and a class picked from no evidence. The request is
+    not sent, and the section fails as a refused call does."""
+    classes = tuple(f"class{i:02d}" for i in range(12))
+    service = _service(
+        decision_model={"input": "text", "max_input_tokens": 256}, classes=classes
+    )
+    decider = FakeDecider([])
+    bedrock, _ = _split((1, 1))
+    result = _run_with_texts(
+        service, _document(1), decider, bedrock, ["INVOICE 7, Bill to: Acme"]
+    )
+
+    assert decider.requests == []
+    assert result.sections[0].classification == UNCLASSIFIED_CLASS
+
+
+def test_a_limit_with_no_room_for_section_text_is_refused_at_load():
+    from idp_common.config.models import IDPConfig
+
+    def section(**decision_model):
+        return IDPConfig.model_validate(
+            {
+                "classification": {
+                    "split_then_classify": {
+                        "section_classification": {"decision_model": decision_model}
+                    }
+                }
+            }
+        )
+
+    # 'both' at two pages carries two images, 512 tokens before any text.
+    with pytest.raises(Exception, match="max_input_tokens"):
+        section(input="both", max_pages=2, max_input_tokens=512)
+    assert section(input="both", max_pages=1, max_input_tokens=512)
+    assert section(input="images", max_pages=2, max_input_tokens=256)
