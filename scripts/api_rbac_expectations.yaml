@@ -1301,6 +1301,9 @@ operations:
     kind: mutation
     enforced_in: nested/api-resolvers/src/lambda/agent_request_handler/index.py
     args: { query: "hi", agentIds: ["x"] }
+    note: refuses Quick-Start-Agent in agentIds for every caller, and the
+      analytics processor refuses it again. Quick Start runs only from its own
+      panel, which is Admin only.
   getAgentJobStatus:
     groups: [Admin, Author, Viewer]
     kind: read
@@ -1335,7 +1338,8 @@ operations:
     enforced_in: nested/api-resolvers/src/lambda/list_available_agents/index.py
     args: {}
     note: server-side _caller_in_groups check matches the schema directive
-      (Reviewer excluded). Formerly GAP-03.
+      (Reviewer excluded). Formerly GAP-03. Quick-Start-Agent is left out of
+      the list for every caller.
   listChatSessions:
     groups: ANY
     kind: read
@@ -1410,7 +1414,10 @@ operations:
     args: { prompt: "hi" }
     note: server-side _caller_in_groups check matches the schema directive
       (Reviewer excluded, closes former GAP-03); allowed-role call skipped
-      (would start a live agent session)
+      (would start a live agent session). A message with method quick_start is
+      Admin only (_QUICK_START_ROLES), because Quick Start creates a
+      configuration profile, which only an Admin may create, and refused from
+      everyone on a stack deployed with EnableQuickStartWidget=false.
   sendChatDocumentMessage:
     groups: ANY_GROUP
     kind: mutation
@@ -2111,8 +2118,10 @@ function_url_endpoints:
           the same verified ID token as /chat/document. The processor's
           Admin/Author/Viewer check (and the Admin-only rule under tenant
           isolation) is applied in the route before the stream opens
-          (_enforce_groups_or_403) and again in the processor. The session is
-          checked against its owner the same way, and the processor keys
+          (_enforce_groups_or_403) and again in the processor, which also
+          keeps a Quick Start turn (method quick_start) to Admins, and refuses
+          it from everyone on a stack deployed with EnableQuickStartWidget=false. The
+          session is checked against its owner the same way, and the processor keys
           conversation memory on the verified sub, so a turn under another
           user's session id is refused before any memory loads. A body
           callerSub is ignored.
