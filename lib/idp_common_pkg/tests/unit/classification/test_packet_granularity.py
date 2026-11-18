@@ -40,6 +40,7 @@ from idp_common.classification.models import Segment
 from idp_common.classification.service import ClassificationService
 from idp_common.config.merge_utils import merge_config_with_defaults
 from idp_common.models import Document, Page, Status
+from idp_common.utils.transient_errors import TransientError
 
 PACKET_PROMPT = (
     "<document-types>\n{CLASS_NAMES_AND_DESCRIPTIONS}\n</document-types>\n"
@@ -964,14 +965,21 @@ class TestAWindowTooLargeForTheModelIsSplit:
         return invoke_model
 
     def _run(
-        self, *, pages: int = 10, limit: Optional[int] = None, refuse=None, **packet
+        self,
+        *,
+        pages: int = 10,
+        limit: Optional[int] = None,
+        refuse=None,
+        calls: Optional[List[List[str]]] = None,
+        **packet,
     ):
         service = _service(
             packet={"window_pages": "20", "overlap_pages": "1", **packet},
             modality={"images": True},
         )
         document = _document(pages)
-        calls: List[List[str]] = []
+        # Passed in by a caller that needs the calls when the run raises.
+        calls = [] if calls is None else calls
         with (
             patch("idp_common.s3.get_text_content", return_value="page text"),
             patch("idp_common.image.prepare_image", return_value=_png()),
@@ -1260,12 +1268,22 @@ class TestOnlyARefusalAboutImageCountIsSplit:
             # One image too large on its own: no window is small enough.
             ("ValidationException", "image exceeds maximum size of 5 MB"),
             ("ValidationException", "image dimensions exceed 8000 pixels"),
-            # A throttle that happens to mention images.
-            ("ThrottlingException", "Rate exceeded: too many images in flight"),
         ],
     )
     def test_any_other_image_error_is_not_split(self, code, message):
         _, calls = TestAWindowWithTooManyImagesIsSplit()._run_with(message, code=code)
+        assert len(calls) == 1
+
+    def test_a_throttle_that_mentions_images_is_not_split(self):
+        """A throttle is transient, so it fails the classification step for the
+        state machine to retry (#2034) rather than being split into smaller
+        windows that the same limit would throttle."""
+        runner = TestAWindowWithTooManyImagesIsSplit()
+        runner.REFUSAL_CODE = "ThrottlingException"
+        runner.REFUSAL_MESSAGE = "Rate exceeded: too many images in flight"
+        calls: List[List[str]] = []
+        with pytest.raises(TransientError):
+            runner._run(calls=calls)
         assert len(calls) == 1
 
 

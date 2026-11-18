@@ -1,12 +1,13 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { defineMessages, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
+import { ConsoleLogger } from 'aws-amplify/utils';
 import AnnotationContext from '@cloudscape-design/components/annotation-context';
 import type { AnnotationContextProps } from '@cloudscape-design/components/annotation-context';
+import { HotspotRegistry, type RegisterHotspot } from './tourHotspots';
 import { DOCUMENTS_PATH } from '../routes/constants';
-import { isQuickStartEnabled } from '../utils/quick-start-flag';
 import './guidedTour.css';
 
 const messages = defineMessages<{
@@ -281,7 +282,24 @@ interface GuidedTourContextValue {
 
 const GuidedTourContext = createContext<GuidedTourContextValue | null>(null);
 
-export const buildTutorial = (intl: IntlShape, flags: TourFlags): AnnotationContextProps.Tutorial => ({
+const logger = new ConsoleLogger('GuidedTour');
+
+/** How long the tour waits after navigating, so the page under it has rendered. */
+const TOUR_DELAY_MS = 350;
+
+/**
+ * How long a started tour waits for the side navigation to show a link it points at.
+ * The navigation renders no links until it knows the caller's role, which it reads
+ * on every mount, and the Welcome page that starts the tour has no navigation.
+ */
+export const TOUR_WAIT_MS = 10_000;
+
+interface PendingTour {
+  flags: TourFlags;
+  ready: boolean;
+}
+
+const allSteps = (intl: IntlShape, flags: TourFlags): AnnotationContextProps.Tutorial => ({
   title: intl.formatMessage(messages.tutorialTitle),
   description: intl.formatMessage(messages.tutorialDescription),
   completed: false,
@@ -379,9 +397,34 @@ export const buildTutorial = (intl: IntlShape, flags: TourFlags): AnnotationCont
   ],
 });
 
+const keepMountedSteps = (tutorial: AnnotationContextProps.Tutorial, mounted: ReadonlySet<string>): AnnotationContextProps.Tutorial => ({
+  ...tutorial,
+  tasks: tutorial.tasks
+    .map((task) => ({ ...task, steps: task.steps.filter((step) => mounted.has(step.hotspotId)) }))
+    .filter((task) => task.steps.length > 0),
+});
+
+/**
+ * The tour for these flags. Given the hotspots on the page, it keeps only the steps
+ * that point at one, so a role whose navigation lacks a page skips that page's step.
+ * Without them, it keeps every step these flags select.
+ */
+export const buildTutorial = (intl: IntlShape, flags: TourFlags, mounted?: ReadonlySet<string>): AnnotationContextProps.Tutorial => {
+  const tutorial = allSteps(intl, flags);
+  return mounted ? keepMountedSteps(tutorial, mounted) : tutorial;
+};
+
+/**
+ * The guided tour. Whether it shows and opens Quick Start is decided by whoever
+ * starts it, through the `quickStart` flag. This provider sits above the routes and
+ * mounts before the app has configured the session, so a role check here would
+ * read no session; the Welcome page starts the tour from inside the signed-in
+ * routes, where the role is known.
+ */
 export const GuidedTourProvider = ({ children }: { children: React.ReactNode }): React.JSX.Element => {
   const intl = useIntl();
   const [tutorial, setTutorial] = useState<AnnotationContextProps.Tutorial | null>(null);
+  const opensQuickStartOnFinish = useRef(false);
   const navigate = useNavigate();
   // Formatted once: the aria label of the popover's close button and the click-capture
   // below that watches for it must agree in every language.
@@ -401,22 +444,61 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
     [intl, dismissLabel],
   );
 
+  const mountedHotspots = useRef(new Map<string, number>());
+  const pendingTour = useRef<PendingTour | null>(null);
+  const [hotspotsMounted, setHotspotsMounted] = useState(0);
+
+  const registerHotspot = useCallback<RegisterHotspot>((hotspotId) => {
+    const counts = mountedHotspots.current;
+    counts.set(hotspotId, (counts.get(hotspotId) ?? 0) + 1);
+    if (pendingTour.current) setHotspotsMounted((mounted) => mounted + 1);
+    return () => {
+      const left = (counts.get(hotspotId) ?? 1) - 1;
+      if (left > 0) counts.set(hotspotId, left);
+      else counts.delete(hotspotId);
+    };
+  }, []);
+
+  const startPendingTour = useCallback(() => {
+    const pending = pendingTour.current;
+    if (!pending?.ready) return;
+    const next = buildTutorial(intl, pending.flags, new Set(mountedHotspots.current.keys()));
+    if (next.tasks.length === 0) return;
+    pendingTour.current = null;
+    setTutorial(next);
+  }, [intl]);
+
+  useEffect(() => {
+    startPendingTour();
+  }, [hotspotsMounted, startPendingTour]);
+
   const startTour = useCallback(
     (flags?: Partial<TourFlags>) => {
       const resolved: TourFlags = {
         customModels: flags?.customModels ?? false,
         capacityPlanning: flags?.capacityPlanning ?? true,
-        quickStart: isQuickStartEnabled(),
+        quickStart: flags?.quickStart ?? false,
       };
+      opensQuickStartOnFinish.current = resolved.quickStart;
       navigate(DOCUMENTS_PATH);
-      window.setTimeout(() => setTutorial(buildTutorial(intl, resolved)), 350);
+      const pending: PendingTour = { flags: resolved, ready: false };
+      pendingTour.current = pending;
+      window.setTimeout(() => {
+        pending.ready = true;
+        startPendingTour();
+      }, TOUR_DELAY_MS);
+      window.setTimeout(() => {
+        if (pendingTour.current !== pending) return;
+        pendingTour.current = null;
+        logger.warn('The guided tour did not start: no step it points at was on the page in time');
+      }, TOUR_WAIT_MS);
     },
-    [intl, navigate],
+    [navigate, startPendingTour],
   );
   const exitTour = useCallback(() => setTutorial(null), []);
   const finishTour = useCallback(() => {
     setTutorial(null);
-    if (isQuickStartEnabled()) {
+    if (opensQuickStartOnFinish.current) {
       window.dispatchEvent(new CustomEvent('openQuickStart'));
     }
   }, []);
@@ -443,15 +525,17 @@ export const GuidedTourProvider = ({ children }: { children: React.ReactNode }):
 
   return (
     <GuidedTourContext.Provider value={value}>
-      <AnnotationContext
-        currentTutorial={tutorial}
-        onStartTutorial={() => startTour()}
-        onExitTutorial={() => exitTour()}
-        onFinish={() => finishTour()}
-        i18nStrings={i18nStrings}
-      >
-        {children}
-      </AnnotationContext>
+      <HotspotRegistry.Provider value={registerHotspot}>
+        <AnnotationContext
+          currentTutorial={tutorial}
+          onStartTutorial={() => startTour()}
+          onExitTutorial={() => exitTour()}
+          onFinish={() => finishTour()}
+          i18nStrings={i18nStrings}
+        >
+          {children}
+        </AnnotationContext>
+      </HotspotRegistry.Provider>
     </GuidedTourContext.Provider>
   );
 };

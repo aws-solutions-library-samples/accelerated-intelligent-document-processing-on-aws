@@ -23,6 +23,7 @@ import TestStudioRoutes from './TestStudioRoutes';
 import RequireRole from './RequireRole';
 import AgentChatRoutes from './AgentChatRoutes';
 import QuickStartWidget from '../components/agent-chat/QuickStartWidget';
+import useQuickStartAvailable from '../hooks/use-quick-start-available';
 import FeaturesRoutes from './FeaturesRoutes';
 import InboxRoutes from './InboxRoutes';
 import ReviewQueuesRoutes from './ReviewQueuesRoutes';
@@ -68,6 +69,7 @@ interface AuthRoutesProps {
 const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const { currentCredentials } = useAppContext();
   const { isQueueWorker, isAnnotatorOnly, isReviewerOnly, hasNoRole, sessionError, retrySession, loading: roleLoading } = useUserRole();
+  const quickStartAvailable = useQuickStartAvailable();
   const settings = useParameterStore(currentCredentials);
   const { signOut } = useAuthenticator();
 
@@ -212,7 +214,7 @@ const AuthRoutes = ({ redirectParam }: AuthRoutesProps): React.JSX.Element => {
   const shell = (
     <>
       {routes}
-      {!isAnnotatorOnly && <QuickStartWidget />}
+      {quickStartAvailable && <QuickStartWidget />}
     </>
   );
 

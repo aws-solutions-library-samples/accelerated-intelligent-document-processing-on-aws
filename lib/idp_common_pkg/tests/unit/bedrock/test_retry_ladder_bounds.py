@@ -139,6 +139,85 @@ def test_a_dropped_connection_is_retried_like_a_read_timeout(drops, monkeypatch)
     assert metrics["BedrockRequestsFailed"] == 0
 
 
+#: Bedrock's answer when a tokens-per-minute quota is exhausted. The code is
+#: ``ThrottlingException``, the same as a requests-per-minute throttle.
+_TOO_MANY_TOKENS = "Too many tokens, please wait before trying again."
+
+
+def _throttled_response() -> urllib3.HTTPResponse:
+    return urllib3.HTTPResponse(
+        body=io.BytesIO(json.dumps({"message": _TOO_MANY_TOKENS}).encode()),
+        status=429,
+        headers={
+            "content-type": "application/json",
+            "x-amzn-ErrorType": "ThrottlingException:http://internal.amazon.com/",
+        },
+        preload_content=False,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("throttles", [3, 8], ids=["recovers", "exhausted"])
+def test_a_tokens_per_minute_throttle_is_retried_by_the_ladder(throttles, monkeypatch):
+    """#2034: a throttled packet window's error read "(reached max retries: 0): Too
+    many tokens", which looks as if nothing retried it. That count is botocore's,
+    for one attempt: ``BedrockClient`` pins botocore to a single attempt so its own
+    ladder is the only one, and every attempt therefore reports zero retries,
+    including the last of a ladder that made all eight. Measured with a real
+    ``bedrock-runtime`` client, as the dropped-connection test above is."""
+    from idp_common.utils.transient_errors import is_transient_error
+
+    sent: list[str] = []
+
+    def urlopen(pool, method, url, *args, **kwargs):
+        sent.append(url)
+        if len(sent) <= throttles:
+            return _throttled_response()
+        return urllib3.HTTPResponse(
+            body=io.BytesIO(json.dumps(_CONVERSE_OK).encode()),
+            status=200,
+            headers={"content-type": "application/json"},
+            preload_content=False,
+        )
+
+    metrics: Counter = Counter()
+    client = _recording_client(metrics)
+    client._client = _botocore_runtime_client()
+    monkeypatch.setattr(urllib3.connectionpool.HTTPConnectionPool, "urlopen", urlopen)
+    monkeypatch.setattr(URLLib3Session, "send", _REAL_SEND)
+
+    def invoke():
+        return client._invoke_with_retry(
+            model_id="us.amazon.nova-lite-v1:0",
+            converse_params={
+                "modelId": "us.amazon.nova-lite-v1:0",
+                "messages": [{"role": "user", "content": [{"text": "hi"}]}],
+                "system": [{"text": "s"}],
+                "inferenceConfig": {"maxTokens": 10},
+                "additionalModelRequestFields": {},
+            },
+            retry_count=0,
+            max_retries=client_mod.DEFAULT_MAX_RETRIES,
+            request_start_time=0.0,
+        )
+
+    if throttles <= client_mod.DEFAULT_MAX_RETRIES:
+        assert invoke()["response"]["stopReason"] == "end_turn"
+        assert len(sent) == throttles + 1
+        assert metrics["BedrockThrottling"] == throttles
+        return
+
+    with pytest.raises(ClientError) as caught:
+        invoke()
+    # Every attempt the ladder allows was made, and the error still says zero.
+    assert len(sent) == client_mod.DEFAULT_MAX_RETRIES + 1
+    assert metrics["BedrockMaxRetriesExceeded"] == 1
+    assert "(reached max retries: 0)" in str(caught.value)
+    assert _TOO_MANY_TOKENS in str(caught.value)
+    assert caught.value.response["Error"]["Code"] == "ThrottlingException"
+    assert is_transient_error(caught.value)
+
+
 class _BodyCutShort(io.RawIOBase):
     """A response body that delivers its first half and then, per ``reset``, has the
     connection reset by the peer or ends cleanly short of its ``content-length``."""

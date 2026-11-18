@@ -12,12 +12,12 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import Hotspot from '@cloudscape-design/components/hotspot';
 import { createIntl, IntlProvider } from 'react-intl';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { onIntlError } from '../../i18n/LocaleProvider';
 import { GuidedTourProvider, buildTutorial } from '../guidedTour';
+import { TourHotspot } from '../tourHotspots';
 
 /** The strings the assertions read; the rest fall back to English, as the app's error policy allows. */
 const FR = {
@@ -39,18 +39,22 @@ const French = ({ children }: { children: React.ReactNode }) => (
   </IntlProvider>
 );
 
-const flags = { customModels: false, capacityPlanning: true };
+const flags = { customModels: false, capacityPlanning: true, quickStart: true };
 
-/** The number of steps the tour has with `flags` and Quick Start on, read from the tutorial itself. */
-const stepCount = (): number =>
-  buildTutorial(createIntl({ locale: 'en', defaultLocale: 'en' }), { ...flags, quickStart: true }).tasks[0].steps.length;
+/** The steps whose hotspot is on the page; the tour keeps only those. Two, so the first step has a Next button. */
+const MOUNTED = new Set(['nav-documents', 'nav-upload']);
 
-/** Mount the provider around the first step's hotspot and start the tour as the Welcome page does. */
+/** The number of steps the tour has with `flags` and these hotspots, read from the tutorial itself. */
+const stepCount = (): number => buildTutorial(createIntl({ locale: 'en', defaultLocale: 'en' }), flags, MOUNTED).tasks[0].steps.length;
+
+/** Mount the provider around the first two steps' hotspots and start the tour as the Welcome page does. */
 const startTour = (): void => {
   render(
     <MemoryRouter>
       <GuidedTourProvider>
-        <Hotspot hotspotId="nav-documents" />
+        {[...MOUNTED].map((id) => (
+          <TourHotspot key={id} hotspotId={id} />
+        ))}
       </GuidedTourProvider>
     </MemoryRouter>,
     { wrapper: French },
@@ -61,12 +65,7 @@ const startTour = (): void => {
 };
 
 describe('the guided tour under fr-CA', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
   it('reads the first step and the annotation strings from the French catalog', async () => {
-    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
     startTour();
 
     // Awaited: the tour opens 350 ms after it is started, on the first hotspot in the tree.
@@ -80,7 +79,6 @@ describe('the guided tour under fr-CA', () => {
   });
 
   it('exits the tour when its French dismiss label is clicked', async () => {
-    vi.stubEnv('VITE_ENABLE_QUICK_START_WIDGET', 'true');
     startTour();
 
     const dismiss = await screen.findByLabelText('Fermer la visite');

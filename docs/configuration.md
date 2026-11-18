@@ -824,13 +824,13 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. Eight task states additionally list `TransientError` — the five
-extraction and assessment states (in-process extraction, shard plan, shard, shard
-merge, assessment) and the three rule-validation states (policy classification,
-per-section rule validation, orchestration). That is the one name their handlers
+availability codes. The classification, extraction, assessment and rule-validation
+task states additionally list `TransientError`: classification, in-process
+extraction, shard plan, shard, shard merge, assessment, policy classification,
+per-section rule validation and orchestration. That is the one name their handlers
 re-raise a transient cause under when it arrives as an ordinary Python exception (a
 botocore read or connect timeout, a dropped connection, a Strands wrapper around
-one). The classification lives in
+one). Whether a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says,
 and a bare HTTP 500, 502, 503 or 504 in place of a code is transient),

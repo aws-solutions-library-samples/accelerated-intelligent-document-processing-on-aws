@@ -440,8 +440,12 @@ entries:
     note: >-
       Pinned as the single conversational agent of its mode, with the caller's own
       memory. Its reads are configuration profiles and the schema catalog, so the
-      combination rule does not apply.
-    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
+      combination rule does not apply. It runs only from the Quick Start panel:
+      Document Analytics does not list it, and submitAgentQuery and the analytics
+      processor refuse it, so AgentProcessorFunction is not a role it runs under.
+      On a stack deployed with EnableQuickStartWidget=false, both chat routes refuse
+      it too.
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction]
     reads: [configuration_profiles]
     inputs: [user_prompt, conversation_history, configuration]
     outputs: [ui_rendered, configuration_write, generation_queue]
