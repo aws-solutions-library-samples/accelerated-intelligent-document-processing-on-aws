@@ -23,10 +23,10 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import boto3
 from botocore.exceptions import ClientError
@@ -65,6 +65,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_PAGE_CONTENT_REGEX,
 )
 from idp_common.config.schema_utils import deref_schema
+from idp_common.decision_model import DecisionModelError
 from idp_common.models import Document, ProcessingIssue, Section, Status
 from idp_common.prompt_comments import strip_prompt_comments
 from idp_common.utils import (
@@ -72,6 +73,7 @@ from idp_common.utils import (
     extract_structured_data_from_text,
 )
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
+from idp_common.utils.transient_errors import is_transient_error, reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +266,59 @@ def _annotate_image_refusal(
         exc.args = (f"{exc}\n{hint}",) + tuple(exc.args[1:])
     except Exception:  # pragma: no cover - an exception with read-only args
         pass
+
+
+class _TransientCallFailure:
+    """Stops a pool of model calls at its first transient failure, then raises it.
+
+    A section classification segment or a splitting call that fails with a throttle
+    or another transient error (``is_transient_error``) is not recorded on its
+    section. Recorded, it became a string in ``document.errors``, and ProcessResults
+    then failed the whole document with a plain ``Exception`` that no retrier
+    matches, so one throttled call lost the packet (#2034). Raised as
+    ``TransientError`` instead, it reaches ``ClassificationStep``'s retrier, which
+    runs the whole step again from the OCR output with its longer backoff.
+
+    The first transient failure cancels every call the pool has not started,
+    because the retry makes those calls anyway. Calls already running finish, and
+    their results are discarded with the rest of the attempt. Deterministic
+    failures are not this class's business: they keep their per-section handling.
+    """
+
+    def __init__(self, futures: Iterable[Future]):
+        self._futures = list(futures)
+        self.first: Optional[Tuple[str, BaseException]] = None
+        self.count = 0
+
+    def record(self, where: str, exc: BaseException) -> None:
+        self.count += 1
+        logger.warning("%s failed with a transient error: %s", where, exc)
+        if self.first is None:
+            self.first = (where, exc)
+            for future in self._futures:
+                future.cancel()
+
+    def raise_first(self) -> None:
+        """Raise the first transient failure as ``TransientError``, if there was one."""
+        if self.first is None:
+            return
+        where, exc = self.first
+        logger.error(
+            "%d call(s) failed with a transient error; raising the first so the "
+            "classification step is retried",
+            self.count,
+        )
+        reraise_if_transient(exc, where=where)
+
+
+class UnusablePacketReply(ValueError):
+    """A packet call's reply that arrived, was billed, and cannot be used.
+
+    Raised by ``ClassificationService._run_packet_window_call`` with the call's
+    metering attached (``utils.attach_failure_metering``), so the window loop can
+    count it and, when an earlier answer is in hand, keep that answer (#2035). A
+    ``ValueError`` because the plain ``ValueError`` it replaces was one.
+    """
 
 
 class ClassificationService:
@@ -5283,6 +5338,11 @@ class ClassificationService:
             every window failed; ``errors`` names each window that did, so a
             partial result is still reported as partial rather than as a clean
             run over fewer pages.
+
+        Raises:
+            TransientError: a window failed with a throttle or another transient
+                error, so the classification step is retried rather than the
+                window being reported as failed (#2034).
         """
         from idp_common.utils.bedrock_utils import (
             is_image_count_rejection,
@@ -5353,6 +5413,11 @@ class ClassificationService:
                     forced_class=forced_class,
                 )
             except Exception as e:
+                # Replies the window received before it failed were billed, so
+                # count them whether the window is split or reported (#2035).
+                received = utils.failure_metering(e)
+                if received:
+                    metering = utils.merge_metering_data(metering, received)
                 # Two refusals that a smaller window fixes: the input is too
                 # long, or the request carries too many page images (Bedrock
                 # caps images per request, so a window above that cap with
@@ -5387,9 +5452,20 @@ class ClassificationService:
                         (halves[1], f"{window_label}b", True),
                     ]
                     continue
-                # One window failing must not discard the others: on a long
-                # packet that would turn a transient throttle into a total loss
-                # of a 40-page document's boundaries.
+                # A throttle or another transient failure is raised rather than
+                # recorded. Recorded, it failed the whole document later, in
+                # ProcessResults, with an error no retrier matches; raised, the
+                # classification step is retried and the windows still pending
+                # are never sent (#2034).
+                reraise_if_transient(
+                    e,
+                    where=(
+                        f"Packet window {window_label} "
+                        f"(pages {window_page_ids[0]}-{window_page_ids[-1]})"
+                    ),
+                )
+                # A deterministic failure in one window does not discard the
+                # others' boundaries.
                 error_msg = (
                     f"Packet window {window_label} "
                     f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
@@ -5576,13 +5652,23 @@ class ClassificationService:
             and self._class_validation_enforced()
         )
         max_retries = self._class_validation_retries() if validates else 0
+        # A reply that is not JSON at all gets one re-prompt asking for the JSON
+        # only, on this same loop and whatever the validation settings, so the
+        # splitting call gets it too. It used to fail the window, and with it a
+        # one-window document, on the first such reply (#2035).
+        parse_retries = 1
 
         attempt_content = content
         window_metering: Dict[str, Any] = {}
         segments: List[Segment] = []
         invalid: List[Segment] = []
         answered = 0
-        for attempt in range(max_retries + 1):
+        requests = 0
+        # Why the loop kept an earlier answer, when a re-prompt's reply was unusable.
+        kept_reason: Optional[str] = None
+        attempt = 0
+        while attempt <= max_retries:
+            requests += 1
             try:
                 segments, attempt_metering = self._run_packet_window_call(
                     attempt_content,
@@ -5591,11 +5677,65 @@ class ClassificationService:
                     window_page_ids,
                     forced_class,
                 )
+            except json.JSONDecodeError as e:
+                # Counted here, once: the call returned, so it was billed.
+                window_metering = utils.merge_metering_data(
+                    window_metering, utils.failure_metering(e)
+                )
+                if answered:
+                    # The reply to a class re-prompt. The previous answer is in
+                    # hand, so keep it, as when the re-prompt overflows below.
+                    kept_reason = (
+                        f"the reply to the validation re-prompt could not be "
+                        f"parsed as JSON ({e})"
+                    )
+                    break
+                if not parse_retries:
+                    raise utils.attach_failure_metering(
+                        ValueError(
+                            f"Document {document.id}: the model's reply could not "
+                            f"be parsed as JSON, including after a re-prompt "
+                            f"asking for JSON only ({e})"
+                        ),
+                        window_metering,
+                    ) from e
+                parse_retries -= 1
+                logger.warning(
+                    "Packet window %s: the model's reply for document %s could "
+                    "not be parsed as JSON (%s); re-prompting for JSON only.",
+                    window_label,
+                    document.id,
+                    e,
+                )
+                # Single-turn, like the class re-prompt: the model never sees the
+                # reply that failed, so the instruction must not refer to it.
+                attempt_content = content + [
+                    {
+                        "text": (
+                            "Reply with only the JSON object, in the format asked "
+                            "for above, with no other text before or after it."
+                        )
+                    }
+                ]
+                continue
+            except UnusablePacketReply as e:
+                # Billed like any reply, so counted here, once.
+                window_metering = utils.merge_metering_data(
+                    window_metering, utils.failure_metering(e)
+                )
+                if answered:
+                    kept_reason = (
+                        f"the reply to the validation re-prompt was unusable ({e})"
+                    )
+                    break
+                raise utils.attach_failure_metering(e, window_metering)
             except Exception as e:
                 from idp_common.utils.bedrock_utils import is_input_token_overflow
 
                 if attempt == 0 or not is_input_token_overflow(e):
-                    raise
+                    # Carries the usage of any reply already received, which
+                    # the caller counts even though the window failed.
+                    raise utils.attach_failure_metering(e, window_metering)
                 # The re-prompt is longer than the first request, so it can be
                 # the one that does not fit. Raising here would make the caller
                 # split the window and drop this window's billed first attempt
@@ -5640,16 +5780,28 @@ class ClassificationService:
                         )
                     }
                 ]
+            attempt += 1
 
         fallback = self._fallback_class()
-        logger.error(
-            "Packet window %s still returned invalid class(es) after %d attempt(s); "
-            "assigned fallback '%s' to %d segment(s).",
-            window_label,
-            answered,
-            fallback,
-            len(invalid),
-        )
+        if kept_reason:
+            logger.error(
+                "Packet window %s: %s after %d request(s); kept the previous answer "
+                "and assigned fallback '%s' to its %d invalid segment(s).",
+                window_label,
+                kept_reason,
+                requests,
+                fallback,
+                len(invalid),
+            )
+        else:
+            logger.error(
+                "Packet window %s still returned invalid class(es) after %d "
+                "attempt(s); assigned fallback '%s' to %d segment(s).",
+                window_label,
+                answered,
+                fallback,
+                len(invalid),
+            )
         for seg in invalid:
             # The fallback is not a prediction, so it carries no score.
             seg.doc_class = fallback
@@ -5665,13 +5817,27 @@ class ClassificationService:
         window_page_ids: List[str],
         forced_class: Optional[str],
     ) -> tuple[List[Segment], Dict[str, Any]]:
-        """One packet request and its parse. Split out so validation can retry."""
+        """One packet request and its parse. Split out so validation can retry.
+
+        Every failure after the call returned carries the call's metering
+        (``utils.failure_metering``): a reply that is not JSON raises
+        ``json.JSONDecodeError``, for the caller's re-prompt, and any other reply
+        that cannot be used, including one cut off at ``max_tokens``, raises
+        :class:`UnusablePacketReply`.
+        """
         response_with_metering = self._invoke_bedrock_model(
             content=content, config=config
         )
 
         response = response_with_metering["response"]
         window_metering = response_with_metering.get("metering", {})
+
+        def unusable(message: str) -> BaseException:
+            # The call was billed whatever its reply, so its usage travels with
+            # the failure for the window loop to count (#2035).
+            return utils.attach_failure_metering(
+                UnusablePacketReply(message), window_metering
+            )
 
         # Defensive: handle the case where the LLM returns an empty content array
         content_array = response["output"]["message"].get("content", [])
@@ -5680,9 +5846,7 @@ class ClassificationService:
                 "LLM returned empty content array in packet classification response",
                 extra={"response": response},
             )
-            raise ValueError(
-                "Packet classification failed: LLM returned empty response"
-            )
+            raise unusable("Packet classification failed: LLM returned empty response")
 
         # Reasoning models (Claude Sonnet 5 / 4.6+, extended thinking on) emit
         # reasoningContent block(s) before the answer text block, so content[0]
@@ -5694,11 +5858,23 @@ class ClassificationService:
         )
 
         classification_json = extract_json_from_text(classification_text)
-        classification_data = json.loads(classification_json)
+        try:
+            classification_data = json.loads(classification_json)
+        except json.JSONDecodeError as e:
+            from idp_common.utils.bedrock_utils import is_output_token_truncation
+
+            if is_output_token_truncation(response_with_metering):
+                # A re-prompt has the same max_tokens and would be cut off too.
+                raise unusable(
+                    f"Document {document.id}: the model's reply was cut off at "
+                    f"max_tokens ({config.get('max_tokens')}) before its JSON was "
+                    f"complete"
+                ) from e
+            raise utils.attach_failure_metering(e, window_metering)
         raw_segments = classification_data.get("segments", [])
 
         if not raw_segments:
-            raise ValueError("No segments found in the classification result")
+            raise unusable("No segments found in the classification result")
 
         if forced_class:
             # The document's NAME already asserts the class; the model was
@@ -5720,7 +5896,7 @@ class ClassificationService:
             require_class=config.get("stage") != self.STAGE_SPLITTING,
         )
         if not segments:
-            raise ValueError(
+            raise unusable(
                 "Every segment the model returned was unusable (see warnings above)"
             )
         return segments, window_metering
@@ -6107,15 +6283,23 @@ class ClassificationService:
                 executor.submit(boundary_for, page_id): page_id
                 for page_id in sorted_page_ids
             }
+            transient = _TransientCallFailure(futures)
             for future in as_completed(futures):
+                if future.cancelled():
+                    continue
                 page_id = futures[future]
                 try:
                     future.result()
                 except Exception as e:
+                    if is_transient_error(e):
+                        # Raised after the pool, so the step is retried (#2034).
+                        transient.record(f"Splitting call for page {page_id}", e)
+                        continue
                     error_msg = f"Splitting call failed for page {page_id}: {e}"
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
+        transient.raise_first()
 
         if not verdicts:
             return [], metering, errors
@@ -6155,6 +6339,14 @@ class ClassificationService:
         for a failed call, ``{"validation_error": ...}`` for a class outside the
         vocabulary replaced by the fallback — for the issue recorded on its
         section.
+
+        A call that fails with a throttle or another transient error is not
+        recorded that way. The calls not yet started are cancelled, and once the
+        running ones finish the first transient failure is raised as
+        ``TransientError``, so the classification step is retried (#2034). For
+        the decision-model method only a failure its client reports as
+        ``retry_later`` is transient; ``DecisionModelSectionLabeler`` raises those
+        as ``TransientError``.
         """
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
@@ -6228,12 +6420,26 @@ class ClassificationService:
             futures = {
                 executor.submit(label, index): index for index in range(len(segments))
             }
+            transient = _TransientCallFailure(futures)
             for future in as_completed(futures):
+                if future.cancelled():
+                    continue
                 index = futures[future]
                 try:
                     future.result()
                 except Exception as e:
                     segment = segments[index]
+                    where = (
+                        f"Section classification of segment {index + 1} "
+                        f"(pages {segment.start_page}-{segment.end_page})"
+                    )
+                    # A decision-model error reaching here is one its client did not
+                    # report as retry_later (the labeler raises those as
+                    # TransientError), so its cause chain is not consulted.
+                    if is_transient_error(e) and not isinstance(e, DecisionModelError):
+                        # Raised after the pool, so the step is retried (#2034).
+                        transient.record(where, e)
+                        continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "
                         f"(pages {segment.start_page}-{segment.end_page}): {e}"
@@ -6242,6 +6448,7 @@ class ClassificationService:
                     with lock:
                         errors.append(error_msg)
                         issues[index] = {"error": error_msg}
+        transient.raise_first()
 
         logger.info(
             "Section classification labeled %d/%d segment(s)",

@@ -9,7 +9,7 @@ import { AppLayout, BreadcrumbGroup, Flashbar } from '@cloudscape-design/compone
 import useAppContext from '../../contexts/app';
 import useNotifications from '../../hooks/use-notifications';
 import { mapNotificationsToFlashbar } from '../common/notification-flashbar';
-import { appLayoutLabels } from '../common/labels';
+import { useAppLayoutLabels } from '../common/labels';
 import Navigation from '../genaiidp-layout/navigation';
 import { inboxHref } from '../../routes/constants';
 import InboxPage from './InboxPage';
@@ -22,6 +22,7 @@ const BREADCRUMBS = [
 
 const InboxLayout = (): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
   const flashItems = mapNotificationsToFlashbar(useNotifications());
   // The info panel, closed until asked for, as on the other Home pages.
   const [toolsOpen, setToolsOpen] = useState(false);

@@ -164,6 +164,18 @@ a reply naming an invalid class re-prompts the window up to
 `validation.maxValidationRetries` times, and a segment still invalid afterwards is
 given `fallback_class`.
 
+A packet call's reply that is not JSON — combined, or the splitting call at packet
+granularity — is re-prompted once on the same loop: the request is re-sent with a
+line asking for the JSON only, whatever the validation settings. A second reply that
+is not JSON fails the window with an error naming the document and saying the reply
+could not be parsed, so a one-window document fails with it. A reply cut off at
+`max_tokens` is not re-prompted, because the re-prompt would be cut off too: the
+window fails with an error saying so. A reply to a class re-prompt that cannot be
+used (not JSON, no segments, or no usable segment) keeps the answer already
+received, as an overflowing re-prompt does. Every reply a window received is
+metered, including those of a window that then failed (#2035). The page and section classification paths are unchanged: an
+unparseable reply there is read as text, or handled as an invalid class.
+
 ### The segments contract
 
 Every path produces `list[Segment]` and one builder reads it:
@@ -203,6 +215,18 @@ into extraction as though it had been decided. An out-of-vocabulary answer that
 exhausts its retries gets `fallback_class` (which may be a real class), and
 `_invoke_with_class_validation` returns the validation error so the section records
 `classification_invalid_class_fallback`, as the page-level path does.
+
+A call that fails with a throttle or another transient error (`is_transient_error`)
+is not recorded on its section. This holds for a section classification call, for a
+splitting call at page granularity, and for a packet window at either stage. For the
+decision-model method the client decides instead: only a failure it reports as
+`retry_later` (a request that never ran) is transient, so a read timeout or a dropped
+connection still fails the section. In a pool of calls, the first transient failure cancels the calls not
+yet started, and once the running ones finish it is raised as `TransientError`. A
+packet window raises at once, so the windows after it are never sent. The
+classification Lambda reports it under that name, which `ClassificationStep` retries
+(#2034). Recorded on the section, it would instead fail the whole document in
+ProcessResults with an error no retrier matches.
 
 #### Section classification by a decision model
 

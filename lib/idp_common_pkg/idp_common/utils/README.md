@@ -74,6 +74,13 @@ a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
 
+A `ClientError` whose code is a bare HTTP status — botocore's code when a reply names
+no error type, such as `"500"` with the message `"Internal Server Error"` — is
+transient for 500, 502, 503 and 504 (#2036). The status of a *named* code is not
+consulted: Lambda answers several deterministic errors with a 502, so the name still
+decides. The Bedrock ladders go further and retry any 5xx of those four by status
+(see the [bedrock README](../bedrock/README.md#resilience-features)).
+
 ⚠️ **The throttling half of the vocabulary is read from botocore, not listed here.**
 AWS has at least six spellings meaning "you are being rate limited" — `Throttling`,
 `ThrottlingException`, `ThrottledException`, `RequestThrottled`,

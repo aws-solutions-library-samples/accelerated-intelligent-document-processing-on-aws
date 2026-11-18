@@ -58,7 +58,7 @@ export const editTrail = ({ origin, objectKey, name, queue, testSet }: EditTrail
   const doc: Crumb = { text: name, href: '#' };
   switch (origin) {
     case 'document':
-      return [...documentListBreadcrumbItems, { text: name, href: documentDetailHref(objectKey) }, { text: 'Edit', href: '#' }];
+      return [...documentListBreadcrumbItems(), { text: name, href: documentDetailHref(objectKey) }, { text: 'Edit', href: '#' }];
     case 'review':
       return [...reviewManagementTrail(queue?.view), ...(queue ? [queue.crumb] : []), doc];
     case 'queues':

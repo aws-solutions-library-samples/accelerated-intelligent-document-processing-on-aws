@@ -10,15 +10,14 @@ import { describe, expect, it } from 'vitest';
 import type { SideNavigationProps } from '@cloudscape-design/components';
 
 import { JOBS_PATH, MY_QUEUES_PATH, MY_TASKS_PATH } from '../../routes/constants';
-import { HOME_SECTION, buildHomeNavSection } from './review-queues-nav-items';
+import { buildHomeNavSection } from './review-queues-nav-items';
 
 const inbox: SideNavigationProps.Link = { type: 'link', text: 'Inbox', href: '#/inbox' };
 
 describe('buildHomeNavSection', () => {
   it('lists Inbox, Tasks and Queues for an Annotator', () => {
     const section = buildHomeNavSection(inbox, { showWork: true, taskCount: 0 });
-    expect(section.text).toBe(HOME_SECTION);
-    expect(HOME_SECTION).toBe('Home');
+    expect(section.text).toBe('Home');
     const links = section.items as SideNavigationProps.Link[];
     expect(links.map((l) => l.text)).toEqual(['Inbox', 'Tasks', 'Queues']);
     expect(links.map((l) => l.href)).toEqual(['#/inbox', `#${MY_TASKS_PATH}`, `#${MY_QUEUES_PATH}`]);
