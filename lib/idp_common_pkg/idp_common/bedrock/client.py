@@ -78,6 +78,7 @@ from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     REGION_PREFIXES,
     get_model_max_output_tokens,
+    http_server_error_status,
     metering_model_id,
     parse_max_tokens_limit_from_error,
     parse_model_id,
@@ -2210,8 +2211,13 @@ class BedrockClient:
                 "RequestTimeout",
                 "RequestTimeoutException",
             ]
+            # An HTTP 500, 502, 503 or 504 is retried whatever code it carries,
+            # including the bare status botocore uses as the code when the reply
+            # names no error ("500", "Internal Server Error"). Matched by name
+            # alone, that one failed the call on its first attempt (#2036).
+            server_error_status = http_server_error_status(e.response)
 
-            if error_code in retryable_errors:
+            if error_code in retryable_errors or server_error_status is not None:
                 self._put_metric("BedrockThrottles", 1)
 
                 # Emit circuit-breaker specific metrics by error category.
@@ -2219,7 +2225,12 @@ class BedrockClient:
                 # that feeds BedrockServiceOutageAlarm (the circuit breaker
                 # trigger). For per-path counts use BedrockThrottles
                 # (generation, above) or BedrockEmbeddingThrottles (embedding).
-                if error_code == "ServiceUnavailableException":
+                # A 503 is "service unavailable" whatever its code; a 500, 502 or
+                # 504 has no category, like InternalServerException.
+                if (
+                    error_code == "ServiceUnavailableException"
+                    or server_error_status == 503
+                ):
                     self._put_metric("BedrockServiceUnavailable", 1)
                 elif error_code in (
                     "ThrottlingException",
@@ -2699,8 +2710,11 @@ class BedrockClient:
                 "TimeoutError",
                 "RequestTimeoutException",
             ]
+            # The same rule as the generation ladder: any HTTP 500, 502, 503 or
+            # 504 is retried, whatever its code (#2036).
+            server_error_status = http_server_error_status(e.response)
 
-            if error_code in retryable_errors:
+            if error_code in retryable_errors or server_error_status is not None:
                 self._put_metric("BedrockEmbeddingThrottles", 1)
 
                 # Emit circuit-breaker specific metrics by error category.
@@ -2708,7 +2722,10 @@ class BedrockClient:
                 # that feeds BedrockServiceOutageAlarm (the circuit breaker
                 # trigger). For per-path counts use BedrockEmbeddingThrottles
                 # (embedding, above) or BedrockThrottles (generation).
-                if error_code == "ServiceUnavailableException":
+                if (
+                    error_code == "ServiceUnavailableException"
+                    or server_error_status == 503
+                ):
                     self._put_metric("BedrockServiceUnavailable", 1)
                 elif error_code in (
                     "ThrottlingException",

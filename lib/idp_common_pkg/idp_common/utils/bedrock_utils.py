@@ -13,13 +13,14 @@ import random
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
 import urllib3.exceptions
 
+from idp_common.bedrock.model_utils import http_server_error_status
 from idp_common.failed_attempt import drop_failed_attempt
 
 # The invocation deadline, the sleep clamp and the pre-attempt budget gate. They live
@@ -522,14 +523,35 @@ def _raised_from(error: BaseException, types: tuple[type[BaseException], ...]) -
     caller was handling. ``transient_errors`` follows the same rule for the same
     reason. Cycle-safe and bounded.
     """
+    return any(isinstance(node, types) for node in _cause_chain(error))
+
+
+def _raised_from_server_error(error: BaseException) -> bool:
+    """Whether ``error``, or an exception it was explicitly raised ``from``, is a
+    ``ClientError`` for an HTTP 500, 502, 503 or 504 reply.
+
+    Strands delivers a Bedrock ``ClientError`` raw from the first model call and
+    wrapped in ``EventLoopException`` from later cycles (see
+    ``_RETRYABLE_TRANSPORT_EXCEPTION_TYPES``). A bare-status code (``"500"``)
+    matches nothing in the substring vocabulary, so without this the wrapped form
+    failed on its first attempt (#2036).
+    """
+    return any(
+        isinstance(node, botocore.exceptions.ClientError)
+        and http_server_error_status(node.response) is not None
+        for node in _cause_chain(error)
+    )
+
+
+def _cause_chain(error: BaseException) -> Iterator[BaseException]:
+    """``error`` and its explicit ``raise ... from`` ancestors, cycle-safe and
+    bounded; see :func:`_raised_from` for why ``__context__`` is not followed."""
     seen: set[int] = set()
     node: BaseException | None = error
     while node is not None and id(node) not in seen and len(seen) < _MAX_CAUSE_CHAIN:
-        if isinstance(node, types):
-            return True
+        yield node
         seen.add(id(node))
         node = node.__cause__
-    return False
 
 
 def async_exponential_backoff_retry[T, **P](
@@ -614,11 +636,12 @@ def async_exponential_backoff_retry[T, **P](
                         not in e.response.get("Error", {}).get("Message", "")
                     ):
                         raise
-                    if (
-                        error_code is None
-                        or error_code.lower() not in retryable_lower
-                        or attempt == max_retries - 1
-                    ):
+                    # Any HTTP 500/502/503/504 is retried whatever its code,
+                    # as on the Converse ladder in bedrock/client.py (#2036).
+                    is_retryable_code = (
+                        error_code is not None and error_code.lower() in retryable_lower
+                    ) or http_server_error_status(e.response) is not None
+                    if not is_retryable_code or attempt == max_retries - 1:
                         raise
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
@@ -656,8 +679,11 @@ def async_exponential_backoff_retry[T, **P](
                         log_bedrock_invocation_error(e, attempt + 1)
                         raise
                     # A retryable exception type (Strands' ModelThrottledException,
-                    # botocore's transport failures), raw or raised ``from`` one.
-                    is_retryable_type = _raised_from(e, retryable_exception_types)
+                    # botocore's transport failures) or an HTTP 5xx ClientError,
+                    # raw or raised ``from`` one.
+                    is_retryable_type = _raised_from(
+                        e, retryable_exception_types
+                    ) or _raised_from_server_error(e)
 
                     # Also check if exception name or message contains retryable error patterns
                     exception_name = type(e).__name__
@@ -841,11 +867,11 @@ def exponential_backoff_retry[T, **P](
                     # both paths retry the same conditions; converse_stream is
                     # wrapped here, so any streaming-only spelling omitted from
                     # that set fails the caller on the first attempt.
-                    if (
-                        error_code is None
-                        or error_code.lower() not in _DEFAULT_RETRYABLE_ERRORS_LOWER
-                        or attempt == max_retries - 1
-                    ):
+                    is_retryable_code = (
+                        error_code is not None
+                        and error_code.lower() in _DEFAULT_RETRYABLE_ERRORS_LOWER
+                    ) or http_server_error_status(e.response) is not None
+                    if not is_retryable_code or attempt == max_retries - 1:
                         raise
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter

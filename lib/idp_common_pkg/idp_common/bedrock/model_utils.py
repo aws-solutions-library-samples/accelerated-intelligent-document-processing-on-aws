@@ -15,7 +15,7 @@ import re
 import time
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import yaml
 
@@ -613,3 +613,41 @@ def parse_max_tokens_limit_from_error(message: str) -> Optional[int]:
             except ValueError:
                 return None
     return None
+
+
+#: HTTP statuses that mean the server failed a request that can succeed when it is
+#: sent again. 501 (Not Implemented) and 505 (HTTP Version Not Supported) are 5xx
+#: too, but they fail the same way every time, so they are left out.
+RETRYABLE_HTTP_SERVER_STATUSES = frozenset({500, 502, 503, 504})
+
+_BARE_STATUS_CODES = {str(status): status for status in RETRYABLE_HTTP_SERVER_STATUSES}
+
+
+def bare_http_server_status(code: object) -> Optional[int]:
+    """The status when a botocore error code is a bare retryable HTTP status, else None.
+
+    botocore uses the HTTP status itself as the error code (``"500"``, with the
+    message ``"Internal Server Error"``) when a reply names no error type, as an
+    empty or HTML body from a front end does. Such a code says nothing about the
+    request, only that the server failed it (#2036).
+    """
+    return _BARE_STATUS_CODES.get(code) if isinstance(code, str) else None
+
+
+def http_server_error_status(
+    error_response: Optional[Mapping[str, Any]],
+) -> Optional[int]:
+    """The retryable HTTP server-error status of a botocore error response, else None.
+
+    Read from the reply's HTTP status, then from a bare-status error code, so a
+    500, 502, 503 or 504 is recognised whatever code it carries. Use it for Bedrock
+    replies, where every documented 5xx (``InternalServerException``,
+    ``ServiceUnavailableException``) is transient. It is not a rule for every AWS
+    service: Lambda, for one, answers several deterministic errors with a 502,
+    which is why ``utils.transient_errors`` uses only :func:`bare_http_server_status`.
+    """
+    response = error_response or {}
+    status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+    if isinstance(status, int) and status in RETRYABLE_HTTP_SERVER_STATUSES:
+        return status
+    return bare_http_server_status((response.get("Error") or {}).get("Code"))
