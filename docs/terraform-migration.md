@@ -90,8 +90,8 @@ You need:
   older module plans to replace a pool whose setting differs from its own, which
   would delete every user. The change that prevents this is in [pull request
   #1848](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1848),
-  which ships in the first release after 0.6.14; no published release has it yet.
-  With an older module the `apply` phase finds the replacement and refuses.
+  which is in release 0.6.15 and later. With an older module the `apply` phase finds
+  the replacement and refuses.
 - A name for the new deployment that no CloudFormation stack uses (at most 25
   characters), and the old deployment's admin username.
 - A maintenance window. From the freeze step on, the old deployment stops taking new
