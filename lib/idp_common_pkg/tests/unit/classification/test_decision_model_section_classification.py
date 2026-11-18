@@ -30,12 +30,21 @@ from unittest.mock import patch
 import pytest
 
 from idp_common.classification.service import ClassificationService
+from idp_common.config.models import DECISION_MODEL_MAX_SECTION_PAGES
 from idp_common.config.schema_constants import UNCLASSIFIED_CLASS
 from tests.unit.classification.test_split_then_classify import (
     _classes,
     _document,
     _png,
     _reply,
+)
+from tests.unit.decision_model.window_contract import (  # noqa: F401 - autouse
+    DENSE_STYLES,
+    WINDOW_INPUT_TOKENS,
+    dense_page,
+    no_oversize_requests,
+    request_tokens,
+    window_refusal,
 )
 
 pytestmark = pytest.mark.unit
@@ -53,6 +62,9 @@ class FakeDecider:
 
     def invoke(self, FunctionName, InvocationType, Payload):
         self.requests.append(json.loads(Payload))
+        refusal = window_refusal(Payload)
+        if refusal:
+            return refusal
         if self.error is not None:
             return {
                 "FunctionError": "Unhandled",
@@ -389,3 +401,43 @@ def test_a_limit_with_no_room_for_section_text_is_refused_at_load():
         section(input="both", max_pages=2, max_input_tokens=512)
     assert section(input="both", max_pages=1, max_input_tokens=512)
     assert section(input="images", max_pages=2, max_input_tokens=256)
+
+
+def test_every_section_request_fits_the_window_at_the_most_pages():
+    """#2051: a section of dense pages at the largest ``max_pages``, in ``text``,
+    ``both`` and ``images``, with two classes and with eight, at the default
+    ``max_input_tokens``. Every request fits the window; with text, the section's
+    text had to be cut to make it fit."""
+    pages = DECISION_MODEL_MAX_SECTION_PAGES
+    classes_cases = (("invoice", "receipt"), tuple(f"class{i}" for i in range(8)))
+    for mode in ("text", "both", "images"):
+        for classes in classes_cases:
+            service = _service(
+                decision_model={"input": mode, "max_pages": pages}, classes=classes
+            )
+            cfg = service.config.classification.split_then_classify
+            limit = cfg.section_classification.decision_model.max_input_tokens
+            assert limit == WINDOW_INPUT_TOKENS
+            for style in DENSE_STYLES if mode != "images" else DENSE_STYLES[:1]:
+                case = f"input {mode}, {len(classes)} classes, {style} text"
+                texts = [dense_page(style, p) for p in range(1, pages + 1)]
+                decider = FakeDecider([{name: 1 / len(classes) for name in classes}])
+                bedrock, _ = _split((1, pages))
+                result = _run_with_texts(
+                    service, _document(pages), decider, bedrock, texts
+                )
+
+                assert result.sections[0].classification in classes, (
+                    f"{case}: {result.errors}"
+                )
+                (request,) = decider.requests
+                assert len(request["images"]) == (pages if mode != "text" else 0)
+                if mode != "images":
+                    # The first page alone is over the window, so it was cut.
+                    assert request["state"].startswith(f"Page 1:\n{texts[0][:20]}")
+                    assert "Page 2:" not in request["state"], case
+                tokens = request_tokens(request)
+                assert tokens <= WINDOW_INPUT_TOKENS, (
+                    f"{case}: the request was about {tokens:.0f} tokens, over the "
+                    f"{WINDOW_INPUT_TOKENS} the window holds"
+                )
