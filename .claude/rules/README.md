@@ -33,3 +33,7 @@ always loads.
   that owns it.
 - Write what is true now, and don't put counts of files, tests or other items in
   these files (see [lint-and-gates.md](lint-and-gates.md)).
+- Give every rule file a row in the table above, and point each `paths:` glob at
+  files that exist. `scripts/tests/test_claude_rules.py` fails when a glob matches
+  no file, when it uses glob syntax the test cannot read, when the table and the
+  directory disagree, or when front matter holds anything but `paths:`.

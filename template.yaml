@@ -374,7 +374,7 @@ Parameters:
     Type: String
     Default: 'true'
     AllowedValues: [ 'true', 'false' ]
-    Description: Show the floating Quick Start chat widget in the web UI for prompt-based config bootstrap
+    Description: Offer Quick Start (prompt-based configuration bootstrap) in the web UI. When false, the UI hides it and the chat routes refuse it; idp-cli bootstrap is unaffected
 
   # Optional Knowledge Base Configuration
   DocumentKnowledgeBase:
@@ -3651,6 +3651,7 @@ Resources:
         DataRetentionInDays: !Ref DataRetentionInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        EnableQuickStartWidget: !Ref EnableQuickStartWidget
         
         # Conditional parameters
         HasGuardrailConfig: !If [HasGuardrailConfig, "true", "false"]
@@ -12549,6 +12550,7 @@ Resources:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -12907,6 +12909,7 @@ Resources:
           AWS_LWA_INVOKE_MODE: response_stream
           PORT: "8080"
           LOG_LEVEL: !Ref LogLevel
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           # Pin idp_common.metrics.put_metric to the stack namespace so
           # Bedrock throttle/latency/token emits from
           # idp_common.bedrock.client._put_metric match the

@@ -2249,9 +2249,9 @@ ai_ux_test_stories_nightly:
     - size:large
   # ceil(nightly flows / k), where k = floor((deadline_minutes - setup_minutes
   # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
-  # gate: 13 p0 flows at 3 a shard. The CI-jobs test recomputes it from the
-  # catalogue.
-  parallel: 5
+  # gate. The CI-jobs test recomputes both from the catalogue and fails when a
+  # p0 flow no longer fits.
+  parallel: 6
   rules: &ux_story_nightly_rules
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
       when: never

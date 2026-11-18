@@ -398,6 +398,7 @@
         },
         {
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
