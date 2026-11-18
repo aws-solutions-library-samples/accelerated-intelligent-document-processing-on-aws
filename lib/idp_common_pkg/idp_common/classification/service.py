@@ -23,10 +23,10 @@ import logging
 import os
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Set, Union
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple, Union
 
 import boto3
 from botocore.exceptions import ClientError
@@ -72,6 +72,7 @@ from idp_common.utils import (
     extract_structured_data_from_text,
 )
 from idp_common.utils.few_shot_example_builder import build_few_shot_examples_content
+from idp_common.utils.transient_errors import is_transient_error, reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -264,6 +265,49 @@ def _annotate_image_refusal(
         exc.args = (f"{exc}\n{hint}",) + tuple(exc.args[1:])
     except Exception:  # pragma: no cover - an exception with read-only args
         pass
+
+
+class _TransientCallFailure:
+    """Stops a pool of model calls at its first transient failure, then raises it.
+
+    A section classification segment or a splitting call that fails with a throttle
+    or another transient error (``is_transient_error``) is not recorded on its
+    section. Recorded, it became a string in ``document.errors``, and ProcessResults
+    then failed the whole document with a plain ``Exception`` that no retrier
+    matches, so one throttled call lost the packet (#2034). Raised as
+    ``TransientError`` instead, it reaches ``ClassificationStep``'s retrier, which
+    runs the whole step again from the OCR output with its longer backoff.
+
+    The first transient failure cancels every call the pool has not started,
+    because the retry makes those calls anyway. Calls already running finish, and
+    their results are discarded with the rest of the attempt. Deterministic
+    failures are not this class's business: they keep their per-section handling.
+    """
+
+    def __init__(self, futures: Iterable[Future]):
+        self._futures = list(futures)
+        self.first: Optional[Tuple[str, BaseException]] = None
+        self.count = 0
+
+    def record(self, where: str, exc: BaseException) -> None:
+        self.count += 1
+        logger.warning("%s failed with a transient error: %s", where, exc)
+        if self.first is None:
+            self.first = (where, exc)
+            for future in self._futures:
+                future.cancel()
+
+    def raise_first(self) -> None:
+        """Raise the first transient failure as ``TransientError``, if there was one."""
+        if self.first is None:
+            return
+        where, exc = self.first
+        logger.error(
+            "%d call(s) failed with a transient error; raising the first so the "
+            "classification step is retried",
+            self.count,
+        )
+        reraise_if_transient(exc, where=where)
 
 
 class ClassificationService:
@@ -5283,6 +5327,11 @@ class ClassificationService:
             every window failed; ``errors`` names each window that did, so a
             partial result is still reported as partial rather than as a clean
             run over fewer pages.
+
+        Raises:
+            TransientError: a window failed with a throttle or another transient
+                error, so the classification step is retried rather than the
+                window being reported as failed (#2034).
         """
         from idp_common.utils.bedrock_utils import (
             is_image_count_rejection,
@@ -5387,9 +5436,20 @@ class ClassificationService:
                         (halves[1], f"{window_label}b", True),
                     ]
                     continue
-                # One window failing must not discard the others: on a long
-                # packet that would turn a transient throttle into a total loss
-                # of a 40-page document's boundaries.
+                # A throttle or another transient failure is raised rather than
+                # recorded. Recorded, it failed the whole document later, in
+                # ProcessResults, with an error no retrier matches; raised, the
+                # classification step is retried and the windows still pending
+                # are never sent (#2034).
+                reraise_if_transient(
+                    e,
+                    where=(
+                        f"Packet window {window_label} "
+                        f"(pages {window_page_ids[0]}-{window_page_ids[-1]})"
+                    ),
+                )
+                # A deterministic failure in one window does not discard the
+                # others' boundaries.
                 error_msg = (
                     f"Packet window {window_label} "
                     f"(pages {window_page_ids[0]}-{window_page_ids[-1]}) "
@@ -6107,15 +6167,23 @@ class ClassificationService:
                 executor.submit(boundary_for, page_id): page_id
                 for page_id in sorted_page_ids
             }
+            transient = _TransientCallFailure(futures)
             for future in as_completed(futures):
+                if future.cancelled():
+                    continue
                 page_id = futures[future]
                 try:
                     future.result()
                 except Exception as e:
+                    if is_transient_error(e):
+                        # Raised after the pool, so the step is retried (#2034).
+                        transient.record(f"Splitting call for page {page_id}", e)
+                        continue
                     error_msg = f"Splitting call failed for page {page_id}: {e}"
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
+        transient.raise_first()
 
         if not verdicts:
             return [], metering, errors
@@ -6155,6 +6223,12 @@ class ClassificationService:
         for a failed call, ``{"validation_error": ...}`` for a class outside the
         vocabulary replaced by the fallback — for the issue recorded on its
         section.
+
+        A call that fails with a throttle or another transient error is not
+        recorded that way. The calls not yet started are cancelled, and once the
+        running ones finish the first transient failure is raised as
+        ``TransientError``, so the classification step is retried (#2034). This
+        holds for the LLM and the decision-model methods alike.
         """
         config = self._get_classification_config(self.STAGE_SECTION_CLASSIFICATION)
         _, send_images = self._resolve_modality(stage=self.STAGE_SECTION_CLASSIFICATION)
@@ -6228,12 +6302,23 @@ class ClassificationService:
             futures = {
                 executor.submit(label, index): index for index in range(len(segments))
             }
+            transient = _TransientCallFailure(futures)
             for future in as_completed(futures):
+                if future.cancelled():
+                    continue
                 index = futures[future]
                 try:
                     future.result()
                 except Exception as e:
                     segment = segments[index]
+                    where = (
+                        f"Section classification of segment {index + 1} "
+                        f"(pages {segment.start_page}-{segment.end_page})"
+                    )
+                    if is_transient_error(e):
+                        # Raised after the pool, so the step is retried (#2034).
+                        transient.record(where, e)
+                        continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "
                         f"(pages {segment.start_page}-{segment.end_page}): {e}"
@@ -6242,6 +6327,7 @@ class ClassificationService:
                     with lock:
                         errors.append(error_msg)
                         issues[index] = {"error": error_msg}
+        transient.raise_first()
 
         logger.info(
             "Section classification labeled %d/%d segment(s)",

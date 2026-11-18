@@ -204,6 +204,16 @@ exhausts its retries gets `fallback_class` (which may be a real class), and
 `_invoke_with_class_validation` returns the validation error so the section records
 `classification_invalid_class_fallback`, as the page-level path does.
 
+A call that fails with a throttle or another transient error (`is_transient_error`)
+is not recorded on its section. This holds for a section classification call, by
+either method, for a splitting call at page granularity, and for a packet window at
+either stage. In a pool of calls, the first transient failure cancels the calls not
+yet started, and once the running ones finish it is raised as `TransientError`. A
+packet window raises at once, so the windows after it are never sent. The
+classification Lambda reports it under that name, which `ClassificationStep` retries
+(#2034). Recorded on the section, it would instead fail the whole document in
+ProcessResults with an error no retrier matches.
+
 #### Which placeholders a stage is allowed to render
 
 The prefix saving is the whole justification for split-then-classify, so **the

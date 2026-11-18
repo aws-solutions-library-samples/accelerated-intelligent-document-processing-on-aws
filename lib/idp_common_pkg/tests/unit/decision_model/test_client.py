@@ -296,3 +296,57 @@ def test_the_input_modes_are_the_configs():
     from idp_common.decision_model import INPUT_MODES
 
     assert INPUT_MODES is DECISION_MODEL_INPUTS
+
+
+# A failure that outlasts the retries keeps what made it retryable as its
+# ``__cause__``, so ``is_transient_error`` can tell a throttle from a refusal and the
+# classification step is retried rather than the section failed (#2034).
+
+
+def test_a_throttle_past_the_retries_is_transient():
+    from idp_common.utils.transient_errors import is_transient_error
+
+    last = _client_error("TooManyRequestsException")
+    fake = FakeLambda([_client_error("TooManyRequestsException"), last])
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert caught.value.__cause__ is last
+    assert is_transient_error(caught.value)
+
+
+def test_a_connection_that_never_opened_past_the_retries_is_transient():
+    from botocore.exceptions import ConnectTimeoutError
+
+    from idp_common.utils.transient_errors import is_transient_error
+
+    fake = FakeLambda([ConnectTimeoutError(endpoint_url="x")] * 2)
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert isinstance(caught.value.__cause__, ConnectTimeoutError)
+    assert is_transient_error(caught.value)
+
+
+def test_no_time_left_for_a_throttle_retry_is_transient(monkeypatch):
+    from idp_common.utils.transient_errors import is_transient_error
+
+    monkeypatch.setattr(
+        "idp_common.decision_model.invoker.attempt_cannot_finish", lambda *a: True
+    )
+    fake = FakeLambda([_client_error("TooManyRequestsException")])
+    with pytest.raises(DecisionModelUnavailable, match="no time left") as caught:
+        _client(fake).decide(_request(), "Ctx")
+    assert is_transient_error(caught.value)
+
+
+def test_a_crashed_environment_past_the_retries_is_not_transient():
+    """The control: a function error carries no exception, so nothing is chained, and
+    an environment that keeps crashing on one request is not retried as a step."""
+    from idp_common.utils.transient_errors import is_transient_error
+
+    fake = FakeLambda(
+        [_function_error("Runtime.ExitError", "exited") for _ in range(2)]
+    )
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert caught.value.__cause__ is None
+    assert not is_transient_error(caught.value)

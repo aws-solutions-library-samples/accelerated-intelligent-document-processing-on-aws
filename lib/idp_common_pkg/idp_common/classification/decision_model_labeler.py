@@ -10,10 +10,12 @@ is its ``classification_candidates``, in the shape the LLM path writes, so secti
 forming, HITL and extraction do not change.
 
 A failed call fails its section: the segment keeps no class and the error is
-recorded on it, exactly as an LLM labeling call that fails. It is never converted
-into an LLM call. ``low_confidence`` is the only route to another labeler. It
-applies to an answer below ``min_confidence``, never to an error, and is off at
-its default of 0.
+recorded on it, exactly as an LLM labeling call that fails. A throttle that outlasts
+the client's retries, a timeout or a dropped connection is transient instead, and is
+raised so the classification step is retried, as on the LLM path (#2034). Either way
+it is never converted into an LLM call. ``low_confidence`` is the only route to
+another labeler. It applies to an answer below ``min_confidence``, never to an
+error, and is off at its default of 0.
 """
 
 from __future__ import annotations

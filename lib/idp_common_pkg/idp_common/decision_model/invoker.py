@@ -211,12 +211,17 @@ class DecisionModelClient:
                 worst_attempt_seconds = max(
                     worst_attempt_seconds, time.time() - attempt_start_time
                 )
+                # ``from retry.cause``: the throttle or connect error that made
+                # the attempt retryable stays the ``__cause__``, which is what lets
+                # ``is_transient_error`` tell a throttle that outlasted these
+                # retries from a refusal, so the classification step is retried
+                # rather than the section failed (#2034).
                 if attempt >= self.max_retries:
                     self._put_metric("DecisionModelRequestsFailed", 1)
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason} after "
                         f"{attempt + 1} attempts"
-                    ) from None
+                    ) from retry.cause
                 backoff = self._backoff_within_invocation(attempt)
                 if attempt_cannot_finish(
                     worst_attempt_seconds + backoff, self.function_name
@@ -226,7 +231,7 @@ class DecisionModelClient:
                     raise DecisionModelUnavailable(
                         f"{self.function_name}: {retry.reason}; no time left in "
                         "this invocation for another attempt"
-                    ) from None
+                    ) from retry.cause
                 logger.warning(
                     "Decision model %s: %s; retrying in %.1fs (attempt %d of %d)",
                     self.function_name,
@@ -297,7 +302,7 @@ class DecisionModelClient:
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
             if code in _RETRYABLE_CLIENT_ERRORS:
-                raise _Retry(code) from None
+                raise _Retry(code, cause=e) from None
             raise DecisionModelUnavailable(
                 f"{self.function_name}: {code}: "
                 f"{e.response.get('Error', {}).get('Message', '')}"
@@ -312,7 +317,7 @@ class DecisionModelClient:
         except (ConnectTimeoutError, EndpointConnectionError) as e:
             # The connection never opened, so the invocation never began: the one
             # failure that is safe to retry without re-running paid work.
-            raise _Retry(f"{type(e).__name__}: {e}") from None
+            raise _Retry(f"{type(e).__name__}: {e}", cause=e) from None
         except BotoCoreError as e:
             # Anything else below the API, including ConnectionClosedError: the
             # request may have been delivered, so like a read timeout it is not
@@ -368,6 +373,9 @@ class DecisionModelClient:
 
 
 class _Retry(Exception):
-    def __init__(self, reason: str):
+    def __init__(self, reason: str, cause: Optional[BaseException] = None):
         super().__init__(reason)
         self.reason = reason
+        #: The exception that made the attempt retryable, when there was one. A
+        #: crashed execution environment has none: it arrives as a function error.
+        self.cause = cause
