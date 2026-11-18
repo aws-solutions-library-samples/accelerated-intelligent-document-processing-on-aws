@@ -735,6 +735,12 @@ same class that the model let share a page are not joined into one.
 One window failing does not discard the others, so a transient throttle on a long
 packet costs that window's boundaries rather than the whole document's.
 
+A reply that is not JSON gets one re-prompt asking for the JSON only. If the second
+reply is not JSON either, the window fails with an error saying the model's reply
+could not be parsed. Both calls are metered. See the
+[classification module README](../lib/idp_common_pkg/idp_common/classification/README.md#windowing-and-merging)
+for the details.
+
 `window_pages` is a page count, so a window can still be too large for the model
 once its page images are attached: a full window of full-resolution scans can
 exceed a smaller model's input, and the Converse API also limits how many images

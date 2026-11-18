@@ -5353,6 +5353,11 @@ class ClassificationService:
                     forced_class=forced_class,
                 )
             except Exception as e:
+                # Replies the window received before it failed were billed, so
+                # count them whether the window is split or reported (#2035).
+                received = utils.failure_metering(e)
+                if received:
+                    metering = utils.merge_metering_data(metering, received)
                 # Two refusals that a smaller window fixes: the input is too
                 # long, or the request carries too many page images (Bedrock
                 # caps images per request, so a window above that cap with
@@ -5576,13 +5581,19 @@ class ClassificationService:
             and self._class_validation_enforced()
         )
         max_retries = self._class_validation_retries() if validates else 0
+        # A reply that is not JSON at all gets one re-prompt asking for the JSON
+        # only, on this same loop and whatever the validation settings, so the
+        # splitting call gets it too. It used to fail the window, and with it a
+        # one-window document, on the first such reply (#2035).
+        parse_retries = 1
 
         attempt_content = content
         window_metering: Dict[str, Any] = {}
         segments: List[Segment] = []
         invalid: List[Segment] = []
         answered = 0
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             try:
                 segments, attempt_metering = self._run_packet_window_call(
                     attempt_content,
@@ -5591,11 +5602,56 @@ class ClassificationService:
                     window_page_ids,
                     forced_class,
                 )
+            except json.JSONDecodeError as e:
+                # Counted here, once: the call returned, so it was billed.
+                window_metering = utils.merge_metering_data(
+                    window_metering, utils.failure_metering(e)
+                )
+                if answered:
+                    # The reply to a class re-prompt. The previous answer is in
+                    # hand, so keep it, as when the re-prompt overflows below.
+                    logger.warning(
+                        "Packet window %s: the reply to the validation re-prompt "
+                        "could not be parsed as JSON (%s); keeping the previous "
+                        "answer.",
+                        window_label,
+                        e,
+                    )
+                    break
+                if not parse_retries:
+                    raise utils.attach_failure_metering(
+                        ValueError(
+                            f"Document {document.id}: the model's reply could not "
+                            f"be parsed as JSON, including after a re-prompt "
+                            f"asking for JSON only ({e})"
+                        ),
+                        window_metering,
+                    ) from e
+                parse_retries -= 1
+                logger.warning(
+                    "Packet window %s: the model's reply for document %s could "
+                    "not be parsed as JSON (%s); re-prompting for JSON only.",
+                    window_label,
+                    document.id,
+                    e,
+                )
+                attempt_content = content + [
+                    {
+                        "text": (
+                            "Your previous reply could not be parsed as JSON. "
+                            "Reply with only the JSON object, in the format "
+                            "asked for above, and no other text."
+                        )
+                    }
+                ]
+                continue
             except Exception as e:
                 from idp_common.utils.bedrock_utils import is_input_token_overflow
 
                 if attempt == 0 or not is_input_token_overflow(e):
-                    raise
+                    # Carries the usage of any reply already received, which
+                    # the caller counts even though the window failed.
+                    raise utils.attach_failure_metering(e, window_metering)
                 # The re-prompt is longer than the first request, so it can be
                 # the one that does not fit. Raising here would make the caller
                 # split the window and drop this window's billed first attempt
@@ -5640,6 +5696,7 @@ class ClassificationService:
                         )
                     }
                 ]
+            attempt += 1
 
         fallback = self._fallback_class()
         logger.error(
@@ -5665,7 +5722,11 @@ class ClassificationService:
         window_page_ids: List[str],
         forced_class: Optional[str],
     ) -> tuple[List[Segment], Dict[str, Any]]:
-        """One packet request and its parse. Split out so validation can retry."""
+        """One packet request and its parse. Split out so validation can retry.
+
+        A reply that is not JSON raises ``json.JSONDecodeError`` carrying the
+        call's metering (``utils.failure_metering``), for the caller's retry.
+        """
         response_with_metering = self._invoke_bedrock_model(
             content=content, config=config
         )
@@ -5694,7 +5755,12 @@ class ClassificationService:
         )
 
         classification_json = extract_json_from_text(classification_text)
-        classification_data = json.loads(classification_json)
+        try:
+            classification_data = json.loads(classification_json)
+        except json.JSONDecodeError as e:
+            # The call was billed whether or not its reply parses, so its usage
+            # travels with the failure for the retry loop to count (#2035).
+            raise utils.attach_failure_metering(e, window_metering)
         raw_segments = classification_data.get("segments", [])
 
         if not raw_segments:

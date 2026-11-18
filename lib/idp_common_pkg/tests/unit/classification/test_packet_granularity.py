@@ -34,8 +34,13 @@ import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
+import boto3
 import pytest
+from botocore.config import Config
+from botocore.stub import Stubber
 
+from idp_common.bedrock import client as bedrock_client_module
+from idp_common.bedrock.client import BedrockClient
 from idp_common.classification.models import Segment
 from idp_common.classification.service import ClassificationService
 from idp_common.config.merge_utils import merge_config_with_defaults
@@ -1816,3 +1821,199 @@ class TestPacketGranularityHonoursClassValidation:
         )
         assert len(calls) == 1
         assert segments[0].doc_class == "invoice"
+
+
+#: A normal-length answer that is not JSON: what the model sent in #2035.
+_PROSE = "The packet holds an invoice on pages 1-2 and a receipt on pages 3-4."
+_JSON_ONLY_RE_PROMPT = "could not be parsed as JSON"
+
+
+def _reply_text(text: str, input_tokens: int) -> Dict[str, Any]:
+    return {
+        "response": {"output": {"message": {"content": [{"text": text}]}}},
+        "metering": {"Classification/bedrock/nova": {"inputTokens": input_tokens}},
+    }
+
+
+@pytest.mark.unit
+class TestAReplyThatIsNotJsonIsRetriedOnce:
+    """#2035: a reply that is not JSON used to fail the window, and with it a
+    one-window document, on the first attempt. It now gets one re-prompt asking
+    for the JSON only, on the same loop as the class-validation re-prompt, and
+    every call made is metered once."""
+
+    TWO_SEGMENTS = json.dumps(
+        {
+            "segments": [
+                {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "invoice"},
+                {"ordinal_start_page": 3, "ordinal_end_page": 4, "type": "receipt"},
+            ]
+        }
+    )
+
+    def _classify(self, replies: List[Dict[str, Any]], **classification: Any):
+        service = _service(**classification)
+        calls: List[List[Dict[str, Any]]] = []
+        queue = list(replies)
+
+        def invoke(*, content, config):
+            calls.append(content)
+            return queue.pop(0)
+
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=invoke),
+        ):
+            result = service.packet_classify_document(_document(4))
+        return result, calls
+
+    def test_a_reply_that_is_not_json_is_re_prompted_and_the_document_classified(
+        self,
+    ):
+        result, calls = self._classify(
+            [_reply_text(_PROSE, 300), _reply_text(self.TWO_SEGMENTS, 700)]
+        )
+
+        assert result.status != Status.FAILED, result.errors
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        assert len(calls) == 2, "one re-prompt"
+        first_text = "".join(b.get("text", "") for b in calls[0])
+        assert _JSON_ONLY_RE_PROMPT not in first_text
+        assert calls[1][:-1] == calls[0], "the re-prompt repeats the request"
+        assert _JSON_ONLY_RE_PROMPT in calls[1][-1]["text"]
+        # Both calls were billed, so both are counted, each once.
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+
+    def test_the_re_prompt_is_made_with_class_validation_off(self):
+        """It is not a validation retry, so turning validation off leaves it on."""
+        result, calls = self._classify(
+            [_reply_text(_PROSE, 300), _reply_text(self.TWO_SEGMENTS, 700)],
+            enforceValidClasses=False,
+        )
+        assert len(calls) == 2
+        assert len(result.sections) == 2
+
+    def test_two_replies_that_are_not_json_fail_with_a_clear_error(self):
+        result, calls = self._classify(
+            [_reply_text(_PROSE, 300), _reply_text(_PROSE, 700)]
+        )
+
+        assert len(calls) == 2, "one re-prompt, then the window fails"
+        assert result.status == Status.FAILED
+        assert result.sections == []
+        failure = next(e for e in result.errors if "produced no segments" in e)
+        assert "Document doc-1" in failure
+        assert "could not be parsed as JSON" in failure
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+
+    def test_a_valid_first_reply_makes_one_call(self):
+        result, calls = self._classify([_reply_text(self.TWO_SEGMENTS, 700)])
+
+        assert len(calls) == 1
+        assert len(result.sections) == 2
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 700
+
+    def test_an_unparseable_reply_to_a_class_re_prompt_keeps_the_first_answer(
+        self, caplog
+    ):
+        """The first answer is in hand, so it is kept with the fallback for its
+        invalid class, as when the class re-prompt overflows."""
+        bad_class = json.dumps(
+            {
+                "segments": [
+                    {"ordinal_start_page": 1, "ordinal_end_page": 4, "type": "po"}
+                ]
+            }
+        )
+        result, calls = self._classify(
+            [_reply_text(bad_class, 300), _reply_text(_PROSE, 700)]
+        )
+
+        assert len(calls) == 2
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "unclassified")
+        ]
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+        assert "keeping the previous answer" in caplog.text
+
+
+def _converse_reply(text: str, input_tokens: int) -> Dict[str, Any]:
+    return {
+        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": input_tokens,
+            "outputTokens": 20,
+            "totalTokens": input_tokens + 20,
+        },
+        "metrics": {"latencyMs": 1},
+    }
+
+
+@pytest.mark.unit
+def test_a_reply_that_is_not_json_is_re_prompted_through_the_real_client(
+    monkeypatch,
+):
+    """#2035 end to end: the real service and the real ``BedrockClient``, with only
+    the ``bedrock-runtime`` client replaced by a botocore ``Stubber``."""
+    model = "us.amazon.nova-2-lite-v1:0"
+    runtime = boto3.client(
+        "bedrock-runtime",
+        region_name="us-west-2",
+        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
+        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        config=Config(retries={"total_max_attempts": 1, "mode": "standard"}),
+    )
+    requests: List[Dict[str, Any]] = []
+    runtime.meta.events.register(
+        "before-parameter-build.bedrock-runtime.Converse",
+        lambda params, **_kwargs: requests.append(params),
+    )
+    # The service reaches Bedrock through the module's default client.
+    default = bedrock_client_module.default_client
+    monkeypatch.setattr(default, "_client", runtime)
+    monkeypatch.setattr(default, "_put_metric", lambda *a, **k: None)
+    backoffs: List[int] = []
+    monkeypatch.setattr(
+        BedrockClient,
+        "_backoff_within_invocation",
+        lambda self, retry_count: backoffs.append(retry_count) or 0.0,
+    )
+    segments = [
+        {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "invoice"},
+        {"ordinal_start_page": 3, "ordinal_end_page": 4, "type": "receipt"},
+    ]
+
+    with Stubber(runtime) as stubber:
+        stubber.add_response("converse", _converse_reply(_PROSE, 300))
+        stubber.add_response(
+            "converse", _converse_reply(json.dumps({"segments": segments}), 700)
+        )
+        with patch("idp_common.s3.get_text_content", return_value="page text"):
+            result = _service(modality={"images": False}).packet_classify_document(
+                _document(4, with_images=False)
+            )
+        stubber.assert_no_pending_responses()
+
+    assert result.errors == []
+    assert [(s.page_ids, s.classification) for s in result.sections] == [
+        (["1", "2"], "invoice"),
+        (["3", "4"], "receipt"),
+    ]
+    assert len(requests) == 2, "the first reply and one re-prompt"
+    re_prompt = requests[1]["messages"][-1]["content"][-1]["text"]
+    assert _JSON_ONLY_RE_PROMPT in re_prompt
+    assert backoffs == [], "a service re-prompt, not a client-level retry"
+    # Both replies were billed, so both are counted, each once.
+    assert result.metering == {
+        f"Classification/bedrock/{model}": {
+            "inputTokens": 1000,
+            "outputTokens": 40,
+            "totalTokens": 1040,
+            "requests": 2,
+        }
+    }
