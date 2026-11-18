@@ -33,6 +33,7 @@
 import React from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react';
+import { IntlProvider } from 'react-intl';
 
 const { mockGraphql } = vi.hoisted(() => ({ mockGraphql: vi.fn() }));
 vi.mock('../../../api/client-shim', () => ({
@@ -139,6 +140,12 @@ const routeGraphql = ({ query }: { query: string }) => {
 
 const putCalls = () => mockGraphql.mock.calls.filter(([args]) => String(args.query).includes('putConfigPrefixMapping'));
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('ConfigPrefixMappingsLayout', () => {
   beforeEach(() => {
     roleState.isAdmin = true;
@@ -220,7 +227,7 @@ describe('ConfigPrefixMappingsLayout', () => {
     // selected: `putConfigPrefixMapping` is a full replace, so a revision
     // cleared here is a revision unpinned on the next save, with the admin
     // having asked for nothing of the kind.
-    render(<ConfigPrefixMappingsLayout />);
+    render(<ConfigPrefixMappingsLayout />, { wrapper: English });
     await screen.findByText('acme/invoices/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
@@ -231,7 +238,7 @@ describe('ConfigPrefixMappingsLayout', () => {
   });
 
   it('saves an edited mapping with its revision still pinned', async () => {
-    render(<ConfigPrefixMappingsLayout />);
+    render(<ConfigPrefixMappingsLayout />, { wrapper: English });
     await screen.findByText('acme/invoices/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
@@ -266,7 +273,7 @@ describe('ConfigPrefixMappingsLayout', () => {
       return routeGraphql({ query });
     });
 
-    render(<ConfigPrefixMappingsLayout />);
+    render(<ConfigPrefixMappingsLayout />, { wrapper: English });
     await screen.findByText('acme/invoices/');
     const listsBefore = listCalls();
 
@@ -356,7 +363,7 @@ describe('ConfigPrefixMappingsLayout', () => {
   it('opens an existing mapping in the match mode it was stored with', async () => {
     // `acme/invoices/` is a folder mapping, so Edit must not present it as exact
     // and silently rewrite it on save.
-    render(<ConfigPrefixMappingsLayout />);
+    render(<ConfigPrefixMappingsLayout />, { wrapper: English });
     await screen.findByText('acme/invoices/');
 
     fireEvent.click(screen.getByRole('button', { name: 'Edit' }));

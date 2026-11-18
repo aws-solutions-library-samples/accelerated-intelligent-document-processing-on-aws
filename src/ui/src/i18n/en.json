@@ -163,6 +163,34 @@
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
   },
+  "common.configRevisionSelector.current": {
+    "defaultMessage": "Current",
+    "description": "Option for the profile’s current configuration when no revision is published, and the selector’s placeholder."
+  },
+  "common.configRevisionSelector.currentRevision": {
+    "defaultMessage": "Current (r{revision})",
+    "description": "Option for the profile’s current configuration. {revision} is its published revision number, after \"r\" for revision."
+  },
+  "common.configRevisionSelector.description": {
+    "defaultMessage": "Defaults to the profile’s current configuration. Pick an earlier revision to run against exactly what it recorded.",
+    "description": "Help text under the Configuration revision label, on screens that do not supply their own."
+  },
+  "common.configRevisionSelector.differs": {
+    "defaultMessage": "r{revision}, which differs from the profile's configuration in the editor",
+    "description": "Description of the Current option when the profile was changed without recording a revision. {revision} is the published one."
+  },
+  "common.configRevisionSelector.followsProfile": {
+    "defaultMessage": "Whatever the profile holds when the work runs",
+    "description": "Description of the Current option: the work uses the profile as it is when the work starts."
+  },
+  "common.configRevisionSelector.label": {
+    "defaultMessage": "Configuration revision",
+    "description": "Label of the selector of the configuration profile revision the work runs against."
+  },
+  "common.configRevisionSelector.loading": {
+    "defaultMessage": "Loading revisions…",
+    "description": "Shown in place of the Configuration revision selector while the revisions load."
+  },
   "common.dateRangeFields.bothDatesRequired": {
     "defaultMessage": "Both start and end dates are required.",
     "description": "Validation error of a UTC date range when the start or end date is empty."
@@ -279,6 +307,46 @@
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
   },
+  "documents.abortModal.abort": {
+    "defaultMessage": "Abort",
+    "description": "Confirm button of the Abort dialog: stops the processing workflows."
+  },
+  "documents.abortModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Abort dialog without aborting."
+  },
+  "documents.abortModal.confirm": {
+    "defaultMessage": "{count, plural, =0 {None of the selected documents can be aborted.} one {Are you sure you want to abort processing for this document?} other {Are you sure you want to abort processing for # documents?}}",
+    "description": "Question in the Abort dialog. {count} is the number of selected documents that can be aborted."
+  },
+  "documents.abortModal.infoIconAriaLabel": {
+    "defaultMessage": "Info",
+    "description": "Screen-reader label of the information icon in the Abort dialog."
+  },
+  "documents.abortModal.list": {
+    "defaultMessage": "The following {count, plural, one {document} other {documents}} will be aborted:",
+    "description": "Introduces the list of documents the Abort dialog will stop. {count} is the number of documents listed."
+  },
+  "documents.abortModal.notAbortable": {
+    "defaultMessage": "{count, plural, one {# document cannot be aborted because it has already completed or failed:} other {# documents cannot be aborted because they have already completed or failed:}}",
+    "description": "Introduces the list of selected documents the Abort dialog leaves alone. {count} is the number of documents listed."
+  },
+  "documents.abortModal.onlyActive": {
+    "defaultMessage": "Documents can only be aborted when they have an active workflow (status: QUEUED, RUNNING, PREPROCESSING, OCR, CLASSIFYING, EXTRACTING, ASSESSING, POSTPROCESSING, HITL_IN_PROGRESS, SUMMARIZING, or EVALUATING).",
+    "description": "Shown in the Abort dialog when no selected document can be aborted; the status codes are stored values and stay as written."
+  },
+  "documents.abortModal.title": {
+    "defaultMessage": "{count, plural, =0 {Cannot abort workflows} one {Abort workflow} other {Abort # workflows}}",
+    "description": "Title of the dialog that stops processing workflows. {count} is the number of selected documents that can be aborted."
+  },
+  "documents.abortModal.warning": {
+    "defaultMessage": "This action will stop the processing workflow. Documents will be marked as \"ABORTED\" and will not complete processing.",
+    "description": "Warning in the Abort dialog; \"ABORTED\" is the stored document status and stays as written."
+  },
+  "documents.abortModal.warningIconAriaLabel": {
+    "defaultMessage": "Warning",
+    "description": "Screen-reader label of the warning icon in the Abort dialog."
+  },
   "documents.configSource.activeProfile": {
     "defaultMessage": "Active profile",
     "description": "Why the document got its configuration profile: the active profile applied."
@@ -306,6 +374,22 @@
   "documents.configSource.rejected": {
     "defaultMessage": "Refused at ingest",
     "description": "Why the document has no configuration profile: it was refused at ingest."
+  },
+  "documents.deleteModal.body": {
+    "defaultMessage": "Are you sure you want to delete {count, plural, =0 {this document} one {this document} other {these # documents}}? This action cannot be undone.",
+    "description": "Question in the Delete Document dialog. {count} is the number of documents selected."
+  },
+  "documents.deleteModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Delete Document dialog without deleting."
+  },
+  "documents.deleteModal.delete": {
+    "defaultMessage": "Delete",
+    "description": "Confirm button of the Delete Document dialog."
+  },
+  "documents.deleteModal.title": {
+    "defaultMessage": "{count, plural, =0 {Delete Document} one {Delete Document} other {Delete Documents}}",
+    "description": "Title of the dialog that deletes documents. {count} is the number of documents selected."
   },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
@@ -566,6 +650,50 @@
   "documents.panel.title": {
     "defaultMessage": "Document Details",
     "description": "Heading of the panel that lists the fields of a document on its page."
+  },
+  "documents.reprocessModal.bdaNote": {
+    "defaultMessage": "<strong>NOTE:</strong> To ensure that BDA project blueprints are aligned with your selected configuration profile, be sure to execute \"Sync To BDA\" for your configuration profile from the View/Edit Configuration page.",
+    "description": "Reminder in the Reprocess dialog for a profile in BDA mode; \"Sync To BDA\" names a button and \"View/Edit Configuration\" a page."
+  },
+  "documents.reprocessModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Reprocess dialog without reprocessing."
+  },
+  "documents.reprocessModal.confirm": {
+    "defaultMessage": "Are you sure you want to reprocess {count, plural, =0 {this document} one {this document} other {# documents}}?",
+    "description": "Question at the top of the Reprocess dialog. {count} is the number of documents selected."
+  },
+  "documents.reprocessModal.documentsList": {
+    "defaultMessage": "This will trigger workflow reprocessing for the following {count, plural, =0 {document} one {document} other {documents}}:",
+    "description": "Introduces the list of documents in the Reprocess dialog. {count} is the number of documents selected."
+  },
+  "documents.reprocessModal.profile.description": {
+    "defaultMessage": "Select which configuration profile to use for reprocessing these documents",
+    "description": "Help text under the Configuration Profile label in the Reprocess dialog."
+  },
+  "documents.reprocessModal.profile.label": {
+    "defaultMessage": "Configuration Profile",
+    "description": "Label of the selector of the configuration profile the documents are reprocessed with."
+  },
+  "documents.reprocessModal.profile.loading": {
+    "defaultMessage": "Loading profiles...",
+    "description": "Placeholder and loading text of the configuration profile selector while the profiles load."
+  },
+  "documents.reprocessModal.profile.placeholder": {
+    "defaultMessage": "Select configuration profile",
+    "description": "Placeholder of the configuration profile selector when no profile is selected."
+  },
+  "documents.reprocessModal.reprocess": {
+    "defaultMessage": "Reprocess",
+    "description": "Confirm button of the Reprocess dialog."
+  },
+  "documents.reprocessModal.revisionDescription": {
+    "defaultMessage": "Defaults to the profile’s current configuration. Pick an earlier revision to reproduce what an earlier run produced.",
+    "description": "Help text under the Configuration revision selector in the Reprocess dialog."
+  },
+  "documents.reprocessModal.title": {
+    "defaultMessage": "{count, plural, =0 {Reprocess document} one {Reprocess document} other {Reprocess # documents}}",
+    "description": "Title of the dialog that reprocesses documents. {count} is the number of documents selected."
   },
   "documents.reviewStatus.completed": {
     "defaultMessage": "Review Completed",

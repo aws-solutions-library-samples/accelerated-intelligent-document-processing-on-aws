@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 231,
-    "findings": 5972
+    "files": 227,
+    "findings": 5924
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -47,14 +47,11 @@
     "src/ui/src/components/capacity-planning/DocumentPickerModal.tsx": 24,
     "src/ui/src/components/capacity-planning/tools-panel.tsx": 12,
     "src/ui/src/components/chat-panel/ChatPanel.tsx": 21,
-    "src/ui/src/components/common/AbortWorkflowModal.tsx": 19,
     "src/ui/src/components/common/CircuitBreakerPanel.tsx": 15,
     "src/ui/src/components/common/ClassConfidence.tsx": 4,
     "src/ui/src/components/common/ClassMismatchIndicator.tsx": 26,
-    "src/ui/src/components/common/ConfigRevisionSelector.tsx": 6,
     "src/ui/src/components/common/CreateConfigProfileModal.tsx": 23,
     "src/ui/src/components/common/DateRangeModal.tsx": 4,
-    "src/ui/src/components/common/DeleteDocumentModal.tsx": 8,
     "src/ui/src/components/common/FieldGeometryAffordance.tsx": 2,
     "src/ui/src/components/common/LoadState.tsx": 1,
     "src/ui/src/components/common/NoConfigProfilesInScopeAlert.tsx": 2,
@@ -63,7 +60,6 @@
     "src/ui/src/components/common/ProcessChangesConfirmModal.tsx": 19,
     "src/ui/src/components/common/ReasonModal.tsx": 9,
     "src/ui/src/components/common/ReportModal.tsx": 4,
-    "src/ui/src/components/common/ReprocessDocumentModal.tsx": 15,
     "src/ui/src/components/common/ResizableModal.tsx": 3,
     "src/ui/src/components/common/UnrecordedChangesAlert.tsx": 5,
     "src/ui/src/components/common/copy-to-baseline.ts": 1,
