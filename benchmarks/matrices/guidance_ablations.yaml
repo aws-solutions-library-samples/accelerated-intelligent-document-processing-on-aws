@@ -1,11 +1,14 @@
 # Ablation registry for the "Benchmarks by Problem Set" pages (docs/benchmark-guidance/).
 #
-# Each ablation answers one customer question by changing ONE setting and leaving the rest
-# as the dataset's configuration preset sets it (docs/benchmark-guidance/index.md, "How we run a benchmark").
+# Each ablation answers one customer question by changing ONE setting. An ablation with a
+# `baseline` changes it from that configuration (the recommended setup); one without
+# changes it from each dataset's configuration preset (docs/benchmark-guidance/index.md,
+# "How we run a benchmark").
 # benchmarks/harness/render_guidance.py renders every ablation into its page between the
-# `<!-- BEGIN GENERATED ABLATIONS -->` / `<!-- END GENERATED ABLATIONS -->` markers. When
-# a results file exists at benchmarks/results/guidance/<ID>.json, the renderer fills the
-# table from it; otherwise every cell is "—" and the answer is "Not yet measured".
+# `<!-- BEGIN GENERATED FAQ -->` and `<!-- BEGIN GENERATED ABLATIONS -->` markers. When
+# a results file exists at benchmarks/results/guidance/<ID>.json, the renderer writes the
+# ablation's answer, chart and tables from it; otherwise the question is listed once, with
+# its ID, under "Planned" at the end of the page's FAQ.
 #
 # Fields:
 #   id        stable ID used by the run scripts and the results file name
@@ -39,6 +42,13 @@
 #   plot_x    the tokens metric for the x-axis when cost is not available (default:
 #             total tokens when measured). Cost per 1,000 documents is used whenever
 #             every plotted value has usage in its results file.
+#   cost_metric
+#             optional: a cost cell of the results file (a key of `metrics` below,
+#             such as classification_cost_per_1000_docs) to use in place of the
+#             whole pipeline's cost per 1,000 documents: the chart's cost axis, the
+#             tables' cost column, the cost per error prevented and the cheapest
+#             value. Used where the setting under test changes one step's cost and
+#             the other steps' cost would hide it
 #   by_size   optional {metric, x}: a chart of one per-document metric of the results
 #             file's `per_doc` against a per-document size, one point per document per
 #             value, on a log x axis, with a running median per value. Datasets whose
@@ -53,13 +63,28 @@
 #             1,000 documents, and what each model's agentic value costs against its
 #             single-pass value. `documents` names the documents in the table.
 #   grid      optional {rows, cols}: values are named "<row> · <col>" and render as a grid
+#   baseline  optional: a key of `baselines`, the configuration every value starts from
+#             before its own `set` overrides; without it a value starts from the preset
+#   reference optional: the value that equals the baseline, drawn and named as the
+#             reference point (bold) on the chart, in place of a "(default)" value. A
+#             results table bolds it and adds "(recommended)" unless the value already
+#             carries a parenthesized note, such as "(preset default)"
+#   transform optional: per value, the name of a function in
+#             benchmarks/harness/profile_transforms.py applied to the profile last
+#   notes     optional: caveats and secondary results, printed in the details
+#   deprecated
+#             optional: true to list the ablation under Planned, its results kept but
+#             not shown, while its test is redesigned
 #   set       per value, the configuration overrides that produce it (dotted paths),
 #             in the order of `values`; run_guidance_ablation.py applies them
 #
 # A dataset's `testset` is its Test Studio test set ID and `docs` the number of its
 # documents a run uses. `max_failed` is how many failed documents a run may have and
 # still count (default 0): one DocSplit packet trips a Bedrock content filter during
-# extraction, after classification has finished, and fails the document.
+# extraction, after classification has finished, and fails the document. Claude Haiku
+# 5.5 classification occasionally returns a reply that is not JSON, and a Bedrock HTTP
+# 500 is not retried; either fails a document. Scores count only documents every run
+# of every value scored.
 #
 # A dataset's `preset` names the config_library/unified preset its runs start from, and
 # its `chart` names it on a chart ("RealKIE invoices"; default: `short`).
@@ -73,18 +98,18 @@ datasets:
   synth_two_docs: {name: "Synthetic file holding two statements", short: "Two statements in one file", kind: packet, link: "../idp-fundamentals/benchmark-datasets.md#synthetic-bank-statements", preset: bank-statement-sample}
   realkie: {name: "RealKIE-FCC-Verified (20 invoices)", short: "RealKIE", chart: "RealKIE invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-verified, docs: 20}
   realkie_all: {name: "RealKIE-FCC-Verified, all 75 invoices", short: "RealKIE, all", chart: "RealKIE invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-verified, docs: 75}
-  realkie_long: {name: "RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)", short: "RealKIE, long", chart: "RealKIE long invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-long, docs: 19}
+  realkie_long: {name: "RealKIE-FCC-Verified, long invoices (19 invoices, 8 to 33 pages)", short: "RealKIE, long", chart: "RealKIE long invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-long, docs: 19, max_failed: 1}
   realkie_short: {name: "RealKIE-FCC-Verified, short invoices (24 invoices, 1 or 2 pages)", short: "RealKIE, short", chart: "RealKIE short invoices", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified", preset: realkie-fcc-verified, testset: realkie-fcc-short, docs: 24}
   confbench: {name: "ConfBench (RealKIE invoices with scan noise)", short: "ConfBench", chart: "ConfBench invoices", kind: fields, link: "../extensions/confbench-testset.md", preset: realkie-fcc-verified}
-  omniai: {name: "OmniAI-OCR-Benchmark, bank checks (20)", short: "OmniAI, bank checks", chart: "OmniAI bank checks", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#omniai-ocr-benchmark", preset: ocr-benchmark, testset: ocr-benchmark, docs: 20}
+  omniai: {name: "OmniAI-OCR-Benchmark, bank checks (20)", short: "OmniAI, bank checks", chart: "OmniAI bank checks", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#omniai-ocr-benchmark", preset: ocr-benchmark, testset: ocr-benchmark, docs: 20, max_failed: 3}
   omniai_all: {name: "OmniAI-OCR-Benchmark, all 9 formats (293 documents)", short: "OmniAI", chart: "OmniAI documents", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#omniai-ocr-benchmark", preset: ocr-benchmark, testset: ocr-benchmark, docs: 293}
   fake_w2: {name: "Fake-W2-Tax-Forms (W-2 forms, 45 fields)", short: "Fake-W2", chart: "Fake-W2 forms", kind: fields, link: "../idp-fundamentals/benchmark-datasets.md#fake-w2-tax-forms", preset: fake-w2, testset: fake-w2, docs: 20}
-  docsplit: {name: "DocSplit-Poly-Seq (20 packets)", short: "DocSplit", chart: "DocSplit packets", kind: packet, link: "../idp-fundamentals/benchmark-datasets.md#docsplit-poly-seq", preset: docsplit, testset: docsplit, docs: 20, max_failed: 1}
-  long_packets: {name: "Long packets, 30-60 pages (to be built)", short: "Long packets", kind: packet, new: true}
-  same_class_packets: {name: "Same-class documents back to back (to be built)", short: "Same-class packets", kind: packet, new: true}
+  docsplit: {name: "DocSplit-Poly-Seq (20 packets)", short: "DocSplit", chart: "DocSplit packets", kind: packet, link: "../idp-fundamentals/benchmark-datasets.md#docsplit-poly-seq", preset: docsplit, testset: docsplit, docs: 20, max_failed: 6}
+  docsplit_100: {name: "DocSplit-Poly-Seq (100 packets)", short: "DocSplit", chart: "DocSplit packets", kind: packet, link: "../idp-fundamentals/benchmark-datasets.md#docsplit-poly-seq", preset: docsplit, testset: docsplit, docs: 100, max_failed: 10}
+  docsplit_sameclass: {name: "DocSplit same-class runs (60 packets)", short: "Same-class runs", chart: "Same-class packets", kind: packet, about: "60 packets we built from the pages of DocSplit packets 101 to 500, 879 pages in all. Each packet holds one run of documents of the same class back to back: 40 runs of two and 20 of three, over all 13 classes. DocSplit reuses a small pool of documents, so many also appear in packets 1 to 100.", preset: docsplit, testset: docsplit-sameclass, docs: 60, max_failed: 6}
+  docsplit_long: {name: "DocSplit long packets (40 packets, 30 to 60 pages)", short: "Long packets", chart: "Long packets", kind: packet, about: "40 packets we built from the pages of DocSplit packets 101 to 500, 1,815 pages and 508 documents in all, 10 packets in each of 30 to 37, 38 to 45, 46 to 53 and 54 to 60 pages. As in DocSplit, no two neighbouring documents share a class. DocSplit reuses a small pool of documents, so many also appear in packets 1 to 100.", preset: docsplit, testset: docsplit-long, docs: 40, max_failed: 4}
   packets_with_fields: {name: "Packets with section and field ground truth (to be built)", short: "Packets with fields", kind: packet_fields, new: true}
   handwritten: {name: "Handwritten forms (to be built)", short: "Handwritten forms", kind: fields, new: true}
-  rule_verdicts: {name: "Documents with expert rule verdicts (to be built)", short: "Rule-verdict set", kind: rules, new: true}
 
 # A metric's `short` name labels a key entry, and its `axis` titles its chart axis in
 # plain words (default: the name, with "(%)" for a share). A `baseline` is drawn as a
@@ -94,7 +119,10 @@ datasets:
 # `kinds` lists the dataset kinds a metric applies to. The renderer draws one results table
 # per dataset kind, with only the metrics that apply to it. `cost_per_1000_docs` is not
 # listed in any ablation: the renderer prices the results file's usage with
-# config_library/pricing.yaml and adds the column whenever usage is there.
+# config_library/pricing.yaml and adds the column whenever usage is there. Nor is
+# `classification_cost_per_1000_docs`, which the collector writes and an ablation's
+# `cost_metric` puts in the cost column's place; its `note` says what it counts, under
+# every table that shows it.
 metrics:
   completeness: {name: "Completeness", kinds: [list]}
   cell_accuracy: {name: "Cell accuracy", kinds: [list]}
@@ -116,19 +144,30 @@ metrics:
   alert_rate: {name: "Values below threshold", kinds: [list, fields, packet]}
   errors_caught: {name: "Errors below threshold", kinds: [list, fields, packet]}
   errors_caught_30: {name: "Errors caught reviewing 30% of values", axis: "Errors caught, reviewing 30% of values (%)", short: "Errors caught at 30%", kinds: [fields], baseline: {metric: errors_caught_30_random, name: "random review", caption: "what a review of a random 30% of values catches"}}
-  verdict_agreement: {name: "Verdict agreement", kinds: [rules]}
-  wrong_passes: {name: "Wrong passes", kinds: [rules]}
-  wrong_fails: {name: "Wrong fails", kinds: [rules]}
-  not_decided: {name: "Information not found", kinds: [rules]}
+  ecarb_30: {name: "ECARB at a 30% review budget", short: "ECARB@30", axis: "Errors caught vs random review, 30% reviewed (×)", kinds: [list, fields, packet], baseline: {value: 1.0, name: "random review", caption: "1×, what reviewing a random 30% of values catches"}}
   ocr_tokens: {name: "OCR tokens per page", kinds: [list, fields, packet, packet_fields]}
   classification_tokens: {name: "Classification tokens per page", kinds: [list, fields, packet, packet_fields]}
   extraction_tokens: {name: "Extraction tokens per page", kinds: [list, fields, packet_fields]}
   scoring_tokens: {name: "Scoring tokens per page", kinds: [list, fields, packet_fields]}
-  rule_tokens: {name: "Rule validation tokens per document", kinds: [rules]}
-  total_tokens: {name: "Total tokens per page", kinds: [list, fields, packet, packet_fields, rules]}
-  cost_per_1000_docs: {name: "Cost per 1,000 documents (USD)", kinds: [list, fields, packet, packet_fields, rules]}
-  cached_share: {name: "Share of input served from cache", kinds: [list, fields, packet, packet_fields, rules]}
-  median_seconds: {name: "Median seconds per document", kinds: [list, fields, packet, packet_fields, rules]}
+  total_tokens: {name: "Total tokens per page", kinds: [list, fields, packet, packet_fields]}
+  cost_per_1000_docs: {name: "Cost per 1,000 documents (USD)", kinds: [list, fields, packet, packet_fields]}
+  classification_cost_per_1000_docs: {name: "Classification cost per 1,000 documents (USD)", kinds: [packet, packet_fields], note: "Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out."}
+  cached_share: {name: "Share of input served from cache", kinds: [list, fields, packet, packet_fields]}
+  median_seconds: {name: "Median seconds per document", kinds: [list, fields, packet, packet_fields]}
+
+# The configuration we recommend (docs/benchmark-guidance/index.md, "What we recommend").
+# An ablation that names it changes one setting from it rather than from the preset.
+# Escalation is off so that scoring runs on the model named, and nothing else.
+baselines:
+  recommended:
+    name: "Baseline setup"
+    summary: "Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction with structured output, and confidence scoring, all on Claude Haiku 5.5, with no escalation to a second scoring model"
+    set: {"ocr.backend": "textract", "ocr.features": [{"name": "LAYOUT"}], "classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.mode": "simple", "extraction.schema_enforcement.mode": "structured_output", "extraction.confidence.mode": "separate", "extraction.confidence.model": "us.anthropic.claude-haiku-5-5", "extraction.confidence.escalation_enabled": false}
+
+  develop:
+    name: "Baseline setup"
+    summary: "Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction, and confidence scoring, all on Claude Haiku 5.5, with no escalation to a second scoring model"
+    set: {"ocr.backend": "textract", "ocr.features": [{"name": "LAYOUT"}], "classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.mode": "simple", "extraction.confidence.mode": "separate", "extraction.confidence.model": "us.anthropic.claude-haiku-5-5", "extraction.confidence.escalation_enabled": false}
 
 ablations:
   # ------------------------------------------------------------- every problem set
@@ -137,37 +176,32 @@ ablations:
     question: "How much do results vary between identical runs?"
     changes: "Nothing: the preset, run 10 times"
     values: ["Preset"]
-    datasets: [realkie, docsplit, synth_400]
+    datasets: [realkie, docsplit]
     runs: 10
     metrics: [weighted_accuracy, boundary_accuracy, list_recall, total_tokens]
-  - id: TR-02
-    page: index
-    question: "How long does a document take, and how many documents an hour?"
-    changes: "Documents submitted at once"
-    values: ["1", "10", "50"]
-    datasets: [realkie, synth_400]
-    runs: 3
-    metrics: [median_seconds]
 
   # ---------------------------------------------------------------- digitization
   - id: DG-01
     page: digitization
+    notes: "On OmniAI bank checks, Textract with Layout only got every field right on 47% of checks, against 16% with Amazon Nova 2 Lite, which cost less ($4.84 against $7.76 per 1,000)."
     question: "Does the OCR reader make a difference to extraction accuracy?"
-    takeaway: "Keep Textract: the other readers scored no better"
-    short_values: {"Textract, tables and layout (default)": "Textract, tables + layout", "Textract, layout only": "Textract, layout only", "Bedrock vision model (Nova 2 Lite)": "Nova 2 Lite vision"}
+    takeaway: "Textract Layout only matches the other readers"
     changes: "OCR reader"
-    values: ["Textract, tables and layout (default)", "Textract, layout only", "Bedrock vision model (Nova 2 Lite)"]
-    set: [{"ocr.backend": "textract", "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}, {"name": "SIGNATURES"}]}, {"ocr.backend": "textract", "ocr.features": [{"name": "LAYOUT"}]}, {"ocr.backend": "bedrock", "ocr.model_id": "us.amazon.nova-2-lite-v1:0", "ocr.task_prompt": "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting.\n<document-image>\n{DOCUMENT_IMAGE}\n</document-image>"}]
-    datasets: [realkie, confbench, omniai, synth_400]
+    varies: "OCR reader"
+    values: ["Textract, layout only (recommended)", "Textract, tables and layout", "Amazon Nova 2 Lite vision"]
+    set: [{"ocr.backend": "textract", "ocr.features": [{"name": "LAYOUT"}]}, {"ocr.backend": "textract", "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}, {"name": "SIGNATURES"}]}, {"ocr.backend": "bedrock", "ocr.model_id": "us.amazon.nova-2-lite-v1:0", "ocr.task_prompt": "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting.\n<document-image>\n{DOCUMENT_IMAGE}\n</document-image>"}]
+    baseline: recommended
+    reference: "Textract, layout only (recommended)"
+    datasets: ["realkie", "omniai"]
     runs: 3
-    metrics: [weighted_accuracy, list_recall, list_precision, ocr_tokens, total_tokens]
+    metrics: ["weighted_accuracy", "all_fields_right", "ocr_tokens", "total_tokens"]
   - id: DG-02
     page: digitization
     question: "If I read pages with a vision model, which model?"
     changes: "Model used for Bedrock vision OCR"
     values: ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5"]
     holds: "OCR reader set to the Bedrock vision model"
-    datasets: [realkie, confbench, synth_400]
+    datasets: [realkie, confbench]
     runs: 3
     metrics: [weighted_accuracy, list_precision, ocr_tokens, total_tokens]
   - id: DG-03
@@ -181,15 +215,16 @@ ablations:
   - id: DG-04
     page: digitization
     question: "What resolution should pages be rendered at?"
-    takeaway: "200 DPI scored like 300 DPI; 150 DPI slipped slightly"
+    takeaway: "Lower resolution saved nothing; keep 300 DPI"
     varies: "page resolution"
-    short_values: {"300 (default)": "300 DPI", "200": "200 DPI", "150": "150 DPI"}
     changes: "`ocr.image.dpi`"
-    values: ["300 (default)", "200", "150"]
+    values: ["300 DPI (preset default)", "200 DPI", "150 DPI"]
     set: [{"ocr.image.dpi": 300}, {"ocr.image.dpi": 200}, {"ocr.image.dpi": 150}]
-    datasets: [realkie, confbench, synth_400]
+    baseline: recommended
+    reference: "300 DPI (preset default)"
+    datasets: ["realkie"]
     runs: 3
-    metrics: [weighted_accuracy, list_precision, total_tokens]
+    metrics: ["weighted_accuracy", "total_tokens"]
   - id: DG-05
     page: digitization
     question: "Does image preprocessing help on poor scans?"
@@ -201,15 +236,17 @@ ablations:
   - id: DG-06
     page: digitization
     question: "Which Textract features do I need?"
-    takeaway: "No Textract feature combination changed accuracy measurably"
+    takeaway: "Layout only scores best and costs least"
     varies: "Textract features"
-    short_values: {"TABLES, LAYOUT, SIGNATURES (default)": "Tables, layout, signatures", "LAYOUT only": "Layout only", "TABLES only": "Tables only", "TABLES, LAYOUT, SIGNATURES, FORMS": "Tables, layout, signatures, forms"}
     changes: "`ocr.features`"
-    values: ["TABLES, LAYOUT, SIGNATURES (default)", "LAYOUT only", "TABLES only", "TABLES, LAYOUT, SIGNATURES, FORMS"]
-    set: [{"ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}, {"name": "SIGNATURES"}]}, {"ocr.features": [{"name": "LAYOUT"}]}, {"ocr.features": [{"name": "TABLES"}]}, {"ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}, {"name": "SIGNATURES"}, {"name": "FORMS"}]}]
-    datasets: [realkie, fake_w2, synth_400]
+    values: ["Layout only (recommended)", "Tables, layout, signatures (preset default)", "Tables only", "Tables, layout, signatures, forms"]
+    set: [{"ocr.features": [{"name": "LAYOUT"}]}, {"ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}, {"name": "SIGNATURES"}]}, {"ocr.features": [{"name": "TABLES"}]}, {"ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}, {"name": "SIGNATURES"}, {"name": "FORMS"}]}]
+    baseline: recommended
+    reference: "Layout only (recommended)"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, list_recall, list_precision, total_tokens]
+    metrics: ["weighted_accuracy", "all_fields_right", "ocr_tokens", "total_tokens"]
+    plot: ["weighted_accuracy", "all_fields_right"]
   - id: DG-07
     page: digitization
     question: "How much accuracy does scan quality cost?"
@@ -231,64 +268,46 @@ ablations:
   - id: SC-11
     page: splitting-and-classification
     question: "Does holistic classification beat page-by-page classification?"
-    takeaway: "Holistic classification with a Claude model gets the most sections right"
+    takeaway: "Holistic classification with Claude Sonnet 5.5 beats page by page"
     varies: "granularity, strategy and model"
     short_values: {"Two steps: split page by page, then classify": "Two steps, page by page", "Two steps: split holistically, then classify": "Two steps, holistic"}
     changes: "Granularity and strategy, by classification model"
-    values: ["Page by page · Amazon Nova 2 Lite (default)", "Holistic · Amazon Nova 2 Lite (default)", "Two steps: split page by page, then classify · Amazon Nova 2 Lite (default)", "Two steps: split holistically, then classify · Amazon Nova 2 Lite (default)", "Page by page · Claude Haiku 5.5", "Holistic · Claude Haiku 5.5", "Two steps: split page by page, then classify · Claude Haiku 5.5", "Two steps: split holistically, then classify · Claude Haiku 5.5", "Page by page · Claude Sonnet 5.5", "Holistic · Claude Sonnet 5.5", "Two steps: split page by page, then classify · Claude Sonnet 5.5", "Two steps: split holistically, then classify · Claude Sonnet 5.5"]
+    values: ["Page by page · Amazon Nova 2 Lite", "Holistic · Amazon Nova 2 Lite", "Two steps: split page by page, then classify · Amazon Nova 2 Lite", "Two steps: split holistically, then classify · Amazon Nova 2 Lite", "Page by page · Claude Haiku 5.5", "Holistic · Claude Haiku 5.5", "Two steps: split page by page, then classify · Claude Haiku 5.5", "Two steps: split holistically, then classify · Claude Haiku 5.5", "Page by page · Claude Sonnet 5.5", "Holistic · Claude Sonnet 5.5", "Two steps: split page by page, then classify · Claude Sonnet 5.5", "Two steps: split holistically, then classify · Claude Sonnet 5.5"]
     set: [{"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}, {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "page", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}, {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}, {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}]
-    grid: {rows: ["Page by page", "Holistic", "Two steps: split page by page, then classify", "Two steps: split holistically, then classify"], cols: ["Amazon Nova 2 Lite (default)", "Claude Haiku 5.5", "Claude Sonnet 5.5"]}
-    datasets: [docsplit]
+    grid: {"rows": ["Page by page", "Holistic", "Two steps: split page by page, then classify", "Two steps: split holistically, then classify"], "cols": ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5"]}
+    baseline: recommended
+    reference: "Holistic · Claude Haiku 5.5"
+    datasets: ["docsplit"]
     runs: 3
-    metrics: [page_accuracy, section_accuracy, grouping_score, boundary_accuracy, label_accuracy, classification_tokens, total_tokens]
+    metrics: ["page_accuracy", "section_accuracy", "grouping_score", "boundary_accuracy", "label_accuracy", "classification_tokens", "total_tokens"]
     plot: section_accuracy
+    cost_metric: classification_cost_per_1000_docs
     families: true
   - id: SC-02
     page: splitting-and-classification
     question: "Do I need page images in the classification prompt?"
-    takeaway: "Page images alone classified the most pages correctly"
+    takeaway: "Text alone gets the most sections right, for the least"
     varies: "classification input"
     changes: "What the classification model reads"
-    values: ["Text and images (default)", "Text only", "Images only"]
+    values: ["Text and images (baseline)", "Text only", "Images only"]
     set: [{"classification.combined.llm.modality": {"text": true, "images": true}}, {"classification.combined.llm.modality": {"text": true, "images": false}}, {"classification.combined.llm.modality": {"text": false, "images": true}}]
-    holds: "Page-by-page granularity"
-    datasets: [docsplit]
+    baseline: recommended
+    reference: "Text and images (baseline)"
+    fixed: Classification
+    datasets: ["docsplit"]
     runs: 3
-    metrics: [page_accuracy, boundary_accuracy, label_accuracy, classification_tokens]
-  - id: SC-03
-    page: splitting-and-classification
-    question: "Which classification model should I use?"
-    takeaway: "Claude Haiku 5.5 matches Claude Sonnet 5 at the default's cost"
-    changes: "Classification model"
-    values: ["Amazon Nova 2 Lite (default)", "Amazon Nova Pro", "Claude Haiku 5.5", "Claude Sonnet 5"]
-    set: [{"classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}, {"classification.combined.llm.model": "us.amazon.nova-pro-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-pro-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-pro-v1:0"}, {"classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.combined.llm.model": "us.anthropic.claude-sonnet-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5"}]
-    holds: "Run at both granularities: page by page and holistic"
-    datasets: [docsplit]
-    runs: 3
-    metrics: [page_accuracy, section_accuracy, grouping_score, boundary_accuracy, label_accuracy, classification_tokens, total_tokens, median_seconds]
+    metrics: ["section_accuracy", "page_accuracy", "boundary_accuracy", "label_accuracy", "classification_tokens"]
     plot: section_accuracy
-    families: true
+    cost_metric: classification_cost_per_1000_docs
   - id: SC-04
     page: splitting-and-classification
     question: "How long a packet can holistic classification handle?"
     changes: "Pages per holistic call (`window_pages`)"
     values: ["20 (default)", "10", "40"]
     holds: "Holistic, one call"
-    datasets: [long_packets, docsplit]
+    datasets: [docsplit_long, docsplit]
     runs: 3
     metrics: [page_accuracy, boundary_accuracy, label_accuracy, classification_tokens]
-  - id: SC-05
-    page: splitting-and-classification
-    question: "Does neighboring-page context help page-by-page classification?"
-    takeaway: "One neighboring page finds more boundaries; two help less"
-    varies: "neighboring pages in the prompt"
-    short_values: {"0 (default)": "0 pages", "1": "1 page", "2": "2 pages"}
-    changes: "`contextPagesCount`"
-    values: ["0 (default)", "1", "2"]
-    set: [{"classification.combined.page.contextPagesCount": 0}, {"classification.combined.page.contextPagesCount": 1}, {"classification.combined.page.contextPagesCount": 2}]
-    datasets: [docsplit, same_class_packets]
-    runs: 3
-    metrics: [boundary_accuracy, label_accuracy, over_splits, merges, classification_tokens]
   - id: SC-06
     page: splitting-and-classification
     question: "Do few-shot examples help classification?"
@@ -326,13 +345,14 @@ ablations:
     question: "If every file is one document, should I turn splitting off?"
     changes: "Section splitting"
     values: ["Model decides (default)", "One section"]
-    datasets: [realkie, synth_400, synth_800]
+    datasets: [realkie]
     runs: 3
     metrics: [weighted_accuracy, list_recall, classification_tokens]
 
   # ------------------------------------------------------------------- extraction
   - id: EX-01
     page: extraction
+    notes: "Single-pass scored as well as agentic or better up to 100 line items, and cost about the same there with the 5.5 models. Above 100 line items, agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($316 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, and Test Studio could not score the longest (1,490 items) because its evaluation step timed out."
     question: "When is agentic extraction worth it?"
     takeaway: "Agentic extraction wins only above about 100 line items"
     details_takeaway: "Averaged over whole datasets, the two modes score within the noise"
@@ -349,34 +369,51 @@ ablations:
     strata: {by: list_rows, bands: [0, 1, 21, 101, 301], noun: line items, score: list_score, documents: invoices}
   - id: EX-02
     page: extraction
+    notes: "On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amazon Nova 2 Lite 0.86. xAI Grok 4.6 took about 9 minutes per W-2 form, against 30 seconds for the others."
     question: "Which extraction model should I use?"
-    takeaway: "Top models are near perfect on W-2s; invoices show no winner"
+    takeaway: "Claude Haiku 5.5 scores as well as any model, for the least"
     changes: "Extraction model"
-    values: ["Claude Sonnet 5 (default)", "Amazon Nova Lite", "Amazon Nova Pro", "Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5", "Claude Opus 5.5", "OpenAI GPT-6 Astra", "xAI Grok 4.6"]
-    set: [{"extraction.model": "us.anthropic.claude-sonnet-5"}, {"extraction.model": "us.amazon.nova-lite-v1:0"}, {"extraction.model": "us.amazon.nova-pro-v1:0"}, {"extraction.model": "us.amazon.nova-2-lite-v1:0"}, {"extraction.model": "us.anthropic.claude-haiku-5-5"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5"}, {"extraction.model": "us.anthropic.claude-opus-5-5"}, {"extraction.model": "us.openai.gpt-6-astra"}, {"extraction.model": "us.xai.grok-4.6"}]
-    datasets: [realkie, fake_w2, synth_400]
+    values: ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5", "Claude Opus 5.5", "OpenAI GPT-6 Astra", "xAI Grok 4.6"]
+    set: [{"extraction.model": "us.amazon.nova-2-lite-v1:0"}, {"extraction.model": "us.anthropic.claude-haiku-5-5"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5"}, {"extraction.model": "us.anthropic.claude-opus-5-5"}, {"extraction.model": "us.openai.gpt-6-astra"}, {"extraction.model": "us.xai.grok-4.6"}]
+    baseline: recommended
+    reference: "Claude Haiku 5.5"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, list_recall, list_precision, extraction_tokens, total_tokens, median_seconds]
+    metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens", "median_seconds"]
     families: true
   - id: EX-03
     page: extraction
     question: "Does more reasoning effort improve extraction?"
-    takeaway: "Higher reasoning effort adds a little accuracy for a little cost"
+    fixed_note: "Extraction on Claude Sonnet 5.5 (Claude Haiku 5.5 takes no effort setting)"
+    takeaway: "More reasoning effort adds cost, not accuracy"
     varies: "reasoning effort"
-    changes: "`extraction.reasoning_effort`"
-    values: ["Low (default)", "Medium", "High"]
-    set: [{"extraction.reasoning_effort": "low"}, {"extraction.reasoning_effort": "medium"}, {"extraction.reasoning_effort": "high"}]
-    datasets: [realkie, fake_w2, synth_400]
+    changes: "`extraction.reasoning_effort`, on Claude Sonnet 5.5 (Claude Haiku 5.5 takes no effort setting)"
+    values: ["Low (preset default)", "Medium", "High"]
+    set: [{"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.reasoning_effort": "low"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.reasoning_effort": "medium"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.reasoning_effort": "high"}]
+    baseline: recommended
+    reference: "Low (preset default)"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, list_recall, extraction_tokens, total_tokens, median_seconds]
+    metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens", "median_seconds"]
   - id: EX-04
     page: extraction
+    # Deprecated: the test design is in doubt (RealKIE scored the same without field
+    # descriptions, though they carry format rules such as MM/DD/YY dates). Listed as
+    # Planned, results kept but not shown, until a redesign compares raw values.
+    deprecated: true
     question: "How much do field descriptions matter?"
+    takeaway: "Field descriptions get every W-2 field right far more often"
     changes: "Field descriptions"
-    values: ["Field names only", "Short descriptions", "Descriptions with location, exclusions and format"]
-    datasets: [realkie, fake_w2]
+    varies: "field descriptions"
+    values: ["Descriptions as shipped (recommended)", "Field names only"]
+    set: [{}, {}]
+    transform: [null, "strip_field_descriptions"]
+    baseline: recommended
+    reference: "Descriptions as shipped (recommended)"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, all_fields_right, extraction_tokens]
+    metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens"]
+    plot: ["weighted_accuracy", "all_fields_right"]
   - id: EX-05
     page: extraction
     question: "Do few-shot examples help extraction?"
@@ -387,83 +424,90 @@ ablations:
     metrics: [weighted_accuracy, all_fields_right, extraction_tokens]
   - id: EX-06
     page: extraction
-    question: "Does sending page images to the extraction model help?"
-    changes: "Page images in the extraction prompt"
-    values: ["Text and images (default)", "Text only"]
-    datasets: [realkie, fake_w2, confbench]
+    question: "What is the impact of document modality?"
+    takeaway: "Image and OCR text together keep forms and checks right"
+    changes: "What the extraction model reads: the page image, the OCR text, or both"
+    varies: "what the extraction model reads"
+    values: ["Page image and OCR text", "OCR text only", "Page image only"]
+    set: [{"ocr.backend": "bda"}, {"ocr.backend": "bda"}, {"ocr.backend": "bda"}]
+    transform: [null, "drop_extraction_images", "drop_extraction_text"]
+    holds: "OCR text from Amazon Bedrock Data Automation standard output; single-pass extraction on Claude Haiku 5.5"
+    baseline: recommended
+    reference: "Page image and OCR text"
+    datasets: ["realkie", "fake_w2", "omniai"]
     runs: 3
-    metrics: [weighted_accuracy, all_fields_right, extraction_tokens]
+    metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens", "median_seconds"]
+    plot: ["weighted_accuracy", "all_fields_right"]
   - id: EX-07
     page: extraction
     question: "Does deterministic table parsing help agentic extraction?"
-    changes: "`extraction.agentic.table_parsing.enabled`"
-    values: ["On (default)", "Off"]
-    holds: "Agentic (Advanced) extraction"
-    datasets: [synth_400, synth_800, synth_3200]
+    takeaway: "Table parsing adds cost without adding accuracy"
+    changes: "Deterministic table parsing (`extraction.agentic.table_parsing.enabled`): a tool that turns Textract's tables into rows by code, instead of the model retyping them"
+    varies: "table parsing, a tool that turns Textract's tables into rows by code instead of the model retyping them"
+    values: ["On", "Off"]
+    set: [{"extraction.mode": "advanced", "extraction.agentic.enabled": true, "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}], "extraction.agentic.table_parsing.enabled": true}, {"extraction.mode": "advanced", "extraction.agentic.enabled": true, "ocr.features": [{"name": "TABLES"}, {"name": "LAYOUT"}], "extraction.agentic.table_parsing.enabled": false}]
+    holds: "Agentic extraction on Claude Haiku 5.5, with Textract reading tables and layout (the parser reads Textract's tables)"
+    baseline: recommended
+    reference: "On"
+    datasets: ["realkie_long"]
     runs: 3
-    metrics: [list_recall, list_precision, extraction_tokens, median_seconds]
-  - id: EX-08
-    page: extraction
-    question: "What shard size should agentic extraction use?"
-    changes: "Pages per shard (`max_pages_per_shard`)"
-    values: ["5 (default)", "3", "10", "25"]
-    holds: "Agentic (Advanced) extraction"
-    datasets: [synth_800, synth_3200]
-    runs: 3
-    metrics: [list_recall, list_precision, extraction_tokens, median_seconds]
-  - id: EX-09
-    page: extraction
-    question: "Should agentic extraction load page images only when it needs them?"
-    changes: "`extraction.agentic.table_parsing.lazy_images`"
-    values: ["On (default)", "Off"]
-    holds: "Agentic (Advanced) extraction"
-    datasets: [synth_400, synth_800, realkie]
-    runs: 3
-    metrics: [list_recall, list_precision, weighted_accuracy, extraction_tokens]
+    metrics: ["list_score", "weighted_accuracy", "total_tokens", "median_seconds"]
+    plot: ["list_score", "weighted_accuracy"]
+    by_size: {metric: list_score, x: list_rows}
   - id: EX-10
     page: extraction
     question: "Do schema validation and value coercion improve the output?"
-    changes: "`extraction.validation` and `extraction.coercion`"
-    values: ["Both on (default)", "Coercion off", "Validation off"]
-    set: [{"extraction.coercion.enabled": true, "extraction.validation.enabled": true}, {"extraction.coercion.enabled": false}, {"extraction.validation.enabled": false}]
-    datasets: [fake_w2, realkie]
+    takeaway: "Validation and coercion change nothing measurable; keep them on"
+    changes: "`extraction.validation.enabled` and `extraction.coercion.enabled` together: validation checks the extracted values against the schema, and coercion repairs values of the wrong type or format (\"$1,234.00\" in a number field) by code; off leaves the model's output exactly as returned"
+    varies: "schema validation and value coercion, by extraction model"
+    values: ["Validation and coercion on · Claude Haiku 5.5", "Validation and coercion on · Claude Sonnet 5.5", "Validation and coercion on · Claude Opus 5.5", "Validation and coercion on · Amazon Nova 2 Lite", "Validation and coercion off · Claude Haiku 5.5", "Validation and coercion off · Claude Sonnet 5.5", "Validation and coercion off · Claude Opus 5.5", "Validation and coercion off · Amazon Nova 2 Lite"]
+    set: [{"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.validation.enabled": true, "extraction.coercion.enabled": true}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.validation.enabled": true, "extraction.coercion.enabled": true}, {"extraction.model": "us.anthropic.claude-opus-5-5", "extraction.validation.enabled": true, "extraction.coercion.enabled": true}, {"extraction.model": "us.amazon.nova-2-lite-v1:0", "extraction.validation.enabled": true, "extraction.coercion.enabled": true}, {"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.validation.enabled": false, "extraction.coercion.enabled": false}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.validation.enabled": false, "extraction.coercion.enabled": false}, {"extraction.model": "us.anthropic.claude-opus-5-5", "extraction.validation.enabled": false, "extraction.coercion.enabled": false}, {"extraction.model": "us.amazon.nova-2-lite-v1:0", "extraction.validation.enabled": false, "extraction.coercion.enabled": false}]
+    grid: {"rows": ["Validation and coercion on", "Validation and coercion off"], "cols": ["Claude Haiku 5.5", "Claude Sonnet 5.5", "Claude Opus 5.5", "Amazon Nova 2 Lite"]}
+    baseline: recommended
+    reference: "Validation and coercion on · Claude Haiku 5.5"
+    families: true
+    datasets: ["realkie"]
     runs: 3
-    metrics: [weighted_accuracy, all_fields_right, extraction_tokens]
+    metrics: ["weighted_accuracy", "all_fields_right", "total_tokens", "median_seconds"]
+    plot: "weighted_accuracy"
+    short_values: {"Validation and coercion on": "On", "Validation and coercion off": "Off"}
   - id: EX-11
     page: extraction
+    notes: "Differences in the table are run-to-run noise."
     question: "Should I retry failed fields with a stronger model?"
-    changes: "`extraction.validation.fail_action`"
-    values: ["warn (default)", "escalate", "reject"]
-    datasets: [fake_w2, realkie]
+    takeaway: "Escalation never ran: validation never failed"
+    changes: "`extraction.validation.fail_action`, escalating to Claude Sonnet 5.5 (`reject` only flags the section, so it cannot change a value)"
+    varies: "what a validation failure does"
+    values: ["Warn (recommended)", "Escalate to Claude Sonnet 5.5"]
+    set: [{"extraction.validation.enabled": true, "extraction.validation.fail_action": "warn"}, {"extraction.validation.enabled": true, "extraction.validation.fail_action": "escalate", "extraction.validation.escalation_model": "us.anthropic.claude-sonnet-5-5"}]
+    baseline: recommended
+    reference: "Warn (recommended)"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, all_fields_right, extraction_tokens]
+    metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens", "median_seconds"]
   - id: EX-12
     page: extraction
-    question: "Does structured output make single-pass extraction more accurate?"
-    takeaway: "Structured output scores the same as the schema in the prompt"
-    short_values: {"Off: schema in the prompt (default)": "Schema in prompt", "Off: schema in the prompt · Claude Sonnet 5.5": "Schema in prompt, Sonnet 5.5", "Structured output · Claude Sonnet 5.5": "Structured output, Sonnet 5.5"}
+    notes: "Structured output scored the same as the schema in the prompt on RealKIE invoices with Claude Haiku 5.5 and Claude Sonnet 5.5. On W-2 forms it never applied: the schema has 28 optional fields and structured output allows 12, so the accelerator fell back to the prompt."
+    question: "Does schema enforcement improve accuracy or cost?"
+    takeaway: "The forced tool costs W-2 accuracy; structured output matches the prompt"
+    varies: "schema enforcement, by model"
     changes: "Schema enforcement (`extraction.schema_enforcement.mode`)"
-    values: ["Off: schema in the prompt (default)", "Off: schema in the prompt · Claude Sonnet 5.5", "Structured output · Claude Sonnet 5.5"]
-    set: [{"extraction.schema_enforcement.mode": "off"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.schema_enforcement.mode": "off"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.schema_enforcement.mode": "structured_output"}]
-    datasets: [realkie, fake_w2]
+    values: ["Schema in prompt · Claude Haiku 5.5", "Structured output · Claude Haiku 5.5", "Schema in prompt · Claude Sonnet 5.5", "Structured output · Claude Sonnet 5.5", "Forced tool · Claude Haiku 5.5", "Schema in prompt · Amazon Nova 2 Lite", "Forced tool · Amazon Nova 2 Lite"]
+    set: [{"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.schema_enforcement.mode": "off"}, {"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.schema_enforcement.mode": "structured_output"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.schema_enforcement.mode": "off"}, {"extraction.model": "us.anthropic.claude-sonnet-5-5", "extraction.schema_enforcement.mode": "structured_output"}, {"extraction.model": "us.anthropic.claude-haiku-5-5", "extraction.schema_enforcement.mode": "forced_tool"}, {"extraction.model": "us.amazon.nova-2-lite-v1:0", "extraction.schema_enforcement.mode": "off"}, {"extraction.model": "us.amazon.nova-2-lite-v1:0", "extraction.schema_enforcement.mode": "forced_tool"}]
+    grid: {"rows": ["Schema in prompt", "Forced tool", "Structured output"], "cols": ["Claude Haiku 5.5", "Claude Sonnet 5.5", "Amazon Nova 2 Lite"]}
+    baseline: recommended
+    reference: "Structured output · Claude Haiku 5.5"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, all_fields_right, extraction_tokens, total_tokens, median_seconds]
+    metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens"]
   - id: EX-13
     page: extraction
     question: "How should I extract sections that hold several records?"
     changes: "Multi-instance sections"
     values: ["Off (default)", "On"]
-    datasets: [synth_two_docs, fake_w2]
+    datasets: [packets_with_fields]
     runs: 3
     metrics: [list_recall, weighted_accuracy, extraction_tokens]
-  - id: EX-14
-    page: extraction
-    question: "How accurate is extraction across many document formats?"
-    changes: "Document format"
-    values: ["Each of the 9 OmniAI formats"]
-    datasets: [omniai_all]
-    runs: 3
-    metrics: [weighted_accuracy, all_fields_right, extraction_tokens]
   - id: EX-15
     page: extraction
     question: "How much do splitting errors cost extraction in a packet?"
@@ -479,35 +523,39 @@ ablations:
     question: "Can I route human review by confidence?"
     changes: "Scoring model"
     values: ["Amazon Nova Lite (default)", "Claude Sonnet 5"]
-    datasets: [confbench, realkie, synth_400]
+    datasets: [confbench, realkie]
     runs: 3
     metrics: [auroc, calibration_error, alert_rate, errors_caught]
   - id: CF-02
     page: confidence-assessment
+    notes: "Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48% at the same cost as Claude Haiku 5.5, not measurably worse, but it varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models."
     question: "Which scoring model should I use?"
-    takeaway: "Claude Haiku 5.5 catches errors; the default doesn't"
+    takeaway: "Haiku 5.5 catches errors like Sonnet 5.5, at a fifth the cost"
     changes: "Scoring model"
-    values: ["Amazon Nova Lite (default)", "Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5"]
+    values: ["Amazon Nova Lite (preset default)", "Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5"]
     set: [{"extraction.confidence.model": "us.amazon.nova-lite-v1:0"}, {"extraction.confidence.model": "us.amazon.nova-2-lite-v1:0"}, {"extraction.confidence.model": "us.anthropic.claude-haiku-5-5"}, {"extraction.confidence.model": "us.anthropic.claude-sonnet-5-5"}]
-    datasets: [confbench, realkie, fake_w2]
+    baseline: recommended
+    reference: "Claude Haiku 5.5"
+    datasets: ["realkie"]
     runs: 3
-    metrics: [auroc, errors_caught_30, calibration_error, alert_rate, errors_caught, scoring_tokens]
-    plot: [auroc, errors_caught_30]
+    metrics: ["auroc", "ecarb_30", "errors_caught_30", "calibration_error", "scoring_tokens", "total_tokens"]
+    plot: ["auroc", "ecarb_30"]
     families: true
   - id: CF-03
     page: confidence-assessment
+    notes: "Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,000 forms. On RealKIE invoices it ran as a separate pass anyway: the accelerator scores a document with line items in a separate pass even when integrated scoring is on."
     question: "Separate scoring pass or integrated into extraction?"
-    takeaway: "Integrated scoring catches more W-2 errors but lowers accuracy"
+    takeaway: "Integrated scoring costs W-2 accuracy; off is cheapest"
     varies: "confidence mode"
-    fixed: Extraction
     changes: "Confidence mode"
-    values: ["Separate (default)", "Integrated", "Off"]
+    values: ["Separate (recommended)", "Integrated", "Off"]
     set: [{"extraction.confidence.mode": "separate"}, {"extraction.confidence.mode": "integrated"}, {"extraction.confidence.mode": "off"}]
-    holds: "Single-pass (Simple) extraction"
-    datasets: [confbench, realkie, synth_800, fake_w2]
+    baseline: recommended
+    reference: "Separate (recommended)"
+    datasets: ["realkie", "fake_w2"]
     runs: 3
-    metrics: [weighted_accuracy, list_recall, auroc, errors_caught_30, scoring_tokens, median_seconds]
-    plot: [weighted_accuracy, errors_caught_30]
+    metrics: ["weighted_accuracy", "auroc", "ecarb_30", "extraction_tokens", "scoring_tokens", "total_tokens", "median_seconds"]
+    plot: "weighted_accuracy"
   - id: CF-04
     page: confidence-assessment
     question: "What confidence threshold should I set?"
@@ -534,64 +582,14 @@ ablations:
     datasets: [confbench, fake_w2]
     runs: 3
     metrics: [auroc, calibration_error, scoring_tokens]
-  - id: CF-07
-    page: confidence-assessment
-    question: "How should long lists be scored?"
-    changes: "`extraction.confidence.list_batch_size`"
-    values: ["25 (default)", "12", "50"]
-    datasets: [synth_400, synth_800, synth_1600]
-    runs: 3
-    metrics: [list_recall, auroc, scoring_tokens, median_seconds]
-
-  # -------------------------------------------------------------- rule validation
-  - id: RV-01
-    page: rule-validation
-    question: "How accurate are rule verdicts?"
-    changes: "Rule validation model"
-    values: ["Default model", "Claude Haiku 5.5", "Claude Sonnet 5"]
-    datasets: [rule_verdicts]
-    runs: 3
-    metrics: [verdict_agreement, wrong_passes, wrong_fails, not_decided, rule_tokens]
-  - id: RV-02
-    page: rule-validation
-    question: "Language model or Z3 for exact rules?"
-    changes: "Rule engine (`x-aws-idp-validation-engine`)"
-    values: ["Language model (default)", "Z3 solver"]
-    datasets: [rule_verdicts]
-    runs: 3
-    metrics: [verdict_agreement, wrong_passes, wrong_fails, rule_tokens]
-  - id: RV-03
-    page: rule-validation
-    question: "Are rules drafted by Policy Discovery as good as hand-written rules?"
-    changes: "Rule source"
-    values: ["Hand-written", "Drafted by Policy Discovery", "Drafted, then reviewed by hand"]
-    datasets: [rule_verdicts]
-    runs: 3
-    metrics: [verdict_agreement, wrong_passes, wrong_fails]
-  - id: RV-04
-    page: rule-validation
-    question: "How large should rule-validation chunks be?"
-    changes: "`max_chunk_size`"
-    values: ["8,000 (default)", "4,000", "16,000"]
-    datasets: [rule_verdicts]
-    runs: 3
-    metrics: [verdict_agreement, not_decided, rule_tokens]
 
   # ------------------------------------------------------------- token use, cost
-  - id: TU-01
-    page: token-use
-    question: "Where do the tokens go?"
-    changes: "Nothing: the preset, measured step by step"
-    values: ["Preset"]
-    datasets: [realkie, docsplit, synth_400]
-    runs: 3
-    metrics: [ocr_tokens, classification_tokens, extraction_tokens, scoring_tokens, total_tokens, cached_share]
   - id: TU-02
     page: token-use
     question: "How much does prompt caching save in extraction?"
     changes: "`extraction.prompt_cache`"
     values: ["auto (default)", "off"]
-    datasets: [realkie, docsplit, synth_400]
+    datasets: [realkie, docsplit]
     runs: 3
     metrics: [total_tokens, cached_share, median_seconds]
   - id: TU-03
@@ -604,6 +602,7 @@ ablations:
     metrics: [classification_tokens, extraction_tokens, scoring_tokens, total_tokens]
   - id: TU-04
     page: token-use
+    notes: "On W-2 forms it cost $5 per 1,000 against $32 for the default, and scored higher (0.998 against 0.966). Scoring with Claude Haiku 5.5 added $7 per 1,000 invoices and gave confidence that separates right from wrong values (AUROC 0.84, against 0.51 for the default)."
     question: "What is the cheapest configuration that keeps accuracy?"
     takeaway: "Claude Haiku 5.5 and Layout only: same accuracy, a sixth the cost"
     short_values: {"Claude Haiku 5.5, Layout only, confidence off": "Haiku 5.5, no scoring", "Claude Haiku 5.5, Layout only, Claude Haiku 5.5 scoring": "Haiku 5.5, Haiku scoring"}
@@ -613,13 +612,130 @@ ablations:
     datasets: [realkie, fake_w2]
     runs: 3
     metrics: [weighted_accuracy, all_fields_right, total_tokens, median_seconds]
+    reference: "Claude Haiku 5.5, Layout only, Claude Haiku 5.5 scoring"
   - id: TU-05
     page: token-use
     question: "How many tokens does each extraction model use for the same document?"
     changes: "Extraction model"
     values: ["The models in EX-02"]
     holds: "Computed from the EX-02 runs"
-    datasets: [realkie, synth_400]
+    datasets: [realkie, omniai_all]
     runs: 0
     derives: EX-02
     metrics: [extraction_tokens, total_tokens]
+  - id: SC-12
+    page: "splitting-and-classification"
+    question: "Can a decision model classify the sections?"
+    takeaway: "To be measured"
+    changes: "Which model classifies each section after Claude Haiku 5.5 detects the sections, and the class descriptions it reads"
+    varies: "which model classifies each section, and the class descriptions"
+    fixed: "Classification"
+    values: ["LLM · Claude Haiku 5.5", "LLM · Claude Haiku 5.5 · short descriptions", "Decision model · first page image", "Decision model · first page image · short descriptions", "Decision model · first 2 page images · short descriptions", "Decision model · first page image and text · short descriptions"]
+    set: [{"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "llm", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "llm", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first_k", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 2, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}, {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "both", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}]
+    transform: [null, "short_class_descriptions", null, "short_class_descriptions", "short_class_descriptions", "short_class_descriptions"]
+    short_values: {"Decision model": "Decider 2B", "short descriptions": "short desc."}
+    baseline: "develop"
+    reference: "LLM · Claude Haiku 5.5"
+    datasets: ["docsplit_100"]
+    runs: 3
+    metrics: ["section_accuracy", "label_accuracy", "page_accuracy", "boundary_accuracy", "classification_tokens", "total_tokens", "median_seconds"]
+    plot: "label_accuracy"
+    cost_metric: classification_cost_per_1000_docs
+    families: false
+    notes: >-
+      Short descriptions replace each class's preset description with one line about what
+      the page looks like (for example "a typed formal letter with a salutation (Dear ...)
+      and a signature"); the splitter and the namer both read them. The decision model is the
+      Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit, on AWS Lambda, images at 448 pixels).
+
+  - id: CF-08
+    page: "confidence-assessment"
+    question: "Can a decision model score confidence?"
+    takeaway: "An LLM scores confidence better than the Strands Decider 2B, for less"
+    changes: "Who scores each extracted value: an LLM or a decision model (one yes/no question per value)"
+    varies: "who scores the values"
+    fixed: "Extraction"
+    values: ["LLM · Claude Haiku 5.5", "LLM · Claude Sonnet 5.5", "Decision model · page images"]
+    set: [{"extraction.confidence.mode": "separate", "extraction.confidence.method": "llm", "extraction.confidence.model": "us.anthropic.claude-haiku-5-5"}, {"extraction.confidence.mode": "separate", "extraction.confidence.method": "llm", "extraction.confidence.model": "us.anthropic.claude-sonnet-5-5"}, {"extraction.confidence.mode": "separate", "extraction.confidence.method": "decision_model", "extraction.confidence.decision_model.endpoint": "${DECIDER_ENDPOINT}", "extraction.confidence.decision_model.input": "images", "extraction.confidence.decision_model.max_pages": 20, "extraction.confidence.decision_model.timeout_ms": 300000}]
+    short_values: {"Decision model": "Decider 2B"}
+    baseline: "develop"
+    reference: "LLM · Claude Haiku 5.5"
+    datasets: ["realkie"]
+    runs: 3
+    metrics: ["auroc", "ecarb_30", "errors_caught_30", "calibration_error", "scoring_tokens", "total_tokens", "median_seconds"]
+    plot: ["auroc", "ecarb_30"]
+    notes: "The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit), on an AWS Lambda function with 10 GB of memory; its cost is that function's duration, with cold starts left out. It asks one yes/no question per extracted value against each page image of the section (up to 20 pages). Extraction ran on Claude Haiku 5.5 for every value. Reading OCR text instead of page images could not be measured on this release: the accelerator sent each section's whole text in one request, longer than the 4,096 tokens the model reads, so half the invoices got no score (issue #2032). Its raw scores are not calibrated, so its calibration error depends on how often values are wrong and does not carry over to other documents."
+  - id: SC-13
+    page: splitting-and-classification
+    question: "Which way of splitting and classifying should I use?"
+    takeaway: "To be measured"
+    changes: "How the packet is split and who names each section, by model"
+    varies: "approach and model"
+    short_values: {"Split, then an LLM names each section": "Split, LLM classifies", "Split, then a decision model names each section": "Split, Decider 2B classifies"}
+    values:
+      - "Page by page · Amazon Nova 2 Lite"
+      - "Holistic · Amazon Nova 2 Lite"
+      - "Split, then an LLM names each section · Amazon Nova 2 Lite"
+      - "Split, then a decision model names each section · Amazon Nova 2 Lite"
+      - "Page by page · Claude Haiku 5.5"
+      - "Holistic · Claude Haiku 5.5"
+      - "Split, then an LLM names each section · Claude Haiku 5.5"
+      - "Split, then a decision model names each section · Claude Haiku 5.5"
+      - "Page by page · Claude Sonnet 5.5"
+      - "Holistic · Claude Sonnet 5.5"
+      - "Split, then an LLM names each section · Claude Sonnet 5.5"
+      - "Split, then a decision model names each section · Claude Sonnet 5.5"
+    set:
+      - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}
+      - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.method": "llm"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+      - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}
+      - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "llm"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+      - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}
+      - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.method": "llm"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+    grid:
+      rows: ["Page by page", "Holistic", "Split, then an LLM names each section", "Split, then a decision model names each section"]
+      cols: ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5"]
+    interim: "Partial: 7 of 12 settings measured; Claude Sonnet 5.5, the decision-model row and the same-class packets are still running."
+    baseline: develop
+    reference: "Holistic · Claude Haiku 5.5"
+    datasets: [docsplit_100, docsplit_sameclass]
+    runs: 3
+    metrics: [section_accuracy, boundary_accuracy, label_accuracy, page_accuracy, grouping_score, over_splits, merges, auroc, calibration_error, classification_tokens, median_seconds]
+    plot: section_accuracy
+    cost_metric: classification_cost_per_1000_docs
+    families: true
+    notes: >-
+      In the two split rows the model named in the column finds the section boundaries
+      (reading the whole packet); the LLM row then has that same model classify each section,
+      and the decision-model row has the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit, on AWS Lambda, images at 448 pixels)
+      classify it from the section's first page image.
+  - id: SC-14
+    page: splitting-and-classification
+    question: "Do long packets change which approach to use?"
+    takeaway: "To be measured"
+    changes: "How the packet is split and classified, on packets of 5 to 20 pages and of 30 to 60 pages"
+    varies: "approach and packet length"
+    fixed: "Classification"
+    short_values: {"Split, then an LLM classifies each section": "Split, LLM classifies"}
+    values: ["Page by page · Claude Haiku 5.5", "Holistic · Claude Haiku 5.5", "Split, then an LLM classifies each section · Claude Haiku 5.5"]
+    set:
+      - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}
+      - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "llm"}
+    cost_metric: classification_cost_per_1000_docs
+    baseline: develop
+    reference: "Holistic · Claude Haiku 5.5"
+    datasets: [docsplit_100, docsplit_long]
+    runs: 3
+    metrics: [section_accuracy, boundary_accuracy, label_accuracy, page_accuracy, over_splits, merges, classification_tokens, median_seconds]
+    plot: section_accuracy
+    families: false
+    notes: >-
+      The 5-to-20-page results are the same runs as SC-13. A holistic call reads at most
+      the preset's page window at once, so a long packet is read in several windows.

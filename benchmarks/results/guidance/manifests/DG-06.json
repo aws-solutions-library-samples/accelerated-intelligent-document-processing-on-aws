@@ -1,54 +1,81 @@
 {
   "ablation": "DG-06",
-  "verdict": "Pick the features your documents need; none of the combinations we tried changed accuracy measurably. On RealKIE invoices and W-2 forms every combination scored within the noise of the default, and LAYOUT alone used about 3% fewer total tokens per page because it sends less page text. Textract prices each page by the features you select, so dropping a feature your documents do not need saves Textract charges rather than tokens.",
+  "verdict": "Layout only is a good place to start: it got every field right on 82% of W-2 forms, against 55% with the preset's tables, layout and signatures, for the lowest cost. Test it on your own documents.",
   "runs": {
     "realkie": {
-      "TABLES, LAYOUT, SIGNATURES (default)": [
-        "RealKIE-FCC-Verified-20261113-183155",
-        "RealKIE-FCC-Verified-20261113-183156",
-        "RealKIE-FCC-Verified-20261113-183157"
+      "Layout only (recommended)": [
+        "RealKIE-FCC-Verified-20261116-181226",
+        "RealKIE-FCC-Verified-20261116-181239",
+        "RealKIE-FCC-Verified-20261116-181216"
       ],
-      "LAYOUT only": [
-        "RealKIE-FCC-Verified-20261113-183443",
-        "RealKIE-FCC-Verified-20261113-183516",
-        "RealKIE-FCC-Verified-20261113-183512"
+      "Tables only": [
+        "RealKIE-FCC-Verified-20261116-181323",
+        "RealKIE-FCC-Verified-20261116-181334",
+        "RealKIE-FCC-Verified-20261116-181556"
       ],
-      "TABLES only": [
-        "RealKIE-FCC-Verified-20261113-183741",
-        "RealKIE-FCC-Verified-20261113-183751",
-        "RealKIE-FCC-Verified-20261113-183840"
+      "Tables, layout, signatures (preset default)": [
+        "RealKIE-FCC-Verified-20261116-181250",
+        "RealKIE-FCC-Verified-20261116-181313",
+        "RealKIE-FCC-Verified-20261116-181301"
       ],
-      "TABLES, LAYOUT, SIGNATURES, FORMS": [
-        "RealKIE-FCC-Verified-20261113-184029",
-        "RealKIE-FCC-Verified-20261113-184136",
-        "RealKIE-FCC-Verified-20261113-184120"
+      "Tables, layout, signatures, forms": [
+        "RealKIE-FCC-Verified-20261116-181651",
+        "RealKIE-FCC-Verified-20261116-181759",
+        "RealKIE-FCC-Verified-20261116-181730"
       ]
     },
     "fake_w2": {
-      "TABLES, LAYOUT, SIGNATURES (default)": [
-        "Fake-W2-Tax-Forms-20261113-184358",
-        "Fake-W2-Tax-Forms-20261113-184446",
-        "Fake-W2-Tax-Forms-20261113-184443"
+      "Layout only (recommended)": [
+        "Fake-W2-Tax-Forms-20261116-182120",
+        "Fake-W2-Tax-Forms-20261116-182302",
+        "Fake-W2-Tax-Forms-20261116-182043"
       ],
-      "LAYOUT only": [
-        "Fake-W2-Tax-Forms-20261113-184524",
-        "Fake-W2-Tax-Forms-20261113-184603",
-        "Fake-W2-Tax-Forms-20261113-184607"
+      "Tables, layout, signatures (preset default)": [
+        "Fake-W2-Tax-Forms-20261116-182350",
+        "Fake-W2-Tax-Forms-20261116-182325",
+        "Fake-W2-Tax-Forms-20261116-182400"
       ],
-      "TABLES only": [
-        "Fake-W2-Tax-Forms-20261113-184628",
-        "Fake-W2-Tax-Forms-20261113-184719",
-        "Fake-W2-Tax-Forms-20261113-184721"
+      "Tables only": [
+        "Fake-W2-Tax-Forms-20261116-182435",
+        "Fake-W2-Tax-Forms-20261116-182811",
+        "Fake-W2-Tax-Forms-20261116-182652"
       ],
-      "TABLES, LAYOUT, SIGNATURES, FORMS": [
-        "Fake-W2-Tax-Forms-20261113-184742",
-        "Fake-W2-Tax-Forms-20261113-184825",
-        "Fake-W2-Tax-Forms-20261113-184846"
+      "Tables, layout, signatures, forms": [
+        "Fake-W2-Tax-Forms-20261116-182846",
+        "Fake-W2-Tax-Forms-20261116-182824",
+        "Fake-W2-Tax-Forms-20261116-182859"
       ]
     }
   },
+  "max_failed": {},
   "stack": "sr-testing",
   "region": "us-east-1",
   "release": "0.6.15.dev1",
-  "measured": "November 2026"
+  "measured": "November 2026",
+  "cache_isolated": [
+    "Fake-W2-Tax-Forms-20261116-182043",
+    "Fake-W2-Tax-Forms-20261116-182120",
+    "Fake-W2-Tax-Forms-20261116-182302",
+    "Fake-W2-Tax-Forms-20261116-182325",
+    "Fake-W2-Tax-Forms-20261116-182350",
+    "Fake-W2-Tax-Forms-20261116-182400",
+    "Fake-W2-Tax-Forms-20261116-182435",
+    "Fake-W2-Tax-Forms-20261116-182652",
+    "Fake-W2-Tax-Forms-20261116-182811",
+    "Fake-W2-Tax-Forms-20261116-182824",
+    "Fake-W2-Tax-Forms-20261116-182846",
+    "Fake-W2-Tax-Forms-20261116-182859",
+    "RealKIE-FCC-Verified-20261116-181216",
+    "RealKIE-FCC-Verified-20261116-181226",
+    "RealKIE-FCC-Verified-20261116-181239",
+    "RealKIE-FCC-Verified-20261116-181250",
+    "RealKIE-FCC-Verified-20261116-181301",
+    "RealKIE-FCC-Verified-20261116-181313",
+    "RealKIE-FCC-Verified-20261116-181323",
+    "RealKIE-FCC-Verified-20261116-181334",
+    "RealKIE-FCC-Verified-20261116-181556",
+    "RealKIE-FCC-Verified-20261116-181651",
+    "RealKIE-FCC-Verified-20261116-181730",
+    "RealKIE-FCC-Verified-20261116-181759"
+  ]
 }

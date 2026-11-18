@@ -1,0 +1,54 @@
+{
+  "ablation": "DG-06",
+  "verdict": "Pick the features your documents need; none of the combinations we tried changed accuracy measurably. On RealKIE invoices and W-2 forms every combination scored within the noise of the default, and LAYOUT alone used about 3% fewer total tokens per page because it sends less page text. Textract prices each page by the features you select, so dropping a feature your documents do not need saves Textract charges rather than tokens.",
+  "runs": {
+    "realkie": {
+      "TABLES, LAYOUT, SIGNATURES (default)": [
+        "RealKIE-FCC-Verified-20261113-183155",
+        "RealKIE-FCC-Verified-20261113-183156",
+        "RealKIE-FCC-Verified-20261113-183157"
+      ],
+      "LAYOUT only": [
+        "RealKIE-FCC-Verified-20261113-183443",
+        "RealKIE-FCC-Verified-20261113-183516",
+        "RealKIE-FCC-Verified-20261113-183512"
+      ],
+      "TABLES only": [
+        "RealKIE-FCC-Verified-20261113-183741",
+        "RealKIE-FCC-Verified-20261113-183751",
+        "RealKIE-FCC-Verified-20261113-183840"
+      ],
+      "TABLES, LAYOUT, SIGNATURES, FORMS": [
+        "RealKIE-FCC-Verified-20261113-184029",
+        "RealKIE-FCC-Verified-20261113-184136",
+        "RealKIE-FCC-Verified-20261113-184120"
+      ]
+    },
+    "fake_w2": {
+      "TABLES, LAYOUT, SIGNATURES (default)": [
+        "Fake-W2-Tax-Forms-20261113-184358",
+        "Fake-W2-Tax-Forms-20261113-184446",
+        "Fake-W2-Tax-Forms-20261113-184443"
+      ],
+      "LAYOUT only": [
+        "Fake-W2-Tax-Forms-20261113-184524",
+        "Fake-W2-Tax-Forms-20261113-184603",
+        "Fake-W2-Tax-Forms-20261113-184607"
+      ],
+      "TABLES only": [
+        "Fake-W2-Tax-Forms-20261113-184628",
+        "Fake-W2-Tax-Forms-20261113-184719",
+        "Fake-W2-Tax-Forms-20261113-184721"
+      ],
+      "TABLES, LAYOUT, SIGNATURES, FORMS": [
+        "Fake-W2-Tax-Forms-20261113-184742",
+        "Fake-W2-Tax-Forms-20261113-184825",
+        "Fake-W2-Tax-Forms-20261113-184846"
+      ]
+    }
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026"
+}

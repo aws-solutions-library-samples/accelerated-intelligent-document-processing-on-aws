@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="792" height="460" viewBox="0 0 792 460" role="img"><title>With the preset&#x27;s descriptions, Claude Haiku 5.5 classifies sections better than the Decider 2B</title><desc>DocSplit packets, 18–20 packets × 3 runs: LLM · Haiku 5.5 (baseline setup) 96% at $17.2 classification cost per 1,000 packets, LLM · Nova 2 Lite 94% at $15.3 classification cost per 1,000 packets, Decider 2B · first page image 81% at $20.3 classification cost per 1,000 packets, Decider 2B · first page image and text 83% at $20.5 classification cost per 1,000 packets, Decider 2B · first 2 page images 82% at $19.0 classification cost per 1,000 packets; Baseline setup: Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction, and confidence scoring, all on Claude Haiku 5.5, with no escalation to a second scoring model. Interim: 20 packets, the preset&#x27;s class descriptions; a 100-packet re-run with one-line descriptions is in progress.</desc><style>
+  .viz { --series: #2a78d6; --ring: #ffffff; --ink: #0b0b0b; --ink-2: #52514e;
+         --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+         --fam-nova: #2a78d6; --fam-claude: #eb6834; --fam-other: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz, svg.viz:root { --series: #3987e5;
+      --ring: #17181c; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835;
+      --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  }
+  :root[data-theme="dark"] .viz { --series: #3987e5; --ring: #17181c; --ink: #f0efec;
+    --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  .viz { max-width: 100%; height: auto; }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .viz .ctitle { font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .panel { font-size: 13px; font-weight: 600; fill: var(--ink); }
+  .sub { font-size: 12px; fill: var(--muted); }
+  .viz .lead { font-size: 12px; fill: var(--ink); }
+  .label { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel.dflt, .viz .plabel .dflt { fill: var(--ink); font-weight: 700; }
+  .viz .dot.ref { stroke: var(--ink); stroke-width: 1.5; }
+  .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .none { font-size: 12px; fill: var(--muted); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--ink-2); stroke-width: 1; }
+  .viz .gap { fill: var(--ring); }
+  .viz .leader { stroke: var(--muted); stroke-width: 1; }
+  .band { fill: var(--series); opacity: 0.12; }
+  .dot { fill: var(--series); stroke: var(--ring); stroke-width: 2; }
+  .axislabel { font-size: 12px; fill: var(--ink-2); }
+  .prices { font-size: 10px; fill: var(--muted); }
+  .num { font-size: 11px; font-weight: 700; fill: var(--ink); }
+  .halo { paint-order: stroke; stroke: var(--ring); stroke-width: 3px;
+          stroke-linejoin: round; }
+  .mcoe { stroke: var(--ink-2); stroke-width: 1; fill: none; }
+  .mcoelabel { font-size: 11px; fill: var(--ink-2); }
+  .viz .ptitle { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .viz .fam-nova { fill: var(--fam-nova); }
+  .viz .fam-claude { fill: var(--fam-claude); }
+  .viz .fam-other { fill: var(--fam-other); }
+  .viz .baseline { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 5 4; }
+  .viz .baselinelabel { font-size: 11px; fill: var(--ink-2); }
+</style><text class="ctitle" x="0" y="18.0">With the preset&#x27;s descriptions, Claude Haiku 5.5 classifies sections better than the Decider 2B</text><text class="sub" x="0" y="38.0">DocSplit packets, 18–20 packets × 3 runs · Varies: which model classifies each section · Everything else: baseline setup</text><g transform="translate(0.0 50.0)"><text class="axislabel" x="42" y="13">Label accuracy (%) ↑</text><line class="grid" x1="46" x2="770" y1="294.0" y2="294.0"/><line class="axis" x1="42" x2="46" y1="294.0" y2="294.0"/><text class="tick" x="39" y="298.0" text-anchor="end">70%</text><line class="grid" x1="46" x2="770" y1="204.0" y2="204.0"/><line class="axis" x1="42" x2="46" y1="204.0" y2="204.0"/><text class="tick" x="39" y="208.0" text-anchor="end">80%</text><line class="grid" x1="46" x2="770" y1="114.0" y2="114.0"/><line class="axis" x1="42" x2="46" y1="114.0" y2="114.0"/><text class="tick" x="39" y="118.0" text-anchor="end">90%</text><line class="grid" x1="46" x2="770" y1="24.0" y2="24.0"/><line class="axis" x1="42" x2="46" y1="24.0" y2="24.0"/><text class="tick" x="39" y="28.0" text-anchor="end">100%</text><line class="axis" x1="46.0" x2="46.0" y1="294" y2="298"/><text class="tick" x="46.0" y="310" text-anchor="middle">$0</text><line class="axis" x1="190.8" x2="190.8" y1="294" y2="298"/><text class="tick" x="190.8" y="310" text-anchor="middle">$5</text><line class="axis" x1="335.6" x2="335.6" y1="294" y2="298"/><text class="tick" x="335.6" y="310" text-anchor="middle">$10</text><line class="axis" x1="480.4" x2="480.4" y1="294" y2="298"/><text class="tick" x="480.4" y="310" text-anchor="middle">$15</text><line class="axis" x1="625.2" x2="625.2" y1="294" y2="298"/><text class="tick" x="625.2" y="310" text-anchor="middle">$20</text><line class="axis" x1="770.0" x2="770.0" y1="294" y2="298"/><text class="tick" x="770.0" y="310" text-anchor="middle">$25</text><line class="axis" x1="46" x2="770" y1="294" y2="294"/><line class="axis" x1="46" x2="46" y1="24" y2="294"/><text class="axislabel" x="408.0" y="330" text-anchor="middle">Classification cost per 1,000 packets ($) — cheaper ←</text><rect class="band" x="538.6" y="49.5" width="10" height="14.6" rx="5"/><rect class="band" x="483.2" y="64.6" width="10" height="29.6" rx="5"/><rect class="band" x="628.0" y="176.7" width="10" height="38.0" rx="5"/><rect class="band" x="634.2" y="157.0" width="10" height="33.0" rx="5"/><rect class="band" x="591.9" y="160.2" width="10" height="48.4" rx="5"/><line class="leader" x1="634.0" y1="168.8" x2="621.2" y2="157.5"/><line class="leader" x1="627.8" y1="200.3" x2="615.0" y2="211.6"/><g><title>LLM · Haiku 5.5 (baseline setup): Label accuracy 96% ± 1%, $17.2 classification cost per 1,000 packets</title><circle class="dot ref" cx="543.6" cy="56.8" r="5"/></g><g><title>LLM · Nova 2 Lite: Label accuracy 94% ± 2%, $15.3 classification cost per 1,000 packets</title><circle class="dot" cx="488.2" cy="79.4" r="5"/></g><g><title>Decider 2B · first page image: Label accuracy 81% ± 2%, $20.3 classification cost per 1,000 packets</title><circle class="dot" cx="633.0" cy="195.6" r="5"/></g><g><title>Decider 2B · first page image and text: Label accuracy 83% ± 2%, $20.5 classification cost per 1,000 packets</title><circle class="dot" cx="639.2" cy="173.5" r="5"/></g><g><title>Decider 2B · first 2 page images: Label accuracy 82% ± 3%, $19.0 classification cost per 1,000 packets</title><circle class="dot" cx="596.9" cy="184.5" r="5"/></g><text class="plabel dflt halo" x="553.6" y="60.8" text-anchor="start">LLM · Haiku 5.5 (baseline setup)</text><text class="plabel halo" x="478.2" y="83.4" text-anchor="end">LLM · Nova 2 Lite</text><text class="plabel halo" x="586.9" y="188.5" text-anchor="end">Decider 2B · first 2 page images</text><text class="plabel halo" x="619.2" y="153.5" text-anchor="end">Decider 2B · first page image and text</text><text class="plabel halo" x="613.0" y="223.6" text-anchor="end">Decider 2B · first page image</text></g><text class="prices" x="0" y="409.0">Baseline setup: Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction, and confidence scoring, all</text><text class="prices" x="0" y="423.0">on Claude Haiku 5.5, with no escalation to a second scoring model. Interim: 20 packets, the preset&#x27;s class descriptions; a 100-packet re-run with one-line</text><text class="prices" x="0" y="437.0">descriptions is in progress.</text><text class="prices" x="0" y="455.0">Prices: on-demand, us-east-1, config_library/pricing.yaml as of 2026-11-18</text></svg>

@@ -1,0 +1,49 @@
+{
+  "ablation": "SC-12",
+  "verdict": "Measured; see the table.",
+  "runs": {
+    "docsplit_100": {
+      "Decision model \u00b7 first page image": [
+        "DocSplit-Poly-Seq-20261118-161828",
+        "DocSplit-Poly-Seq-20261118-164945",
+        "DocSplit-Poly-Seq-20261118-165649"
+      ],
+      "LLM \u00b7 Claude Haiku 5.5 \u00b7 short descriptions": [
+        "DocSplit-Poly-Seq-20261118-161805"
+      ],
+      "Decision model \u00b7 first page image \u00b7 short descriptions": [
+        "DocSplit-Poly-Seq-20261118-170107",
+        "DocSplit-Poly-Seq-20261118-165731",
+        "DocSplit-Poly-Seq-20261118-171823"
+      ],
+      "Decision model \u00b7 first 2 page images \u00b7 short descriptions": [
+        "DocSplit-Poly-Seq-20261118-172239",
+        "DocSplit-Poly-Seq-20261118-173421",
+        "DocSplit-Poly-Seq-20261118-173624"
+      ],
+      "Decision model \u00b7 first page image and text \u00b7 short descriptions": [
+        "DocSplit-Poly-Seq-20261118-174232"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit_100": 10
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15-develop-d1be93f",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Poly-Seq-20261118-161805",
+    "DocSplit-Poly-Seq-20261118-161828",
+    "DocSplit-Poly-Seq-20261118-164945",
+    "DocSplit-Poly-Seq-20261118-165649",
+    "DocSplit-Poly-Seq-20261118-165731",
+    "DocSplit-Poly-Seq-20261118-170107",
+    "DocSplit-Poly-Seq-20261118-171823",
+    "DocSplit-Poly-Seq-20261118-172239",
+    "DocSplit-Poly-Seq-20261118-173421",
+    "DocSplit-Poly-Seq-20261118-173624",
+    "DocSplit-Poly-Seq-20261118-174232"
+  ]
+}

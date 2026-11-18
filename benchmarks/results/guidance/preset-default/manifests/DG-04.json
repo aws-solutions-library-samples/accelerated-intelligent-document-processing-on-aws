@@ -1,0 +1,28 @@
+{
+  "ablation": "DG-04",
+  "verdict": "Keep 300 DPI unless tokens matter more than a small accuracy risk. On RealKIE invoices 200 DPI scored the same as 300 (0.82 against 0.81) with 7% fewer tokens per page; 150 DPI scored 0.79, a drop within the noise, with 12% fewer. Below about 200 DPI Textract starts to drop small and faint characters, so test a lower resolution on your own scans first.",
+  "runs": {
+    "realkie": {
+      "300 (default)": [
+        "RealKIE-FCC-Verified-20261113-203126",
+        "RealKIE-FCC-Verified-20261113-203127",
+        "RealKIE-FCC-Verified-20261113-203128"
+      ],
+      "200": [
+        "RealKIE-FCC-Verified-20261113-203431",
+        "RealKIE-FCC-Verified-20261113-203443",
+        "RealKIE-FCC-Verified-20261113-203446"
+      ],
+      "150": [
+        "RealKIE-FCC-Verified-20261113-203719",
+        "RealKIE-FCC-Verified-20261113-203751",
+        "RealKIE-FCC-Verified-20261113-203812"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026"
+}

@@ -1,0 +1,123 @@
+{
+  "ablation": "EX-02",
+  "verdict": "Claude Haiku 5.5 for most forms and invoices; Claude Opus 5.5 when every field must be right. Claude Haiku 5.5 scored 0.98 on W-2 forms and 0.79 on RealKIE invoices for about half the cost of the default, Claude Sonnet 5 (0.96 and 0.80). Claude Opus 5.5, OpenAI GPT-6 Astra and xAI Grok 4.6 were nearly perfect on W-2s (0.999); Claude Sonnet 5.5 scored below Claude Sonnet 5 there (0.92). On RealKIE invoices no model scored measurably different from the default. The Amazon Nova models scored 0.06 to 0.16 lower on W-2s. xAI Grok 4.6 took about three times as long per document.",
+  "runs": {
+    "realkie": {
+      "Claude Sonnet 5 (default)": [
+        "RealKIE-FCC-Verified-20261113-183955",
+        "RealKIE-FCC-Verified-20261113-183954",
+        "RealKIE-FCC-Verified-20261113-183956"
+      ],
+      "Amazon Nova Lite": [
+        "RealKIE-FCC-Verified-20261113-184302",
+        "RealKIE-FCC-Verified-20261113-184254",
+        "RealKIE-FCC-Verified-20261113-184301"
+      ],
+      "Amazon Nova Pro": [
+        "RealKIE-FCC-Verified-20261113-184609",
+        "RealKIE-FCC-Verified-20261113-184643",
+        "RealKIE-FCC-Verified-20261113-184918"
+      ],
+      "Amazon Nova 2 Lite": [
+        "RealKIE-FCC-Verified-20261113-190709",
+        "RealKIE-FCC-Verified-20261113-192401"
+      ],
+      "Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261113-192310",
+        "RealKIE-FCC-Verified-20261113-192341",
+        "RealKIE-FCC-Verified-20261113-192701"
+      ],
+      "Claude Sonnet 4.6": [
+        "RealKIE-FCC-Verified-20261113-192729",
+        "RealKIE-FCC-Verified-20261113-192743",
+        "RealKIE-FCC-Verified-20261113-194402"
+      ],
+      "Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261113-194401",
+        "RealKIE-FCC-Verified-20261113-194404",
+        "RealKIE-FCC-Verified-20261113-195220"
+      ],
+      "Claude Opus 5": [
+        "RealKIE-FCC-Verified-20261113-195217",
+        "RealKIE-FCC-Verified-20261113-195219",
+        "RealKIE-FCC-Verified-20261113-195617"
+      ],
+      "Claude Opus 5.5": [
+        "RealKIE-FCC-Verified-20261113-195659",
+        "RealKIE-FCC-Verified-20261113-195740",
+        "RealKIE-FCC-Verified-20261113-195936"
+      ],
+      "OpenAI GPT-6 Astra": [
+        "RealKIE-FCC-Verified-20261113-195957",
+        "RealKIE-FCC-Verified-20261113-200106",
+        "RealKIE-FCC-Verified-20261113-200235"
+      ],
+      "xAI Grok 4.6": [
+        "RealKIE-FCC-Verified-20261113-200733",
+        "RealKIE-FCC-Verified-20261113-200820",
+        "RealKIE-FCC-Verified-20261113-200702"
+      ]
+    },
+    "fake_w2": {
+      "Claude Sonnet 5 (default)": [
+        "Fake-W2-Tax-Forms-20261113-201217",
+        "Fake-W2-Tax-Forms-20261113-201204",
+        "Fake-W2-Tax-Forms-20261113-201242"
+      ],
+      "Amazon Nova Lite": [
+        "Fake-W2-Tax-Forms-20261113-201354",
+        "Fake-W2-Tax-Forms-20261113-201419",
+        "Fake-W2-Tax-Forms-20261113-201509"
+      ],
+      "Amazon Nova Pro": [
+        "Fake-W2-Tax-Forms-20261113-201521",
+        "Fake-W2-Tax-Forms-20261113-201543",
+        "Fake-W2-Tax-Forms-20261113-201623"
+      ],
+      "Amazon Nova 2 Lite": [
+        "Fake-W2-Tax-Forms-20261113-201638",
+        "Fake-W2-Tax-Forms-20261113-201728",
+        "Fake-W2-Tax-Forms-20261113-201737"
+      ],
+      "Claude Haiku 5.5": [
+        "Fake-W2-Tax-Forms-20261113-201754",
+        "Fake-W2-Tax-Forms-20261113-201833",
+        "Fake-W2-Tax-Forms-20261113-201841"
+      ],
+      "Claude Sonnet 4.6": [
+        "Fake-W2-Tax-Forms-20261113-201858",
+        "Fake-W2-Tax-Forms-20261113-201947",
+        "Fake-W2-Tax-Forms-20261113-202015"
+      ],
+      "Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261113-202016",
+        "Fake-W2-Tax-Forms-20261113-202114",
+        "Fake-W2-Tax-Forms-20261113-202132"
+      ],
+      "Claude Opus 5": [
+        "Fake-W2-Tax-Forms-20261113-202129",
+        "Fake-W2-Tax-Forms-20261113-202220",
+        "Fake-W2-Tax-Forms-20261113-202242"
+      ],
+      "Claude Opus 5.5": [
+        "Fake-W2-Tax-Forms-20261113-202246",
+        "Fake-W2-Tax-Forms-20261113-202327",
+        "Fake-W2-Tax-Forms-20261113-202346"
+      ],
+      "OpenAI GPT-6 Astra": [
+        "Fake-W2-Tax-Forms-20261113-202412",
+        "Fake-W2-Tax-Forms-20261113-202453",
+        "Fake-W2-Tax-Forms-20261113-202510"
+      ],
+      "xAI Grok 4.6": [
+        "Fake-W2-Tax-Forms-20261113-202644",
+        "Fake-W2-Tax-Forms-20261113-202609",
+        "Fake-W2-Tax-Forms-20261113-202529"
+      ]
+    }
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026"
+}

@@ -1,0 +1,30 @@
+{
+  "ablation": "SC-02",
+  "verdict": "On these packets, page images alone did best. Classifying page by page with Amazon Nova 2 Lite, images alone gave more pages the right class (0.84, against 0.82 with text and images) and got more sections exactly right (0.57, against 0.50), with 25% fewer classification tokens. Text alone scored lowest (0.79 and 0.46). DocSplit's pages are scans with noisy OCR text; on clean digital documents the text may count for more, so test on your own files before you turn it off.",
+  "runs": {
+    "docsplit": {
+      "Text and images (default)": [
+        "DocSplit-Poly-Seq-20261113-204126",
+        "DocSplit-Poly-Seq-20261113-204125",
+        "DocSplit-Poly-Seq-20261113-204127"
+      ],
+      "Text only": [
+        "DocSplit-Poly-Seq-20261113-204458",
+        "DocSplit-Poly-Seq-20261113-204500",
+        "DocSplit-Poly-Seq-20261113-204457"
+      ],
+      "Images only": [
+        "DocSplit-Poly-Seq-20261113-204849",
+        "DocSplit-Poly-Seq-20261113-204831",
+        "DocSplit-Poly-Seq-20261113-204830"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit": 1
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026"
+}

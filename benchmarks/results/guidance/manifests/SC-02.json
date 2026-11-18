@@ -1,30 +1,41 @@
 {
   "ablation": "SC-02",
-  "verdict": "On these packets, page images alone did best. Classifying page by page with Amazon Nova 2 Lite, images alone gave more pages the right class (0.84, against 0.82 with text and images) and got more sections exactly right (0.57, against 0.50), with 25% fewer classification tokens. Text alone scored lowest (0.79 and 0.46). DocSplit's pages are scans with noisy OCR text; on clean digital documents the text may count for more, so test on your own files before you turn it off.",
+  "verdict": "Text only is a good place to start: holistic Claude Haiku 5.5 got 0.88 of sections exactly right from the OCR text alone, against 0.76 with page images too, and cost less. Test it on your own packets.",
   "runs": {
     "docsplit": {
-      "Text and images (default)": [
-        "DocSplit-Poly-Seq-20261113-204126",
-        "DocSplit-Poly-Seq-20261113-204125",
-        "DocSplit-Poly-Seq-20261113-204127"
-      ],
       "Text only": [
-        "DocSplit-Poly-Seq-20261113-204458",
-        "DocSplit-Poly-Seq-20261113-204500",
-        "DocSplit-Poly-Seq-20261113-204457"
+        "DocSplit-Poly-Seq-20261116-173745",
+        "DocSplit-Poly-Seq-20261116-173756",
+        "DocSplit-Poly-Seq-20261116-173733"
+      ],
+      "Text and images (baseline)": [
+        "DocSplit-Poly-Seq-20261116-173722",
+        "DocSplit-Poly-Seq-20261116-173702",
+        "DocSplit-Poly-Seq-20261116-173712"
       ],
       "Images only": [
-        "DocSplit-Poly-Seq-20261113-204849",
-        "DocSplit-Poly-Seq-20261113-204831",
-        "DocSplit-Poly-Seq-20261113-204830"
+        "DocSplit-Poly-Seq-20261116-174557",
+        "DocSplit-Poly-Seq-20261116-174607",
+        "DocSplit-Poly-Seq-20261116-174618"
       ]
     }
   },
   "max_failed": {
-    "docsplit": 1
+    "docsplit": 6
   },
   "stack": "sr-testing",
   "region": "us-east-1",
   "release": "0.6.15.dev1",
-  "measured": "November 2026"
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Poly-Seq-20261116-173702",
+    "DocSplit-Poly-Seq-20261116-173712",
+    "DocSplit-Poly-Seq-20261116-173722",
+    "DocSplit-Poly-Seq-20261116-173733",
+    "DocSplit-Poly-Seq-20261116-173745",
+    "DocSplit-Poly-Seq-20261116-173756",
+    "DocSplit-Poly-Seq-20261116-174557",
+    "DocSplit-Poly-Seq-20261116-174607",
+    "DocSplit-Poly-Seq-20261116-174618"
+  ]
 }

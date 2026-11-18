@@ -1696,6 +1696,15 @@ pricing:
       - name: pages
         price: "0.0015"
 
+  # Decision model on AWS Lambda (Strands Decider recipe, 10 GB arm64): billed as
+  # Lambda duration and requests, at arm64 rates.
+  - name: decision_model/GENAIIDP-decider
+    units:
+      - name: requests
+        price: "2.0E-7"
+      - name: gb_seconds
+        price: "1.33334E-5"
+
   # ---------------------------------------------------------------------------
   # AWS Lambda Pricing (US East - N. Virginia)
   # ---------------------------------------------------------------------------

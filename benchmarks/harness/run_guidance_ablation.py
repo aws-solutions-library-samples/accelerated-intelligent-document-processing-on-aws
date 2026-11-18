@@ -6,7 +6,9 @@ the setting, this script:
 
 1. downloads the dataset's preset profile from the stack (the profile named after the
    preset, e.g. `realkie-fcc-verified`),
-2. applies the value's overrides from the registry's `set` list (dotted config paths),
+2. applies the ablation's `baseline` overrides, if it names one, then the value's
+   overrides from the registry's `set` list (dotted config paths), then the value's
+   `transform`, a function in profile_transforms.py, if it has one,
 3. uploads the result as an unmanaged profile `bench-<id>-<dataset>-<n>-r<run>`, one
    per repeat run, each carrying a run marker in its system prompts,
 4. starts `runs` Test Studio runs of the dataset's test set under those profiles,
@@ -32,19 +34,21 @@ that the profiles round-trip every setting the stack knows about.
 Usage:
     AWS_PROFILE=... python3 benchmarks/harness/run_guidance_ablation.py EX-03 \\
         --stack sr-testing --region us-east-1 --checkout ~/wt/fix-1785 \\
-        --release 0.6.15.dev1 --workdir /tmp/guidance-runs [--datasets realkie]
+        --release 0.6.15.dev1 [--datasets realkie]
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures as cf
+import fcntl
 import json
 import os
 import re
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -58,9 +62,21 @@ COLLECT = REPO / "benchmarks" / "harness" / "collect_guidance_results.py"
 LOCK = threading.Lock()
 
 
+def default_workdir() -> Path:
+    """Where run results and caches live: outside /tmp, which a reboot empties."""
+    return Path(
+        os.environ.get("GUIDANCE_WORKDIR", "~/bench-work/guidance-runs")
+    ).expanduser()
+
+
 def cli(args: argparse.Namespace, *cmd: str, timeout: int = 7200) -> str:
     root = Path(args.checkout).expanduser()
     env = dict(os.environ)
+    # Every idp-cli call targets the stack's region. Some subcommands (test-result)
+    # take it from AWS_REGION alone, so an ambient AWS_REGION would aim them at a
+    # region where the stack does not exist.
+    env["AWS_REGION"] = args.region
+    env["AWS_DEFAULT_REGION"] = args.region
     env["PYTHONPATH"] = os.pathsep.join(
         str(p)
         for p in sorted((root / "lib").iterdir())
@@ -77,12 +93,38 @@ def cli(args: argparse.Namespace, *cmd: str, timeout: int = 7200) -> str:
     return proc.stdout + proc.stderr
 
 
+_ENV_REF = re.compile(r"\$\{([A-Z][A-Z0-9_]*)\}")
+
+
+def expand_env(value: Any) -> Any:
+    """Replace `${NAME}` in a registry value with the environment variable NAME.
+
+    Account-specific values (a decision model's Lambda ARN) stay out of the public
+    registry this way. A reference to an unset variable stops the run.
+    """
+    if isinstance(value, str):
+
+        def sub(m: re.Match[str]) -> str:
+            if m.group(1) not in os.environ:
+                raise SystemExit(
+                    f"the registry needs ${{{m.group(1)}}}; set it in the environment"
+                )
+            return os.environ[m.group(1)]
+
+        return _ENV_REF.sub(sub, value)
+    if isinstance(value, list):
+        return [expand_env(v) for v in value]
+    if isinstance(value, dict):
+        return {k: expand_env(v) for k, v in value.items()}
+    return value
+
+
 def set_path(cfg: dict[str, Any], dotted: str, value: Any) -> None:
     node = cfg
     keys = dotted.split(".")
     for key in keys[:-1]:
         node = node.setdefault(key, {})
-    node[keys[-1]] = value
+    node[keys[-1]] = expand_env(value)
 
 
 def nodes(node: Any) -> Iterator[dict[str, Any]]:
@@ -148,8 +190,17 @@ def make_profile(
             raise SystemExit(f"could not download profile {ds['preset']}:\n{out}")
     cfg = yaml.safe_load(base.read_text(encoding="utf-8"))
     cfg["managed"] = False
+    # The baseline first, so that a value's own overrides win over it.
+    for dotted, value in (ab.get("_baseline_set") or {}).items():
+        set_path(cfg, dotted, value)
     for dotted, value in ab["set"][idx].items():
         set_path(cfg, dotted, value)
+    transform = (ab.get("transform") or [None] * len(ab["values"]))[idx]
+    if transform:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import profile_transforms  # noqa: PLC0415
+
+        getattr(profile_transforms, transform)(cfg)
     if not mark_prompts(cfg, run):
         raise SystemExit(
             f"{ds['preset']}: no system prompt to mark, so runs would share a prompt "
@@ -184,7 +235,54 @@ def one_run(
     rev: int,
     label: str,
 ) -> str | None:
-    out = cli(
+    out = start_run(args, ds, profile, rev, label)
+    m = re.search(r"Test run started: (\S+)", out)
+    if not m:
+        print(f"  ! could not start {label}:\n{out[-1500:]}", flush=True)
+        return None
+    return wait_run(args, ds, m.group(1), label)
+
+
+def start_run(
+    args: argparse.Namespace,
+    ds: dict[str, Any],
+    profile: str,
+    rev: int,
+    label: str,
+) -> str:
+    """Start one Test Studio run, one start at a time across every runner process.
+
+    Test Studio names a run after its test set and the second it starts, so two runs of
+    one test set started in the same second collide, and CloudFormation throttles a
+    burst of stack lookups. A file lock serialises the starts, and a start that fails
+    for either reason is retried.
+    """
+    lock = Path(args.workdir) / ".start.lock"
+    out = ""
+    for attempt in range(4):
+        with lock.open("a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                out = start_once(args, ds, profile, rev, label)
+                time.sleep(2)
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+        if "Test run started:" in out:
+            return out
+        if "unique test run id" not in out and "Rate exceeded" not in out:
+            return out
+        time.sleep(10 * (attempt + 1))
+    return out
+
+
+def start_once(
+    args: argparse.Namespace,
+    ds: dict[str, Any],
+    profile: str,
+    rev: int,
+    label: str,
+) -> str:
+    return cli(
         args,
         "process",
         "--stack-name",
@@ -201,11 +299,11 @@ def one_run(
         label,
         timeout=600,
     )
-    m = re.search(r"Test run started: (\S+)", out)
-    if not m:
-        print(f"  ! could not start {label}:\n{out[-1500:]}", flush=True)
-        return None
-    run_id = m.group(1)
+
+
+def wait_run(
+    args: argparse.Namespace, ds: dict[str, Any], run_id: str, label: str
+) -> str | None:
     results = Path(args.workdir) / "results"
     results.mkdir(parents=True, exist_ok=True)
     out = cli(
@@ -217,7 +315,7 @@ def one_run(
         run_id,
         "--wait",
         "--timeout",
-        "5400",
+        "14400",
         "--output-dir",
         str(results),
     )
@@ -249,16 +347,25 @@ def main() -> int:
     parser.add_argument("--checkout", required=True)
     parser.add_argument("--release", required=True)
     parser.add_argument("--measured", default="November 2026")
-    parser.add_argument("--workdir", default="/tmp/guidance-runs")
+    parser.add_argument(
+        "--workdir",
+        default=str(default_workdir()),
+    )
     parser.add_argument("--datasets", help="comma-separated dataset keys")
     parser.add_argument("--runs", type=int, help="override the registry's runs")
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument(
+        "--only",
+        help="comma-separated substrings; run only the values whose name holds one",
+    )
     args = parser.parse_args()
 
     reg = yaml.safe_load(REGISTRY.read_text(encoding="utf-8"))
     ab = next((a for a in reg["ablations"] if a["id"] == args.ablation), None)
     if ab is None or "set" not in ab:
         raise SystemExit(f"{args.ablation}: not in the registry, or has no `set` list")
+    if ab.get("baseline"):
+        ab["_baseline_set"] = reg["baselines"][ab["baseline"]]["set"]
     keys = args.datasets.split(",") if args.datasets else ab["datasets"]
     keys = [k for k in keys if reg["datasets"][k].get("testset")]
     if not keys:
@@ -289,6 +396,8 @@ def main() -> int:
     for ds_key in keys:
         ds = reg["datasets"][ds_key]
         for idx, value in enumerate(ab["values"]):
+            if args.only and not any(o in value for o in args.only.split(",")):
+                continue
             have = manifest["runs"].get(ds_key, {}).get(value, [])
             if len(have) >= runs:
                 continue

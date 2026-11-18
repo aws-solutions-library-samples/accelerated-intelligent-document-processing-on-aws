@@ -1,0 +1,6062 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-183955, RealKIE-FCC-Verified-20261113-183954, RealKIE-FCC-Verified-20261113-183956, RealKIE-FCC-Verified-20261113-184302, RealKIE-FCC-Verified-20261113-184254, RealKIE-FCC-Verified-20261113-184301, RealKIE-FCC-Verified-20261113-184609, RealKIE-FCC-Verified-20261113-184643, RealKIE-FCC-Verified-20261113-184918, RealKIE-FCC-Verified-20261113-190709, RealKIE-FCC-Verified-20261113-192401, RealKIE-FCC-Verified-20261113-192310, RealKIE-FCC-Verified-20261113-192341, RealKIE-FCC-Verified-20261113-192701, RealKIE-FCC-Verified-20261113-192729, RealKIE-FCC-Verified-20261113-192743, RealKIE-FCC-Verified-20261113-194402, RealKIE-FCC-Verified-20261113-194401, RealKIE-FCC-Verified-20261113-194404, RealKIE-FCC-Verified-20261113-195220, RealKIE-FCC-Verified-20261113-195217, RealKIE-FCC-Verified-20261113-195219, RealKIE-FCC-Verified-20261113-195617, RealKIE-FCC-Verified-20261113-195659, RealKIE-FCC-Verified-20261113-195740, RealKIE-FCC-Verified-20261113-195936, RealKIE-FCC-Verified-20261113-195957, RealKIE-FCC-Verified-20261113-200106, RealKIE-FCC-Verified-20261113-200235, RealKIE-FCC-Verified-20261113-200733, RealKIE-FCC-Verified-20261113-200820, RealKIE-FCC-Verified-20261113-200702, Fake-W2-Tax-Forms-20261113-201217, Fake-W2-Tax-Forms-20261113-201204, Fake-W2-Tax-Forms-20261113-201242, Fake-W2-Tax-Forms-20261113-201354, Fake-W2-Tax-Forms-20261113-201419, Fake-W2-Tax-Forms-20261113-201509, Fake-W2-Tax-Forms-20261113-201521, Fake-W2-Tax-Forms-20261113-201543, Fake-W2-Tax-Forms-20261113-201623, Fake-W2-Tax-Forms-20261113-201638, Fake-W2-Tax-Forms-20261113-201728, Fake-W2-Tax-Forms-20261113-201737, Fake-W2-Tax-Forms-20261113-201754, Fake-W2-Tax-Forms-20261113-201833, Fake-W2-Tax-Forms-20261113-201841, Fake-W2-Tax-Forms-20261113-201858, Fake-W2-Tax-Forms-20261113-201947, Fake-W2-Tax-Forms-20261113-202015, Fake-W2-Tax-Forms-20261113-202016, Fake-W2-Tax-Forms-20261113-202114, Fake-W2-Tax-Forms-20261113-202132, Fake-W2-Tax-Forms-20261113-202129, Fake-W2-Tax-Forms-20261113-202220, Fake-W2-Tax-Forms-20261113-202242, Fake-W2-Tax-Forms-20261113-202246, Fake-W2-Tax-Forms-20261113-202327, Fake-W2-Tax-Forms-20261113-202346, Fake-W2-Tax-Forms-20261113-202412, Fake-W2-Tax-Forms-20261113-202453, Fake-W2-Tax-Forms-20261113-202510, Fake-W2-Tax-Forms-20261113-202644, Fake-W2-Tax-Forms-20261113-202609, Fake-W2-Tax-Forms-20261113-202529",
+  "verdict": "Claude Haiku 5.5 for most forms and invoices; Claude Opus 5.5 when every field must be right. Claude Haiku 5.5 scored 0.98 on W-2 forms and 0.79 on RealKIE invoices for about half the cost of the default, Claude Sonnet 5 (0.96 and 0.80). Claude Opus 5.5, OpenAI GPT-6 Astra and xAI Grok 4.6 were nearly perfect on W-2s (0.999); Claude Sonnet 5.5 scored below Claude Sonnet 5 there (0.92). On RealKIE invoices no model scored measurably different from the default. The Amazon Nova models scored 0.06 to 0.16 lower on W-2s. xAI Grok 4.6 took about three times as long per document.",
+  "cells": {
+    "realkie|Claude Sonnet 5 (default)|weighted_accuracy": {
+      "mean": 0.80416,
+      "se": 0.032011
+    },
+    "realkie|Claude Sonnet 5 (default)|extraction_tokens": {
+      "mean": 7041.238683,
+      "se": 6.65963
+    },
+    "realkie|Claude Sonnet 5 (default)|scoring_tokens": {
+      "mean": 13514.617284,
+      "se": 569.279805
+    },
+    "realkie|Claude Sonnet 5 (default)|total_tokens": {
+      "mean": 20555.855967,
+      "se": 572.223219
+    },
+    "realkie|Claude Sonnet 5 (default)|median_seconds": {
+      "mean": 44.072482,
+      "se": 1.953507
+    },
+    "realkie|Claude Sonnet 5 (default)|list_recall": {
+      "mean": 0.480782,
+      "se": 0.027167
+    },
+    "realkie|Claude Sonnet 5 (default)|list_precision": {
+      "mean": 0.232846,
+      "se": 0.025185
+    },
+    "realkie|Claude Sonnet 5 (default)|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.028868
+    },
+    "realkie|Claude Sonnet 5 (default)|auroc": {
+      "mean": 0.397529,
+      "se": 0.010463
+    },
+    "realkie|Claude Sonnet 5 (default)|calibration_error": {
+      "mean": 0.161831,
+      "se": 0.012201
+    },
+    "realkie|Claude Sonnet 5 (default)|errors_caught_30": {
+      "mean": 0.114432,
+      "se": 0.005697
+    },
+    "realkie|Claude Sonnet 5 (default)|errors_caught_30_random": {
+      "mean": 0.299079,
+      "se": 0.000459
+    },
+    "realkie|Claude Sonnet 5 (default)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5 (default)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5 (default)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5 (default)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5 (default)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Lite|weighted_accuracy": {
+      "mean": 0.73645,
+      "se": 0.032755
+    },
+    "realkie|Amazon Nova Lite|extraction_tokens": {
+      "mean": 3709.909465,
+      "se": 34.064296
+    },
+    "realkie|Amazon Nova Lite|scoring_tokens": {
+      "mean": 21294.259259,
+      "se": 2949.93002
+    },
+    "realkie|Amazon Nova Lite|total_tokens": {
+      "mean": 25004.168724,
+      "se": 2977.876891
+    },
+    "realkie|Amazon Nova Lite|median_seconds": {
+      "mean": 40.993088,
+      "se": 0.639467
+    },
+    "realkie|Amazon Nova Lite|list_recall": {
+      "mean": 0.654755,
+      "se": 0.14119
+    },
+    "realkie|Amazon Nova Lite|list_precision": {
+      "mean": 0.174175,
+      "se": 0.044802
+    },
+    "realkie|Amazon Nova Lite|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Lite|auroc": {
+      "mean": 0.653901,
+      "se": 0.019586
+    },
+    "realkie|Amazon Nova Lite|calibration_error": {
+      "mean": 0.190643,
+      "se": 0.006151
+    },
+    "realkie|Amazon Nova Lite|errors_caught_30": {
+      "mean": 0.516117,
+      "se": 0.046243
+    },
+    "realkie|Amazon Nova Lite|errors_caught_30_random": {
+      "mean": 0.299424,
+      "se": 0.000362
+    },
+    "realkie|Amazon Nova Lite|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Lite|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Lite|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Lite|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Lite|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Pro|weighted_accuracy": {
+      "mean": 0.777316,
+      "se": 0.03712
+    },
+    "realkie|Amazon Nova Pro|extraction_tokens": {
+      "mean": 3468.111111,
+      "se": 14.182522
+    },
+    "realkie|Amazon Nova Pro|scoring_tokens": {
+      "mean": 11047.91358,
+      "se": 215.017146
+    },
+    "realkie|Amazon Nova Pro|total_tokens": {
+      "mean": 14516.024691,
+      "se": 221.56833
+    },
+    "realkie|Amazon Nova Pro|median_seconds": {
+      "mean": 40.919655,
+      "se": 0.996859
+    },
+    "realkie|Amazon Nova Pro|list_recall": {
+      "mean": 0.543348,
+      "se": 0.032681
+    },
+    "realkie|Amazon Nova Pro|list_precision": {
+      "mean": 0.387444,
+      "se": 0.050026
+    },
+    "realkie|Amazon Nova Pro|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Pro|auroc": {
+      "mean": 0.55517,
+      "se": 0.034025
+    },
+    "realkie|Amazon Nova Pro|calibration_error": {
+      "mean": 0.206112,
+      "se": 0.009516
+    },
+    "realkie|Amazon Nova Pro|errors_caught_30": {
+      "mean": 0.204611,
+      "se": 0.04942
+    },
+    "realkie|Amazon Nova Pro|errors_caught_30_random": {
+      "mean": 0.299143,
+      "se": 5.4e-05
+    },
+    "realkie|Amazon Nova Pro|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Pro|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Pro|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Pro|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova Pro|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova 2 Lite|weighted_accuracy": {
+      "mean": 0.78277,
+      "se": 0.046369
+    },
+    "realkie|Amazon Nova 2 Lite|extraction_tokens": {
+      "mean": 1862.32716,
+      "se": 1.32716
+    },
+    "realkie|Amazon Nova 2 Lite|scoring_tokens": {
+      "mean": 15654.802469,
+      "se": 841.604938
+    },
+    "realkie|Amazon Nova 2 Lite|total_tokens": {
+      "mean": 17517.12963,
+      "se": 840.277778
+    },
+    "realkie|Amazon Nova 2 Lite|median_seconds": {
+      "mean": 56.194341,
+      "se": 7.770333
+    },
+    "realkie|Amazon Nova 2 Lite|list_recall": {
+      "mean": 0.947036,
+      "se": 0.003716
+    },
+    "realkie|Amazon Nova 2 Lite|list_precision": {
+      "mean": 0.398741,
+      "se": 4e-06
+    },
+    "realkie|Amazon Nova 2 Lite|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova 2 Lite|auroc": {
+      "mean": 0.476022,
+      "se": 0.00355
+    },
+    "realkie|Amazon Nova 2 Lite|calibration_error": {
+      "mean": 0.166549,
+      "se": 0.00092
+    },
+    "realkie|Amazon Nova 2 Lite|errors_caught_30": {
+      "mean": 0.279756,
+      "se": 0.004115
+    },
+    "realkie|Amazon Nova 2 Lite|errors_caught_30_random": {
+      "mean": 0.29984,
+      "se": 5.4e-05
+    },
+    "realkie|Amazon Nova 2 Lite|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova 2 Lite|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova 2 Lite|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova 2 Lite|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Amazon Nova 2 Lite|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.787829,
+      "se": 0.03863
+    },
+    "realkie|Claude Haiku 5.5|extraction_tokens": {
+      "mean": 7344.716049,
+      "se": 54.57109
+    },
+    "realkie|Claude Haiku 5.5|scoring_tokens": {
+      "mean": 14666.794239,
+      "se": 545.148671
+    },
+    "realkie|Claude Haiku 5.5|total_tokens": {
+      "mean": 22011.510288,
+      "se": 582.936973
+    },
+    "realkie|Claude Haiku 5.5|median_seconds": {
+      "mean": 57.657491,
+      "se": 13.831714
+    },
+    "realkie|Claude Haiku 5.5|list_recall": {
+      "mean": 0.637373,
+      "se": 0.141439
+    },
+    "realkie|Claude Haiku 5.5|list_precision": {
+      "mean": 0.225816,
+      "se": 0.034178
+    },
+    "realkie|Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.033333,
+      "se": 0.016667
+    },
+    "realkie|Claude Haiku 5.5|auroc": {
+      "mean": 0.58814,
+      "se": 0.034759
+    },
+    "realkie|Claude Haiku 5.5|calibration_error": {
+      "mean": 0.15771,
+      "se": 0.009137
+    },
+    "realkie|Claude Haiku 5.5|errors_caught_30": {
+      "mean": 0.397115,
+      "se": 0.048742
+    },
+    "realkie|Claude Haiku 5.5|errors_caught_30_random": {
+      "mean": 0.299485,
+      "se": 0.000157
+    },
+    "realkie|Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 4.6|weighted_accuracy": {
+      "mean": 0.804581,
+      "se": 0.039269
+    },
+    "realkie|Claude Sonnet 4.6|extraction_tokens": {
+      "mean": 3412.55144,
+      "se": 0.356128
+    },
+    "realkie|Claude Sonnet 4.6|scoring_tokens": {
+      "mean": 15166.27572,
+      "se": 81.63961
+    },
+    "realkie|Claude Sonnet 4.6|total_tokens": {
+      "mean": 18578.82716,
+      "se": 81.995501
+    },
+    "realkie|Claude Sonnet 4.6|median_seconds": {
+      "mean": 57.490953,
+      "se": 4.822253
+    },
+    "realkie|Claude Sonnet 4.6|list_recall": {
+      "mean": 0.960176,
+      "se": 0.001583
+    },
+    "realkie|Claude Sonnet 4.6|list_precision": {
+      "mean": 0.299768,
+      "se": 0.002135
+    },
+    "realkie|Claude Sonnet 4.6|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 4.6|auroc": {
+      "mean": 0.500317,
+      "se": 0.004923
+    },
+    "realkie|Claude Sonnet 4.6|calibration_error": {
+      "mean": 0.181805,
+      "se": 0.001118
+    },
+    "realkie|Claude Sonnet 4.6|errors_caught_30": {
+      "mean": 0.180049,
+      "se": 0.012165
+    },
+    "realkie|Claude Sonnet 4.6|errors_caught_30_random": {
+      "mean": 0.299684,
+      "se": 0.000316
+    },
+    "realkie|Claude Sonnet 4.6|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 4.6|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 4.6|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 4.6|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 4.6|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.798409,
+      "se": 0.032783
+    },
+    "realkie|Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6990.580247,
+      "se": 0.700266
+    },
+    "realkie|Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 13223.226337,
+      "se": 375.048149
+    },
+    "realkie|Claude Sonnet 5.5|total_tokens": {
+      "mean": 20213.806584,
+      "se": 375.610415
+    },
+    "realkie|Claude Sonnet 5.5|median_seconds": {
+      "mean": 62.772493,
+      "se": 2.291163
+    },
+    "realkie|Claude Sonnet 5.5|list_recall": {
+      "mean": 0.51504,
+      "se": 0.000869
+    },
+    "realkie|Claude Sonnet 5.5|list_precision": {
+      "mean": 0.264957,
+      "se": 0.000805
+    },
+    "realkie|Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5.5|auroc": {
+      "mean": 0.500304,
+      "se": 0.017717
+    },
+    "realkie|Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.191917,
+      "se": 0.002603
+    },
+    "realkie|Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.219091,
+      "se": 0.036318
+    },
+    "realkie|Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.299774,
+      "se": 5.5e-05
+    },
+    "realkie|Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Sonnet 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5|weighted_accuracy": {
+      "mean": 0.806525,
+      "se": 0.035328
+    },
+    "realkie|Claude Opus 5|extraction_tokens": {
+      "mean": 7050.304527,
+      "se": 34.530088
+    },
+    "realkie|Claude Opus 5|scoring_tokens": {
+      "mean": 14339.028807,
+      "se": 600.695724
+    },
+    "realkie|Claude Opus 5|total_tokens": {
+      "mean": 21389.333333,
+      "se": 635.210067
+    },
+    "realkie|Claude Opus 5|median_seconds": {
+      "mean": 61.242301,
+      "se": 10.908302
+    },
+    "realkie|Claude Opus 5|list_recall": {
+      "mean": 0.678096,
+      "se": 0.130903
+    },
+    "realkie|Claude Opus 5|list_precision": {
+      "mean": 0.267589,
+      "se": 0.030099
+    },
+    "realkie|Claude Opus 5|all_fields_right": {
+      "mean": 0.133333,
+      "se": 0.016667
+    },
+    "realkie|Claude Opus 5|auroc": {
+      "mean": 0.491751,
+      "se": 0.002227
+    },
+    "realkie|Claude Opus 5|calibration_error": {
+      "mean": 0.173956,
+      "se": 0.010935
+    },
+    "realkie|Claude Opus 5|errors_caught_30": {
+      "mean": 0.263608,
+      "se": 0.003697
+    },
+    "realkie|Claude Opus 5|errors_caught_30_random": {
+      "mean": 0.298964,
+      "se": 0.000176
+    },
+    "realkie|Claude Opus 5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5.5|weighted_accuracy": {
+      "mean": 0.815622,
+      "se": 0.036022
+    },
+    "realkie|Claude Opus 5.5|extraction_tokens": {
+      "mean": 7046.074074,
+      "se": 24.628876
+    },
+    "realkie|Claude Opus 5.5|scoring_tokens": {
+      "mean": 15064.246914,
+      "se": 603.95103
+    },
+    "realkie|Claude Opus 5.5|total_tokens": {
+      "mean": 22110.320988,
+      "se": 628.5696
+    },
+    "realkie|Claude Opus 5.5|median_seconds": {
+      "mean": 43.158494,
+      "se": 5.954144
+    },
+    "realkie|Claude Opus 5.5|list_recall": {
+      "mean": 0.857318,
+      "se": 0.108505
+    },
+    "realkie|Claude Opus 5.5|list_precision": {
+      "mean": 0.402439,
+      "se": 0.030283
+    },
+    "realkie|Claude Opus 5.5|all_fields_right": {
+      "mean": 0.066667,
+      "se": 0.016667
+    },
+    "realkie|Claude Opus 5.5|auroc": {
+      "mean": 0.462567,
+      "se": 0.003971
+    },
+    "realkie|Claude Opus 5.5|calibration_error": {
+      "mean": 0.18924,
+      "se": 0.011067
+    },
+    "realkie|Claude Opus 5.5|errors_caught_30": {
+      "mean": 0.140904,
+      "se": 0.011828
+    },
+    "realkie|Claude Opus 5.5|errors_caught_30_random": {
+      "mean": 0.299404,
+      "se": 0.000233
+    },
+    "realkie|Claude Opus 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Claude Opus 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OpenAI GPT-6 Astra|weighted_accuracy": {
+      "mean": 0.843855,
+      "se": 0.033777
+    },
+    "realkie|OpenAI GPT-6 Astra|extraction_tokens": {
+      "mean": 9883.687243,
+      "se": 1.498976
+    },
+    "realkie|OpenAI GPT-6 Astra|scoring_tokens": {
+      "mean": 15930.851852,
+      "se": 8.286876
+    },
+    "realkie|OpenAI GPT-6 Astra|total_tokens": {
+      "mean": 25814.539095,
+      "se": 7.88841
+    },
+    "realkie|OpenAI GPT-6 Astra|median_seconds": {
+      "mean": 62.371236,
+      "se": 11.904011
+    },
+    "realkie|OpenAI GPT-6 Astra|list_recall": {
+      "mean": 0.969752,
+      "se": 0.000308
+    },
+    "realkie|OpenAI GPT-6 Astra|list_precision": {
+      "mean": 0.392577,
+      "se": 0.004261
+    },
+    "realkie|OpenAI GPT-6 Astra|all_fields_right": {
+      "mean": 0.133333,
+      "se": 0.016667
+    },
+    "realkie|OpenAI GPT-6 Astra|auroc": {
+      "mean": 0.54866,
+      "se": 0.023034
+    },
+    "realkie|OpenAI GPT-6 Astra|calibration_error": {
+      "mean": 0.101925,
+      "se": 0.009801
+    },
+    "realkie|OpenAI GPT-6 Astra|errors_caught_30": {
+      "mean": 0.411172,
+      "se": 0.039773
+    },
+    "realkie|OpenAI GPT-6 Astra|errors_caught_30_random": {
+      "mean": 0.298977,
+      "se": 8.4e-05
+    },
+    "realkie|OpenAI GPT-6 Astra|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OpenAI GPT-6 Astra|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OpenAI GPT-6 Astra|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OpenAI GPT-6 Astra|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OpenAI GPT-6 Astra|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|xAI Grok 4.6|weighted_accuracy": {
+      "mean": 0.836561,
+      "se": 0.033158
+    },
+    "realkie|xAI Grok 4.6|extraction_tokens": {
+      "mean": 3712.740741,
+      "se": 3.212274
+    },
+    "realkie|xAI Grok 4.6|scoring_tokens": {
+      "mean": 13839.460905,
+      "se": 408.504074
+    },
+    "realkie|xAI Grok 4.6|total_tokens": {
+      "mean": 17552.201646,
+      "se": 411.42488
+    },
+    "realkie|xAI Grok 4.6|median_seconds": {
+      "mean": 87.015376,
+      "se": 20.425666
+    },
+    "realkie|xAI Grok 4.6|list_recall": {
+      "mean": 0.508746,
+      "se": 0.023904
+    },
+    "realkie|xAI Grok 4.6|list_precision": {
+      "mean": 0.26503,
+      "se": 0.021922
+    },
+    "realkie|xAI Grok 4.6|all_fields_right": {
+      "mean": 0.066667,
+      "se": 0.016667
+    },
+    "realkie|xAI Grok 4.6|auroc": {
+      "mean": 0.52804,
+      "se": 0.017056
+    },
+    "realkie|xAI Grok 4.6|calibration_error": {
+      "mean": 0.178263,
+      "se": 0.010238
+    },
+    "realkie|xAI Grok 4.6|errors_caught_30": {
+      "mean": 0.283434,
+      "se": 0.059727
+    },
+    "realkie|xAI Grok 4.6|errors_caught_30_random": {
+      "mean": 0.299398,
+      "se": 0.000253
+    },
+    "realkie|xAI Grok 4.6|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|xAI Grok 4.6|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|xAI Grok 4.6|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|xAI Grok 4.6|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|xAI Grok 4.6|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5 (default)|weighted_accuracy": {
+      "mean": 0.957247,
+      "se": 0.007828
+    },
+    "fake_w2|Claude Sonnet 5 (default)|extraction_tokens": {
+      "mean": 6877.433333,
+      "se": 1.443472
+    },
+    "fake_w2|Claude Sonnet 5 (default)|scoring_tokens": {
+      "mean": 8318.033333,
+      "se": 0.759569
+    },
+    "fake_w2|Claude Sonnet 5 (default)|total_tokens": {
+      "mean": 15195.466667,
+      "se": 1.142488
+    },
+    "fake_w2|Claude Sonnet 5 (default)|median_seconds": {
+      "mean": 28.755373,
+      "se": 3.047736
+    },
+    "fake_w2|Claude Sonnet 5 (default)|all_fields_right": {
+      "mean": 0.15,
+      "se": 0.028868
+    },
+    "fake_w2|Claude Sonnet 5 (default)|auroc": {
+      "mean": 0.462474,
+      "se": 0.019923
+    },
+    "fake_w2|Claude Sonnet 5 (default)|calibration_error": {
+      "mean": 0.045669,
+      "se": 0.00222
+    },
+    "fake_w2|Claude Sonnet 5 (default)|errors_caught_30": {
+      "mean": 0.156962,
+      "se": 0.05485
+    },
+    "fake_w2|Claude Sonnet 5 (default)|errors_caught_30_random": {
+      "mean": 0.29963,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5 (default)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5 (default)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5 (default)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5 (default)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5 (default)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Lite|weighted_accuracy": {
+      "mean": 0.869,
+      "se": 0.014034
+    },
+    "fake_w2|Amazon Nova Lite|extraction_tokens": {
+      "mean": 6681.716667,
+      "se": 0.612599
+    },
+    "fake_w2|Amazon Nova Lite|scoring_tokens": {
+      "mean": 8310.816667,
+      "se": 2.834363
+    },
+    "fake_w2|Amazon Nova Lite|total_tokens": {
+      "mean": 14992.533333,
+      "se": 3.260666
+    },
+    "fake_w2|Amazon Nova Lite|median_seconds": {
+      "mean": 23.360765,
+      "se": 0.452078
+    },
+    "fake_w2|Amazon Nova Lite|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Lite|auroc": {
+      "mean": 0.584373,
+      "se": 0.017955
+    },
+    "fake_w2|Amazon Nova Lite|calibration_error": {
+      "mean": 0.12258,
+      "se": 0.003967
+    },
+    "fake_w2|Amazon Nova Lite|errors_caught_30": {
+      "mean": 0.388328,
+      "se": 0.025283
+    },
+    "fake_w2|Amazon Nova Lite|errors_caught_30_random": {
+      "mean": 0.299602,
+      "se": 0.000288
+    },
+    "fake_w2|Amazon Nova Lite|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Lite|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Lite|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Lite|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Lite|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Pro|weighted_accuracy": {
+      "mean": 0.900037,
+      "se": 0.011191
+    },
+    "fake_w2|Amazon Nova Pro|extraction_tokens": {
+      "mean": 6683.9,
+      "se": 0.956992
+    },
+    "fake_w2|Amazon Nova Pro|scoring_tokens": {
+      "mean": 8320.75,
+      "se": 2.901006
+    },
+    "fake_w2|Amazon Nova Pro|total_tokens": {
+      "mean": 15004.65,
+      "se": 3.781204
+    },
+    "fake_w2|Amazon Nova Pro|median_seconds": {
+      "mean": 24.439033,
+      "se": 0.118108
+    },
+    "fake_w2|Amazon Nova Pro|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.028868
+    },
+    "fake_w2|Amazon Nova Pro|auroc": {
+      "mean": 0.607834,
+      "se": 0.008421
+    },
+    "fake_w2|Amazon Nova Pro|calibration_error": {
+      "mean": 0.101022,
+      "se": 0.006838
+    },
+    "fake_w2|Amazon Nova Pro|errors_caught_30": {
+      "mean": 0.386313,
+      "se": 0.012163
+    },
+    "fake_w2|Amazon Nova Pro|errors_caught_30_random": {
+      "mean": 0.299311,
+      "se": 4.1e-05
+    },
+    "fake_w2|Amazon Nova Pro|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Pro|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Pro|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Pro|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova Pro|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova 2 Lite|weighted_accuracy": {
+      "mean": 0.802265,
+      "se": 0.018894
+    },
+    "fake_w2|Amazon Nova 2 Lite|extraction_tokens": {
+      "mean": 4643.15,
+      "se": 0.125831
+    },
+    "fake_w2|Amazon Nova 2 Lite|scoring_tokens": {
+      "mean": 8337.0,
+      "se": 1.145644
+    },
+    "fake_w2|Amazon Nova 2 Lite|total_tokens": {
+      "mean": 12980.15,
+      "se": 1.125093
+    },
+    "fake_w2|Amazon Nova 2 Lite|median_seconds": {
+      "mean": 19.191196,
+      "se": 0.086225
+    },
+    "fake_w2|Amazon Nova 2 Lite|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova 2 Lite|auroc": {
+      "mean": 0.589185,
+      "se": 0.005933
+    },
+    "fake_w2|Amazon Nova 2 Lite|calibration_error": {
+      "mean": 0.19367,
+      "se": 0.00081
+    },
+    "fake_w2|Amazon Nova 2 Lite|errors_caught_30": {
+      "mean": 0.356936,
+      "se": 0.009701
+    },
+    "fake_w2|Amazon Nova 2 Lite|errors_caught_30_random": {
+      "mean": 0.29959,
+      "se": 0.000164
+    },
+    "fake_w2|Amazon Nova 2 Lite|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova 2 Lite|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova 2 Lite|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova 2 Lite|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Amazon Nova 2 Lite|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.976957,
+      "se": 0.006815
+    },
+    "fake_w2|Claude Haiku 5.5|extraction_tokens": {
+      "mean": 7889.45,
+      "se": 15.408142
+    },
+    "fake_w2|Claude Haiku 5.5|scoring_tokens": {
+      "mean": 8320.766667,
+      "se": 2.570073
+    },
+    "fake_w2|Claude Haiku 5.5|total_tokens": {
+      "mean": 16210.216667,
+      "se": 17.748951
+    },
+    "fake_w2|Claude Haiku 5.5|median_seconds": {
+      "mean": 24.366572,
+      "se": 0.323912
+    },
+    "fake_w2|Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.633333,
+      "se": 0.033333
+    },
+    "fake_w2|Claude Haiku 5.5|auroc": {
+      "mean": 0.620519,
+      "se": 0.029601
+    },
+    "fake_w2|Claude Haiku 5.5|calibration_error": {
+      "mean": 0.022259,
+      "se": 0.002936
+    },
+    "fake_w2|Claude Haiku 5.5|errors_caught_30": {
+      "mean": 0.40095,
+      "se": 0.047189
+    },
+    "fake_w2|Claude Haiku 5.5|errors_caught_30_random": {
+      "mean": 0.299753,
+      "se": 0.000123
+    },
+    "fake_w2|Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 4.6|weighted_accuracy": {
+      "mean": 0.949235,
+      "se": 0.013302
+    },
+    "fake_w2|Claude Sonnet 4.6|extraction_tokens": {
+      "mean": 5772.9,
+      "se": 0.1
+    },
+    "fake_w2|Claude Sonnet 4.6|scoring_tokens": {
+      "mean": 8318.1,
+      "se": 0.557524
+    },
+    "fake_w2|Claude Sonnet 4.6|total_tokens": {
+      "mean": 14091.0,
+      "se": 0.485627
+    },
+    "fake_w2|Claude Sonnet 4.6|median_seconds": {
+      "mean": 22.593169,
+      "se": 0.394945
+    },
+    "fake_w2|Claude Sonnet 4.6|all_fields_right": {
+      "mean": 0.466667,
+      "se": 0.016667
+    },
+    "fake_w2|Claude Sonnet 4.6|auroc": {
+      "mean": 0.632122,
+      "se": 0.021516
+    },
+    "fake_w2|Claude Sonnet 4.6|calibration_error": {
+      "mean": 0.051172,
+      "se": 0.002878
+    },
+    "fake_w2|Claude Sonnet 4.6|errors_caught_30": {
+      "mean": 0.42296,
+      "se": 0.043939
+    },
+    "fake_w2|Claude Sonnet 4.6|errors_caught_30_random": {
+      "mean": 0.3,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 4.6|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 4.6|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 4.6|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 4.6|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 4.6|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.923477,
+      "se": 0.014791
+    },
+    "fake_w2|Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6742.683333,
+      "se": 2.233333
+    },
+    "fake_w2|Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 8324.383333,
+      "se": 1.005954
+    },
+    "fake_w2|Claude Sonnet 5.5|total_tokens": {
+      "mean": 15067.066667,
+      "se": 1.569589
+    },
+    "fake_w2|Claude Sonnet 5.5|median_seconds": {
+      "mean": 20.656702,
+      "se": 0.418767
+    },
+    "fake_w2|Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.35,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|auroc": {
+      "mean": 0.628591,
+      "se": 0.009176
+    },
+    "fake_w2|Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.080757,
+      "se": 7e-05
+    },
+    "fake_w2|Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.437811,
+      "se": 0.0199
+    },
+    "fake_w2|Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.29963,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Sonnet 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|weighted_accuracy": {
+      "mean": 0.998642,
+      "se": 0.001132
+    },
+    "fake_w2|Claude Opus 5|extraction_tokens": {
+      "mean": 6826.5,
+      "se": 3.996248
+    },
+    "fake_w2|Claude Opus 5|scoring_tokens": {
+      "mean": 8313.666667,
+      "se": 0.825295
+    },
+    "fake_w2|Claude Opus 5|total_tokens": {
+      "mean": 15140.166667,
+      "se": 4.745992
+    },
+    "fake_w2|Claude Opus 5|median_seconds": {
+      "mean": 25.103459,
+      "se": 0.559463
+    },
+    "fake_w2|Claude Opus 5|all_fields_right": {
+      "mean": 0.816667,
+      "se": 0.016667
+    },
+    "fake_w2|Claude Opus 5|auroc": {
+      "mean": 0.996296,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|calibration_error": {
+      "mean": 0.004576,
+      "se": 0.000105
+    },
+    "fake_w2|Claude Opus 5|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|errors_caught_30_random": {
+      "mean": 0.29963,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5.5|weighted_accuracy": {
+      "mean": 0.999435,
+      "se": 0.000465
+    },
+    "fake_w2|Claude Opus 5.5|extraction_tokens": {
+      "mean": 6901.333333,
+      "se": 5.653932
+    },
+    "fake_w2|Claude Opus 5.5|scoring_tokens": {
+      "mean": 8313.1,
+      "se": 1.586138
+    },
+    "fake_w2|Claude Opus 5.5|total_tokens": {
+      "mean": 15214.433333,
+      "se": 4.415534
+    },
+    "fake_w2|Claude Opus 5.5|median_seconds": {
+      "mean": 24.803915,
+      "se": 0.962141
+    },
+    "fake_w2|Claude Opus 5.5|all_fields_right": {
+      "mean": 0.9,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5.5|calibration_error": {
+      "mean": 0.00297,
+      "se": 0.000488
+    },
+    "fake_w2|Claude Opus 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Claude Opus 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OpenAI GPT-6 Astra|weighted_accuracy": {
+      "mean": 0.998889,
+      "se": 0.000821
+    },
+    "fake_w2|OpenAI GPT-6 Astra|extraction_tokens": {
+      "mean": 4957.583333,
+      "se": 2.296797
+    },
+    "fake_w2|OpenAI GPT-6 Astra|scoring_tokens": {
+      "mean": 8313.683333,
+      "se": 0.7373
+    },
+    "fake_w2|OpenAI GPT-6 Astra|total_tokens": {
+      "mean": 13271.266667,
+      "se": 2.687368
+    },
+    "fake_w2|OpenAI GPT-6 Astra|median_seconds": {
+      "mean": 23.137122,
+      "se": 0.190904
+    },
+    "fake_w2|OpenAI GPT-6 Astra|all_fields_right": {
+      "mean": 0.833333,
+      "se": 0.033333
+    },
+    "fake_w2|OpenAI GPT-6 Astra|calibration_error": {
+      "mean": 0.003714,
+      "se": 0.000232
+    },
+    "fake_w2|OpenAI GPT-6 Astra|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OpenAI GPT-6 Astra|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OpenAI GPT-6 Astra|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OpenAI GPT-6 Astra|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OpenAI GPT-6 Astra|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|xAI Grok 4.6|weighted_accuracy": {
+      "mean": 0.999051,
+      "se": 0.000798
+    },
+    "fake_w2|xAI Grok 4.6|extraction_tokens": {
+      "mean": 6027.1,
+      "se": 9.014294
+    },
+    "fake_w2|xAI Grok 4.6|scoring_tokens": {
+      "mean": 8311.233333,
+      "se": 0.968389
+    },
+    "fake_w2|xAI Grok 4.6|total_tokens": {
+      "mean": 14338.333333,
+      "se": 9.938408
+    },
+    "fake_w2|xAI Grok 4.6|median_seconds": {
+      "mean": 98.960675,
+      "se": 11.978712
+    },
+    "fake_w2|xAI Grok 4.6|all_fields_right": {
+      "mean": 0.866667,
+      "se": 0.016667
+    },
+    "fake_w2|xAI Grok 4.6|calibration_error": {
+      "mean": 0.003069,
+      "se": 0.000508
+    },
+    "fake_w2|xAI Grok 4.6|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|xAI Grok 4.6|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|xAI Grok 4.6|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|xAI Grok 4.6|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|xAI Grok 4.6|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Claude Sonnet 5 (default)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Amazon Nova Lite": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Amazon Nova Pro": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Amazon Nova 2 Lite": {
+      "docs": [
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0
+      ],
+      "runs": 2
+    },
+    "realkie|Claude Haiku 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Claude Sonnet 4.6": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Claude Sonnet 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Claude Opus 5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Claude Opus 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|OpenAI GPT-6 Astra": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|xAI Grok 4.6": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Claude Sonnet 5 (default)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Amazon Nova Lite": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Amazon Nova Pro": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Amazon Nova 2 Lite": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Claude Haiku 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Claude Sonnet 4.6": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Claude Sonnet 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Claude Opus 5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Claude Opus 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|OpenAI GPT-6 Astra": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|xAI Grok 4.6": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Claude Sonnet 5 (default)": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "realkie|Amazon Nova Lite": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Amazon Nova Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.amazon.nova-lite-v1:0"
+        ]
+      }
+    },
+    "realkie|Amazon Nova Pro": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Amazon Nova Pro, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-pro-v1:0"
+        ]
+      }
+    },
+    "realkie|Amazon Nova 2 Lite": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    },
+    "realkie|Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Claude Sonnet 4.6": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 4.6, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-4-6"
+        ]
+      }
+    },
+    "realkie|Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
+        ]
+      }
+    },
+    "realkie|Claude Opus 5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Opus 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-opus-5"
+        ]
+      }
+    },
+    "realkie|Claude Opus 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Opus 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-opus-5-5"
+        ]
+      }
+    },
+    "realkie|OpenAI GPT-6 Astra": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "OpenAI GPT-6 Astra, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.openai.gpt-6-astra"
+        ]
+      }
+    },
+    "realkie|xAI Grok 4.6": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "xAI Grok 4.6, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.xai.grok-4.6"
+        ]
+      }
+    },
+    "fake_w2|Claude Sonnet 5 (default)": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "fake_w2|Amazon Nova Lite": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Amazon Nova Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-lite-v1:0"
+        ]
+      }
+    },
+    "fake_w2|Amazon Nova Pro": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Amazon Nova Pro, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-pro-v1:0"
+        ]
+      }
+    },
+    "fake_w2|Amazon Nova 2 Lite": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    },
+    "fake_w2|Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Claude Sonnet 4.6": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 4.6, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-4-6"
+        ]
+      }
+    },
+    "fake_w2|Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
+        ]
+      }
+    },
+    "fake_w2|Claude Opus 5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Opus 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-opus-5"
+        ]
+      }
+    },
+    "fake_w2|Claude Opus 5.5": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Opus 5.5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-opus-5-5"
+        ]
+      }
+    },
+    "fake_w2|OpenAI GPT-6 Astra": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "OpenAI GPT-6 Astra, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.openai.gpt-6-astra"
+        ]
+      }
+    },
+    "fake_w2|xAI Grok 4.6": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "xAI Grok 4.6, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.xai.grok-4.6"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Claude Sonnet 5 (default)": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 46741.4,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2928.75,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3987.95,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2005.25,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25315.2,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1679.65,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40346.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 4777.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3732.8,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1629.15,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1557.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42426.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 4704.45,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3740.3,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1695.5,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25310.4,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1582.5,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Amazon Nova Lite": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 77580.55,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2190.8,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 16817.1,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 6329.55,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 37.9,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 97.8,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 89945.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1101.3,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 18082.7,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 7699.3,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 37.9,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 84.6,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 55820.5,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1002.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 14256.85,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 4707.35,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 37.9,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 57.0,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Amazon Nova Pro": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37728.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 987.7,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3312.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1749.3,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheReadInputTokens": 2452.15,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheWriteInputTokens": 342.6,
+        "bedrock/us.amazon.nova-pro-v1:0|inputTokens": 9774.05,
+        "bedrock/us.amazon.nova-pro-v1:0|outputTokens": 1363.25,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 38451.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 203.9,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3574.75,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1742.8,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheReadInputTokens": 2794.75,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-pro-v1:0|inputTokens": 9774.05,
+        "bedrock/us.amazon.nova-pro-v1:0|outputTokens": 1547.55,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37959.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2999.1,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3660.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1863.0,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheReadInputTokens": 2794.75,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-pro-v1:0|inputTokens": 9774.05,
+        "bedrock/us.amazon.nova-pro-v1:0|outputTokens": 1520.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Amazon Nova 2 Lite": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1334.1,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 135.75,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 4828.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1249.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 29911.15,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20923.95,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4237.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2175.85,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 73.8,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1333.6,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 136.25,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 4828.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1238.7,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 50670.15,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6519.8,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4454.6,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2425.3,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 68.9,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Claude Haiku 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 30681.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20363.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3855.8,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1946.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1512.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 168.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 2468.95,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 38.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 41.25,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 41880.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 5396.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3742.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1792.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 2680.9,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 48031.5,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 5392.35,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4743.25,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2287.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 3212.05,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Claude Sonnet 4.6": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 52417.65,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 161.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4490.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1996.05,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheReadInputTokens": 1161.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheWriteInputTokens": 129.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|inputTokens": 11043.55,
+        "bedrock/us.anthropic.claude-sonnet-4-6|outputTokens": 1488.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 51614.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4434.9,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2028.55,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheReadInputTokens": 1290.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|inputTokens": 11043.55,
+        "bedrock/us.anthropic.claude-sonnet-4-6|outputTokens": 1484.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44897.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 7683.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4485.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2005.3,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheReadInputTokens": 1225.5,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheWriteInputTokens": 64.5,
+        "bedrock/us.anthropic.claude-sonnet-4-6|inputTokens": 11043.55,
+        "bedrock/us.anthropic.claude-sonnet-4-6|outputTokens": 1488.65,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 14.7,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Claude Sonnet 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 29660.85,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 16687.05,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3757.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1769.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1512.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 168.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1357.75,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 38812.7,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6329.8,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3710.75,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1715.4,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1347.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 39476.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 7809.3,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3805.75,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1757.35,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 1596.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 84.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1353.45,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Claude Opus 5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 30807.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 16440.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3890.25,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1812.1,
+        "bedrock/us.anthropic.claude-opus-5|cacheReadInputTokens": 1344.0,
+        "bedrock/us.anthropic.claude-opus-5|cacheWriteInputTokens": 336.0,
+        "bedrock/us.anthropic.claude-opus-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-opus-5|outputTokens": 1464.45,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 14.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 38738.65,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 8512.5,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3879.65,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1827.25,
+        "bedrock/us.anthropic.claude-opus-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-opus-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-opus-5|outputTokens": 1449.85,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 14.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 50249.95,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 3232.45,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4660.4,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2109.8,
+        "bedrock/us.anthropic.claude-opus-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-opus-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-opus-5|outputTokens": 1876.5,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 14.4,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Claude Opus 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 46777.1,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1313.35,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3720.45,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1621.3,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 1260.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 420.0,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1378.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 14.3,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 52881.55,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1472.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4382.95,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2031.2,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1672.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 11.85,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 51677.8,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2671.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4391.1,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2036.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 25278.8,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1682.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|OpenAI GPT-6 Astra": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 55304.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4436.65,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2074.65,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "bedrock/us.openai.gpt-6-astra|cacheReadInputTokens": 0.0,
+        "bedrock/us.openai.gpt-6-astra|cacheWriteInputTokens": 38903.85,
+        "bedrock/us.openai.gpt-6-astra|inputTokens": 2.0,
+        "bedrock/us.openai.gpt-6-astra|outputTokens": 1135.2,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 53145.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2158.9,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4438.7,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2046.75,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 12.95,
+        "bedrock/us.openai.gpt-6-astra|cacheReadInputTokens": 38903.85,
+        "bedrock/us.openai.gpt-6-astra|cacheWriteInputTokens": 0.0,
+        "bedrock/us.openai.gpt-6-astra|inputTokens": 2.0,
+        "bedrock/us.openai.gpt-6-astra|outputTokens": 1117.7,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 52913.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2378.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4460.6,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2070.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 38.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 86.1,
+        "bedrock/us.openai.gpt-6-astra|cacheReadInputTokens": 38903.85,
+        "bedrock/us.openai.gpt-6-astra|cacheWriteInputTokens": 0.0,
+        "bedrock/us.openai.gpt-6-astra|inputTokens": 2.0,
+        "bedrock/us.openai.gpt-6-astra|outputTokens": 1116.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|xAI Grok 4.6": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44841.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1529.5,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3676.7,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1651.9,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 40.05,
+        "bedrock/us.xai.grok-4.6|cacheReadInputTokens": 8843.9,
+        "bedrock/us.xai.grok-4.6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.xai.grok-4.6|inputTokens": 4536.7,
+        "bedrock/us.xai.grok-4.6|outputTokens": 1634.85,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 41897.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 4496.2,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3621.25,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1643.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 49.9,
+        "bedrock/us.xai.grok-4.6|cacheReadInputTokens": 12339.35,
+        "bedrock/us.xai.grok-4.6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.xai.grok-4.6|inputTokens": 1041.25,
+        "bedrock/us.xai.grok-4.6|outputTokens": 1653.45,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42063.4,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 8695.7,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3954.4,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1920.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 33.6,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 53.35,
+        "bedrock/us.xai.grok-4.6|cacheReadInputTokens": 4094.7,
+        "bedrock/us.xai.grok-4.6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.xai.grok-4.6|inputTokens": 9285.9,
+        "bedrock/us.xai.grok-4.6|outputTokens": 1679.7,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "fake_w2|Claude Sonnet 5 (default)": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1828.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2746.15,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.7,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 953.15,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2860.5,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 887.45,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1690.35,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 2884.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.7,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 950.55,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2814.3,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 312.7,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2860.5,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 889.9,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3655.4,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 919.1,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 952.3,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2860.5,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 892.45,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Amazon Nova Lite": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 6929.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1281.85,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4942.9,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1843.95,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 7845.4,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 366.55,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4940.85,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1834.4,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 7664.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 547.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4943.1,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1837.2,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Amazon Nova Pro": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4393.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 180.85,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2789.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 962.55,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheReadInputTokens": 3273.8,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheWriteInputTokens": 363.8,
+        "bedrock/us.amazon.nova-pro-v1:0|inputTokens": 2156.25,
+        "bedrock/us.amazon.nova-pro-v1:0|outputTokens": 891.4,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4393.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 180.7,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2788.85,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 956.75,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheReadInputTokens": 3456.55,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheWriteInputTokens": 181.05,
+        "bedrock/us.amazon.nova-pro-v1:0|inputTokens": 2156.25,
+        "bedrock/us.amazon.nova-pro-v1:0|outputTokens": 890.55,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4394.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 179.2,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2786.4,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 955.9,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheReadInputTokens": 3637.6,
+        "bedrock/us.amazon.nova-pro-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-pro-v1:0|inputTokens": 2156.25,
+        "bedrock/us.amazon.nova-pro-v1:0|outputTokens": 888.2,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Amazon Nova 2 Lite": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 2250.85,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 249.95,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1482.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 659.95,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4208.2,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 365.85,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2780.6,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 980.1,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 2500.8,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1482.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 660.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3843.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 730.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2780.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 983.8,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 2500.8,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1482.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 659.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.1,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2780.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 983.15,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Claude Haiku 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.6,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 950.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 2814.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 312.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 1889.4,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3842.2,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 732.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.05,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 960.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 1930.3,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.5,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.15,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 953.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 1880.15,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Claude Sonnet 4.6": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4389.15,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 184.9,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2789.9,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 953.3,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheReadInputTokens": 2195.55,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheWriteInputTokens": 387.45,
+        "bedrock/us.anthropic.claude-sonnet-4-6|inputTokens": 2386.95,
+        "bedrock/us.anthropic.claude-sonnet-4-6|outputTokens": 803.15,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4020.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 553.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2789.35,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 955.9,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheReadInputTokens": 2583.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|inputTokens": 2386.95,
+        "bedrock/us.anthropic.claude-sonnet-4-6|outputTokens": 802.85,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4032.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 541.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2789.35,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 954.65,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheReadInputTokens": 2583.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-4-6|inputTokens": 2386.95,
+        "bedrock/us.anthropic.claude-sonnet-4-6|outputTokens": 802.85,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Claude Sonnet 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4391.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 182.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2787.1,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 963.1,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2657.95,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 469.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 750.95,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4573.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2787.1,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 965.25,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 750.95,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4573.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2787.1,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 961.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 757.65,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Claude Opus 5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.6,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 946.65,
+        "bedrock/us.anthropic.claude-opus-5|cacheReadInputTokens": 2032.55,
+        "bedrock/us.anthropic.claude-opus-5|cacheWriteInputTokens": 1094.45,
+        "bedrock/us.anthropic.claude-opus-5|inputTokens": 2860.5,
+        "bedrock/us.anthropic.claude-opus-5|outputTokens": 844.0,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4389.35,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 185.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 947.6,
+        "bedrock/us.anthropic.claude-opus-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-opus-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5|inputTokens": 2860.5,
+        "bedrock/us.anthropic.claude-opus-5|outputTokens": 841.9,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.6,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 944.75,
+        "bedrock/us.anthropic.claude-opus-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-opus-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5|inputTokens": 2860.5,
+        "bedrock/us.anthropic.claude-opus-5|outputTokens": 831.1,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Claude Opus 5.5": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4392.1,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 182.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 942.75,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 2814.3,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 312.7,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 921.95,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4023.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 550.95,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 947.15,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 902.4,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4391.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 183.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 947.8,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 3127.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 2862.5,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 911.15,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|OpenAI GPT-6 Astra": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4391.2,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 183.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 945.1,
+        "bedrock/us.openai.gpt-6-astra|cacheReadInputTokens": 0.0,
+        "bedrock/us.openai.gpt-6-astra|cacheWriteInputTokens": 4278.95,
+        "bedrock/us.openai.gpt-6-astra|inputTokens": 2.0,
+        "bedrock/us.openai.gpt-6-astra|outputTokens": 672.75,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 947.75,
+        "bedrock/us.openai.gpt-6-astra|cacheReadInputTokens": 4278.95,
+        "bedrock/us.openai.gpt-6-astra|cacheWriteInputTokens": 0.0,
+        "bedrock/us.openai.gpt-6-astra|inputTokens": 2.0,
+        "bedrock/us.openai.gpt-6-astra|outputTokens": 676.45,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4205.85,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 368.9,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 946.3,
+        "bedrock/us.openai.gpt-6-astra|cacheReadInputTokens": 4278.95,
+        "bedrock/us.openai.gpt-6-astra|cacheWriteInputTokens": 0.0,
+        "bedrock/us.openai.gpt-6-astra|inputTokens": 2.0,
+        "bedrock/us.openai.gpt-6-astra|outputTokens": 680.7,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|xAI Grok 4.6": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4206.15,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 368.55,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 942.05,
+        "bedrock/us.xai.grok-4.6|cacheReadInputTokens": 4234.6,
+        "bedrock/us.xai.grok-4.6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.xai.grok-4.6|inputTokens": 263.2,
+        "bedrock/us.xai.grok-4.6|outputTokens": 1512.55,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4029.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 545.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.55,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 944.85,
+        "bedrock/us.xai.grok-4.6|cacheReadInputTokens": 3716.2,
+        "bedrock/us.xai.grok-4.6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.xai.grok-4.6|inputTokens": 781.6,
+        "bedrock/us.xai.grok-4.6|outputTokens": 1531.9,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4574.7,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.45,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 945.15,
+        "bedrock/us.xai.grok-4.6|cacheReadInputTokens": 1800.9,
+        "bedrock/us.xai.grok-4.6|cacheWriteInputTokens": 0.0,
+        "bedrock/us.xai.grok-4.6|inputTokens": 2696.9,
+        "bedrock/us.xai.grok-4.6|outputTokens": 1543.45,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Claude Sonnet 5 (default)": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-183956",
+      "index": 2
+    },
+    "realkie|Amazon Nova Lite": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-184302",
+      "index": 0
+    },
+    "realkie|Amazon Nova Pro": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-184918",
+      "index": 2
+    },
+    "realkie|Amazon Nova 2 Lite": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-190709",
+      "index": 0
+    },
+    "realkie|Claude Haiku 5.5": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-192310",
+      "index": 0
+    },
+    "realkie|Claude Sonnet 4.6": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-194402",
+      "index": 2
+    },
+    "realkie|Claude Sonnet 5.5": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-194401",
+      "index": 0
+    },
+    "realkie|Claude Opus 5": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-195217",
+      "index": 0
+    },
+    "realkie|Claude Opus 5.5": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-195936",
+      "index": 2
+    },
+    "realkie|OpenAI GPT-6 Astra": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-195957",
+      "index": 0
+    },
+    "realkie|xAI Grok 4.6": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-200702",
+      "index": 2
+    },
+    "fake_w2|Claude Sonnet 5 (default)": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-201204",
+      "index": 1
+    },
+    "fake_w2|Amazon Nova Lite": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-201354",
+      "index": 0
+    },
+    "fake_w2|Amazon Nova Pro": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-201521",
+      "index": 0
+    },
+    "fake_w2|Amazon Nova 2 Lite": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-201728",
+      "index": 1
+    },
+    "fake_w2|Claude Haiku 5.5": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-201833",
+      "index": 1
+    },
+    "fake_w2|Claude Sonnet 4.6": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-201858",
+      "index": 0
+    },
+    "fake_w2|Claude Sonnet 5.5": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-202016",
+      "index": 0
+    },
+    "fake_w2|Claude Opus 5": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-202129",
+      "index": 0
+    },
+    "fake_w2|Claude Opus 5.5": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-202327",
+      "index": 1
+    },
+    "fake_w2|OpenAI GPT-6 Astra": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-202412",
+      "index": 0
+    },
+    "fake_w2|xAI Grok 4.6": {
+      "mode": "cold-run",
+      "run": "Fake-W2-Tax-Forms-20261113-202609",
+      "index": 1
+    }
+  },
+  "per_doc": {
+    "realkie|Claude Sonnet 5 (default)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.994286,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999392,
+        "cost": 0.074175
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.233333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.875887,
+        "cost": 0.033224
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730496,
+        "cost": 0.032516
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.904708,
+        "cost": 0.13802
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.33039,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.481956,
+        "cost": 0.155723
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730914,
+        "cost": 0.368559
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.897642,
+        "cost": 0.034461
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.571633,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933152,
+        "cost": 0.374277
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959023,
+        "cost": 0.388987
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.037922
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.159464
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.266013,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.683004,
+        "cost": 0.262683
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.574468,
+        "cost": 0.037886
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.69306,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931886,
+        "cost": 0.173424
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.666667,
+        "cost": 0.031716
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.778,
+        "cost": 0.111769
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.997619,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999747,
+        "cost": 0.063096
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.148311
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.034378
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.850526,
+        "cost": 0.194057
+      }
+    },
+    "realkie|Amazon Nova Lite": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.500247,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.734069,
+        "cost": 0.031776
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.2,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.015403
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.659574,
+        "cost": 0.015341
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.112079,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891356,
+        "cost": 0.0395
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.194805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.076972
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.759832,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953174,
+        "cost": 0.185521
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.644444,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962175,
+        "cost": 0.015442
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.585,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.743085,
+        "cost": 0.159415
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.4,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.923562,
+        "cost": 0.157315
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.015679
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.278036,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.667876,
+        "cost": 0.076672
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.164706,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.691281,
+        "cost": 0.137196
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.503546,
+        "cost": 0.015576
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.075463,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.476113,
+        "cost": 0.089032
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.015509
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.620231,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.746833,
+        "cost": 0.047314
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.358163,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.718954,
+        "cost": 0.031493
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.153741,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.888696,
+        "cost": 0.089436
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.4,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.015671
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.53354,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.850105,
+        "cost": 0.093365
+      }
+    },
+    "realkie|Amazon Nova Pro": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.615385,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959083,
+        "cost": 0.039695
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.677096,
+        "cost": 0.017404
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.468085,
+        "cost": 0.017275
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.724649,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.934381,
+        "cost": 0.059834
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.194805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.088302
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.90044,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.755366,
+        "cost": 0.21383
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.488889,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.87873,
+        "cost": 0.017929
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.0,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.190595
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.1,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891647,
+        "cost": 0.136934
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.019277
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.089214
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.264706,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.709011,
+        "cost": 0.154419
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531915,
+        "cost": 0.019122
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.68574,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.945291,
+        "cost": 0.093146
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.017264
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970741,
+        "cost": 0.057411
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.838393,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982808,
+        "cost": 0.035117
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.600758,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957527,
+        "cost": 0.110821
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.676667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.750971,
+        "cost": 0.018394
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.857618,
+        "cost": 0.108606
+      }
+    },
+    "realkie|Amazon Nova 2 Lite": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.033448
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.25,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.639862,
+        "cost": 0.015986
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.468085,
+        "cost": 0.015913
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.777725,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.940028,
+        "cost": 0.044727
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.194805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.079447
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.746154,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.334697,
+        "cost": 0.189518
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.533333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.950355,
+        "cost": 0.016249
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.765305,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964394,
+        "cost": 0.172441
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.987392,
+        "cost": 0.28648
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 1.0,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016771
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.8,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.079459
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.687943,
+        "cost": 0.139805
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510638,
+        "cost": 0.016859
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.521739,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.927845,
+        "cost": 0.082863
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.01602
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.736726,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971992,
+        "cost": 0.05028
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.842857,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.983283,
+        "cost": 0.031779
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.475728,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.92295,
+        "cost": 0.094311
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.87234,
+        "cost": 0.016341
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.1875,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.834569,
+        "cost": 0.097059
+      }
+    },
+    "realkie|Claude Haiku 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992908,
+        "cost": 0.033112
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.758865,
+        "cost": 0.016091
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.01665
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.589421,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.866804,
+        "cost": 0.038335
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.446407,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.494299,
+        "cost": 0.080406
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510638,
+        "cost": 0.190977
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.644444,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.897957,
+        "cost": 0.016737
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.50238,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.925785,
+        "cost": 0.171453
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.522853,
+        "cost": 0.283705
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.016717
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.080705
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.694466,
+        "cost": 0.142416
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.016864
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.727273,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94971,
+        "cost": 0.081957
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.016204
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.850451,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984091,
+        "cost": 0.049934
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.888393,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988127,
+        "cost": 0.032099
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.203865,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.915305,
+        "cost": 0.079087
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.016457
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.097703
+      }
+    },
+    "realkie|Claude Sonnet 4.6": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.06823
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.4,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.677096,
+        "cost": 0.028792
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.031853
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.784742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.9771,
+        "cost": 0.138842
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.182839,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.466259,
+        "cost": 0.134802
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730914,
+        "cost": 0.317871
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964539,
+        "cost": 0.03073
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.385185,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.913318,
+        "cost": 0.33859
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.336883
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 1.0,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.034162
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.454545,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.70793,
+        "cost": 0.1366
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.264706,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.709011,
+        "cost": 0.220909
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531915,
+        "cost": 0.035338
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.881818,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.966151,
+        "cost": 0.155146
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.026978
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.893382,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988658,
+        "cost": 0.101845
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.054133
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.6,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957447,
+        "cost": 0.233715
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.030379
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.171024
+      }
+    },
+    "realkie|Claude Sonnet 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.071622
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.695035,
+        "cost": 0.035918
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.028451
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.866306,
+        "cost": 0.129992
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.498182,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.499807,
+        "cost": 0.164381
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730914,
+        "cost": 0.363694
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.466667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.895592,
+        "cost": 0.033278
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.385185,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.700552,
+        "cost": 0.372803
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.246718
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.036686
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.154652
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.694466,
+        "cost": 0.260316
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.633333,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.705674,
+        "cost": 0.040474
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.766667,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975177,
+        "cost": 0.166861
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.028576
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970741,
+        "cost": 0.108503
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.85,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984043,
+        "cost": 0.061925
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.147344
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.03327
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.885987,
+        "cost": 0.190911
+      }
+    },
+    "realkie|Claude Opus 5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 1.0,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.124696
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.732791,
+        "cost": 0.063274
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.659574,
+        "cost": 0.052349
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.898221,
+        "cost": 0.261947
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.398182,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.489168,
+        "cost": 0.284346
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.596372
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.928819,
+        "cost": 0.066393
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.385185,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.913318,
+        "cost": 0.65812
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.510945
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992908,
+        "cost": 0.075521
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.264183
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.694466,
+        "cost": 0.419707
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.062564
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.286015
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.060544
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990766,
+        "cost": 0.1869
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 1.0,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.102206
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.199396,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893553,
+        "cost": 0.244969
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.382222,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.719647,
+        "cost": 0.059448
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.663938,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.892346,
+        "cost": 0.322186
+      }
+    },
+    "realkie|Claude Opus 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 1.0,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.109684
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.74927,
+        "cost": 0.046109
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.039763
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.651409,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933077,
+        "cost": 0.207355
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.498182,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.499807,
+        "cost": 0.246426
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.517354
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.900321,
+        "cost": 0.049761
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.580576,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.934104,
+        "cost": 0.540458
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.333717
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.056155
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.2,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.223838
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.694466,
+        "cost": 0.366298
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.055764
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.961638,
+        "cost": 0.241831
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.039948
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990766,
+        "cost": 0.160329
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.895833,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988918,
+        "cost": 0.087855
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.535266,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.95056,
+        "cost": 0.317726
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.049369
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.663938,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.892346,
+        "cost": 0.273885
+      }
+    },
+    "realkie|OpenAI GPT-6 Astra": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 1.0,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.363145
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.645181,
+        "cost": 0.169565
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.155964
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.922438,
+        "cost": 0.542191
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.498182,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.499807,
+        "cost": 0.80948
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.728205,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.737043,
+        "cost": 1.830443
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 1.0,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.172154
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.580576,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.934104,
+        "cost": 1.680885
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.671789,
+        "cost": 1.168787
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992908,
+        "cost": 0.187474
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.6,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.778702
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.264706,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.673339,
+        "cost": 1.315689
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.187397
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.821331
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.765957,
+        "cost": 0.155953
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990766,
+        "cost": 0.526563
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.84375,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.983378,
+        "cost": 0.320183
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 1.0,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.943596
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 1.0,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.132378
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.948647
+      }
+    },
+    "realkie|xAI Grok 4.6": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 1.0,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.056251
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.662912,
+        "cost": 0.027846
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.029429
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.955824,
+        "cost": 0.072755
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.262597,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474744,
+        "cost": 0.125593
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.632941,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.726909,
+        "cost": 0.278754
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964539,
+        "cost": 0.030271
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.577598,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.862865,
+        "cost": 0.270835
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.987392,
+        "cost": 0.163636
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.866667,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.985816,
+        "cost": 0.023515
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.093671
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.703992,
+        "cost": 0.19823
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.784615,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.693399,
+        "cost": 0.033436
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.70303,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954223,
+        "cost": 0.099112
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.026716
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990766,
+        "cost": 0.066401
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.992857,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.99924,
+        "cost": 0.049544
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.007729,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894439,
+        "cost": 0.120959
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.693333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.75461,
+        "cost": 0.029808
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.599653,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.878415,
+        "cost": 0.144984
+      }
+    },
+    "fake_w2|Claude Sonnet 5 (default)": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.032012
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.032213
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032349
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.032205
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.03191
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975142,
+        "cost": 0.032176
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.032136
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032119
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.040129
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.032097
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.921402,
+        "cost": 0.032415
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032134
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.032004
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.032195
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.040285
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.032225
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.032093
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.032575
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975678,
+        "cost": 0.032233
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.032136
+      }
+    },
+    "fake_w2|Amazon Nova Lite": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.01586
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901515,
+        "cost": 0.015814
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.015863
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.015868
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.818182,
+        "cost": 0.015872
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.966619,
+        "cost": 0.015801
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.795455,
+        "cost": 0.015857
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.015865
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.80303,
+        "cost": 0.015801
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.856061,
+        "cost": 0.015858
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.824337,
+        "cost": 0.015814
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.939394,
+        "cost": 0.015864
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.732986,
+        "cost": 0.015839
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.818182,
+        "cost": 0.015804
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.939394,
+        "cost": 0.015862
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.01588
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.856061,
+        "cost": 0.015857
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.015862
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.015821
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.818182,
+        "cost": 0.015798
+      }
+    },
+    "fake_w2|Amazon Nova Pro": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.938948,
+        "cost": 0.02003
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.020823
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.020758
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871212,
+        "cost": 0.020765
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.02066
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.922112,
+        "cost": 0.020764
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.020783
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.833333,
+        "cost": 0.020767
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.0208
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.020723
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.783617,
+        "cost": 0.020132
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.020773
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871212,
+        "cost": 0.020689
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.02076
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.020834
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.020841
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.020709
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.020775
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.020825
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.020721
+      }
+    },
+    "fake_w2|Amazon Nova 2 Lite": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.839572,
+        "cost": 0.017746
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.674242,
+        "cost": 0.01771
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.017714
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.780303,
+        "cost": 0.017757
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.017676
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.90696,
+        "cost": 0.017776
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.75,
+        "cost": 0.017734
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.017693
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.613636,
+        "cost": 0.017751
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.75,
+        "cost": 0.017758
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730587,
+        "cost": 0.017778
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.017761
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.659091,
+        "cost": 0.017668
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.017763
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.017768
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.017779
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.848485,
+        "cost": 0.017744
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.017738
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787879,
+        "cost": 0.017773
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.772727,
+        "cost": 0.017772
+      }
+    },
+    "fake_w2|Claude Haiku 5.5": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.016806
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.017012
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992424,
+        "cost": 0.016825
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016904
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016841
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959991,
+        "cost": 0.016853
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016757
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893939,
+        "cost": 0.016898
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016902
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.016888
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.921402,
+        "cost": 0.016892
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.017015
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.016844
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016907
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992424,
+        "cost": 0.016784
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016707
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.016917
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016799
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.0169
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.016881
+      }
+    },
+    "fake_w2|Claude Sonnet 4.6": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.885027,
+        "cost": 0.037271
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037628
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037657
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037487
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037081
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.047492
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.037414
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.037297
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.878788,
+        "cost": 0.047392
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037435
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.882102,
+        "cost": 0.037734
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.037419
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037235
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.037401
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.037491
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.037731
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037125
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.047118
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.037501
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.037365
+      }
+    },
+    "fake_w2|Claude Sonnet 5.5": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.030264
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.030368
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.030468
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.030399
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.030108
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.90696,
+        "cost": 0.03042
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.038624
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.030242
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.818182,
+        "cost": 0.038649
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.038604
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.882102,
+        "cost": 0.03062
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.030395
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.030179
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.030453
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.030632
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.030479
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.030302
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.030301
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.030354
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.030228
+      }
+    },
+    "fake_w2|Claude Opus 5": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999109,
+        "cost": 0.05312
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.068282
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.070569
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.053518
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.051734
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.052383
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.053367
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.071172
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.071526
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.070146
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.99858,
+        "cost": 0.052837
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.053372
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.071016
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.05029
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.071916
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.053538
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.050061
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.052029
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.053568
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.050006
+      }
+    },
+    "fake_w2|Claude Opus 5.5": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.046271
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.048017
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.046991
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.04723
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.044844
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.045361
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.047128
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045129
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045411
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045128
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045588
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045272
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045003
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045268
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045724
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.04531
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.04503
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.045079
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990829,
+        "cost": 0.045314
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.042476
+      }
+    },
+    "fake_w2|OpenAI GPT-6 Astra": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999109,
+        "cost": 0.110599
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111189
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111375
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111074
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.109331
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.11176
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.110961
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.110967
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111335
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111198
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997159,
+        "cost": 0.111977
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.112931
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.110506
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111294
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111748
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.111997
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.110319
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.110693
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.983652,
+        "cost": 0.114476
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.110654
+      }
+    },
+    "fake_w2|xAI Grok 4.6": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999109,
+        "cost": 0.027507
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.02915
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.027691
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.027527
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.029757
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.030374
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.029462
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.027828
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.030057
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.032598
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.027789
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.028448
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.031725
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.02784
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.031239
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.027259
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.027236
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.028065
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984051,
+        "cost": 0.036685
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.028339
+      }
+    }
+  }
+}

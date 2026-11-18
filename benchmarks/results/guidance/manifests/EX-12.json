@@ -1,125 +1,129 @@
 {
   "ablation": "EX-12",
-  "verdict": "Either; structured output guarantees valid JSON at no cost. With Claude Sonnet 5.5, structured output scored the same as the schema in the prompt on RealKIE invoices (0.82 against 0.80, within the noise) and on W-2 forms (0.92 both), at the same cost. With Claude Sonnet 5 the forced tool lowered W-2 accuracy, and it is not available on Claude Sonnet 5.5.",
+  "verdict": "Structured output, or the schema in the prompt, is a good place to start; avoid the forced tool, which lowered W-2 accuracy from 0.997 to 0.92 with Claude Haiku 5.5. Test it on your own documents.",
   "runs": {
     "realkie": {
-      "Off: schema in the prompt (default)": [
-        "RealKIE-FCC-Verified-20261113-211217",
-        "RealKIE-FCC-Verified-20261113-211218",
-        "RealKIE-FCC-Verified-20261113-211216"
+      "Schema in prompt · Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-172642",
+        "RealKIE-FCC-Verified-20261116-172643",
+        "RealKIE-FCC-Verified-20261116-172637"
       ],
-      "Structured output": [
-        "RealKIE-FCC-Verified-20261113-211535",
-        "RealKIE-FCC-Verified-20261113-211526",
-        "RealKIE-FCC-Verified-20261113-211543"
+      "Schema in prompt · Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-172633",
+        "RealKIE-FCC-Verified-20261116-172636",
+        "RealKIE-FCC-Verified-20261116-172645"
       ],
-      "Forced tool": [
-        "RealKIE-FCC-Verified-20261113-211823",
-        "RealKIE-FCC-Verified-20261113-211839",
-        "RealKIE-FCC-Verified-20261113-211824"
-      ],
-      "Off: schema in the prompt · Claude Sonnet 5.5": [
-        "RealKIE-FCC-Verified-20261116-145708",
-        "RealKIE-FCC-Verified-20261116-145709",
-        "RealKIE-FCC-Verified-20261116-145710"
+      "Structured output · Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-172640",
+        "RealKIE-FCC-Verified-20261116-181358",
+        "RealKIE-FCC-Verified-20261116-181408"
       ],
       "Structured output · Claude Sonnet 5.5": [
-        "RealKIE-FCC-Verified-20261116-145719",
-        "RealKIE-FCC-Verified-20261116-145720",
-        "RealKIE-FCC-Verified-20261116-145721"
+        "RealKIE-FCC-Verified-20261116-172646",
+        "RealKIE-FCC-Verified-20261116-173501",
+        "RealKIE-FCC-Verified-20261116-173500"
+      ],
+      "Forced tool · Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-181421",
+        "RealKIE-FCC-Verified-20261116-181456",
+        "RealKIE-FCC-Verified-20261116-181431"
+      ],
+      "Schema in prompt · Amazon Nova 2 Lite": [
+        "RealKIE-FCC-Verified-20261116-181630",
+        "RealKIE-FCC-Verified-20261116-181442",
+        "RealKIE-FCC-Verified-20261116-181720"
+      ],
+      "Forced tool · Amazon Nova 2 Lite": [
+        "RealKIE-FCC-Verified-20261116-182022",
+        "RealKIE-FCC-Verified-20261116-181915",
+        "RealKIE-FCC-Verified-20261116-182252"
       ]
     },
     "fake_w2": {
-      "Off: schema in the prompt (default)": [
-        "Fake-W2-Tax-Forms-20261113-212143",
-        "Fake-W2-Tax-Forms-20261113-212145",
-        "Fake-W2-Tax-Forms-20261113-212202"
+      "Schema in prompt · Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261116-173917",
+        "Fake-W2-Tax-Forms-20261116-174519",
+        "Fake-W2-Tax-Forms-20261116-173906"
       ],
-      "Structured output": [
-        "Fake-W2-Tax-Forms-20261113-212313",
-        "Fake-W2-Tax-Forms-20261113-212311",
-        "Fake-W2-Tax-Forms-20261113-212326"
-      ],
-      "Forced tool": [
-        "Fake-W2-Tax-Forms-20261113-212439",
-        "Fake-W2-Tax-Forms-20261113-212441",
-        "Fake-W2-Tax-Forms-20261113-212442"
-      ],
-      "Off: schema in the prompt · Claude Sonnet 5.5": [
-        "Fake-W2-Tax-Forms-20261116-145709",
-        "Fake-W2-Tax-Forms-20261116-145719",
-        "Fake-W2-Tax-Forms-20261116-145721"
+      "Structured output · Claude Haiku 5.5": [
+        "Fake-W2-Tax-Forms-20261116-173809",
+        "Fake-W2-Tax-Forms-20261116-173811",
+        "Fake-W2-Tax-Forms-20261116-173822"
       ],
       "Structured output · Claude Sonnet 5.5": [
-        "Fake-W2-Tax-Forms-20261116-145720",
-        "Fake-W2-Tax-Forms-20261116-145722",
-        "Fake-W2-Tax-Forms-20261116-145723"
-      ]
-    },
-    "realkie_long": {
-      "Structured output": [
-        "realkie-fcc-long-20261113-213052",
-        "realkie-fcc-long-20261113-213055",
-        "realkie-fcc-long-20261113-213057"
+        "Fake-W2-Tax-Forms-20261116-174542",
+        "Fake-W2-Tax-Forms-20261116-174520",
+        "Fake-W2-Tax-Forms-20261116-174644"
       ],
-      "Off: schema in the prompt (default)": [
-        "realkie-fcc-long-20261113-213053",
-        "realkie-fcc-long-20261113-213054",
-        "realkie-fcc-long-20261113-213056"
+      "Schema in prompt · Claude Haiku 5.5": [
+        "Fake-W2-Tax-Forms-20261116-173710",
+        "Fake-W2-Tax-Forms-20261116-173712",
+        "Fake-W2-Tax-Forms-20261116-173713"
       ],
-      "Forced tool": [
-        "realkie-fcc-long-20261113-213058",
-        "realkie-fcc-long-20261113-213059",
-        "realkie-fcc-long-20261113-213104"
+      "Forced tool · Claude Haiku 5.5": [
+        "Fake-W2-Tax-Forms-20261116-182425",
+        "Fake-W2-Tax-Forms-20261116-182628",
+        "Fake-W2-Tax-Forms-20261116-182411"
+      ],
+      "Schema in prompt · Amazon Nova 2 Lite": [
+        "Fake-W2-Tax-Forms-20261116-182641",
+        "Fake-W2-Tax-Forms-20261116-182835",
+        "Fake-W2-Tax-Forms-20261116-182910"
+      ],
+      "Forced tool · Amazon Nova 2 Lite": [
+        "Fake-W2-Tax-Forms-20261116-182934",
+        "Fake-W2-Tax-Forms-20261116-183010",
+        "Fake-W2-Tax-Forms-20261116-183335"
       ]
     }
   },
-  "max_failed": {
-    "realkie_long": 1
-  },
+  "max_failed": {},
   "stack": "sr-testing",
   "region": "us-east-1",
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "cache_isolated": [
-    "Fake-W2-Tax-Forms-20261113-212143",
-    "Fake-W2-Tax-Forms-20261113-212145",
-    "Fake-W2-Tax-Forms-20261113-212202",
-    "Fake-W2-Tax-Forms-20261113-212311",
-    "Fake-W2-Tax-Forms-20261113-212313",
-    "Fake-W2-Tax-Forms-20261113-212326",
-    "Fake-W2-Tax-Forms-20261113-212439",
-    "Fake-W2-Tax-Forms-20261113-212441",
-    "Fake-W2-Tax-Forms-20261113-212442",
-    "RealKIE-FCC-Verified-20261113-211216",
-    "RealKIE-FCC-Verified-20261113-211217",
-    "RealKIE-FCC-Verified-20261113-211218",
-    "RealKIE-FCC-Verified-20261113-211526",
-    "RealKIE-FCC-Verified-20261113-211535",
-    "RealKIE-FCC-Verified-20261113-211543",
-    "RealKIE-FCC-Verified-20261113-211823",
-    "RealKIE-FCC-Verified-20261113-211824",
-    "RealKIE-FCC-Verified-20261113-211839",
-    "realkie-fcc-long-20261113-213052",
-    "realkie-fcc-long-20261113-213053",
-    "realkie-fcc-long-20261113-213054",
-    "realkie-fcc-long-20261113-213055",
-    "realkie-fcc-long-20261113-213056",
-    "realkie-fcc-long-20261113-213057",
-    "realkie-fcc-long-20261113-213058",
-    "realkie-fcc-long-20261113-213059",
-    "realkie-fcc-long-20261113-213104",
-    "RealKIE-FCC-Verified-20261116-145708",
-    "RealKIE-FCC-Verified-20261116-145709",
-    "RealKIE-FCC-Verified-20261116-145710",
-    "Fake-W2-Tax-Forms-20261116-145709",
-    "RealKIE-FCC-Verified-20261116-145719",
-    "RealKIE-FCC-Verified-20261116-145720",
-    "Fake-W2-Tax-Forms-20261116-145719",
-    "Fake-W2-Tax-Forms-20261116-145720",
-    "RealKIE-FCC-Verified-20261116-145721",
-    "Fake-W2-Tax-Forms-20261116-145721",
-    "Fake-W2-Tax-Forms-20261116-145722",
-    "Fake-W2-Tax-Forms-20261116-145723"
+    "Fake-W2-Tax-Forms-20261116-173710",
+    "Fake-W2-Tax-Forms-20261116-173712",
+    "Fake-W2-Tax-Forms-20261116-173713",
+    "Fake-W2-Tax-Forms-20261116-173809",
+    "Fake-W2-Tax-Forms-20261116-173811",
+    "Fake-W2-Tax-Forms-20261116-173822",
+    "Fake-W2-Tax-Forms-20261116-173906",
+    "Fake-W2-Tax-Forms-20261116-173917",
+    "Fake-W2-Tax-Forms-20261116-174519",
+    "Fake-W2-Tax-Forms-20261116-174520",
+    "Fake-W2-Tax-Forms-20261116-174542",
+    "Fake-W2-Tax-Forms-20261116-174644",
+    "Fake-W2-Tax-Forms-20261116-182411",
+    "Fake-W2-Tax-Forms-20261116-182425",
+    "Fake-W2-Tax-Forms-20261116-182628",
+    "Fake-W2-Tax-Forms-20261116-182641",
+    "Fake-W2-Tax-Forms-20261116-182835",
+    "Fake-W2-Tax-Forms-20261116-182910",
+    "Fake-W2-Tax-Forms-20261116-182934",
+    "Fake-W2-Tax-Forms-20261116-183010",
+    "Fake-W2-Tax-Forms-20261116-183335",
+    "RealKIE-FCC-Verified-20261116-172633",
+    "RealKIE-FCC-Verified-20261116-172636",
+    "RealKIE-FCC-Verified-20261116-172637",
+    "RealKIE-FCC-Verified-20261116-172640",
+    "RealKIE-FCC-Verified-20261116-172642",
+    "RealKIE-FCC-Verified-20261116-172643",
+    "RealKIE-FCC-Verified-20261116-172645",
+    "RealKIE-FCC-Verified-20261116-172646",
+    "RealKIE-FCC-Verified-20261116-173500",
+    "RealKIE-FCC-Verified-20261116-173501",
+    "RealKIE-FCC-Verified-20261116-181358",
+    "RealKIE-FCC-Verified-20261116-181408",
+    "RealKIE-FCC-Verified-20261116-181421",
+    "RealKIE-FCC-Verified-20261116-181431",
+    "RealKIE-FCC-Verified-20261116-181442",
+    "RealKIE-FCC-Verified-20261116-181456",
+    "RealKIE-FCC-Verified-20261116-181630",
+    "RealKIE-FCC-Verified-20261116-181720",
+    "RealKIE-FCC-Verified-20261116-181915",
+    "RealKIE-FCC-Verified-20261116-182022",
+    "RealKIE-FCC-Verified-20261116-182252"
   ]
 }

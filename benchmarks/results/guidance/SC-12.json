@@ -1,0 +1,1336 @@
+{
+  "release": "0.6.15-develop-d1be93f",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs DocSplit-Poly-Seq-20261117-232545, DocSplit-Poly-Seq-20261117-232535, DocSplit-Poly-Seq-20261117-232555, DocSplit-Poly-Seq-20261117-232959, DocSplit-Poly-Seq-20261117-232949, DocSplit-Poly-Seq-20261117-233038, DocSplit-Poly-Seq-20261117-233434, DocSplit-Poly-Seq-20261117-233412, DocSplit-Poly-Seq-20261117-233402, DocSplit-Poly-Seq-20261117-233842, DocSplit-Poly-Seq-20261117-233832, DocSplit-Poly-Seq-20261117-233822, DocSplit-Poly-Seq-20261117-234308, DocSplit-Poly-Seq-20261117-234257, DocSplit-Poly-Seq-20261117-234247 (6 failed documents left out of the scores)",
+  "verdict": "Not yet, with the preset's class descriptions: Claude Haiku 5.5 classified 0.96 of sections right, against 0.81 to 0.83 for the Strands Decider 2B, whose classification cost slightly more ($19 to $20 against $17 per 1,000 packets). The decision model is more sensitive to how classes are described: a 100-packet re-run with one-line descriptions of what each page looks like is in progress, and in its first runs the Strands Decider 2B classified 0.90 of sections right with them. Test it on your own packets.",
+  "cells": {
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.332737,
+      "se": 0.030872
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|classification_tokens": {
+      "mean": 9987.561521,
+      "se": 28.388343
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|extraction_tokens": {
+      "mean": 6712.067114,
+      "se": 17.276289
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|scoring_tokens": {
+      "mean": 8023.307606,
+      "se": 18.39518
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|total_tokens": {
+      "mean": 24722.936242,
+      "se": 62.788232
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|median_seconds": {
+      "mean": 112.080528,
+      "se": 6.790426
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|list_precision": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|calibration_error": {
+      "mean": 0.891715,
+      "se": 0.001184
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|errors_caught_30": {
+      "mean": 0.298443,
+      "se": 0.000431
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
+      "mean": 0.298443,
+      "se": 0.000431
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|page_accuracy": {
+      "mean": 0.89038,
+      "se": 0.023912
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|section_accuracy": {
+      "mean": 0.77037,
+      "se": 0.026708
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|grouping_score": {
+      "mean": 0.894474,
+      "se": 0.009235
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 0.758133,
+      "se": 0.034912
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|label_accuracy": {
+      "mean": 0.96357,
+      "se": 0.004045
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|weighted_accuracy": {
+      "mean": 0.345886,
+      "se": 0.030449
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|classification_tokens": {
+      "mean": 6893.571588,
+      "se": 7.888154
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|extraction_tokens": {
+      "mean": 6723.244966,
+      "se": 10.647382
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|scoring_tokens": {
+      "mean": 8040.686801,
+      "se": 15.876793
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|total_tokens": {
+      "mean": 21657.503356,
+      "se": 33.688634
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|median_seconds": {
+      "mean": 127.614349,
+      "se": 8.901501
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|list_precision": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|calibration_error": {
+      "mean": 0.893962,
+      "se": 0.001585
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|errors_caught_30": {
+      "mean": 0.299118,
+      "se": 0.000346
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|errors_caught_30_random": {
+      "mean": 0.299118,
+      "se": 0.000346
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|page_accuracy": {
+      "mean": 0.873602,
+      "se": 0.018414
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|section_accuracy": {
+      "mean": 0.744444,
+      "se": 0.032075
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|grouping_score": {
+      "mean": 0.899021,
+      "se": 0.009585
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|boundary_accuracy": {
+      "mean": 0.754087,
+      "se": 0.039353
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|label_accuracy": {
+      "mean": 0.938492,
+      "se": 0.008226
+    },
+    "docsplit|Decision model \u00b7 first page image|weighted_accuracy": {
+      "mean": 0.333465,
+      "se": 0.031501
+    },
+    "docsplit|Decision model \u00b7 first page image|classification_tokens": {
+      "mean": 6000.049217,
+      "se": 1.845131
+    },
+    "docsplit|Decision model \u00b7 first page image|extraction_tokens": {
+      "mean": 6739.444072,
+      "se": 9.358192
+    },
+    "docsplit|Decision model \u00b7 first page image|scoring_tokens": {
+      "mean": 8050.928412,
+      "se": 16.514639
+    },
+    "docsplit|Decision model \u00b7 first page image|total_tokens": {
+      "mean": 20790.4217,
+      "se": 25.742631
+    },
+    "docsplit|Decision model \u00b7 first page image|median_seconds": {
+      "mean": 139.323947,
+      "se": 4.602247
+    },
+    "docsplit|Decision model \u00b7 first page image|list_precision": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first page image|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first page image|calibration_error": {
+      "mean": 0.895424,
+      "se": 0.000426
+    },
+    "docsplit|Decision model \u00b7 first page image|errors_caught_30": {
+      "mean": 0.299215,
+      "se": 0.000501
+    },
+    "docsplit|Decision model \u00b7 first page image|errors_caught_30_random": {
+      "mean": 0.299215,
+      "se": 0.000501
+    },
+    "docsplit|Decision model \u00b7 first page image|page_accuracy": {
+      "mean": 0.759508,
+      "se": 0.002237
+    },
+    "docsplit|Decision model \u00b7 first page image|section_accuracy": {
+      "mean": 0.662963,
+      "se": 0.003704
+    },
+    "docsplit|Decision model \u00b7 first page image|grouping_score": {
+      "mean": 0.899071,
+      "se": 0.0045
+    },
+    "docsplit|Decision model \u00b7 first page image|boundary_accuracy": {
+      "mean": 0.785553,
+      "se": 0.009083
+    },
+    "docsplit|Decision model \u00b7 first page image|label_accuracy": {
+      "mean": 0.809293,
+      "se": 0.010543
+    },
+    "docsplit|Decision model \u00b7 first page image and text|weighted_accuracy": {
+      "mean": 0.346093,
+      "se": 0.032626
+    },
+    "docsplit|Decision model \u00b7 first page image and text|classification_tokens": {
+      "mean": 6009.163546,
+      "se": 1.564166
+    },
+    "docsplit|Decision model \u00b7 first page image and text|extraction_tokens": {
+      "mean": 6729.093633,
+      "se": 10.47987
+    },
+    "docsplit|Decision model \u00b7 first page image and text|scoring_tokens": {
+      "mean": 8018.580524,
+      "se": 5.825027
+    },
+    "docsplit|Decision model \u00b7 first page image and text|total_tokens": {
+      "mean": 20756.837703,
+      "se": 14.13362
+    },
+    "docsplit|Decision model \u00b7 first page image and text|median_seconds": {
+      "mean": 131.342024,
+      "se": 5.865423
+    },
+    "docsplit|Decision model \u00b7 first page image and text|list_precision": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first page image and text|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first page image and text|calibration_error": {
+      "mean": 0.897537,
+      "se": 0.002425
+    },
+    "docsplit|Decision model \u00b7 first page image and text|errors_caught_30": {
+      "mean": 0.298595,
+      "se": 0.000469
+    },
+    "docsplit|Decision model \u00b7 first page image and text|errors_caught_30_random": {
+      "mean": 0.298595,
+      "se": 0.000469
+    },
+    "docsplit|Decision model \u00b7 first page image and text|page_accuracy": {
+      "mean": 0.80025,
+      "se": 0.005442
+    },
+    "docsplit|Decision model \u00b7 first page image and text|section_accuracy": {
+      "mean": 0.64135,
+      "se": 0.022327
+    },
+    "docsplit|Decision model \u00b7 first page image and text|grouping_score": {
+      "mean": 0.891115,
+      "se": 0.00647
+    },
+    "docsplit|Decision model \u00b7 first page image and text|boundary_accuracy": {
+      "mean": 0.723146,
+      "se": 0.026852
+    },
+    "docsplit|Decision model \u00b7 first page image and text|label_accuracy": {
+      "mean": 0.833917,
+      "se": 0.009168
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|weighted_accuracy": {
+      "mean": 0.316861,
+      "se": 0.030263
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|classification_tokens": {
+      "mean": 5999.275168,
+      "se": 1.205212
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|extraction_tokens": {
+      "mean": 6732.10962,
+      "se": 11.742467
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|scoring_tokens": {
+      "mean": 8055.654362,
+      "se": 16.626353
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|total_tokens": {
+      "mean": 20787.03915,
+      "se": 26.890785
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|median_seconds": {
+      "mean": 151.160971,
+      "se": 10.549619
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|list_precision": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|calibration_error": {
+      "mean": 0.89827,
+      "se": 0.002649
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|errors_caught_30": {
+      "mean": 0.298595,
+      "se": 0.000275
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|errors_caught_30_random": {
+      "mean": 0.298595,
+      "se": 0.000275
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|page_accuracy": {
+      "mean": 0.805369,
+      "se": 0.001937
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|section_accuracy": {
+      "mean": 0.651852,
+      "se": 0.009799
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|grouping_score": {
+      "mean": 0.896999,
+      "se": 0.008195
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|boundary_accuracy": {
+      "mean": 0.769383,
+      "se": 0.015536
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|label_accuracy": {
+      "mean": 0.821719,
+      "se": 0.013451
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "docsplit|LLM \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
+      "mean": 17.18235,
+      "se": 0.087083
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite|classification_cost_per_1000_docs": {
+      "mean": 15.270466,
+      "se": 0.053462
+    },
+    "docsplit|Decision model \u00b7 first page image|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first page image|classification_cost_per_1000_docs": {
+      "mean": 20.270646,
+      "se": 0.355964
+    },
+    "docsplit|Decision model \u00b7 first page image and text|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first page image and text|classification_cost_per_1000_docs": {
+      "mean": 20.484345,
+      "se": 0.060513
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "docsplit|Decision model \u00b7 first 2 page images|classification_cost_per_1000_docs": {
+      "mean": 19.024133,
+      "se": 0.212806
+    }
+  },
+  "sample": {
+    "docsplit|LLM \u00b7 Claude Haiku 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "docsplit|Decision model \u00b7 first page image": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "docsplit|Decision model \u00b7 first page image and text": {
+      "docs": [
+        18,
+        18,
+        18
+      ],
+      "failed": [
+        2,
+        2,
+        2
+      ],
+      "runs": 3
+    },
+    "docsplit|Decision model \u00b7 first 2 page images": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "docsplit|LLM \u00b7 Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "SectionClassification": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Splitting": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Amazon Nova 2 Lite classifies them",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "SectionClassification": [
+          "us.amazon.nova-2-lite-v1:0"
+        ],
+        "Splitting": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "docsplit|Decision model \u00b7 first page image": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Splitting": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "docsplit|Decision model \u00b7 first page image and text": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Splitting": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "docsplit|Decision model \u00b7 first 2 page images": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5 finds the sections (holistic), then Claude Haiku 5.5 classifies them",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Splitting": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "docsplit|LLM \u00b7 Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 20212.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 103259.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 227456.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 15627.25,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 19702.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 104605.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 228814.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 16548.85,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 20199.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 104125.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 228433.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 16129.9,
+        "textract/analyze_document-Layout|pages": 14.9
+      }
+    ],
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 5706.25,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 95.05,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 6420.9,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 908.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 69406.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 47363.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177364.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14485.15,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 5787.2,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 95.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 6583.05,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 927.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 73087.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 44256.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177821.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14899.8,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 5788.6,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 95.7,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 6590.2,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 938.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 91551.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 25802.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177575.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14539.35,
+        "textract/analyze_document-Layout|pages": 14.9
+      }
+    ],
+    "docsplit|Decision model \u00b7 first page image": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 81581.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 35631.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177763.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14651.4,
+        "decision_model/GENAIIDP-decider|gb_seconds": 687.4822,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 72584.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 44637.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177682.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14294.95,
+        "decision_model/GENAIIDP-decider|gb_seconds": 719.9879,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 74793.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 42648.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177802.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 15258.45,
+        "decision_model/GENAIIDP-decider|gb_seconds": 776.0683,
+        "textract/analyze_document-Layout|pages": 14.9
+      }
+    ],
+    "docsplit|Decision model \u00b7 first page image and text": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 98404.4444,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 18054.9444,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177162.6111,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14557.2778,
+        "decision_model/GENAIIDP-decider|gb_seconds": 747.0638,
+        "textract/analyze_document-Layout|pages": 14.8333
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 96254.8333,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 19679.8333,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 176904.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14645.4444,
+        "decision_model/GENAIIDP-decider|gb_seconds": 735.6918,
+        "textract/analyze_document-Layout|pages": 14.8333
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 92690.7222,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 23491.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 176844.2778,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14989.3889,
+        "decision_model/GENAIIDP-decider|gb_seconds": 752.6004,
+        "textract/analyze_document-Layout|pages": 14.8333
+      }
+    ],
+    "docsplit|Decision model \u00b7 first 2 page images": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 90289.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 27158.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177803.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14958.45,
+        "decision_model/GENAIIDP-decider|gb_seconds": 607.3806,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 66455.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 50437.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177332.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14706.2,
+        "decision_model/GENAIIDP-decider|gb_seconds": 660.2248,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 72232.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 45094.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177860.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 14851.9,
+        "decision_model/GENAIIDP-decider|gb_seconds": 636.8962,
+        "textract/analyze_document-Layout|pages": 14.9
+      }
+    ]
+  },
+  "cost_basis": {
+    "docsplit|LLM \u00b7 Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite": {
+      "mode": "cache-isolated"
+    },
+    "docsplit|Decision model \u00b7 first page image": {
+      "mode": "cache-isolated"
+    },
+    "docsplit|Decision model \u00b7 first page image and text": {
+      "mode": "cache-isolated"
+    },
+    "docsplit|Decision model \u00b7 first 2 page images": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "docsplit|LLM \u00b7 Claude Haiku 5.5": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.6111,
+        "label_accuracy": 0.933333,
+        "weighted_accuracy": 0.411616,
+        "cost": 0.155786
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.1875,
+        "cost": 0.073295
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.425121,
+        "cost": 0.103435
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.340741,
+        "cost": 0.067826
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.340278,
+        "cost": 0.040601
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.733333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.392593,
+        "cost": 0.15056
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.355611,
+        "cost": 0.106463
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.546032,
+        "cost": 0.107802
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.311111,
+        "cost": 0.072102
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.429825,
+        "cost": 0.109958
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8571,
+        "weighted_accuracy": 0.274775,
+        "cost": 0.133779
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.517544,
+        "cost": 0.132612
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.287524,
+        "cost": 0.104499
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.136364,
+        "cost": 0.136738
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.211111,
+        "cost": 0.071251
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.458333,
+        "cost": 0.153208
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 0.857133,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.326154,
+        "cost": 0.132498
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.084317
+      }
+    },
+    "docsplit|LLM \u00b7 Amazon Nova 2 Lite": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 0.866667,
+        "weighted_accuracy": 0.507371,
+        "cost": 0.141397
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.237414,
+        "cost": 0.069731
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.875,
+        "weighted_accuracy": 0.405797,
+        "cost": 0.090669
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.34,
+        "cost": 0.05867
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.347222,
+        "cost": 0.035256
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.42963,
+        "cost": 0.135287
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.343915,
+        "cost": 0.09929
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.552954,
+        "cost": 0.104185
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.065291
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.289474,
+        "cost": 0.103287
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.2875,
+        "cost": 0.118448
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.517544,
+        "cost": 0.115169
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.287524,
+        "cost": 0.097966
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.136364,
+        "cost": 0.123563
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.373684,
+        "cost": 0.065322
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.458333,
+        "cost": 0.138511
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 0.809533,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.340855,
+        "cost": 0.121493
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.073421
+      }
+    },
+    "docsplit|Decision model \u00b7 first page image": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.8333,
+        "label_accuracy": 0.6,
+        "weighted_accuracy": 0.42723,
+        "cost": 0.151453
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 0.555533,
+        "weighted_accuracy": 0.121028,
+        "cost": 0.075566
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.875,
+        "weighted_accuracy": 0.381643,
+        "cost": 0.09924
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.25,
+        "weighted_accuracy": 0.4,
+        "cost": 0.065396
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.347222,
+        "cost": 0.044812
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.611133,
+        "weighted_accuracy": 0.407407,
+        "cost": 0.145525
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.359788,
+        "cost": 0.099043
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.507246,
+        "cost": 0.09732
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.066189
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 0.416667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.482456,
+        "cost": 0.116001
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8571,
+        "weighted_accuracy": 0.3,
+        "cost": 0.129725
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.517544,
+        "cost": 0.118357
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.236842,
+        "cost": 0.102519
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.136364,
+        "cost": 0.123097
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.266667,
+        "cost": 0.068779
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.425,
+        "cost": 0.147308
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.315556,
+        "cost": 0.125976
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.082373
+      }
+    },
+    "docsplit|Decision model \u00b7 first page image and text": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.666633,
+        "label_accuracy": 0.566667,
+        "weighted_accuracy": 0.466375,
+        "cost": 0.149626
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.117647,
+        "cost": 0.068816
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.875,
+        "weighted_accuracy": 0.386473,
+        "cost": 0.094864
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.466667,
+        "weighted_accuracy": 0.326667,
+        "cost": 0.069585
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.347222,
+        "cost": 0.038323
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 0.555567,
+        "weighted_accuracy": 0.414815,
+        "cost": 0.143466
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.349206,
+        "cost": 0.099303
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.507246,
+        "cost": 0.092805
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.065032
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 0.333333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.552632,
+        "cost": 0.100173
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8571,
+        "weighted_accuracy": 0.283333,
+        "cost": 0.122233
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.508772,
+        "cost": 0.118586
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.296784,
+        "cost": 0.097369
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.416667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.136364,
+        "cost": 0.125599
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.583333,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.403544,
+        "cost": 0.069564
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.433333,
+        "cost": 0.148697
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.328889,
+        "cost": 0.129686
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.078813
+      }
+    },
+    "docsplit|Decision model \u00b7 first 2 page images": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 0.65,
+        "weighted_accuracy": 0.423104,
+        "cost": 0.151822
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 0.555533,
+        "weighted_accuracy": 0.121028,
+        "cost": 0.067604
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 0.875,
+        "label_accuracy": 0.7,
+        "weighted_accuracy": 0.322917,
+        "cost": 0.09748
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.233333,
+        "weighted_accuracy": 0.381818,
+        "cost": 0.063623
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.354167,
+        "cost": 0.036224
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.5,
+        "weighted_accuracy": 0.4,
+        "cost": 0.137122
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.359788,
+        "cost": 0.100299
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.492754,
+        "cost": 0.099135
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.288889,
+        "cost": 0.064894
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.282413,
+        "cost": 0.112447
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8571,
+        "weighted_accuracy": 0.295833,
+        "cost": 0.119871
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.526316,
+        "cost": 0.118068
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.236842,
+        "cost": 0.100618
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.136364,
+        "cost": 0.124085
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.257143,
+        "cost": 0.070417
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.45,
+        "cost": 0.148492
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 0.857133,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.337094,
+        "cost": 0.129466
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.080768
+      }
+    }
+  },
+  "unfinished": {
+    "docsplit|Decision model \u00b7 first page image and text": {
+      "packet_0016.pdf": {
+        "runs": 3,
+        "of": 3,
+        "status": [
+          "FAILED"
+        ]
+      },
+      "packet_0018.pdf": {
+        "runs": 3,
+        "of": 3,
+        "status": [
+          "FAILED"
+        ]
+      }
+    }
+  },
+  "interim_ablation": {
+    "id": "SC-12",
+    "page": "splitting-and-classification",
+    "question": "Can a decision model classify the sections?",
+    "takeaway": "With the preset's descriptions, Claude Haiku 5.5 classifies sections better than the Decider 2B",
+    "changes": "Which model classifies each section after Claude Haiku 5.5 detects the sections: an LLM or a decision model",
+    "varies": "which model classifies each section",
+    "fixed": "Classification",
+    "values": [
+      "LLM \u00b7 Claude Haiku 5.5",
+      "LLM \u00b7 Amazon Nova 2 Lite",
+      "Decision model \u00b7 first page image",
+      "Decision model \u00b7 first page image and text",
+      "Decision model \u00b7 first 2 page images"
+    ],
+    "set": [
+      {
+        "classification.strategy": "split_then_classify",
+        "classification.split_then_classify.splitting.llm.granularity": "packet",
+        "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5",
+        "classification.split_then_classify.section_classification.method": "llm",
+        "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"
+      },
+      {
+        "classification.strategy": "split_then_classify",
+        "classification.split_then_classify.splitting.llm.granularity": "packet",
+        "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5",
+        "classification.split_then_classify.section_classification.method": "llm",
+        "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"
+      },
+      {
+        "classification.strategy": "split_then_classify",
+        "classification.split_then_classify.splitting.llm.granularity": "packet",
+        "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5",
+        "classification.split_then_classify.section_classification.method": "decision_model",
+        "classification.split_then_classify.section_classification.pages": "first",
+        "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}",
+        "classification.split_then_classify.section_classification.decision_model.input": "images",
+        "classification.split_then_classify.section_classification.decision_model.max_pages": 1,
+        "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000
+      },
+      {
+        "classification.strategy": "split_then_classify",
+        "classification.split_then_classify.splitting.llm.granularity": "packet",
+        "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5",
+        "classification.split_then_classify.section_classification.method": "decision_model",
+        "classification.split_then_classify.section_classification.pages": "first",
+        "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}",
+        "classification.split_then_classify.section_classification.decision_model.input": "both",
+        "classification.split_then_classify.section_classification.decision_model.max_pages": 1,
+        "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000
+      },
+      {
+        "classification.strategy": "split_then_classify",
+        "classification.split_then_classify.splitting.llm.granularity": "packet",
+        "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5",
+        "classification.split_then_classify.section_classification.method": "decision_model",
+        "classification.split_then_classify.section_classification.pages": "first_k",
+        "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}",
+        "classification.split_then_classify.section_classification.decision_model.input": "images",
+        "classification.split_then_classify.section_classification.decision_model.max_pages": 2,
+        "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000
+      }
+    ],
+    "baseline": "develop",
+    "reference": "LLM \u00b7 Claude Haiku 5.5",
+    "datasets": [
+      "docsplit"
+    ],
+    "runs": 3,
+    "metrics": [
+      "section_accuracy",
+      "label_accuracy",
+      "page_accuracy",
+      "boundary_accuracy",
+      "classification_tokens",
+      "total_tokens",
+      "median_seconds"
+    ],
+    "plot": "label_accuracy",
+    "families": false,
+    "notes": "The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit), on AWS Lambda, reading each section's first page at 448 pixels; its cost is the function's duration, with cold starts left out. These runs used the docsplit preset's class descriptions, written for the LLM prompt.",
+    "interim": "Interim: 20 packets, the preset's class descriptions; a 100-packet re-run with one-line descriptions is in progress.",
+    "short_values": {
+      "Decision model": "Decider 2B"
+    }
+  }
+}

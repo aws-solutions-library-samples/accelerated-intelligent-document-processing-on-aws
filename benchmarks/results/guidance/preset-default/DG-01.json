@@ -1,0 +1,768 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-200107, RealKIE-FCC-Verified-20261113-200110, RealKIE-FCC-Verified-20261113-200111, RealKIE-FCC-Verified-20261113-200734, RealKIE-FCC-Verified-20261113-200735, RealKIE-FCC-Verified-20261113-200737, RealKIE-FCC-Verified-20261113-201141, RealKIE-FCC-Verified-20261113-201235, RealKIE-FCC-Verified-20261113-201255, OmniAI-OCR-Benchmark-20261113-201450, OmniAI-OCR-Benchmark-20261113-201607, OmniAI-OCR-Benchmark-20261113-201632, OmniAI-OCR-Benchmark-20261113-201740, OmniAI-OCR-Benchmark-20261113-201755, OmniAI-OCR-Benchmark-20261113-201803, OmniAI-OCR-Benchmark-20261113-201905, OmniAI-OCR-Benchmark-20261113-201929, OmniAI-OCR-Benchmark-20261113-201940",
+  "verdict": "Keep Textract. On RealKIE invoices the three readers scored within the noise of each other (0.81, 0.80 and 0.81). On bank checks the Bedrock vision model scored lower than Textract (0.90 against 0.94), a gap near the edge of the noise. The vision model's shorter page text cut total tokens per page on invoices (16,400 against 19,600), but it returns no word confidence for the scoring model to use.",
+  "cells": {
+    "realkie|Textract, tables and layout (default)|weighted_accuracy": {
+      "mean": 0.812818,
+      "se": 0.032467
+    },
+    "realkie|Textract, tables and layout (default)|extraction_tokens": {
+      "mean": 7032.514403,
+      "se": 3.560827
+    },
+    "realkie|Textract, tables and layout (default)|scoring_tokens": {
+      "mean": 12596.744856,
+      "se": 78.599314
+    },
+    "realkie|Textract, tables and layout (default)|total_tokens": {
+      "mean": 19629.259259,
+      "se": 82.03829
+    },
+    "realkie|Textract, tables and layout (default)|median_seconds": {
+      "mean": 51.300827,
+      "se": 6.640855
+    },
+    "realkie|Textract, tables and layout (default)|list_recall": {
+      "mean": 0.500861,
+      "se": 0.066461
+    },
+    "realkie|Textract, tables and layout (default)|list_precision": {
+      "mean": 0.274661,
+      "se": 0.076026
+    },
+    "realkie|Textract, tables and layout (default)|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.028868
+    },
+    "realkie|Textract, tables and layout (default)|auroc": {
+      "mean": 0.385486,
+      "se": 0.012781
+    },
+    "realkie|Textract, tables and layout (default)|calibration_error": {
+      "mean": 0.166775,
+      "se": 0.024025
+    },
+    "realkie|Textract, tables and layout (default)|errors_caught_30": {
+      "mean": 0.12745,
+      "se": 0.021335
+    },
+    "realkie|Textract, tables and layout (default)|errors_caught_30_random": {
+      "mean": 0.299109,
+      "se": 0.000332
+    },
+    "realkie|Textract, tables and layout (default)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Textract, tables and layout (default)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Textract, tables and layout (default)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Textract, layout only|weighted_accuracy": {
+      "mean": 0.795959,
+      "se": 0.032642
+    },
+    "realkie|Textract, layout only|extraction_tokens": {
+      "mean": 6626.530864,
+      "se": 3.811244
+    },
+    "realkie|Textract, layout only|scoring_tokens": {
+      "mean": 13183.687243,
+      "se": 308.686849
+    },
+    "realkie|Textract, layout only|total_tokens": {
+      "mean": 19810.218107,
+      "se": 306.044571
+    },
+    "realkie|Textract, layout only|median_seconds": {
+      "mean": 40.039488,
+      "se": 5.484378
+    },
+    "realkie|Textract, layout only|list_recall": {
+      "mean": 0.613716,
+      "se": 0.01027
+    },
+    "realkie|Textract, layout only|list_precision": {
+      "mean": 0.411306,
+      "se": 0.01405
+    },
+    "realkie|Textract, layout only|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.0
+    },
+    "realkie|Textract, layout only|auroc": {
+      "mean": 0.433029,
+      "se": 0.002664
+    },
+    "realkie|Textract, layout only|calibration_error": {
+      "mean": 0.202112,
+      "se": 0.005637
+    },
+    "realkie|Textract, layout only|errors_caught_30": {
+      "mean": 0.157996,
+      "se": 0.040335
+    },
+    "realkie|Textract, layout only|errors_caught_30_random": {
+      "mean": 0.299199,
+      "se": 0.00014
+    },
+    "realkie|Textract, layout only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Textract, layout only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Textract, layout only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|weighted_accuracy": {
+      "mean": 0.806435,
+      "se": 0.032951
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|ocr_tokens": {
+      "mean": 1907.152263,
+      "se": 55.643709
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|extraction_tokens": {
+      "mean": 7728.901235,
+      "se": 92.302923
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|scoring_tokens": {
+      "mean": 6746.193416,
+      "se": 392.67736
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|total_tokens": {
+      "mean": 16382.246914,
+      "se": 386.204644
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|median_seconds": {
+      "mean": 42.837487,
+      "se": 1.87179
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|list_recall": {
+      "mean": 0.577589,
+      "se": 0.041914
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|list_precision": {
+      "mean": 0.384229,
+      "se": 0.072227
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|auroc": {
+      "mean": 0.421395,
+      "se": 0.024043
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|calibration_error": {
+      "mean": 0.1082,
+      "se": 0.028702
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|errors_caught_30": {
+      "mean": 0.23034,
+      "se": 0.026167
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|errors_caught_30_random": {
+      "mean": 0.299786,
+      "se": 0.00012
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, tables and layout (default)|weighted_accuracy": {
+      "mean": 0.9378,
+      "se": 0.017373
+    },
+    "omniai|Textract, tables and layout (default)|classification_tokens": {
+      "mean": 2421.366667,
+      "se": 3.115731
+    },
+    "omniai|Textract, tables and layout (default)|extraction_tokens": {
+      "mean": 2403.433333,
+      "se": 1.498981
+    },
+    "omniai|Textract, tables and layout (default)|scoring_tokens": {
+      "mean": 4788.15,
+      "se": 1.622498
+    },
+    "omniai|Textract, tables and layout (default)|total_tokens": {
+      "mean": 9612.95,
+      "se": 2.177728
+    },
+    "omniai|Textract, tables and layout (default)|median_seconds": {
+      "mean": 18.354036,
+      "se": 0.416297
+    },
+    "omniai|Textract, tables and layout (default)|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, tables and layout (default)|list_precision": {
+      "mean": 0.827404,
+      "se": 0.0
+    },
+    "omniai|Textract, tables and layout (default)|all_fields_right": {
+      "mean": 0.15,
+      "se": 0.028868
+    },
+    "omniai|Textract, tables and layout (default)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, tables and layout (default)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, tables and layout (default)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only|weighted_accuracy": {
+      "mean": 0.94412,
+      "se": 0.020365
+    },
+    "omniai|Textract, layout only|classification_tokens": {
+      "mean": 2286.9,
+      "se": 1.490805
+    },
+    "omniai|Textract, layout only|extraction_tokens": {
+      "mean": 2268.8,
+      "se": 0.589491
+    },
+    "omniai|Textract, layout only|scoring_tokens": {
+      "mean": 4668.816667,
+      "se": 1.470355
+    },
+    "omniai|Textract, layout only|total_tokens": {
+      "mean": 9224.516667,
+      "se": 0.72476
+    },
+    "omniai|Textract, layout only|median_seconds": {
+      "mean": 17.370237,
+      "se": 0.069637
+    },
+    "omniai|Textract, layout only|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only|list_precision": {
+      "mean": 0.813351,
+      "se": 0.007388
+    },
+    "omniai|Textract, layout only|all_fields_right": {
+      "mean": 0.366667,
+      "se": 0.016667
+    },
+    "omniai|Textract, layout only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|weighted_accuracy": {
+      "mean": 0.897221,
+      "se": 0.031275
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|ocr_tokens": {
+      "mean": 727.083333,
+      "se": 15.540655
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|classification_tokens": {
+      "mean": 2466.45,
+      "se": 16.755024
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|extraction_tokens": {
+      "mean": 2444.933333,
+      "se": 15.635865
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|scoring_tokens": {
+      "mean": 4071.283333,
+      "se": 14.846558
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|total_tokens": {
+      "mean": 9709.75,
+      "se": 55.377846
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|median_seconds": {
+      "mean": 17.913838,
+      "se": 0.689772
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|list_precision": {
+      "mean": 0.738911,
+      "se": 0.014319
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|all_fields_right": {
+      "mean": 0.116667,
+      "se": 0.044096
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Textract, tables and layout (default)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Textract, layout only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "omniai|Textract, tables and layout (default)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "omniai|Textract, layout only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Textract, tables and layout (default)": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "realkie|Textract, layout only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)": {
+      "OCR": "Amazon Nova 2 Lite, reading the page images",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "OCR": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    },
+    "omniai|Textract, tables and layout (default)": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Classification": [
+          "us.amazon.nova-2-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    },
+    "omniai|Textract, layout only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Amazon Nova 2 Lite, page by page",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Classification": [
+          "us.amazon.nova-2-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)": {
+      "OCR": "Amazon Nova 2 Lite, reading the page images",
+      "Classification": "Amazon Nova 2 Lite, page by page",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0"
+        ],
+        "Classification": [
+          "us.amazon.nova-2-lite-v1:0"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ],
+        "OCR": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Textract, tables and layout (default)": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44995.55,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 149.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3659.85,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1599.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1596.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 84.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1500.15,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 45975.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 110.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3711.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1675.4,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1550.1,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44809.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1131.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3664.7,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1569.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1524.4,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Textract, layout only": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 36653.95,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 9266.8,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3792.3,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1626.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1548.8,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40619.8,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 7051.95,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3849.25,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1666.7,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1567.6,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40490.5,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6892.35,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3761.45,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1833.05,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2600.9,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23647.3,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1558.05,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Bedrock vision model (Nova 2 Lite)": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6795.35,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 10404.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1545.55,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 10461.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1700.3,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 583.7,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 28740.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1584.45
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6019.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 12774.5,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 387.9,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 11338.05,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1891.7,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1971.85,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 27431.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1578.5
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6335.85,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 13082.1,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 269.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 11579.65,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2044.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2263.7,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2466.7,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 28339.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1753.45
+      }
+    ],
+    "omniai|Textract, tables and layout (default)": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 2837.95,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 316.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 971.7,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 702.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1271.95,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1517.65,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1240.2,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 757.45,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3154.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 971.7,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 697.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2322.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 469.55,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1241.65,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 757.2,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3154.5,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 971.7,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 696.55,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2465.9,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 323.8,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1241.8,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 754.4,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "omniai|Textract, layout only": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3168.65,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 698.35,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 692.8,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1919.35,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 722.5,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1280.8,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 743.45,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3168.65,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 698.35,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 686.05,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2302.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 339.3,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1278.35,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 751.25,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3168.65,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 698.35,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 687.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2222.65,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 419.15,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1279.3,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 748.1,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ],
+    "omniai|Bedrock vision model (Nova 2 Lite)": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3141.65,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1454.9,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1111.15,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1940.7,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 37.4,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1402.8,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 718.1
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3129.75,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1360.75,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1057.75,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1977.3,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1402.5,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 686.85
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3130.9,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1430.3,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1098.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1977.4,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1392.75,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 678.05
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Textract, tables and layout (default)": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-200111",
+      "index": 2
+    },
+    "realkie|Textract, layout only": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-200737",
+      "index": 2
+    },
+    "realkie|Bedrock vision model (Nova 2 Lite)": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-201255",
+      "index": 2
+    },
+    "omniai|Textract, tables and layout (default)": {
+      "mode": "cold-run",
+      "run": "OmniAI-OCR-Benchmark-20261113-201450",
+      "index": 0
+    },
+    "omniai|Textract, layout only": {
+      "mode": "cold-run",
+      "run": "OmniAI-OCR-Benchmark-20261113-201740",
+      "index": 0
+    },
+    "omniai|Bedrock vision model (Nova 2 Lite)": {
+      "mode": "cold-run",
+      "run": "OmniAI-OCR-Benchmark-20261113-201905",
+      "index": 0
+    }
+  }
+}

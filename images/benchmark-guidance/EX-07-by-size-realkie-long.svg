@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="792" height="502" viewBox="0 0 792 502" role="img"><title>With Claude Haiku 5.5, table parsing adds cost without adding accuracy</title><desc>On: 1–9 55% ± 41%, 10–99 50% ± 12%, More than 99 56% ± 21%; Off: 1–9 63% ± 33%, 10–99 53% ± 12%, More than 99 62% ± 22%</desc><style>
+  .viz { --series: #2a78d6; --ring: #ffffff; --ink: #0b0b0b; --ink-2: #52514e;
+         --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+         --fam-nova: #2a78d6; --fam-claude: #eb6834; --fam-other: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz, svg.viz:root { --series: #3987e5;
+      --ring: #17181c; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835;
+      --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  }
+  :root[data-theme="dark"] .viz { --series: #3987e5; --ring: #17181c; --ink: #f0efec;
+    --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  .viz { max-width: 100%; height: auto; }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .viz .ctitle { font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .panel { font-size: 13px; font-weight: 600; fill: var(--ink); }
+  .sub { font-size: 12px; fill: var(--muted); }
+  .viz .lead { font-size: 12px; fill: var(--ink); }
+  .label { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel.dflt, .viz .plabel .dflt { fill: var(--ink); font-weight: 700; }
+  .viz .dot.ref { stroke: var(--ink); stroke-width: 1.5; }
+  .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .none { font-size: 12px; fill: var(--muted); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--ink-2); stroke-width: 1; }
+  .viz .gap { fill: var(--ring); }
+  .viz .leader { stroke: var(--muted); stroke-width: 1; }
+  .band { fill: var(--series); opacity: 0.12; }
+  .dot { fill: var(--series); stroke: var(--ring); stroke-width: 2; }
+  .axislabel { font-size: 12px; fill: var(--ink-2); }
+  .prices { font-size: 10px; fill: var(--muted); }
+  .num { font-size: 11px; font-weight: 700; fill: var(--ink); }
+  .halo { paint-order: stroke; stroke: var(--ring); stroke-width: 3px;
+          stroke-linejoin: round; }
+  .mcoe { stroke: var(--ink-2); stroke-width: 1; fill: none; }
+  .mcoelabel { font-size: 11px; fill: var(--ink-2); }
+  .viz .ptitle { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .viz .fam-nova { fill: var(--fam-nova); }
+  .viz .fam-claude { fill: var(--fam-claude); }
+  .viz .fam-other { fill: var(--fam-other); }
+  .viz .baseline { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 5 4; }
+  .viz .baselinelabel { font-size: 11px; fill: var(--ink-2); }
+
+  .viz .s1 { fill: var(--fam-nova); }
+  .viz .s2 { fill: var(--fam-claude); }
+  .viz .s3 { fill: var(--fam-other); }
+  .viz .pt { opacity: 0.75; }
+  .viz .trend { fill: none; stroke-width: 2; stroke-linejoin: round; }
+  .viz .trend.t1 { stroke: var(--fam-nova); }
+  .viz .trend.t2 { stroke: var(--fam-claude); }
+  .viz .trend.t3 { stroke: var(--fam-other); }
+  .viz .trend.d2 { stroke-dasharray: 7 3; }
+  .viz .trend.d3 { stroke-dasharray: 2 3; }
+  .viz .swatch { stroke-width: 2; }
+  .viz .dot.sized { opacity: 0.85; stroke-width: 1.5; }
+  .viz .sizekey { fill: none; stroke: var(--ink-2); stroke-width: 1; }
+</style><text class="ctitle" x="0" y="18.0">With Claude Haiku 5.5, table parsing adds cost without adding accuracy</text><text class="sub" x="0" y="38.0">RealKIE long invoices, 18 documents × 3 runs ·</text><text class="sub" x="0" y="54.0">Varies: table parsing, a tool that turns Textract&#x27;s tables into rows by code instead of the model retyping them ·</text><text class="sub" x="0" y="70.0">Fixed: extraction on Claude Haiku 5.5</text><line class="trend swatch t1 d1" x1="5.0" x2="32.0" y1="92.0" y2="92.0"/><circle class="dot s1" cx="18.0" cy="92.0" r="5"/><text class="label" x="38.0" y="96.0">On</text><line class="trend swatch t2 d2" x1="74.4" x2="101.4" y1="92.0" y2="92.0"/><rect class="dot s2" x="82.9" y="87.5" width="9.0" height="9.0" rx="1.5"/><text class="label" x="107.4" y="96.0">Off</text><text class="label" x="0" y="121.0">Dot area: cost per document</text><circle class="sizekey" cx="209.0" cy="117.0" r="10.1"/><text class="label" x="225.2" y="121.0">$0.15</text><circle class="sizekey" cx="290.4" cy="117.0" r="11.7"/><text class="label" x="308.1" y="121.0">$0.20</text><circle class="sizekey" cx="375.9" cy="117.0" r="14.3"/><text class="label" x="396.2" y="121.0">$0.30</text><text class="axislabel" x="42" y="155.0">Line items matched, line-item score (%) ↑</text><line class="grid" x1="46" x2="770" y1="426.0" y2="426.0"/><line class="axis" x1="42" x2="46" y1="426.0" y2="426.0"/><text class="tick" x="39" y="430.0" text-anchor="end">0%</text><line class="grid" x1="46" x2="770" y1="374.0" y2="374.0"/><line class="axis" x1="42" x2="46" y1="374.0" y2="374.0"/><text class="tick" x="39" y="378.0" text-anchor="end">20%</text><line class="grid" x1="46" x2="770" y1="322.0" y2="322.0"/><line class="axis" x1="42" x2="46" y1="322.0" y2="322.0"/><text class="tick" x="39" y="326.0" text-anchor="end">40%</text><line class="grid" x1="46" x2="770" y1="270.0" y2="270.0"/><line class="axis" x1="42" x2="46" y1="270.0" y2="270.0"/><text class="tick" x="39" y="274.0" text-anchor="end">60%</text><line class="grid" x1="46" x2="770" y1="218.0" y2="218.0"/><line class="axis" x1="42" x2="46" y1="218.0" y2="218.0"/><text class="tick" x="39" y="222.0" text-anchor="end">80%</text><line class="grid" x1="46" x2="770" y1="166.0" y2="166.0"/><line class="axis" x1="42" x2="46" y1="166.0" y2="166.0"/><text class="tick" x="39" y="170.0" text-anchor="end">100%</text><line class="axis" x1="166.7" x2="166.7" y1="426.0" y2="430.0"/><text class="tick" x="166.7" y="442.0" text-anchor="middle">1–9</text><text class="tick" x="166.7" y="456.0" text-anchor="middle">N = 2</text><line class="axis" x1="408.0" x2="408.0" y1="426.0" y2="430.0"/><text class="tick" x="408.0" y="442.0" text-anchor="middle">10–99</text><text class="tick" x="408.0" y="456.0" text-anchor="middle">N = 12</text><line class="axis" x1="649.3" x2="649.3" y1="426.0" y2="430.0"/><text class="tick" x="649.3" y="442.0" text-anchor="middle">More than 99</text><text class="tick" x="649.3" y="456.0" text-anchor="middle">N = 4</text><line class="axis" x1="46" x2="770" y1="426.0" y2="426.0"/><line class="axis" x1="46" x2="46" y1="166.0" y2="426.0"/><text class="axislabel" x="408.0" y="476.0" text-anchor="middle">Rows in the list (ground truth)</text><path class="trend t1 d1" d="M151.7 283.0 L393.0 296.7 L634.3 280.2"/><line class="trend t1" x1="151.7" x2="151.7" y1="176.2" y2="389.9"/><g><title>On, 1–9: line-item score 55% ± 41%, 2 documents, $0.14 per document</title><circle class="dot sized s1" cx="151.7" cy="283.0" r="9.66654145400798"/></g><line class="trend t1" x1="393.0" x2="393.0" y1="266.5" y2="326.9"/><g><title>On, 10–99: line-item score 50% ± 12%, 12 documents, $0.17 per document</title><circle class="dot sized s1" cx="393.0" cy="296.7" r="10.906268196489822"/></g><line class="trend t1" x1="634.3" x2="634.3" y1="225.8" y2="334.5"/><g><title>On, More than 99: line-item score 56% ± 21%, 4 documents, $0.29 per document</title><circle class="dot sized s1" cx="634.3" cy="280.2" r="14.0"/></g><path class="trend t2 d2" d="M181.7 261.8 L423.0 288.5 L664.3 264.3"/><line class="trend t2" x1="181.7" x2="181.7" y1="176.0" y2="347.6"/><g><title>Off, 1–9: line-item score 63% ± 33%, 2 documents, $0.14 per document</title><rect class="dot sized s2" x="172.9" y="253.0" width="17.5" height="17.5" rx="1.5"/></g><line class="trend t2" x1="423.0" x2="423.0" y1="256.6" y2="320.4"/><g><title>Off, 10–99: line-item score 53% ± 12%, 12 documents, $0.17 per document</title><rect class="dot sized s2" x="413.2" y="278.7" width="19.7" height="19.7" rx="1.5"/></g><line class="trend t2" x1="664.3" x2="664.3" y1="206.2" y2="322.4"/><g><title>Off, More than 99: line-item score 62% ± 22%, 4 documents, $0.28 per document</title><rect class="dot sized s2" x="652.0" y="251.9" width="24.7" height="24.7" rx="1.5"/></g><text class="prices" x="0" y="497.0">Prices: on-demand, us-east-1, config_library/pricing.yaml as of 2026-11-18</text></svg>

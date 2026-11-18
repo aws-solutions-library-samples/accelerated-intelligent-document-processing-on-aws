@@ -1,0 +1,79 @@
+{
+  "ablation": "EX-10",
+  "verdict": "Keep both on; they're a free safety net. Validation checks each value against the schema and records what fails; coercion converts values to the schema's types (for example \"$6.00\" to 6.0). On RealKIE invoices coercion changed no value for any model, and validation flagged only Amazon Nova 2 Lite (5 of 60 sections, each missing a required field), which it records but doesn't fix. Accuracy and cost were the same on and off for Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Amazon Nova 2 Lite.",
+  "runs": {
+    "realkie": {
+      "Validation and coercion on \u00b7 Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-210412",
+        "RealKIE-FCC-Verified-20261116-210348",
+        "RealKIE-FCC-Verified-20261116-210401"
+      ],
+      "Validation and coercion on \u00b7 Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-210325",
+        "RealKIE-FCC-Verified-20261116-210312",
+        "RealKIE-FCC-Verified-20261116-210336"
+      ],
+      "Validation and coercion on \u00b7 Claude Opus 5.5": [
+        "RealKIE-FCC-Verified-20261116-211231",
+        "RealKIE-FCC-Verified-20261116-211428",
+        "RealKIE-FCC-Verified-20261116-211453"
+      ],
+      "Validation and coercion off \u00b7 Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261116-211742",
+        "RealKIE-FCC-Verified-20261116-212058",
+        "RealKIE-FCC-Verified-20261116-212135"
+      ],
+      "Validation and coercion on \u00b7 Amazon Nova 2 Lite": [
+        "RealKIE-FCC-Verified-20261116-211556",
+        "RealKIE-FCC-Verified-20261116-211631",
+        "RealKIE-FCC-Verified-20261116-211617"
+      ],
+      "Validation and coercion off \u00b7 Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-212145",
+        "RealKIE-FCC-Verified-20261116-212209",
+        "RealKIE-FCC-Verified-20261116-212223"
+      ],
+      "Validation and coercion off \u00b7 Claude Opus 5.5": [
+        "RealKIE-FCC-Verified-20261116-212359",
+        "RealKIE-FCC-Verified-20261116-212503",
+        "RealKIE-FCC-Verified-20261116-212608"
+      ],
+      "Validation and coercion off \u00b7 Amazon Nova 2 Lite": [
+        "RealKIE-FCC-Verified-20261116-212629",
+        "RealKIE-FCC-Verified-20261116-212647",
+        "RealKIE-FCC-Verified-20261116-212713"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "RealKIE-FCC-Verified-20261116-210312",
+    "RealKIE-FCC-Verified-20261116-210325",
+    "RealKIE-FCC-Verified-20261116-210336",
+    "RealKIE-FCC-Verified-20261116-210348",
+    "RealKIE-FCC-Verified-20261116-210401",
+    "RealKIE-FCC-Verified-20261116-210412",
+    "RealKIE-FCC-Verified-20261116-211231",
+    "RealKIE-FCC-Verified-20261116-211428",
+    "RealKIE-FCC-Verified-20261116-211453",
+    "RealKIE-FCC-Verified-20261116-211556",
+    "RealKIE-FCC-Verified-20261116-211617",
+    "RealKIE-FCC-Verified-20261116-211631",
+    "RealKIE-FCC-Verified-20261116-211742",
+    "RealKIE-FCC-Verified-20261116-212058",
+    "RealKIE-FCC-Verified-20261116-212135",
+    "RealKIE-FCC-Verified-20261116-212145",
+    "RealKIE-FCC-Verified-20261116-212209",
+    "RealKIE-FCC-Verified-20261116-212223",
+    "RealKIE-FCC-Verified-20261116-212359",
+    "RealKIE-FCC-Verified-20261116-212503",
+    "RealKIE-FCC-Verified-20261116-212608",
+    "RealKIE-FCC-Verified-20261116-212629",
+    "RealKIE-FCC-Verified-20261116-212647",
+    "RealKIE-FCC-Verified-20261116-212713"
+  ]
+}

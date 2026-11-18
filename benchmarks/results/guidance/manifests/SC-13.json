@@ -1,0 +1,87 @@
+{
+  "ablation": "SC-13",
+  "verdict": "Measured; see the table.",
+  "runs": {
+    "docsplit_100": {
+      "Page by page \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-Poly-Seq-20261118-151031",
+        "DocSplit-Poly-Seq-20261118-151044",
+        "DocSplit-Poly-Seq-20261118-151109"
+      ],
+      "Holistic \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-Poly-Seq-20261118-151058",
+        "DocSplit-Poly-Seq-20261118-151427",
+        "DocSplit-Poly-Seq-20261118-151512"
+      ],
+      "Split, then an LLM names each section \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-Poly-Seq-20261118-151417",
+        "DocSplit-Poly-Seq-20261118-151438",
+        "DocSplit-Poly-Seq-20261118-151501"
+      ],
+      "Page by page \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-151451",
+        "DocSplit-Poly-Seq-20261118-160137",
+        "DocSplit-Poly-Seq-20261118-160148"
+      ],
+      "Holistic \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-160211",
+        "DocSplit-Poly-Seq-20261118-160158",
+        "DocSplit-Poly-Seq-20261118-160233"
+      ],
+      "Split, then an LLM names each section \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-162508",
+        "DocSplit-Poly-Seq-20261118-161841"
+      ],
+      "Page by page \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-Poly-Seq-20261118-164849",
+        "DocSplit-Poly-Seq-20261118-165109",
+        "DocSplit-Poly-Seq-20261118-164955"
+      ],
+      "Holistic \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-Poly-Seq-20261118-165944",
+        "DocSplit-Poly-Seq-20261118-165956",
+        "DocSplit-Poly-Seq-20261118-171346"
+      ],
+      "Split, then an LLM names each section \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-Poly-Seq-20261118-171638",
+        "DocSplit-Poly-Seq-20261118-172007",
+        "DocSplit-Poly-Seq-20261118-172617"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit_100": 10
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15-develop-d1be93f",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Poly-Seq-20261118-151031",
+    "DocSplit-Poly-Seq-20261118-151044",
+    "DocSplit-Poly-Seq-20261118-151058",
+    "DocSplit-Poly-Seq-20261118-151109",
+    "DocSplit-Poly-Seq-20261118-151417",
+    "DocSplit-Poly-Seq-20261118-151427",
+    "DocSplit-Poly-Seq-20261118-151438",
+    "DocSplit-Poly-Seq-20261118-151451",
+    "DocSplit-Poly-Seq-20261118-151501",
+    "DocSplit-Poly-Seq-20261118-151512",
+    "DocSplit-Poly-Seq-20261118-160137",
+    "DocSplit-Poly-Seq-20261118-160148",
+    "DocSplit-Poly-Seq-20261118-160158",
+    "DocSplit-Poly-Seq-20261118-160211",
+    "DocSplit-Poly-Seq-20261118-160233",
+    "DocSplit-Poly-Seq-20261118-161841",
+    "DocSplit-Poly-Seq-20261118-162508",
+    "DocSplit-Poly-Seq-20261118-164849",
+    "DocSplit-Poly-Seq-20261118-164955",
+    "DocSplit-Poly-Seq-20261118-165109",
+    "DocSplit-Poly-Seq-20261118-165944",
+    "DocSplit-Poly-Seq-20261118-165956",
+    "DocSplit-Poly-Seq-20261118-171346",
+    "DocSplit-Poly-Seq-20261118-171638",
+    "DocSplit-Poly-Seq-20261118-172007",
+    "DocSplit-Poly-Seq-20261118-172617"
+  ]
+}

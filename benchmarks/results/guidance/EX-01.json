@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261113-173220, RealKIE-FCC-Verified-20261113-173644, RealKIE-FCC-Verified-20261113-173641, RealKIE-FCC-Verified-20261113-173219, RealKIE-FCC-Verified-20261113-173642, RealKIE-FCC-Verified-20261113-173643, RealKIE-FCC-Verified-20261116-145655, RealKIE-FCC-Verified-20261116-145659, RealKIE-FCC-Verified-20261116-145657, RealKIE-FCC-Verified-20261116-145656, RealKIE-FCC-Verified-20261116-145658, RealKIE-FCC-Verified-20261116-145707, Fake-W2-Tax-Forms-20261113-181721, Fake-W2-Tax-Forms-20261113-181722, Fake-W2-Tax-Forms-20261113-181723, Fake-W2-Tax-Forms-20261113-181901, Fake-W2-Tax-Forms-20261113-182002, Fake-W2-Tax-Forms-20261113-182011, realkie-fcc-short-20261113-201254, realkie-fcc-short-20261113-201252, realkie-fcc-short-20261113-201253, realkie-fcc-short-20261113-201713, realkie-fcc-short-20261113-201703, realkie-fcc-short-20261113-201714, realkie-fcc-long-20261113-201929, realkie-fcc-long-20261113-201928, realkie-fcc-long-20261113-202020, realkie-fcc-long-20261113-202336, realkie-fcc-long-20261113-202804, realkie-fcc-long-20261113-202644, realkie-fcc-long-20261116-145655, realkie-fcc-long-20261116-145656, realkie-fcc-long-20261116-145654, realkie-fcc-long-20261116-145707, realkie-fcc-long-20261116-145708, realkie-fcc-long-20261116-145709, synth-statements-400-20261113-231559, synth-statements-400-20261113-231602, synth-statements-400-20261113-231603, synth-statements-400-20261113-231600, synth-statements-400-20261113-231601, synth-statements-400-20261113-231604, synth-statements-800-20261113-231613, synth-statements-800-20261113-231615, synth-statements-800-20261113-231617, synth-statements-800-20261113-231614, synth-statements-800-20261113-231616, synth-statements-1600-20261113-231626, synth-statements-1600-20261113-231629, synth-statements-1600-20261113-231631, RealKIE-FCC-Verified-20261116-152541, RealKIE-FCC-Verified-20261116-152542, RealKIE-FCC-Verified-20261116-152544, RealKIE-FCC-Verified-20261116-152951, RealKIE-FCC-Verified-20261116-152953, RealKIE-FCC-Verified-20261116-152954, RealKIE-FCC-Verified-20261116-152540, RealKIE-FCC-Verified-20261116-152543, RealKIE-FCC-Verified-20261116-152545, RealKIE-FCC-Verified-20261116-152955, RealKIE-FCC-Verified-20261116-152950, RealKIE-FCC-Verified-20261116-152952 (12 failed documents left out of the scores)",
-  "verdict": "When an invoice has more than about 100 line items, and then with Claude Haiku 5.5. On all 75 RealKIE invoices, single-pass scored as well as agentic or better up to 100 line items (0.69 against 0.57 with Claude Haiku 5.5 at 1 to 20 items), and with the 5.5 models agentic cost about the same there. Above 100 line items single-pass got almost no line items right (0.00 to 0.22) while agentic got 0.44 to 0.79. On those long invoices agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($316 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, so the long bands rest on few invoices; Test Studio could not score the longest (1,490 items), because its evaluation step timed out although extraction finished.",
+  "verdict": "Single-pass is a good place to start, with agentic on Claude Haiku 5.5 above about 100 line items: there single-pass got almost no line items right and agentic got 0.44 to 0.79. Test it on your own documents.",
   "cells": {
     "realkie|Single-pass (Simple, default)|weighted_accuracy": {
       "mean": 0.802328,
@@ -214,16 +214,16 @@
       "se": 0.031382
     },
     "realkie|Agentic \u00b7 Claude Sonnet 5.5|extraction_tokens": {
-      "mean": 439844.851852,
-      "se": 424453.600951
+      "mean": 15564.358025,
+      "se": 229.722404
     },
     "realkie|Agentic \u00b7 Claude Sonnet 5.5|scoring_tokens": {
-      "mean": 172902.440329,
-      "se": 166563.785299
+      "mean": 6308.201646,
+      "se": 52.42043
     },
     "realkie|Agentic \u00b7 Claude Sonnet 5.5|total_tokens": {
-      "mean": 612747.292181,
-      "se": 591017.363848
+      "mean": 21872.559671,
+      "se": 179.13174
     },
     "realkie|Agentic \u00b7 Claude Sonnet 5.5|median_seconds": {
       "mean": 56.208087,
@@ -256,6 +256,14 @@
     "realkie|Agentic \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
       "mean": 0.299038,
       "se": 0.000423
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Agentic \u00b7 Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
     "realkie|Agentic \u00b7 Claude Sonnet 5.5|grouping_score": {
       "mean": 1.0,

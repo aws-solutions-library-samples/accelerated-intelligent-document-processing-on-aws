@@ -1,0 +1,2376 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-210557, RealKIE-FCC-Verified-20261116-210546, RealKIE-FCC-Verified-20261116-210607, RealKIE-FCC-Verified-20261116-210630, RealKIE-FCC-Verified-20261116-210641, RealKIE-FCC-Verified-20261116-210620, RealKIE-FCC-Verified-20261116-211439, RealKIE-FCC-Verified-20261116-211323, RealKIE-FCC-Verified-20261116-211607, Fake-W2-Tax-Forms-20261116-211721, Fake-W2-Tax-Forms-20261116-211641, Fake-W2-Tax-Forms-20261116-211653, Fake-W2-Tax-Forms-20261116-211759, Fake-W2-Tax-Forms-20261116-211942, Fake-W2-Tax-Forms-20261116-212023, Fake-W2-Tax-Forms-20261116-212034, Fake-W2-Tax-Forms-20261116-212045, Fake-W2-Tax-Forms-20261116-212108, OmniAI-OCR-Benchmark-20261116-212120, OmniAI-OCR-Benchmark-20261116-212156, OmniAI-OCR-Benchmark-20261116-212234, OmniAI-OCR-Benchmark-20261116-212248, OmniAI-OCR-Benchmark-20261116-212259, OmniAI-OCR-Benchmark-20261116-212310, OmniAI-OCR-Benchmark-20261116-212410, OmniAI-OCR-Benchmark-20261116-212420, OmniAI-OCR-Benchmark-20261116-212434 (1 failed documents left out of the scores)",
+  "verdict": "Page image plus OCR text is a good place to start. On W-2 forms and bank checks, OCR text alone lost the most (W-2s: 0.91 against 0.997; checks: 0.89 against 0.994), and the image alone got fewer forms fully right (50% of W-2s against 82%). On RealKIE invoices all three scored the same (0.77 to 0.79). The image-only runs still paid for OCR here; skipping OCR would save about $10 per 1,000 pages. Test it on your own documents.",
+  "cells": {
+    "realkie|Page image and OCR text|weighted_accuracy": {
+      "mean": 0.787342,
+      "se": 0.036002
+    },
+    "realkie|Page image and OCR text|extraction_tokens": {
+      "mean": 7166.831276,
+      "se": 21.757767
+    },
+    "realkie|Page image and OCR text|scoring_tokens": {
+      "mean": 12602.399177,
+      "se": 1184.045161
+    },
+    "realkie|Page image and OCR text|total_tokens": {
+      "mean": 19769.230453,
+      "se": 1200.537743
+    },
+    "realkie|Page image and OCR text|median_seconds": {
+      "mean": 61.469054,
+      "se": 1.199526
+    },
+    "realkie|Page image and OCR text|list_recall": {
+      "mean": 0.371177,
+      "se": 0.033906
+    },
+    "realkie|Page image and OCR text|list_precision": {
+      "mean": 0.283743,
+      "se": 0.080009
+    },
+    "realkie|Page image and OCR text|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Page image and OCR text|auroc": {
+      "mean": 0.814722,
+      "se": 0.005453
+    },
+    "realkie|Page image and OCR text|calibration_error": {
+      "mean": 0.18178,
+      "se": 0.012229
+    },
+    "realkie|Page image and OCR text|errors_caught_30": {
+      "mean": 0.684626,
+      "se": 0.007238
+    },
+    "realkie|Page image and OCR text|errors_caught_30_random": {
+      "mean": 0.2987,
+      "se": 0.000663
+    },
+    "realkie|Page image and OCR text|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image and OCR text|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image and OCR text|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image and OCR text|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image and OCR text|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OCR text only|weighted_accuracy": {
+      "mean": 0.788948,
+      "se": 0.035628
+    },
+    "realkie|OCR text only|extraction_tokens": {
+      "mean": 2523.707819,
+      "se": 28.597841
+    },
+    "realkie|OCR text only|scoring_tokens": {
+      "mean": 12841.296296,
+      "se": 1483.423378
+    },
+    "realkie|OCR text only|total_tokens": {
+      "mean": 15365.004115,
+      "se": 1511.191272
+    },
+    "realkie|OCR text only|median_seconds": {
+      "mean": 68.440963,
+      "se": 6.471093
+    },
+    "realkie|OCR text only|list_recall": {
+      "mean": 0.354443,
+      "se": 0.039273
+    },
+    "realkie|OCR text only|list_precision": {
+      "mean": 0.227639,
+      "se": 0.033768
+    },
+    "realkie|OCR text only|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|OCR text only|auroc": {
+      "mean": 0.815722,
+      "se": 0.025028
+    },
+    "realkie|OCR text only|calibration_error": {
+      "mean": 0.129202,
+      "se": 0.018302
+    },
+    "realkie|OCR text only|errors_caught_30": {
+      "mean": 0.673808,
+      "se": 0.035829
+    },
+    "realkie|OCR text only|errors_caught_30_random": {
+      "mean": 0.299272,
+      "se": 0.000545
+    },
+    "realkie|OCR text only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OCR text only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OCR text only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OCR text only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|OCR text only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image only|weighted_accuracy": {
+      "mean": 0.770878,
+      "se": 0.03715
+    },
+    "realkie|Page image only|extraction_tokens": {
+      "mean": 5770.561728,
+      "se": 22.388889
+    },
+    "realkie|Page image only|scoring_tokens": {
+      "mean": 9537.753086,
+      "se": 177.740741
+    },
+    "realkie|Page image only|total_tokens": {
+      "mean": 15308.314815,
+      "se": 155.351852
+    },
+    "realkie|Page image only|median_seconds": {
+      "mean": 61.2752,
+      "se": 3.021935
+    },
+    "realkie|Page image only|list_recall": {
+      "mean": 0.195799,
+      "se": 0.015369
+    },
+    "realkie|Page image only|list_precision": {
+      "mean": 0.212311,
+      "se": 0.018683
+    },
+    "realkie|Page image only|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Page image only|auroc": {
+      "mean": 0.736444,
+      "se": 0.010916
+    },
+    "realkie|Page image only|calibration_error": {
+      "mean": 0.162727,
+      "se": 0.010608
+    },
+    "realkie|Page image only|errors_caught_30": {
+      "mean": 0.528863,
+      "se": 0.015502
+    },
+    "realkie|Page image only|errors_caught_30_random": {
+      "mean": 0.299215,
+      "se": 0.000481
+    },
+    "realkie|Page image only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Page image only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|weighted_accuracy": {
+      "mean": 0.996721,
+      "se": 0.00167
+    },
+    "fake_w2|Page image and OCR text|extraction_tokens": {
+      "mean": 7818.033333,
+      "se": 4.375722
+    },
+    "fake_w2|Page image and OCR text|scoring_tokens": {
+      "mean": 10726.683333,
+      "se": 107.599808
+    },
+    "fake_w2|Page image and OCR text|total_tokens": {
+      "mean": 18544.716667,
+      "se": 105.975494
+    },
+    "fake_w2|Page image and OCR text|median_seconds": {
+      "mean": 38.951873,
+      "se": 1.206123
+    },
+    "fake_w2|Page image and OCR text|all_fields_right": {
+      "mean": 0.816667,
+      "se": 0.033333
+    },
+    "fake_w2|Page image and OCR text|auroc": {
+      "mean": 0.998611,
+      "se": 0.000584
+    },
+    "fake_w2|Page image and OCR text|calibration_error": {
+      "mean": 0.051603,
+      "se": 0.001518
+    },
+    "fake_w2|Page image and OCR text|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|errors_caught_30_random": {
+      "mean": 0.29963,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image and OCR text|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OCR text only|weighted_accuracy": {
+      "mean": 0.909402,
+      "se": 0.009034
+    },
+    "fake_w2|OCR text only|extraction_tokens": {
+      "mean": 7991.083333,
+      "se": 39.188714
+    },
+    "fake_w2|OCR text only|scoring_tokens": {
+      "mean": 11072.583333,
+      "se": 83.17073
+    },
+    "fake_w2|OCR text only|total_tokens": {
+      "mean": 19063.666667,
+      "se": 44.881997
+    },
+    "fake_w2|OCR text only|median_seconds": {
+      "mean": 43.570788,
+      "se": 4.389755
+    },
+    "fake_w2|OCR text only|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "fake_w2|OCR text only|auroc": {
+      "mean": 0.940757,
+      "se": 0.037961
+    },
+    "fake_w2|OCR text only|calibration_error": {
+      "mean": 0.052628,
+      "se": 0.002028
+    },
+    "fake_w2|OCR text only|errors_caught_30": {
+      "mean": 0.890821,
+      "se": 0.078249
+    },
+    "fake_w2|OCR text only|errors_caught_30_random": {
+      "mean": 0.299128,
+      "se": 0.000172
+    },
+    "fake_w2|OCR text only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OCR text only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OCR text only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OCR text only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|OCR text only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image only|weighted_accuracy": {
+      "mean": 0.991255,
+      "se": 0.00218
+    },
+    "fake_w2|Page image only|extraction_tokens": {
+      "mean": 6291.783333,
+      "se": 15.936079
+    },
+    "fake_w2|Page image only|scoring_tokens": {
+      "mean": 10759.033333,
+      "se": 171.3049
+    },
+    "fake_w2|Page image only|total_tokens": {
+      "mean": 17050.816667,
+      "se": 172.856208
+    },
+    "fake_w2|Page image only|median_seconds": {
+      "mean": 35.286707,
+      "se": 0.194806
+    },
+    "fake_w2|Page image only|all_fields_right": {
+      "mean": 0.5,
+      "se": 0.028868
+    },
+    "fake_w2|Page image only|auroc": {
+      "mean": 0.961871,
+      "se": 0.018505
+    },
+    "fake_w2|Page image only|calibration_error": {
+      "mean": 0.049978,
+      "se": 0.001598
+    },
+    "fake_w2|Page image only|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image only|errors_caught_30_random": {
+      "mean": 0.299547,
+      "se": 0.000251
+    },
+    "fake_w2|Page image only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Page image only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image and OCR text|weighted_accuracy": {
+      "mean": 0.993868,
+      "se": 0.001651
+    },
+    "omniai|Page image and OCR text|classification_tokens": {
+      "mean": 5619.65,
+      "se": 55.209057
+    },
+    "omniai|Page image and OCR text|extraction_tokens": {
+      "mean": 8085.783333,
+      "se": 25.564238
+    },
+    "omniai|Page image and OCR text|scoring_tokens": {
+      "mean": 8326.766667,
+      "se": 374.05323
+    },
+    "omniai|Page image and OCR text|total_tokens": {
+      "mean": 22032.2,
+      "se": 438.68741
+    },
+    "omniai|Page image and OCR text|median_seconds": {
+      "mean": 26.960835,
+      "se": 0.317166
+    },
+    "omniai|Page image and OCR text|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image and OCR text|list_precision": {
+      "mean": 0.985507,
+      "se": 0.007246
+    },
+    "omniai|Page image and OCR text|all_fields_right": {
+      "mean": 0.383333,
+      "se": 0.033333
+    },
+    "omniai|Page image and OCR text|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image and OCR text|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image and OCR text|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image and OCR text|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image and OCR text|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|OCR text only|weighted_accuracy": {
+      "mean": 0.885466,
+      "se": 0.042127
+    },
+    "omniai|OCR text only|classification_tokens": {
+      "mean": 5594.509649,
+      "se": 55.494947
+    },
+    "omniai|OCR text only|extraction_tokens": {
+      "mean": 5202.771053,
+      "se": 44.816768
+    },
+    "omniai|OCR text only|scoring_tokens": {
+      "mean": 7987.662281,
+      "se": 207.555109
+    },
+    "omniai|OCR text only|total_tokens": {
+      "mean": 18784.942982,
+      "se": 217.425086
+    },
+    "omniai|OCR text only|median_seconds": {
+      "mean": 26.272738,
+      "se": 0.622894
+    },
+    "omniai|OCR text only|list_recall": {
+      "mean": 0.846258,
+      "se": 0.053864
+    },
+    "omniai|OCR text only|list_precision": {
+      "mean": 0.641785,
+      "se": 0.022762
+    },
+    "omniai|OCR text only|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "omniai|OCR text only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|OCR text only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|OCR text only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|OCR text only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|OCR text only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|weighted_accuracy": {
+      "mean": 0.982422,
+      "se": 0.002818
+    },
+    "omniai|Page image only|classification_tokens": {
+      "mean": 5571.2,
+      "se": 63.464242
+    },
+    "omniai|Page image only|extraction_tokens": {
+      "mean": 7546.333333,
+      "se": 94.855708
+    },
+    "omniai|Page image only|scoring_tokens": {
+      "mean": 8028.383333,
+      "se": 24.212967
+    },
+    "omniai|Page image only|total_tokens": {
+      "mean": 21145.916667,
+      "se": 140.261287
+    },
+    "omniai|Page image only|median_seconds": {
+      "mean": 26.967881,
+      "se": 0.2959
+    },
+    "omniai|Page image only|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|list_precision": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|all_fields_right": {
+      "mean": 0.3,
+      "se": 0.05
+    },
+    "omniai|Page image only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Page image only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Page image and OCR text": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|OCR text only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Page image only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Page image and OCR text": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|OCR text only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Page image only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "omniai|Page image and OCR text": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "omniai|OCR text only": {
+      "docs": [
+        20,
+        20,
+        19
+      ],
+      "failed": [
+        0,
+        0,
+        1
+      ],
+      "runs": 3
+    },
+    "omniai|Page image only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Page image and OCR text": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|OCR text only": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Page image only": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Page image and OCR text": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|OCR text only": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Page image only": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "omniai|Page image and OCR text": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Classification": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "omniai|OCR text only": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Classification": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "omniai|Page image only": {
+      "OCR": "bda",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Classification": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Page image and OCR text": [
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 12919.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 28201.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 26969.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5709.35
+      },
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 15668.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 28427.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 26932.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5730.0
+      },
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 27116.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 27589.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27417.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 7514.2
+      }
+    ],
+    "realkie|OCR text only": [
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 23985.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 28327.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8089.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 8291.0
+      },
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 26248.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 26115.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8010.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 7621.9
+      },
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 10923.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 25653.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7615.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5801.85
+      }
+    ],
+    "realkie|Page image only": [
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 11042.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 24356.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 21167.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4803.25
+      },
+      {
+        "bda/documents-standard|pages": 4.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8233.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 28341.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 21208.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4844.25
+      }
+    ],
+    "fake_w2|Page image and OCR text": [
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 3599.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4613.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5125.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5086.6
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5847.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 2619.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5198.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5090.1
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 3756.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4460.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5126.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5108.2
+      }
+    ],
+    "fake_w2|OCR text only": [
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5151.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3062.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4468.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6313.55
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7603.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 611.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4468.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6362.5
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 6579.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1634.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4468.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6466.45
+      }
+    ],
+    "fake_w2|Page image only": [
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7600.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 614.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 3186.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5518.85
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7388.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 825.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 3186.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5438.45
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8056.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 412.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 3260.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5664.35
+      }
+    ],
+    "omniai|Page image and OCR text": [
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5149.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4666.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8082.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5010.5
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 4808.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4604.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7959.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4249.2
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5173.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4239.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7960.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4193.55
+      }
+    ],
+    "omniai|OCR text only": [
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8501.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 911.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4881.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4150.6
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7737.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1674.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4974.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4333.35
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8500.1053,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 970.1053,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5048.0526,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4671.3158
+      }
+    ],
+    "omniai|Page image only": [
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8110.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1302.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7477.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4512.5
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 9008.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 403.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7464.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4041.25
+      },
+      {
+        "bda/documents-standard|pages": 1.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8904.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 508.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7478.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4225.85
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Page image and OCR text": {
+      "mode": "cache-isolated"
+    },
+    "realkie|OCR text only": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Page image only": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Page image and OCR text": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|OCR text only": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Page image only": {
+      "mode": "cache-isolated"
+    },
+    "omniai|Page image and OCR text": {
+      "mode": "cache-isolated"
+    },
+    "omniai|OCR text only": {
+      "mode": "cache-isolated"
+    },
+    "omniai|Page image only": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Page image and OCR text": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.796049,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978303,
+        "cost": 0.026484
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.754068,
+        "cost": 0.012994
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.609929,
+        "cost": 0.012481
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.651373,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.908856,
+        "cost": 0.039002
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.394632,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.488791,
+        "cost": 0.060073
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.647059,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.799332,
+        "cost": 0.145574
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.952589,
+        "cost": 0.013125
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.196728,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893269,
+        "cost": 0.129439
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.505122,
+        "cost": 0.093344
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.945745,
+        "cost": 0.013607
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.52684,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.715621,
+        "cost": 0.061509
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.107473
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531915,
+        "cost": 0.013831
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.577922,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.869992,
+        "cost": 0.064135
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.012079
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.949464,
+        "cost": 0.040496
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.75,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.952128,
+        "cost": 0.025055
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.059776
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.012813
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.885987,
+        "cost": 0.077125
+      }
+    },
+    "realkie|OCR text only": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.785979,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977232,
+        "cost": 0.02596
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.6,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.627451,
+        "cost": 0.012062
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.011713
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.523161,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.895216,
+        "cost": 0.040842
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.398494,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.489201,
+        "cost": 0.064645
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.647059,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.870254,
+        "cost": 0.138082
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.4,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931313,
+        "cost": 0.011889
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.412013,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916172,
+        "cost": 0.130667
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.089004
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.69,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.967021,
+        "cost": 0.013122
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.059496
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.261111,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680048,
+        "cost": 0.10167
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.531915,
+        "cost": 0.012531
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.227273,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.896518,
+        "cost": 0.058075
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.011509
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.681999,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881064,
+        "cost": 0.037458
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.725828,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970833,
+        "cost": 0.024282
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.007729,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.887347,
+        "cost": 0.057507
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.760358,
+        "cost": 0.012033
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.599653,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.892599,
+        "cost": 0.072369
+      }
+    },
+    "realkie|Page image only": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.786667,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.956028,
+        "cost": 0.025333
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.900709,
+        "cost": 0.012245
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.012169
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.585912,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.866431,
+        "cost": 0.039263
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.342857,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.483283,
+        "cost": 0.060612
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.160196,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.889383,
+        "cost": 0.14022
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.907413,
+        "cost": 0.012602
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.001667,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.468262,
+        "cost": 0.116045
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.516942,
+        "cost": 0.092285
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957447,
+        "cost": 0.012405
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.638298,
+        "cost": 0.059008
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.469711,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.70224,
+        "cost": 0.105863
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.012925
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.451515,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.870729,
+        "cost": 0.064418
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.012166
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.596075,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.935753,
+        "cost": 0.037671
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 1.0,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.836879,
+        "cost": 0.02326
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.011594,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89485,
+        "cost": 0.059473
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.511111,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.78487,
+        "cost": 0.01232
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.538095,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893143,
+        "cost": 0.073693
+      }
+    },
+    "fake_w2|Page image and OCR text": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.014235
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.01434
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.014037
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013826
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.01367
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.013953
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013955
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013851
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.014178
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.014052
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997159,
+        "cost": 0.013807
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.01352
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013964
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013836
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013865
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.014097
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.014101
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013967
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.0139
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.01391
+      }
+    },
+    "fake_w2|OCR text only": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.014087
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893939,
+        "cost": 0.014496
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.90798,
+        "cost": 0.014345
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.013846
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.014312
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.912893,
+        "cost": 0.014063
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.014781
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.968483,
+        "cost": 0.014136
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.013985
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.014424
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891098,
+        "cost": 0.014342
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.856061,
+        "cost": 0.014779
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893939,
+        "cost": 0.01432
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.014169
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.014109
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.014266
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.833333,
+        "cost": 0.014438
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.014293
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.840909,
+        "cost": 0.01475
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.014361
+      }
+    },
+    "fake_w2|Page image only": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.991533,
+        "cost": 0.014031
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984217,
+        "cost": 0.013888
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013402
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999341,
+        "cost": 0.013382
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.013735
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990294,
+        "cost": 0.014481
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.983766,
+        "cost": 0.013576
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.013183
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999439,
+        "cost": 0.013263
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013387
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013782
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013671
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.013408
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.01319
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998543,
+        "cost": 0.012953
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013429
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.013737
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999495,
+        "cost": 0.013348
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.0135
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.976957,
+        "cost": 0.014053
+      }
+    },
+    "omniai|Page image and OCR text": {
+      "BANK_CHECK_102.png": {
+        "list_score": 0.988776,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988776,
+        "cost": 0.018477
+      },
+      "BANK_CHECK_115.png": {
+        "list_score": 0.998952,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998952,
+        "cost": 0.012751
+      },
+      "BANK_CHECK_143.png": {
+        "list_score": 0.982066,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982066,
+        "cost": 0.012569
+      },
+      "BANK_CHECK_152.png": {
+        "list_score": 0.992203,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992203,
+        "cost": 0.0124
+      },
+      "BANK_CHECK_159.png": {
+        "list_score": 0.971358,
+        "list_rows": 8,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971358,
+        "cost": 0.021157
+      },
+      "BANK_CHECK_165.png": {
+        "list_score": 0.991534,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.991534,
+        "cost": 0.012453
+      },
+      "BANK_CHECK_17.png": {
+        "list_score": 0.99085,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.99085,
+        "cost": 0.013483
+      },
+      "BANK_CHECK_201.png": {
+        "list_score": 0.997553,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997553,
+        "cost": 0.015136
+      },
+      "BANK_CHECK_252.png": {
+        "list_score": 0.996201,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996201,
+        "cost": 0.012221
+      },
+      "BANK_CHECK_275.png": {
+        "list_score": 0.996914,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996914,
+        "cost": 0.012534
+      },
+      "BANK_CHECK_280.png": {
+        "list_score": 0.991667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.991667,
+        "cost": 0.012571
+      },
+      "BANK_CHECK_289.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.012752
+      },
+      "BANK_CHECK_292.png": {
+        "list_score": 0.994312,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.994312,
+        "cost": 0.01353
+      },
+      "BANK_CHECK_322.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.012391
+      },
+      "BANK_CHECK_355.png": {
+        "list_score": 1.0,
+        "list_rows": 7,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.018106
+      },
+      "BANK_CHECK_369.png": {
+        "list_score": 0.996059,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996059,
+        "cost": 0.013544
+      },
+      "BANK_CHECK_377.png": {
+        "list_score": 0.996633,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996633,
+        "cost": 0.012442
+      },
+      "BANK_CHECK_404.png": {
+        "list_score": 0.998405,
+        "list_rows": 5,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998405,
+        "cost": 0.016956
+      },
+      "BANK_CHECK_408.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.012628
+      }
+    },
+    "omniai|OCR text only": {
+      "BANK_CHECK_102.png": {
+        "list_score": 0.349715,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.349715,
+        "cost": 0.015796
+      },
+      "BANK_CHECK_115.png": {
+        "list_score": 0.997904,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997904,
+        "cost": 0.011813
+      },
+      "BANK_CHECK_143.png": {
+        "list_score": 0.953606,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953606,
+        "cost": 0.011863
+      },
+      "BANK_CHECK_152.png": {
+        "list_score": 0.992203,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992203,
+        "cost": 0.011898
+      },
+      "BANK_CHECK_159.png": {
+        "list_score": 0.822561,
+        "list_rows": 8,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.822561,
+        "cost": 0.019377
+      },
+      "BANK_CHECK_165.png": {
+        "list_score": 0.973016,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.973016,
+        "cost": 0.01195
+      },
+      "BANK_CHECK_17.png": {
+        "list_score": 0.998866,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998866,
+        "cost": 0.012215
+      },
+      "BANK_CHECK_201.png": {
+        "list_score": 0.693934,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.693934,
+        "cost": 0.015197
+      },
+      "BANK_CHECK_252.png": {
+        "list_score": 0.988604,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988604,
+        "cost": 0.011815
+      },
+      "BANK_CHECK_275.png": {
+        "list_score": 0.990741,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990741,
+        "cost": 0.011994
+      },
+      "BANK_CHECK_280.png": {
+        "list_score": 0.954852,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954852,
+        "cost": 0.012361
+      },
+      "BANK_CHECK_289.png": {
+        "list_score": 0.993762,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.993762,
+        "cost": 0.011969
+      },
+      "BANK_CHECK_292.png": {
+        "list_score": 0.992688,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992688,
+        "cost": 0.012922
+      },
+      "BANK_CHECK_322.png": {
+        "list_score": 0.990476,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990476,
+        "cost": 0.011675
+      },
+      "BANK_CHECK_355.png": {
+        "list_score": 0.510128,
+        "list_rows": 7,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510128,
+        "cost": 0.015944
+      },
+      "BANK_CHECK_369.png": {
+        "list_score": 0.876481,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.876481,
+        "cost": 0.013436
+      },
+      "BANK_CHECK_377.png": {
+        "list_score": 0.967165,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.967165,
+        "cost": 0.011752
+      },
+      "BANK_CHECK_404.png": {
+        "list_score": 0.784562,
+        "list_rows": 5,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.784562,
+        "cost": 0.016139
+      },
+      "BANK_CHECK_408.png": {
+        "list_score": 0.992593,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992593,
+        "cost": 0.011831
+      }
+    },
+    "omniai|Page image only": {
+      "BANK_CHECK_102.png": {
+        "list_score": 0.972997,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.972997,
+        "cost": 0.017784
+      },
+      "BANK_CHECK_115.png": {
+        "list_score": 0.981481,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.981481,
+        "cost": 0.012194
+      },
+      "BANK_CHECK_143.png": {
+        "list_score": 0.960664,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.960664,
+        "cost": 0.012107
+      },
+      "BANK_CHECK_152.png": {
+        "list_score": 0.987654,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.987654,
+        "cost": 0.011897
+      },
+      "BANK_CHECK_159.png": {
+        "list_score": 0.988575,
+        "list_rows": 8,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988575,
+        "cost": 0.018239
+      },
+      "BANK_CHECK_165.png": {
+        "list_score": 0.957319,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957319,
+        "cost": 0.012066
+      },
+      "BANK_CHECK_17.png": {
+        "list_score": 0.997401,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997401,
+        "cost": 0.012713
+      },
+      "BANK_CHECK_201.png": {
+        "list_score": 0.995062,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.995062,
+        "cost": 0.014808
+      },
+      "BANK_CHECK_252.png": {
+        "list_score": 0.975309,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975309,
+        "cost": 0.011943
+      },
+      "BANK_CHECK_275.png": {
+        "list_score": 0.981481,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.981481,
+        "cost": 0.012108
+      },
+      "BANK_CHECK_280.png": {
+        "list_score": 0.976852,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.976852,
+        "cost": 0.012285
+      },
+      "BANK_CHECK_289.png": {
+        "list_score": 0.992593,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992593,
+        "cost": 0.01205
+      },
+      "BANK_CHECK_292.png": {
+        "list_score": 1.0,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.013244
+      },
+      "BANK_CHECK_322.png": {
+        "list_score": 0.977778,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977778,
+        "cost": 0.011931
+      },
+      "BANK_CHECK_355.png": {
+        "list_score": 0.972134,
+        "list_rows": 7,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.972134,
+        "cost": 0.01737
+      },
+      "BANK_CHECK_369.png": {
+        "list_score": 1.0,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.01305
+      },
+      "BANK_CHECK_377.png": {
+        "list_score": 0.975309,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975309,
+        "cost": 0.011948
+      },
+      "BANK_CHECK_404.png": {
+        "list_score": 0.991923,
+        "list_rows": 5,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.991923,
+        "cost": 0.015765
+      },
+      "BANK_CHECK_408.png": {
+        "list_score": 0.981481,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.981481,
+        "cost": 0.012049
+      }
+    }
+  },
+  "unfinished": {
+    "omniai|OCR text only": {
+      "BANK_CHECK_285.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,401 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-203126, RealKIE-FCC-Verified-20261113-203127, RealKIE-FCC-Verified-20261113-203128, RealKIE-FCC-Verified-20261113-203431, RealKIE-FCC-Verified-20261113-203443, RealKIE-FCC-Verified-20261113-203446, RealKIE-FCC-Verified-20261113-203719, RealKIE-FCC-Verified-20261113-203751, RealKIE-FCC-Verified-20261113-203812",
+  "verdict": "Keep 300 DPI unless tokens matter more than a small accuracy risk. On RealKIE invoices 200 DPI scored the same as 300 (0.82 against 0.81) with 7% fewer tokens per page; 150 DPI scored 0.79, a drop within the noise, with 12% fewer. Below about 200 DPI Textract starts to drop small and faint characters, so test a lower resolution on your own scans first.",
+  "cells": {
+    "realkie|300 (default)|weighted_accuracy": {
+      "mean": 0.806737,
+      "se": 0.030991
+    },
+    "realkie|300 (default)|extraction_tokens": {
+      "mean": 7043.584362,
+      "se": 2.798653
+    },
+    "realkie|300 (default)|scoring_tokens": {
+      "mean": 13831.17284,
+      "se": 369.87939
+    },
+    "realkie|300 (default)|total_tokens": {
+      "mean": 20874.757202,
+      "se": 372.552752
+    },
+    "realkie|300 (default)|median_seconds": {
+      "mean": 44.171606,
+      "se": 0.863066
+    },
+    "realkie|300 (default)|list_recall": {
+      "mean": 0.600945,
+      "se": 0.061343
+    },
+    "realkie|300 (default)|list_precision": {
+      "mean": 0.400318,
+      "se": 0.085584
+    },
+    "realkie|300 (default)|all_fields_right": {
+      "mean": 0.066667,
+      "se": 0.016667
+    },
+    "realkie|300 (default)|auroc": {
+      "mean": 0.402406,
+      "se": 0.0089
+    },
+    "realkie|300 (default)|calibration_error": {
+      "mean": 0.129521,
+      "se": 0.024083
+    },
+    "realkie|300 (default)|errors_caught_30": {
+      "mean": 0.185175,
+      "se": 0.003488
+    },
+    "realkie|300 (default)|errors_caught_30_random": {
+      "mean": 0.298979,
+      "se": 0.000281
+    },
+    "realkie|300 (default)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|300 (default)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|300 (default)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|200|weighted_accuracy": {
+      "mean": 0.816312,
+      "se": 0.033213
+    },
+    "realkie|200|extraction_tokens": {
+      "mean": 7011.506173,
+      "se": 0.810407
+    },
+    "realkie|200|scoring_tokens": {
+      "mean": 12438.761317,
+      "se": 32.867926
+    },
+    "realkie|200|total_tokens": {
+      "mean": 19450.26749,
+      "se": 33.512436
+    },
+    "realkie|200|median_seconds": {
+      "mean": 28.963096,
+      "se": 0.77318
+    },
+    "realkie|200|list_recall": {
+      "mean": 0.459753,
+      "se": 0.056198
+    },
+    "realkie|200|list_precision": {
+      "mean": 0.239369,
+      "se": 0.061747
+    },
+    "realkie|200|all_fields_right": {
+      "mean": 0.05,
+      "se": 0.0
+    },
+    "realkie|200|auroc": {
+      "mean": 0.530651,
+      "se": 0.024259
+    },
+    "realkie|200|calibration_error": {
+      "mean": 0.17435,
+      "se": 0.004908
+    },
+    "realkie|200|errors_caught_30": {
+      "mean": 0.402661,
+      "se": 0.021743
+    },
+    "realkie|200|errors_caught_30_random": {
+      "mean": 0.299571,
+      "se": 9.4e-05
+    },
+    "realkie|200|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|200|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|200|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|150|weighted_accuracy": {
+      "mean": 0.78771,
+      "se": 0.036228
+    },
+    "realkie|150|extraction_tokens": {
+      "mean": 4998.559671,
+      "se": 3.936558
+    },
+    "realkie|150|scoring_tokens": {
+      "mean": 13268.399177,
+      "se": 323.951496
+    },
+    "realkie|150|total_tokens": {
+      "mean": 18266.958848,
+      "se": 322.875217
+    },
+    "realkie|150|median_seconds": {
+      "mean": 30.890483,
+      "se": 0.622441
+    },
+    "realkie|150|list_recall": {
+      "mean": 0.529823,
+      "se": 0.003262
+    },
+    "realkie|150|list_precision": {
+      "mean": 0.27574,
+      "se": 0.003367
+    },
+    "realkie|150|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "realkie|150|auroc": {
+      "mean": 0.513464,
+      "se": 0.010678
+    },
+    "realkie|150|calibration_error": {
+      "mean": 0.148516,
+      "se": 0.005677
+    },
+    "realkie|150|errors_caught_30": {
+      "mean": 0.40131,
+      "se": 0.049701
+    },
+    "realkie|150|errors_caught_30_random": {
+      "mean": 0.299373,
+      "se": 0.000398
+    },
+    "realkie|150|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|150|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|150|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|300 (default)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|200": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|150": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|300 (default)": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "realkie|200": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    },
+    "realkie|150": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
+      "Extraction": "Claude Sonnet 5, single-pass",
+      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "billed": {
+        "Assessment": [
+          "us.amazon.nova-lite-v1:0",
+          "us.anthropic.claude-sonnet-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|300 (default)": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37269.1,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 10021.25,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3748.25,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1781.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2638.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25310.4,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1631.5,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37063.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 8474.6,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3700.0,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1761.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4318.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25310.4,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1563.4,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42536.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6491.5,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3866.45,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1745.15,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4318.1,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 1347.1,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25343.3,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1708.95,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|200": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 24805.8,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20241.3,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3603.85,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1590.6,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25234.45,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1476.05,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 39682.85,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 4402.5,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3560.2,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1597.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 1340.25,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25267.8,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1514.35,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 41588.25,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 3450.7,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3604.75,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1602.5,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25234.45,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1483.1,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|150": [
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 25667.5,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20810.1,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3839.05,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1677.15,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 316.8,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 17040.3,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1659.55,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40893.45,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 7793.45,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3854.3,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1905.9,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 1824.15,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 17022.0,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1623.15,
+        "textract/analyze_document-Tables|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40487.0,
+        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6012.05,
+        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3797.15,
+        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1700.2,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1996.8,
+        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 17040.3,
+        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1623.2,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|300 (default)": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-203126",
+      "index": 0
+    },
+    "realkie|200": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-203431",
+      "index": 0
+    },
+    "realkie|150": {
+      "mode": "cold-run",
+      "run": "RealKIE-FCC-Verified-20261113-203719",
+      "index": 0
+    }
+  }
+}

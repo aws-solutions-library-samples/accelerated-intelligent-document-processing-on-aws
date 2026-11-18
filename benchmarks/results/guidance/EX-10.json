@@ -1,0 +1,2416 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-210412, RealKIE-FCC-Verified-20261116-210348, RealKIE-FCC-Verified-20261116-210401, RealKIE-FCC-Verified-20261116-210325, RealKIE-FCC-Verified-20261116-210312, RealKIE-FCC-Verified-20261116-210336, RealKIE-FCC-Verified-20261116-211231, RealKIE-FCC-Verified-20261116-211428, RealKIE-FCC-Verified-20261116-211453, RealKIE-FCC-Verified-20261116-211742, RealKIE-FCC-Verified-20261116-212058, RealKIE-FCC-Verified-20261116-212135, RealKIE-FCC-Verified-20261116-211556, RealKIE-FCC-Verified-20261116-211631, RealKIE-FCC-Verified-20261116-211617, RealKIE-FCC-Verified-20261116-212145, RealKIE-FCC-Verified-20261116-212209, RealKIE-FCC-Verified-20261116-212223, RealKIE-FCC-Verified-20261116-212359, RealKIE-FCC-Verified-20261116-212503, RealKIE-FCC-Verified-20261116-212608, RealKIE-FCC-Verified-20261116-212629, RealKIE-FCC-Verified-20261116-212647, RealKIE-FCC-Verified-20261116-212713",
+  "verdict": "Keep both on; they're a free safety net. Validation checks each value against the schema and records what fails; coercion converts values to the schema's types (for example \"$6.00\" to 6.0). On RealKIE invoices coercion changed no value for any model, and validation flagged only Amazon Nova 2 Lite (5 of 60 sections, each missing a required field), which it records but doesn't fix. Accuracy and cost were the same on and off for Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Amazon Nova 2 Lite.",
+  "cells": {
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.824813,
+      "se": 0.034285
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6806.119342,
+      "se": 24.79422
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 12125.440329,
+      "se": 443.388667
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|total_tokens": {
+      "mean": 18931.559671,
+      "se": 468.176732
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|median_seconds": {
+      "mean": 50.9614,
+      "se": 3.339735
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|list_recall": {
+      "mean": 0.459817,
+      "se": 0.0703
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|list_precision": {
+      "mean": 0.295116,
+      "se": 0.008916
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|auroc": {
+      "mean": 0.852951,
+      "se": 0.014942
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.116781,
+      "se": 0.009648
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.78823,
+      "se": 0.007331
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.298894,
+      "se": 0.000147
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Sonnet 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.807938,
+      "se": 0.037382
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|extraction_tokens": {
+      "mean": 6772.168724,
+      "se": 0.50226
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|scoring_tokens": {
+      "mean": 10097.91358,
+      "se": 312.193458
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|total_tokens": {
+      "mean": 16870.082305,
+      "se": 312.297432
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|median_seconds": {
+      "mean": 50.889701,
+      "se": 4.878112
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|list_recall": {
+      "mean": 0.312272,
+      "se": 0.034086
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|list_precision": {
+      "mean": 0.347774,
+      "se": 0.067956
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|auroc": {
+      "mean": 0.820624,
+      "se": 0.021958
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|calibration_error": {
+      "mean": 0.172821,
+      "se": 0.006621
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|errors_caught_30": {
+      "mean": 0.641718,
+      "se": 0.024982
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|errors_caught_30_random": {
+      "mean": 0.299076,
+      "se": 0.000144
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|weighted_accuracy": {
+      "mean": 0.825416,
+      "se": 0.035797
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|extraction_tokens": {
+      "mean": 6908.687243,
+      "se": 4.935824
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|scoring_tokens": {
+      "mean": 15006.938272,
+      "se": 110.953981
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|total_tokens": {
+      "mean": 21915.625514,
+      "se": 107.696504
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|median_seconds": {
+      "mean": 45.913831,
+      "se": 2.459707
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|list_recall": {
+      "mean": 0.953471,
+      "se": 0.008576
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|list_precision": {
+      "mean": 0.264417,
+      "se": 0.026322
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|all_fields_right": {
+      "mean": 0.1,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|auroc": {
+      "mean": 0.823238,
+      "se": 0.017069
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|calibration_error": {
+      "mean": 0.102758,
+      "se": 0.007704
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|errors_caught_30": {
+      "mean": 0.802557,
+      "se": 0.015647
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|errors_caught_30_random": {
+      "mean": 0.299307,
+      "se": 0.000162
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|weighted_accuracy": {
+      "mean": 0.812679,
+      "se": 0.036395
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|extraction_tokens": {
+      "mean": 6780.123457,
+      "se": 5.263358
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|scoring_tokens": {
+      "mean": 11421.958848,
+      "se": 578.18168
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|total_tokens": {
+      "mean": 18202.082305,
+      "se": 581.030233
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|median_seconds": {
+      "mean": 38.092101,
+      "se": 3.852366
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|list_recall": {
+      "mean": 0.298098,
+      "se": 0.000922
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|list_precision": {
+      "mean": 0.297283,
+      "se": 0.006551
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|auroc": {
+      "mean": 0.854937,
+      "se": 0.015434
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|calibration_error": {
+      "mean": 0.175067,
+      "se": 0.004934
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|errors_caught_30": {
+      "mean": 0.728815,
+      "se": 0.040927
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|errors_caught_30_random": {
+      "mean": 0.298607,
+      "se": 0.00016
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|weighted_accuracy": {
+      "mean": 0.760374,
+      "se": 0.037797
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|extraction_tokens": {
+      "mean": 1661.0,
+      "se": 28.969368
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|scoring_tokens": {
+      "mean": 16720.374486,
+      "se": 2542.542794
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|total_tokens": {
+      "mean": 18381.374486,
+      "se": 2515.088594
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|median_seconds": {
+      "mean": 44.924221,
+      "se": 1.1474
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|list_recall": {
+      "mean": 0.586114,
+      "se": 0.186648
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|list_precision": {
+      "mean": 0.194175,
+      "se": 0.04322
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|auroc": {
+      "mean": 0.733751,
+      "se": 0.050147
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|calibration_error": {
+      "mean": 0.09782,
+      "se": 0.024572
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|errors_caught_30": {
+      "mean": 0.529685,
+      "se": 0.108231
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|errors_caught_30_random": {
+      "mean": 0.299007,
+      "se": 0.00036
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|weighted_accuracy": {
+      "mean": 0.825019,
+      "se": 0.034155
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|extraction_tokens": {
+      "mean": 6831.786008,
+      "se": 0.264529
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|scoring_tokens": {
+      "mean": 14125.403292,
+      "se": 301.104684
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|total_tokens": {
+      "mean": 20957.1893,
+      "se": 300.869609
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|median_seconds": {
+      "mean": 35.741863,
+      "se": 0.646063
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|list_recall": {
+      "mean": 0.495543,
+      "se": 0.014931
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|list_precision": {
+      "mean": 0.25074,
+      "se": 0.015089
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|auroc": {
+      "mean": 0.869209,
+      "se": 0.012024
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|calibration_error": {
+      "mean": 0.131611,
+      "se": 0.001602
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|errors_caught_30": {
+      "mean": 0.8182,
+      "se": 0.035218
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|errors_caught_30_random": {
+      "mean": 0.298764,
+      "se": 0.000452
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|weighted_accuracy": {
+      "mean": 0.823502,
+      "se": 0.035451
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|extraction_tokens": {
+      "mean": 6894.736626,
+      "se": 10.132349
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|scoring_tokens": {
+      "mean": 14494.209877,
+      "se": 340.818673
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|total_tokens": {
+      "mean": 21388.946502,
+      "se": 350.924471
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|median_seconds": {
+      "mean": 39.859842,
+      "se": 0.096171
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|list_recall": {
+      "mean": 0.958176,
+      "se": 0.006944
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|list_precision": {
+      "mean": 0.290649,
+      "se": 0.064065
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|all_fields_right": {
+      "mean": 0.066667,
+      "se": 0.016667
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|auroc": {
+      "mean": 0.793203,
+      "se": 0.053859
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|calibration_error": {
+      "mean": 0.126742,
+      "se": 0.009139
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|errors_caught_30": {
+      "mean": 0.704037,
+      "se": 0.111761
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|errors_caught_30_random": {
+      "mean": 0.298852,
+      "se": 0.000269
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|weighted_accuracy": {
+      "mean": 0.753575,
+      "se": 0.040315
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|extraction_tokens": {
+      "mean": 1595.185185,
+      "se": 20.910247
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|scoring_tokens": {
+      "mean": 12507.851852,
+      "se": 752.222112
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|total_tokens": {
+      "mean": 14103.037037,
+      "se": 731.80222
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|median_seconds": {
+      "mean": 36.307059,
+      "se": 0.220135
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|list_recall": {
+      "mean": 0.475728,
+      "se": 0.165655
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|list_precision": {
+      "mean": 0.238245,
+      "se": 0.064939
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|auroc": {
+      "mean": 0.732389,
+      "se": 0.059885
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|calibration_error": {
+      "mean": 0.124307,
+      "se": 0.019616
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|errors_caught_30": {
+      "mean": 0.591956,
+      "se": 0.102639
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|errors_caught_30_random": {
+      "mean": 0.298105,
+      "se": 0.000517
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
+        ]
+      }
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Opus 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-opus-5-5"
+        ]
+      }
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Sonnet 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-sonnet-5-5"
+        ]
+      }
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Opus 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-opus-5-5"
+        ]
+      }
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Amazon Nova 2 Lite, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.amazon.nova-2-lite-v1:0"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Validation and coercion on · Claude Sonnet 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 21778.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 21527.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2177.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5558.95,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2605.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 137.15,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1310.0,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 21538.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 17788.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 1788.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4405.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2605.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 137.15,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1004.95,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 30761.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 12544.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2167.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5287.8,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2605.85,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 137.15,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1302.25,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion on · Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 29648.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 10101.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25424.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5076.35,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 23857.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 14133.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25509.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5277.85,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 16203.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 19257.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25391.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5089.2,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion on · Claude Opus 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 47061.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3397.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2708.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6721.8,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 2331.55,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 411.45,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1652.1,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 36702.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 14442.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2674.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 7518.3,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 1782.95,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 960.05,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1627.55,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 38360.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 13631.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2660.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6454.2,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 2194.4,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 548.6,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1583.75,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion off · Claude Haiku 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 41005.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25530.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5662.6,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 44737.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 2407.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25625.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5565.05,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 34933.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4240.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25630.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5816.05,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1332.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 136.05,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 3612.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1589.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 66247.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 3344.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 9176.55,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1332.8,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 135.8,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 3612.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1477.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 64561.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 338.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 3037.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 9304.1,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1329.35,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 139.25,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 3612.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1871.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 39861.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2036.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5243.6,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion off · Claude Sonnet 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 48019.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2254.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5780.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2331.55,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 411.45,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1311.45,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 48019.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2247.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5657.9,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2468.7,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 274.3,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1309.85,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 51125.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2367.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6153.1,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheReadInputTokens": 2331.55,
+        "bedrock/us.anthropic.claude-sonnet-5-5|cacheWriteInputTokens": 411.45,
+        "bedrock/us.anthropic.claude-sonnet-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-sonnet-5-5|outputTokens": 1307.75,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion off · Claude Opus 5.5": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 47280.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2462.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6216.0,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 2194.4,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 548.6,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1484.0,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 51569.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2631.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6143.8,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 2194.4,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 548.6,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1618.2,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 50450.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2639.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6711.3,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheReadInputTokens": 2331.55,
+        "bedrock/us.anthropic.claude-opus-5-5|cacheWriteInputTokens": 411.45,
+        "bedrock/us.anthropic.claude-opus-5-5|inputTokens": 23616.05,
+        "bedrock/us.anthropic.claude-opus-5-5|outputTokens": 1591.7,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite": [
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1332.75,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 135.85,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 3612.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1211.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 47252.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2490.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6695.5,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1331.7,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 136.9,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 3612.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1479.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 39010.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2060.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5029.45,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1330.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 138.45,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 3612.15,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1448.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 38650.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3529.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 2087.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5164.25,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.050753
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.691489,
+        "cost": 0.022305
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.018648
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584596,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919482,
+        "cost": 0.118263
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.194805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.099015
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94368,
+        "cost": 0.231795
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.4,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931313,
+        "cost": 0.025812
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.275285,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901626,
+        "cost": 0.239724
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.13715
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.025644
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.09996
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.694466,
+        "cost": 0.162909
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.70922,
+        "cost": 0.02546
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96873,
+        "cost": 0.113939
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.021279
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.787706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977416,
+        "cost": 0.074901
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.85,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984043,
+        "cost": 0.041689
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.011594,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89485,
+        "cost": 0.096892
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.760358,
+        "cost": 0.023021
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.790377,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.898705,
+        "cost": 0.125878
+      }
+    },
+    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.798025,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978513,
+        "cost": 0.013235
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.833333,
+        "cost": 0.006336
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.00595
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.651409,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.92659,
+        "cost": 0.027681
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.194805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.031026
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.647059,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.941176,
+        "cost": 0.061286
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006718
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.058157
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.522853,
+        "cost": 0.040593
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959929,
+        "cost": 0.007596
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.631206,
+        "cost": 0.028155
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.047181
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.007459
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93396,
+        "cost": 0.034576
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.005859
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.021791
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.8272,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.981617,
+        "cost": 0.010821
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.026544
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.488889,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.732861,
+        "cost": 0.006599
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.717857,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89099,
+        "cost": 0.034016
+      }
+    },
+    "realkie|Validation and coercion on · Claude Opus 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 1.0,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.084864
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.233333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.659366,
+        "cost": 0.039468
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.033862
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.955824,
+        "cost": 0.190004
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.394632,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.488791,
+        "cost": 0.167503
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.357721
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971631,
+        "cost": 0.045898
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.515446,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.927175,
+        "cost": 0.433289
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.216412
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.051587
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.695035,
+        "cost": 0.162899
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.494252,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.704851,
+        "cost": 0.257592
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.049692
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96873,
+        "cost": 0.187079
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.038323
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990766,
+        "cost": 0.122059
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 1.0,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.074512
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.6,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957447,
+        "cost": 0.303089
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.644444,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.749409,
+        "cost": 0.039984
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.790377,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.898705,
+        "cost": 0.1979
+      }
+    },
+    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.794074,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978093,
+        "cost": 0.012393
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.833333,
+        "cost": 0.006016
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005723
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.027296
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.254632,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.473897,
+        "cost": 0.028003
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94368,
+        "cost": 0.0648
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006333
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.050406
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.522853,
+        "cost": 0.038466
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.682222,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.966194,
+        "cost": 0.006712
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.631206,
+        "cost": 0.027589
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.045496
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.609929,
+        "cost": 0.006506
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93396,
+        "cost": 0.029421
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.005781
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.019472
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.010863
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.024978
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.006268
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.717857,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.90872,
+        "cost": 0.035225
+      }
+    },
+    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.013117
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.684189,
+        "cost": 0.005839
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.468085,
+        "cost": 0.005745
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.656087,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.927088,
+        "cost": 0.032612
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.244805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.472852,
+        "cost": 0.030776
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.06,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.595035,
+        "cost": 0.053844
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.577778,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.955083,
+        "cost": 0.006232
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.379794,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.711123,
+        "cost": 0.086802
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.6,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.944838,
+        "cost": 0.035678
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.823333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.76844,
+        "cost": 0.007139
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.2,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.026213
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.687943,
+        "cost": 0.042558
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510638,
+        "cost": 0.006814
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.578788,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933914,
+        "cost": 0.031174
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005336
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.736726,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.759226,
+        "cost": 0.019073
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.742857,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.972644,
+        "cost": 0.010958
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.577458,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933772,
+        "cost": 0.04734
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.351111,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716337,
+        "cost": 0.006792
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.105557,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.825852,
+        "cost": 0.061931
+      }
+    },
+    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.048592
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.695035,
+        "cost": 0.021745
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.020596
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.118431
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.194805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467532,
+        "cost": 0.097134
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94368,
+        "cost": 0.22061
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.4,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.926455,
+        "cost": 0.022771
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.382114,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.912991,
+        "cost": 0.273756
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.132773
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.028045
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.096929
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.396633,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.694466,
+        "cost": 0.157635
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.027549
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975822,
+        "cost": 0.111807
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.02325
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970741,
+        "cost": 0.075495
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.85,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984043,
+        "cost": 0.039972
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.011594,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89485,
+        "cost": 0.091239
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.760358,
+        "cost": 0.026917
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.663938,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.885254,
+        "cost": 0.121665
+      }
+    },
+    "realkie|Validation and coercion off · Claude Opus 5.5": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 1.0,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.084252
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.233333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.659366,
+        "cost": 0.039015
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.037861
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.925985,
+        "cost": 0.188295
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.342857,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.483283,
+        "cost": 0.158414
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.357523
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971631,
+        "cost": 0.036813
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.580576,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.934104,
+        "cost": 0.424333
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.214334
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.05519
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.695035,
+        "cost": 0.1585
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.494252,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.704851,
+        "cost": 0.255107
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723404,
+        "cost": 0.040793
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.772727,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.961638,
+        "cost": 0.183519
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.787234,
+        "cost": 0.037833
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.913197,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990766,
+        "cost": 0.12032
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.895833,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988918,
+        "cost": 0.069779
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964539,
+        "cost": 0.28425
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.764091,
+        "cost": 0.040467
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.663938,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.885254,
+        "cost": 0.198337
+      }
+    },
+    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.012906
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.2,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.677096,
+        "cost": 0.005806
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.468085,
+        "cost": 0.005726
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.720415,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933931,
+        "cost": 0.03163
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.244805,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.472852,
+        "cost": 0.029517
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.06,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.453191,
+        "cost": 0.053726
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.577778,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.955083,
+        "cost": 0.006239
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.251251,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.704203,
+        "cost": 0.073184
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.6,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.944838,
+        "cost": 0.035582
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.823333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.76844,
+        "cost": 0.007269
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.2,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.026006
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.266667,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.687943,
+        "cost": 0.042326
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510638,
+        "cost": 0.006765
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.645455,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.941006,
+        "cost": 0.030955
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005409
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.736726,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.759226,
+        "cost": 0.019117
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.742857,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.972644,
+        "cost": 0.010978
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.593578,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.935487,
+        "cost": 0.045872
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.32,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.713027,
+        "cost": 0.006176
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.176349,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.833383,
+        "cost": 0.040659
+      }
+    }
+  },
+  "validation_counts": {
+    "note": "Sections across all three runs. 'on' values: read from section metadata (metadata.validation, metadata.coercion). 'off' values: the same validate_extraction and coerce_extraction run offline over the stored output, to show what they would have done. Every validation failure was a required field (Advertiser) missing from Nova 2 Lite's output.",
+    "values": {
+      "Validation and coercion on · Claude Sonnet 5.5": {
+        "sections": 60,
+        "sections_failing_validation": 0,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "validation"
+      },
+      "Validation and coercion on · Claude Haiku 5.5": {
+        "sections": 60,
+        "sections_failing_validation": 0,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "validation"
+      },
+      "Validation and coercion on · Claude Opus 5.5": {
+        "sections": 60,
+        "sections_failing_validation": 0,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "validation"
+      },
+      "Validation and coercion off · Claude Haiku 5.5": {
+        "sections": 60,
+        "sections_failing_validation": 0,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "nothing (both off); counted offline"
+      },
+      "Validation and coercion on · Amazon Nova 2 Lite": {
+        "sections": 60,
+        "sections_failing_validation": 5,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "validation"
+      },
+      "Validation and coercion off · Claude Sonnet 5.5": {
+        "sections": 60,
+        "sections_failing_validation": 0,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "nothing (both off); counted offline"
+      },
+      "Validation and coercion off · Claude Opus 5.5": {
+        "sections": 60,
+        "sections_failing_validation": 0,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "nothing (both off); counted offline"
+      },
+      "Validation and coercion off · Amazon Nova 2 Lite": {
+        "sections": 60,
+        "sections_failing_validation": 5,
+        "values_coercion_changed_or_would_change": 0,
+        "coercion_refusals": 0,
+        "recorded_by_pipeline": "nothing (both off); counted offline"
+      }
+    }
+  }
+}

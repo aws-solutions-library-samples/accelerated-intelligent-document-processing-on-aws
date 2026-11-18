@@ -1,0 +1,1055 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-180749, RealKIE-FCC-Verified-20261116-180739, RealKIE-FCC-Verified-20261116-180800, RealKIE-FCC-Verified-20261116-180813, RealKIE-FCC-Verified-20261116-180835, RealKIE-FCC-Verified-20261116-180824, Fake-W2-Tax-Forms-20261116-181532, Fake-W2-Tax-Forms-20261116-181810, Fake-W2-Tax-Forms-20261116-181347, Fake-W2-Tax-Forms-20261116-181835, Fake-W2-Tax-Forms-20261116-182032, Fake-W2-Tax-Forms-20261116-181902",
+  "verdict": "Keep them. On W-2 forms, field descriptions raised the share of forms with every field right from 10% to 75% (weighted accuracy 0.97 to 0.996) at the same cost. On RealKIE invoices they made no difference (0.81 both).",
+  "cells": {
+    "realkie|Descriptions as shipped (recommended)|weighted_accuracy": {
+      "mean": 0.809178,
+      "se": 0.037868
+    },
+    "realkie|Descriptions as shipped (recommended)|extraction_tokens": {
+      "mean": 6771.897119,
+      "se": 2.595083
+    },
+    "realkie|Descriptions as shipped (recommended)|scoring_tokens": {
+      "mean": 10705.81893,
+      "se": 510.954274
+    },
+    "realkie|Descriptions as shipped (recommended)|total_tokens": {
+      "mean": 17477.716049,
+      "se": 513.01768
+    },
+    "realkie|Descriptions as shipped (recommended)|median_seconds": {
+      "mean": 35.768111,
+      "se": 2.25049
+    },
+    "realkie|Descriptions as shipped (recommended)|list_recall": {
+      "mean": 0.292224,
+      "se": 0.003955
+    },
+    "realkie|Descriptions as shipped (recommended)|list_precision": {
+      "mean": 0.296398,
+      "se": 0.007241
+    },
+    "realkie|Descriptions as shipped (recommended)|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Descriptions as shipped (recommended)|auroc": {
+      "mean": 0.832232,
+      "se": 0.02028
+    },
+    "realkie|Descriptions as shipped (recommended)|calibration_error": {
+      "mean": 0.169812,
+      "se": 0.003166
+    },
+    "realkie|Descriptions as shipped (recommended)|errors_caught_30": {
+      "mean": 0.687336,
+      "se": 0.041384
+    },
+    "realkie|Descriptions as shipped (recommended)|errors_caught_30_random": {
+      "mean": 0.299074,
+      "se": 0.000175
+    },
+    "realkie|Descriptions as shipped (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Descriptions as shipped (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Descriptions as shipped (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Descriptions as shipped (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Descriptions as shipped (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Field names only|weighted_accuracy": {
+      "mean": 0.81124,
+      "se": 0.035315
+    },
+    "realkie|Field names only|extraction_tokens": {
+      "mean": 6623.251029,
+      "se": 7.530602
+    },
+    "realkie|Field names only|scoring_tokens": {
+      "mean": 9786.246914,
+      "se": 375.866291
+    },
+    "realkie|Field names only|total_tokens": {
+      "mean": 16409.497942,
+      "se": 368.412477
+    },
+    "realkie|Field names only|median_seconds": {
+      "mean": 39.564259,
+      "se": 1.816478
+    },
+    "realkie|Field names only|list_recall": {
+      "mean": 0.316768,
+      "se": 0.029619
+    },
+    "realkie|Field names only|list_precision": {
+      "mean": 0.37801,
+      "se": 0.059198
+    },
+    "realkie|Field names only|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Field names only|auroc": {
+      "mean": 0.829735,
+      "se": 0.024899
+    },
+    "realkie|Field names only|calibration_error": {
+      "mean": 0.16791,
+      "se": 0.009704
+    },
+    "realkie|Field names only|errors_caught_30": {
+      "mean": 0.636104,
+      "se": 0.044593
+    },
+    "realkie|Field names only|errors_caught_30_random": {
+      "mean": 0.299285,
+      "se": 0.000364
+    },
+    "realkie|Field names only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Field names only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Field names only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Field names only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Field names only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Descriptions as shipped (recommended)|weighted_accuracy": {
+      "mean": 0.995897,
+      "se": 0.001839
+    },
+    "fake_w2|Descriptions as shipped (recommended)|extraction_tokens": {
+      "mean": 7459.066667,
+      "se": 29.563665
+    },
+    "fake_w2|Descriptions as shipped (recommended)|scoring_tokens": {
+      "mean": 10883.8,
+      "se": 93.935936
+    },
+    "fake_w2|Descriptions as shipped (recommended)|total_tokens": {
+      "mean": 18342.866667,
+      "se": 102.134031
+    },
+    "fake_w2|Descriptions as shipped (recommended)|median_seconds": {
+      "mean": 30.534628,
+      "se": 0.127526
+    },
+    "fake_w2|Descriptions as shipped (recommended)|all_fields_right": {
+      "mean": 0.75,
+      "se": 0.057735
+    },
+    "fake_w2|Descriptions as shipped (recommended)|auroc": {
+      "mean": 0.995971,
+      "se": 0.002883
+    },
+    "fake_w2|Descriptions as shipped (recommended)|calibration_error": {
+      "mean": 0.049511,
+      "se": 0.000767
+    },
+    "fake_w2|Descriptions as shipped (recommended)|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Descriptions as shipped (recommended)|errors_caught_30_random": {
+      "mean": 0.299877,
+      "se": 0.000123
+    },
+    "fake_w2|Descriptions as shipped (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Descriptions as shipped (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Descriptions as shipped (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Descriptions as shipped (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Descriptions as shipped (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|weighted_accuracy": {
+      "mean": 0.970494,
+      "se": 0.003917
+    },
+    "fake_w2|Field names only|extraction_tokens": {
+      "mean": 6455.85,
+      "se": 14.416397
+    },
+    "fake_w2|Field names only|scoring_tokens": {
+      "mean": 9963.6,
+      "se": 218.782775
+    },
+    "fake_w2|Field names only|total_tokens": {
+      "mean": 16419.45,
+      "se": 228.363729
+    },
+    "fake_w2|Field names only|median_seconds": {
+      "mean": 32.241497,
+      "se": 0.425238
+    },
+    "fake_w2|Field names only|all_fields_right": {
+      "mean": 0.1,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|auroc": {
+      "mean": 0.982973,
+      "se": 0.00142
+    },
+    "fake_w2|Field names only|calibration_error": {
+      "mean": 0.055868,
+      "se": 0.002308
+    },
+    "fake_w2|Field names only|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|errors_caught_30_random": {
+      "mean": 0.29945,
+      "se": 0.00018
+    },
+    "fake_w2|Field names only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Field names only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Descriptions as shipped (recommended)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Field names only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Descriptions as shipped (recommended)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Field names only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Descriptions as shipped (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Field names only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Descriptions as shipped (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Field names only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Descriptions as shipped (recommended)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 24201.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 12442.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25409.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5084.1,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 39378.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 279.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25656.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5569.3,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 36623.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 6793.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25500.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5415.25,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Field names only": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 24317.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 14818.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25121.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5185.25,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 34268.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 533.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25089.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5058.9,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 34593.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 208.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25078.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5101.8,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "fake_w2|Descriptions as shipped (recommended)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7341.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1067.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5220.5,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7555.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 853.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5109.55,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 6099.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 2574.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4744.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5118.35,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ],
+    "fake_w2|Field names only": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7111.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 325.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4007.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5191.85,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7063.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 108.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 3925.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4865.5,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7220.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 217.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4007.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5213.9,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Descriptions as shipped (recommended)": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Field names only": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Descriptions as shipped (recommended)": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Field names only": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Descriptions as shipped (recommended)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.798025,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978513,
+        "cost": 0.012192
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.904255,
+        "cost": 0.006358
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.005638
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.028323
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.281645,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.476771,
+        "cost": 0.027893
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94368,
+        "cost": 0.068174
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006284
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.053011
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.51182,
+        "cost": 0.042834
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959929,
+        "cost": 0.007032
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.631206,
+        "cost": 0.026497
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.044838
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.006486
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93396,
+        "cost": 0.028993
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005863
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.018783
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.8272,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.981617,
+        "cost": 0.010858
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.024913
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.444444,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.728132,
+        "cost": 0.006516
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.722024,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891433,
+        "cost": 0.032821
+      }
+    },
+    "realkie|Field names only": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.012385
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.2,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893617,
+        "cost": 0.006631
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.006247
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.651409,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.873398,
+        "cost": 0.025976
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.357389,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.484829,
+        "cost": 0.028326
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.375294,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.912265,
+        "cost": 0.059438
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.926325,
+        "cost": 0.006572
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.03,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.889716,
+        "cost": 0.051678
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.540583,
+        "cost": 0.0385
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.674444,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.965366,
+        "cost": 0.006681
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.914894,
+        "cost": 0.028299
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.045358
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.006804
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.574892,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933499,
+        "cost": 0.030859
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.673759,
+        "cost": 0.005666
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.5845,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.743032,
+        "cost": 0.01869
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.888393,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988127,
+        "cost": 0.011511
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.003865,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894028,
+        "cost": 0.02632
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.466667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.730496,
+        "cost": 0.006181
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.725,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.933775,
+        "cost": 0.034457
+      }
+    },
+    "fake_w2|Descriptions as shipped (recommended)": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.007655
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007096
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007845
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007774
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007334
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.007683
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992424,
+        "cost": 0.007845
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007655
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007926
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007494
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997159,
+        "cost": 0.007858
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007925
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007163
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007685
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992424,
+        "cost": 0.007356
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992424,
+        "cost": 0.007333
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.007826
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007697
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007661
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007826
+      }
+    },
+    "fake_w2|Field names only": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96836,
+        "cost": 0.006748
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007288
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007332
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.007141
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007317
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.967566,
+        "cost": 0.007322
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931818,
+        "cost": 0.007345
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007437
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.007469
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007561
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996686,
+        "cost": 0.007457
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007473
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.007164
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.007542
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007399
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007124
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007651
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007427
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.007344
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.007378
+      }
+    }
+  }
+}

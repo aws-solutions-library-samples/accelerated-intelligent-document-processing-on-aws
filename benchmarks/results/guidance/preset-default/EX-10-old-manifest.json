@@ -1,0 +1,47 @@
+{
+  "ablation": "EX-10",
+  "verdict": "Leave them on; they changed nothing here. Across 400 sections on RealKIE invoices and W-2 forms, coercion changed no value and validation never failed, so turning either off can't change a result on these documents. Differences in the table are run-to-run noise.",
+  "runs": {
+    "realkie": {
+      "Coercion off": [
+        "RealKIE-FCC-Verified-20261116-175524",
+        "RealKIE-FCC-Verified-20261116-175558"
+      ],
+      "Coercion and validation on (recommended)": [
+        "RealKIE-FCC-Verified-20261116-175514",
+        "RealKIE-FCC-Verified-20261116-175503",
+        "RealKIE-FCC-Verified-20261116-175537"
+      ]
+    },
+    "fake_w2": {
+      "Coercion and validation on (recommended)": [
+        "Fake-W2-Tax-Forms-20261116-180006",
+        "Fake-W2-Tax-Forms-20261116-175942",
+        "Fake-W2-Tax-Forms-20261116-180058"
+      ],
+      "Coercion off": [
+        "Fake-W2-Tax-Forms-20261116-180212",
+        "Fake-W2-Tax-Forms-20261116-180341",
+        "Fake-W2-Tax-Forms-20261116-180557"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "Fake-W2-Tax-Forms-20261116-175942",
+    "Fake-W2-Tax-Forms-20261116-180006",
+    "Fake-W2-Tax-Forms-20261116-180058",
+    "Fake-W2-Tax-Forms-20261116-180212",
+    "Fake-W2-Tax-Forms-20261116-180341",
+    "Fake-W2-Tax-Forms-20261116-180557",
+    "RealKIE-FCC-Verified-20261116-175503",
+    "RealKIE-FCC-Verified-20261116-175514",
+    "RealKIE-FCC-Verified-20261116-175524",
+    "RealKIE-FCC-Verified-20261116-175537",
+    "RealKIE-FCC-Verified-20261116-175558"
+  ]
+}

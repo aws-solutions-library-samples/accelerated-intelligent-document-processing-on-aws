@@ -1,0 +1,49 @@
+{
+  "ablation": "EX-04",
+  "verdict": "Keep them. On W-2 forms, field descriptions raised the share of forms with every field right from 10% to 75% (weighted accuracy 0.97 to 0.996) at the same cost. On RealKIE invoices they made no difference (0.81 both).",
+  "runs": {
+    "realkie": {
+      "Descriptions as shipped (recommended)": [
+        "RealKIE-FCC-Verified-20261116-180749",
+        "RealKIE-FCC-Verified-20261116-180739",
+        "RealKIE-FCC-Verified-20261116-180800"
+      ],
+      "Field names only": [
+        "RealKIE-FCC-Verified-20261116-180813",
+        "RealKIE-FCC-Verified-20261116-180835",
+        "RealKIE-FCC-Verified-20261116-180824"
+      ]
+    },
+    "fake_w2": {
+      "Descriptions as shipped (recommended)": [
+        "Fake-W2-Tax-Forms-20261116-181532",
+        "Fake-W2-Tax-Forms-20261116-181810",
+        "Fake-W2-Tax-Forms-20261116-181347"
+      ],
+      "Field names only": [
+        "Fake-W2-Tax-Forms-20261116-181835",
+        "Fake-W2-Tax-Forms-20261116-182032",
+        "Fake-W2-Tax-Forms-20261116-181902"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "Fake-W2-Tax-Forms-20261116-181347",
+    "Fake-W2-Tax-Forms-20261116-181532",
+    "Fake-W2-Tax-Forms-20261116-181810",
+    "Fake-W2-Tax-Forms-20261116-181835",
+    "Fake-W2-Tax-Forms-20261116-181902",
+    "Fake-W2-Tax-Forms-20261116-182032",
+    "RealKIE-FCC-Verified-20261116-180739",
+    "RealKIE-FCC-Verified-20261116-180749",
+    "RealKIE-FCC-Verified-20261116-180800",
+    "RealKIE-FCC-Verified-20261116-180813",
+    "RealKIE-FCC-Verified-20261116-180824",
+    "RealKIE-FCC-Verified-20261116-180835"
+  ]
+}

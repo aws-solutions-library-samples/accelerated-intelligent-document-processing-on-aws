@@ -2,344 +2,392 @@
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "region": "us-east-1",
-  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-200107, RealKIE-FCC-Verified-20261113-200110, RealKIE-FCC-Verified-20261113-200111, RealKIE-FCC-Verified-20261113-200734, RealKIE-FCC-Verified-20261113-200735, RealKIE-FCC-Verified-20261113-200737, RealKIE-FCC-Verified-20261113-201141, RealKIE-FCC-Verified-20261113-201235, RealKIE-FCC-Verified-20261113-201255, OmniAI-OCR-Benchmark-20261113-201450, OmniAI-OCR-Benchmark-20261113-201607, OmniAI-OCR-Benchmark-20261113-201632, OmniAI-OCR-Benchmark-20261113-201740, OmniAI-OCR-Benchmark-20261113-201755, OmniAI-OCR-Benchmark-20261113-201803, OmniAI-OCR-Benchmark-20261113-201905, OmniAI-OCR-Benchmark-20261113-201929, OmniAI-OCR-Benchmark-20261113-201940",
-  "verdict": "Keep Textract. On RealKIE invoices the three readers scored within the noise of each other (0.81, 0.80 and 0.81). On bank checks the Bedrock vision model scored lower than Textract (0.90 against 0.94), a gap near the edge of the noise. The vision model's shorter page text cut total tokens per page on invoices (16,400 against 19,600), but it returns no word confidence for the scoring model to use.",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-173806, RealKIE-FCC-Verified-20261116-173820, RealKIE-FCC-Verified-20261116-173830, RealKIE-FCC-Verified-20261116-173853, RealKIE-FCC-Verified-20261116-173840, RealKIE-FCC-Verified-20261116-173903, RealKIE-FCC-Verified-20261116-174433, RealKIE-FCC-Verified-20261116-174329, RealKIE-FCC-Verified-20261116-174636, OmniAI-OCR-Benchmark-20261116-175036, OmniAI-OCR-Benchmark-20261116-174930, OmniAI-OCR-Benchmark-20261116-175234, OmniAI-OCR-Benchmark-20261116-174811, OmniAI-OCR-Benchmark-20261116-174727, OmniAI-OCR-Benchmark-20261116-174822, OmniAI-OCR-Benchmark-20261116-175932, OmniAI-OCR-Benchmark-20261116-175245, OmniAI-OCR-Benchmark-20261116-175412 (8 failed documents left out of the scores)",
+  "verdict": "Amazon Textract with Layout only is a good place to start: on RealKIE invoices it scored as well as the other readers, for a third of the cost of Textract with tables. Test it on your own documents.",
   "cells": {
-    "realkie|Textract, tables and layout (default)|weighted_accuracy": {
-      "mean": 0.812818,
-      "se": 0.032467
+    "realkie|Textract, layout only (recommended)|weighted_accuracy": {
+      "mean": 0.797535,
+      "se": 0.038
     },
-    "realkie|Textract, tables and layout (default)|extraction_tokens": {
-      "mean": 7032.514403,
-      "se": 3.560827
+    "realkie|Textract, layout only (recommended)|extraction_tokens": {
+      "mean": 6764.662551,
+      "se": 4.548621
     },
-    "realkie|Textract, tables and layout (default)|scoring_tokens": {
-      "mean": 12596.744856,
-      "se": 78.599314
+    "realkie|Textract, layout only (recommended)|scoring_tokens": {
+      "mean": 10143.353909,
+      "se": 227.955596
     },
-    "realkie|Textract, tables and layout (default)|total_tokens": {
-      "mean": 19629.259259,
-      "se": 82.03829
+    "realkie|Textract, layout only (recommended)|total_tokens": {
+      "mean": 16908.016461,
+      "se": 232.084925
     },
-    "realkie|Textract, tables and layout (default)|median_seconds": {
-      "mean": 51.300827,
-      "se": 6.640855
+    "realkie|Textract, layout only (recommended)|median_seconds": {
+      "mean": 45.867538,
+      "se": 1.626093
     },
-    "realkie|Textract, tables and layout (default)|list_recall": {
-      "mean": 0.500861,
-      "se": 0.066461
+    "realkie|Textract, layout only (recommended)|list_recall": {
+      "mean": 0.25713,
+      "se": 0.020238
     },
-    "realkie|Textract, tables and layout (default)|list_precision": {
-      "mean": 0.274661,
-      "se": 0.076026
+    "realkie|Textract, layout only (recommended)|list_precision": {
+      "mean": 0.274119,
+      "se": 0.019508
     },
-    "realkie|Textract, tables and layout (default)|all_fields_right": {
-      "mean": 0.05,
-      "se": 0.028868
+    "realkie|Textract, layout only (recommended)|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
     },
-    "realkie|Textract, tables and layout (default)|auroc": {
-      "mean": 0.385486,
-      "se": 0.012781
+    "realkie|Textract, layout only (recommended)|auroc": {
+      "mean": 0.809593,
+      "se": 0.049611
     },
-    "realkie|Textract, tables and layout (default)|calibration_error": {
-      "mean": 0.166775,
-      "se": 0.024025
+    "realkie|Textract, layout only (recommended)|calibration_error": {
+      "mean": 0.167943,
+      "se": 0.007579
     },
-    "realkie|Textract, tables and layout (default)|errors_caught_30": {
-      "mean": 0.12745,
-      "se": 0.021335
+    "realkie|Textract, layout only (recommended)|errors_caught_30": {
+      "mean": 0.636618,
+      "se": 0.040027
     },
-    "realkie|Textract, tables and layout (default)|errors_caught_30_random": {
-      "mean": 0.299109,
-      "se": 0.000332
+    "realkie|Textract, layout only (recommended)|errors_caught_30_random": {
+      "mean": 0.298887,
+      "se": 0.000466
     },
-    "realkie|Textract, tables and layout (default)|page_accuracy": {
+    "realkie|Textract, layout only (recommended)|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Textract, tables and layout (default)|section_accuracy": {
+    "realkie|Textract, layout only (recommended)|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Textract, tables and layout (default)|grouping_score": {
+    "realkie|Textract, layout only (recommended)|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Textract, layout only|weighted_accuracy": {
-      "mean": 0.795959,
-      "se": 0.032642
-    },
-    "realkie|Textract, layout only|extraction_tokens": {
-      "mean": 6626.530864,
-      "se": 3.811244
-    },
-    "realkie|Textract, layout only|scoring_tokens": {
-      "mean": 13183.687243,
-      "se": 308.686849
-    },
-    "realkie|Textract, layout only|total_tokens": {
-      "mean": 19810.218107,
-      "se": 306.044571
-    },
-    "realkie|Textract, layout only|median_seconds": {
-      "mean": 40.039488,
-      "se": 5.484378
-    },
-    "realkie|Textract, layout only|list_recall": {
-      "mean": 0.613716,
-      "se": 0.01027
-    },
-    "realkie|Textract, layout only|list_precision": {
-      "mean": 0.411306,
-      "se": 0.01405
-    },
-    "realkie|Textract, layout only|all_fields_right": {
-      "mean": 0.05,
-      "se": 0.0
-    },
-    "realkie|Textract, layout only|auroc": {
-      "mean": 0.433029,
-      "se": 0.002664
-    },
-    "realkie|Textract, layout only|calibration_error": {
-      "mean": 0.202112,
-      "se": 0.005637
-    },
-    "realkie|Textract, layout only|errors_caught_30": {
-      "mean": 0.157996,
-      "se": 0.040335
-    },
-    "realkie|Textract, layout only|errors_caught_30_random": {
-      "mean": 0.299199,
-      "se": 0.00014
-    },
-    "realkie|Textract, layout only|page_accuracy": {
+    "realkie|Textract, layout only (recommended)|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Textract, layout only|section_accuracy": {
+    "realkie|Textract, layout only (recommended)|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Textract, layout only|grouping_score": {
+    "realkie|Textract, tables and layout|weighted_accuracy": {
+      "mean": 0.764465,
+      "se": 0.040515
+    },
+    "realkie|Textract, tables and layout|extraction_tokens": {
+      "mean": 7228.279835,
+      "se": 29.48927
+    },
+    "realkie|Textract, tables and layout|scoring_tokens": {
+      "mean": 10825.399177,
+      "se": 1049.628262
+    },
+    "realkie|Textract, tables and layout|total_tokens": {
+      "mean": 18053.679012,
+      "se": 1078.177637
+    },
+    "realkie|Textract, tables and layout|median_seconds": {
+      "mean": 52.865209,
+      "se": 1.172003
+    },
+    "realkie|Textract, tables and layout|list_recall": {
+      "mean": 0.34575,
+      "se": 0.071263
+    },
+    "realkie|Textract, tables and layout|list_precision": {
+      "mean": 0.230181,
+      "se": 0.023085
+    },
+    "realkie|Textract, tables and layout|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Textract, tables and layout|auroc": {
+      "mean": 0.901214,
+      "se": 0.018673
+    },
+    "realkie|Textract, tables and layout|calibration_error": {
+      "mean": 0.15391,
+      "se": 0.003311
+    },
+    "realkie|Textract, tables and layout|errors_caught_30": {
+      "mean": 0.845973,
+      "se": 0.054119
+    },
+    "realkie|Textract, tables and layout|errors_caught_30_random": {
+      "mean": 0.298831,
+      "se": 0.000426
+    },
+    "realkie|Textract, tables and layout|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Bedrock vision model (Nova 2 Lite)|weighted_accuracy": {
-      "mean": 0.806435,
-      "se": 0.032951
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|ocr_tokens": {
-      "mean": 1907.152263,
-      "se": 55.643709
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|extraction_tokens": {
-      "mean": 7728.901235,
-      "se": 92.302923
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|scoring_tokens": {
-      "mean": 6746.193416,
-      "se": 392.67736
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|total_tokens": {
-      "mean": 16382.246914,
-      "se": 386.204644
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|median_seconds": {
-      "mean": 42.837487,
-      "se": 1.87179
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|list_recall": {
-      "mean": 0.577589,
-      "se": 0.041914
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|list_precision": {
-      "mean": 0.384229,
-      "se": 0.072227
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|all_fields_right": {
-      "mean": 0.016667,
-      "se": 0.016667
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|auroc": {
-      "mean": 0.421395,
-      "se": 0.024043
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|calibration_error": {
-      "mean": 0.1082,
-      "se": 0.028702
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|errors_caught_30": {
-      "mean": 0.23034,
-      "se": 0.026167
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|errors_caught_30_random": {
-      "mean": 0.299786,
-      "se": 0.00012
-    },
-    "realkie|Bedrock vision model (Nova 2 Lite)|page_accuracy": {
+    "realkie|Textract, tables and layout|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Bedrock vision model (Nova 2 Lite)|section_accuracy": {
+    "realkie|Textract, tables and layout|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Bedrock vision model (Nova 2 Lite)|grouping_score": {
+    "realkie|Textract, tables and layout|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, tables and layout (default)|weighted_accuracy": {
-      "mean": 0.9378,
-      "se": 0.017373
-    },
-    "omniai|Textract, tables and layout (default)|classification_tokens": {
-      "mean": 2421.366667,
-      "se": 3.115731
-    },
-    "omniai|Textract, tables and layout (default)|extraction_tokens": {
-      "mean": 2403.433333,
-      "se": 1.498981
-    },
-    "omniai|Textract, tables and layout (default)|scoring_tokens": {
-      "mean": 4788.15,
-      "se": 1.622498
-    },
-    "omniai|Textract, tables and layout (default)|total_tokens": {
-      "mean": 9612.95,
-      "se": 2.177728
-    },
-    "omniai|Textract, tables and layout (default)|median_seconds": {
-      "mean": 18.354036,
-      "se": 0.416297
-    },
-    "omniai|Textract, tables and layout (default)|list_recall": {
+    "realkie|Textract, tables and layout|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, tables and layout (default)|list_precision": {
-      "mean": 0.827404,
+    "realkie|Amazon Nova 2 Lite vision|weighted_accuracy": {
+      "mean": 0.786837,
+      "se": 0.035925
+    },
+    "realkie|Amazon Nova 2 Lite vision|ocr_tokens": {
+      "mean": 2020.366255,
+      "se": 14.881917
+    },
+    "realkie|Amazon Nova 2 Lite vision|extraction_tokens": {
+      "mean": 7956.259259,
+      "se": 13.785798
+    },
+    "realkie|Amazon Nova 2 Lite vision|scoring_tokens": {
+      "mean": 6872.621399,
+      "se": 120.418426
+    },
+    "realkie|Amazon Nova 2 Lite vision|total_tokens": {
+      "mean": 16849.246914,
+      "se": 92.269006
+    },
+    "realkie|Amazon Nova 2 Lite vision|median_seconds": {
+      "mean": 50.865976,
+      "se": 3.022285
+    },
+    "realkie|Amazon Nova 2 Lite vision|list_recall": {
+      "mean": 0.297201,
+      "se": 0.015672
+    },
+    "realkie|Amazon Nova 2 Lite vision|list_precision": {
+      "mean": 0.279176,
+      "se": 0.009554
+    },
+    "realkie|Amazon Nova 2 Lite vision|all_fields_right": {
+      "mean": 0.0,
       "se": 0.0
     },
-    "omniai|Textract, tables and layout (default)|all_fields_right": {
-      "mean": 0.15,
-      "se": 0.028868
+    "realkie|Amazon Nova 2 Lite vision|auroc": {
+      "mean": 0.758733,
+      "se": 0.056932
     },
-    "omniai|Textract, tables and layout (default)|page_accuracy": {
+    "realkie|Amazon Nova 2 Lite vision|calibration_error": {
+      "mean": 0.130122,
+      "se": 0.020128
+    },
+    "realkie|Amazon Nova 2 Lite vision|errors_caught_30": {
+      "mean": 0.540193,
+      "se": 0.080466
+    },
+    "realkie|Amazon Nova 2 Lite vision|errors_caught_30_random": {
+      "mean": 0.298612,
+      "se": 0.000131
+    },
+    "realkie|Amazon Nova 2 Lite vision|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, tables and layout (default)|section_accuracy": {
+    "realkie|Amazon Nova 2 Lite vision|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, tables and layout (default)|grouping_score": {
+    "realkie|Amazon Nova 2 Lite vision|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, layout only|weighted_accuracy": {
-      "mean": 0.94412,
-      "se": 0.020365
-    },
-    "omniai|Textract, layout only|classification_tokens": {
-      "mean": 2286.9,
-      "se": 1.490805
-    },
-    "omniai|Textract, layout only|extraction_tokens": {
-      "mean": 2268.8,
-      "se": 0.589491
-    },
-    "omniai|Textract, layout only|scoring_tokens": {
-      "mean": 4668.816667,
-      "se": 1.470355
-    },
-    "omniai|Textract, layout only|total_tokens": {
-      "mean": 9224.516667,
-      "se": 0.72476
-    },
-    "omniai|Textract, layout only|median_seconds": {
-      "mean": 17.370237,
-      "se": 0.069637
-    },
-    "omniai|Textract, layout only|list_recall": {
+    "realkie|Amazon Nova 2 Lite vision|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, layout only|list_precision": {
-      "mean": 0.813351,
-      "se": 0.007388
-    },
-    "omniai|Textract, layout only|all_fields_right": {
-      "mean": 0.366667,
-      "se": 0.016667
-    },
-    "omniai|Textract, layout only|page_accuracy": {
+    "realkie|Amazon Nova 2 Lite vision|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, layout only|section_accuracy": {
+    "omniai|Textract, tables and layout|weighted_accuracy": {
+      "mean": 0.989907,
+      "se": 0.00296
+    },
+    "omniai|Textract, tables and layout|classification_tokens": {
+      "mean": 5736.722549,
+      "se": 58.365836
+    },
+    "omniai|Textract, tables and layout|extraction_tokens": {
+      "mean": 7983.440196,
+      "se": 69.735463
+    },
+    "omniai|Textract, tables and layout|scoring_tokens": {
+      "mean": 8110.115686,
+      "se": 122.428001
+    },
+    "omniai|Textract, tables and layout|total_tokens": {
+      "mean": 21830.278431,
+      "se": 239.976738
+    },
+    "omniai|Textract, tables and layout|median_seconds": {
+      "mean": 35.123416,
+      "se": 2.395981
+    },
+    "omniai|Textract, tables and layout|list_recall": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Textract, layout only|grouping_score": {
+    "omniai|Textract, tables and layout|list_precision": {
+      "mean": 0.985507,
+      "se": 0.007246
+    },
+    "omniai|Textract, tables and layout|all_fields_right": {
+      "mean": 0.306863,
+      "se": 0.083125
+    },
+    "omniai|Textract, tables and layout|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)|weighted_accuracy": {
-      "mean": 0.897221,
-      "se": 0.031275
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|ocr_tokens": {
-      "mean": 727.083333,
-      "se": 15.540655
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|classification_tokens": {
-      "mean": 2466.45,
-      "se": 16.755024
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|extraction_tokens": {
-      "mean": 2444.933333,
-      "se": 15.635865
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|scoring_tokens": {
-      "mean": 4071.283333,
-      "se": 14.846558
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|total_tokens": {
-      "mean": 9709.75,
-      "se": 55.377846
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|median_seconds": {
-      "mean": 17.913838,
-      "se": 0.689772
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|list_recall": {
+    "omniai|Textract, tables and layout|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)|list_precision": {
-      "mean": 0.738911,
-      "se": 0.014319
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|all_fields_right": {
-      "mean": 0.116667,
-      "se": 0.044096
-    },
-    "omniai|Bedrock vision model (Nova 2 Lite)|page_accuracy": {
+    "omniai|Textract, tables and layout|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)|section_accuracy": {
+    "omniai|Textract, tables and layout|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)|grouping_score": {
+    "omniai|Textract, tables and layout|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only (recommended)|weighted_accuracy": {
+      "mean": 0.994035,
+      "se": 0.002604
+    },
+    "omniai|Textract, layout only (recommended)|classification_tokens": {
+      "mean": 5466.01462,
+      "se": 116.087183
+    },
+    "omniai|Textract, layout only (recommended)|extraction_tokens": {
+      "mean": 7838.445127,
+      "se": 165.022751
+    },
+    "omniai|Textract, layout only (recommended)|scoring_tokens": {
+      "mean": 8041.19152,
+      "se": 191.460786
+    },
+    "omniai|Textract, layout only (recommended)|total_tokens": {
+      "mean": 21345.651267,
+      "se": 472.524872
+    },
+    "omniai|Textract, layout only (recommended)|median_seconds": {
+      "mean": 39.567196,
+      "se": 2.252167
+    },
+    "omniai|Textract, layout only (recommended)|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only (recommended)|list_precision": {
+      "mean": 0.992593,
+      "se": 0.007407
+    },
+    "omniai|Textract, layout only (recommended)|all_fields_right": {
+      "mean": 0.474561,
+      "se": 0.01444
+    },
+    "omniai|Textract, layout only (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Textract, layout only (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Amazon Nova 2 Lite vision|weighted_accuracy": {
+      "mean": 0.950456,
+      "se": 0.020793
+    },
+    "omniai|Amazon Nova 2 Lite vision|ocr_tokens": {
+      "mean": 749.516667,
+      "se": 22.588511
+    },
+    "omniai|Amazon Nova 2 Lite vision|classification_tokens": {
+      "mean": 5783.824561,
+      "se": 39.153607
+    },
+    "omniai|Amazon Nova 2 Lite vision|extraction_tokens": {
+      "mean": 8310.594737,
+      "se": 62.212931
+    },
+    "omniai|Amazon Nova 2 Lite vision|scoring_tokens": {
+      "mean": 7376.569298,
+      "se": 40.964015
+    },
+    "omniai|Amazon Nova 2 Lite vision|total_tokens": {
+      "mean": 22220.505263,
+      "se": 161.164279
+    },
+    "omniai|Amazon Nova 2 Lite vision|median_seconds": {
+      "mean": 39.01151,
+      "se": 7.7656
+    },
+    "omniai|Amazon Nova 2 Lite vision|list_recall": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Amazon Nova 2 Lite vision|list_precision": {
+      "mean": 0.888113,
+      "se": 0.030468
+    },
+    "omniai|Amazon Nova 2 Lite vision|all_fields_right": {
+      "mean": 0.155263,
+      "se": 0.030501
+    },
+    "omniai|Amazon Nova 2 Lite vision|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Amazon Nova 2 Lite vision|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Amazon Nova 2 Lite vision|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Amazon Nova 2 Lite vision|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "omniai|Amazon Nova 2 Lite vision|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     }
   },
   "sample": {
-    "realkie|Textract, tables and layout (default)": {
+    "realkie|Textract, layout only (recommended)": {
       "docs": [
         20,
         20,
@@ -352,7 +400,7 @@
       ],
       "runs": 3
     },
-    "realkie|Textract, layout only": {
+    "realkie|Textract, tables and layout": {
       "docs": [
         20,
         20,
@@ -365,7 +413,7 @@
       ],
       "runs": 3
     },
-    "realkie|Bedrock vision model (Nova 2 Lite)": {
+    "realkie|Amazon Nova 2 Lite vision": {
       "docs": [
         20,
         20,
@@ -378,142 +426,140 @@
       ],
       "runs": 3
     },
-    "omniai|Textract, tables and layout (default)": {
+    "omniai|Textract, tables and layout": {
       "docs": [
         20,
         20,
-        20
+        17
       ],
       "failed": [
         0,
         0,
-        0
+        3
       ],
       "runs": 3
     },
-    "omniai|Textract, layout only": {
+    "omniai|Textract, layout only (recommended)": {
       "docs": [
         20,
-        20,
-        20
+        18,
+        19
       ],
       "failed": [
         0,
-        0,
-        0
+        2,
+        1
       ],
       "runs": 3
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)": {
+    "omniai|Amazon Nova 2 Lite vision": {
       "docs": [
         20,
-        20,
-        20
+        19,
+        19
       ],
       "failed": [
         0,
-        0,
-        0
+        1,
+        1
       ],
       "runs": 3
     }
   },
   "models": {
-    "realkie|Textract, tables and layout (default)": {
-      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
-      "billed": {
-        "Assessment": [
-          "us.amazon.nova-lite-v1:0"
-        ],
-        "Extraction": [
-          "us.anthropic.claude-sonnet-5"
-        ]
-      }
-    },
-    "realkie|Textract, layout only": {
+    "realkie|Textract, layout only (recommended)": {
       "OCR": "Amazon Textract (Layout)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0",
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "realkie|Bedrock vision model (Nova 2 Lite)": {
-      "OCR": "Amazon Nova 2 Lite, reading the page images",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+    "realkie|Textract, tables and layout": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0",
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Amazon Nova 2 Lite vision": {
+      "OCR": "Amazon Nova 2 Lite, reading the page images",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
         ],
         "OCR": [
           "us.amazon.nova-2-lite-v1:0"
         ]
       }
     },
-    "omniai|Textract, tables and layout (default)": {
+    "omniai|Textract, tables and layout": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Amazon Nova 2 Lite, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Classification": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "omniai|Textract, layout only": {
+    "omniai|Textract, layout only (recommended)": {
       "OCR": "Amazon Textract (Layout)",
-      "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Amazon Nova 2 Lite, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Classification": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)": {
+    "omniai|Amazon Nova 2 Lite vision": {
       "OCR": "Amazon Nova 2 Lite, reading the page images",
-      "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Amazon Nova 2 Lite, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Classification": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "OCR": [
           "us.amazon.nova-2-lite-v1:0"
@@ -522,247 +568,1023 @@
     }
   },
   "usage": {
-    "realkie|Textract, tables and layout (default)": [
+    "realkie|Textract, layout only (recommended)": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44995.55,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 149.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3659.85,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1599.2,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1596.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 84.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1500.15,
-        "textract/analyze_document-Tables|pages": 4.05
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 45975.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 110.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3711.0,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1675.4,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1550.1,
-        "textract/analyze_document-Tables|pages": 4.05
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44809.3,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1131.4,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3664.7,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1569.8,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1524.4,
-        "textract/analyze_document-Tables|pages": 4.05
-      }
-    ],
-    "realkie|Textract, layout only": [
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 36653.95,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 9266.8,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3792.3,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1626.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1548.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 28275.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 11474.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25395.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5010.25,
         "textract/analyze_document-Layout|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40619.8,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 7051.95,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3849.25,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1666.7,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1567.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 37991.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25401.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4977.95,
         "textract/analyze_document-Layout|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40490.5,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 6892.35,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3761.45,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1833.05,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2600.9,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23647.3,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1558.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 32871.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3772.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25371.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4890.45,
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Bedrock vision model (Nova 2 Lite)": [
+    "realkie|Textract, tables and layout": [
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6795.35,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 10404.0,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1545.55,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 10461.5,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1700.3,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 583.7,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 28740.0,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1584.45
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 34524.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 12803.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27683.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6805.25,
+        "textract/analyze_document-Tables|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6019.05,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 12774.5,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 387.9,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 11338.05,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1891.7,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1971.85,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 27431.0,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1578.5
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 21633.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 13922.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27180.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5362.7,
+        "textract/analyze_document-Tables|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6335.85,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 13082.1,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 269.4,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 11579.65,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2044.6,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2263.7,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2466.7,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 28339.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1753.45
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 25296.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 11607.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27132.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5400.45,
+        "textract/analyze_document-Tables|pages": 4.05
       }
     ],
-    "omniai|Textract, tables and layout (default)": [
+    "realkie|Amazon Nova 2 Lite vision": [
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 2837.95,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 316.55,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 971.7,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 702.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1271.95,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1517.65,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1240.2,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 757.45,
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6800.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5567.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 19612.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 30153.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4883.65
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6960.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 4791.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 19612.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 30296.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4539.3
+      },
+      {
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1340.55,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 6764.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 6292.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 19612.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 30158.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4650.35
+      }
+    ],
+    "omniai|Textract, tables and layout": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5748.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3810.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8168.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4289.35,
         "textract/analyze_document-Tables|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3154.5,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 971.7,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 697.0,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2322.9,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 469.55,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1241.65,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 757.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7164.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 2393.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8168.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4395.1,
         "textract/analyze_document-Tables|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3154.5,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 971.7,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 696.55,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2465.9,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 323.8,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1241.8,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 754.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 6418.1765,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3043.2353,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7980.2353,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 3912.5882,
         "textract/analyze_document-Tables|pages": 1.0
       }
     ],
-    "omniai|Textract, layout only": [
+    "omniai|Textract, layout only (recommended)": [
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3168.65,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 698.35,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 692.8,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1919.35,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 722.5,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1280.8,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 743.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5589.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3824.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7765.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4253.05,
         "textract/analyze_document-Layout|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3168.65,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 698.35,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 686.05,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2302.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 339.3,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1278.35,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 751.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5158.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4376.1667,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8016.7222,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4566.3333,
         "textract/analyze_document-Layout|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3168.65,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 698.35,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 687.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 2222.65,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 419.15,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1279.3,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 748.1,
-        "textract/analyze_document-Layout|pages": 1.0
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5750.5789,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3147.4211,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 7325.5263,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4264.1053,
+        "textract/analyze_document-Layout|pages": 0.9474
       }
     ],
-    "omniai|Bedrock vision model (Nova 2 Lite)": [
+    "omniai|Amazon Nova 2 Lite vision": [
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3141.65,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1454.9,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1111.15,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1940.7,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 37.4,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1402.8,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 718.1
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 331.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 433.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5748.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3051.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8488.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4273.9
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3129.75,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1360.75,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1057.75,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1977.3,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1402.5,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 686.85
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 331.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 447.8947,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5748.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3089.6316,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8643.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4171.8421
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 3130.9,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1430.3,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 1098.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 1977.4,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 1392.75,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 678.05
+        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 331.0,
+        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 374.1053,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5748.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3089.6316,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 8385.7368,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 3975.4737
       }
     ]
   },
   "cost_basis": {
-    "realkie|Textract, tables and layout (default)": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-200111",
-      "index": 2
+    "realkie|Textract, layout only (recommended)": {
+      "mode": "cache-isolated"
     },
-    "realkie|Textract, layout only": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-200737",
-      "index": 2
+    "realkie|Textract, tables and layout": {
+      "mode": "cache-isolated"
     },
-    "realkie|Bedrock vision model (Nova 2 Lite)": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-201255",
-      "index": 2
+    "realkie|Amazon Nova 2 Lite vision": {
+      "mode": "cache-isolated"
     },
-    "omniai|Textract, tables and layout (default)": {
-      "mode": "cold-run",
-      "run": "OmniAI-OCR-Benchmark-20261113-201450",
-      "index": 0
+    "omniai|Textract, tables and layout": {
+      "mode": "cache-isolated"
     },
-    "omniai|Textract, layout only": {
-      "mode": "cold-run",
-      "run": "OmniAI-OCR-Benchmark-20261113-201740",
-      "index": 0
+    "omniai|Textract, layout only (recommended)": {
+      "mode": "cache-isolated"
     },
-    "omniai|Bedrock vision model (Nova 2 Lite)": {
-      "mode": "cold-run",
-      "run": "OmniAI-OCR-Benchmark-20261113-201905",
-      "index": 0
+    "omniai|Amazon Nova 2 Lite vision": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Textract, layout only (recommended)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.796049,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978303,
+        "cost": 0.012251
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.82499,
+        "cost": 0.005998
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.005973
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.026084
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.190816,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467108,
+        "cost": 0.028283
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.480392,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.923446,
+        "cost": 0.064169
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006609
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.04849
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.522853,
+        "cost": 0.040622
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959929,
+        "cost": 0.006718
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.309091,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.550613,
+        "cost": 0.026735
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.047453
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.006532
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863038,
+        "cost": 0.030674
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005613
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.019139
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.010838
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.024944
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.006334
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.717857,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89099,
+        "cost": 0.032201
+      }
+    },
+    "realkie|Textract, tables and layout": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.035181
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.366667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.67355,
+        "cost": 0.017355
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.716312,
+        "cost": 0.016776
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.046926
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.446407,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.494299,
+        "cost": 0.087758
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.439716,
+        "cost": 0.204126
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.942874,
+        "cost": 0.01738
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.182562,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.891762,
+        "cost": 0.167728
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.533333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474389,
+        "cost": 0.133501
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.971631,
+        "cost": 0.017688
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.081914
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.253968,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.679288,
+        "cost": 0.15199
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.539007,
+        "cost": 0.017551
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.580124,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.72129,
+        "cost": 0.086662
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.016871
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.970741,
+        "cost": 0.051626
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.032868
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.07998
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.017548
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.099231
+      }
+    },
+    "realkie|Amazon Nova 2 Lite vision": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.94862,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.98035,
+        "cost": 0.014197
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.904255,
+        "cost": 0.020865
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.333333,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.64539,
+        "cost": 0.003167
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584513,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.866282,
+        "cost": 0.030019
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.332395,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.48217,
+        "cost": 0.022208
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.611176,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.866437,
+        "cost": 0.099082
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.908884,
+        "cost": 0.004713
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.083932,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.670648,
+        "cost": 0.048772
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.8,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.51379,
+        "cost": 0.024808
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.466667,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93617,
+        "cost": 0.006393
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.507554,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.71357,
+        "cost": 0.036061
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.332211,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.687612,
+        "cost": 0.032692
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.546099,
+        "cost": 0.006769
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.705195,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.936723,
+        "cost": 0.051457
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.003275
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.856352,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.963442,
+        "cost": 0.022482
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.980952,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.976697,
+        "cost": 0.010098
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.021498
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.005123
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.532143,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.818041,
+        "cost": 0.059665
+      }
+    },
+    "omniai|Textract, tables and layout": {
+      "BANK_CHECK_102.png": {
+        "list_score": 0.969412,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969412,
+        "cost": 0.023446
+      },
+      "BANK_CHECK_143.png": {
+        "list_score": 0.996881,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996881,
+        "cost": 0.017273
+      },
+      "BANK_CHECK_152.png": {
+        "list_score": 0.994802,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.994802,
+        "cost": 0.017468
+      },
+      "BANK_CHECK_165.png": {
+        "list_score": 0.991534,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.991534,
+        "cost": 0.017103
+      },
+      "BANK_CHECK_201.png": {
+        "list_score": 0.998942,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998942,
+        "cost": 0.020043
+      },
+      "BANK_CHECK_275.png": {
+        "list_score": 0.978395,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978395,
+        "cost": 0.017225
+      },
+      "BANK_CHECK_289.png": {
+        "list_score": 0.990643,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990643,
+        "cost": 0.017564
+      },
+      "BANK_CHECK_322.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.01713
+      },
+      "BANK_CHECK_355.png": {
+        "list_score": 1.0,
+        "list_rows": 7,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.023504
+      },
+      "BANK_CHECK_369.png": {
+        "list_score": 0.990303,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990303,
+        "cost": 0.018625
+      },
+      "BANK_CHECK_377.png": {
+        "list_score": 0.993266,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.993266,
+        "cost": 0.01746
+      },
+      "BANK_CHECK_404.png": {
+        "list_score": 0.974701,
+        "list_rows": 5,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.974701,
+        "cost": 0.021739
+      }
+    },
+    "omniai|Textract, layout only (recommended)": {
+      "BANK_CHECK_102.png": {
+        "list_score": 0.975151,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975151,
+        "cost": 0.012219
+      },
+      "BANK_CHECK_143.png": {
+        "list_score": 0.975828,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975828,
+        "cost": 0.006271
+      },
+      "BANK_CHECK_152.png": {
+        "list_score": 0.993827,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.993827,
+        "cost": 0.006443
+      },
+      "BANK_CHECK_165.png": {
+        "list_score": 0.994356,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.994356,
+        "cost": 0.006498
+      },
+      "BANK_CHECK_201.png": {
+        "list_score": 0.999471,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999471,
+        "cost": 0.009017
+      },
+      "BANK_CHECK_275.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.006417
+      },
+      "BANK_CHECK_289.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.006429
+      },
+      "BANK_CHECK_322.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.005971
+      },
+      "BANK_CHECK_355.png": {
+        "list_score": 0.997354,
+        "list_rows": 7,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997354,
+        "cost": 0.012245
+      },
+      "BANK_CHECK_369.png": {
+        "list_score": 0.993535,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.993535,
+        "cost": 0.00753
+      },
+      "BANK_CHECK_377.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.006272
+      },
+      "BANK_CHECK_404.png": {
+        "list_score": 0.998898,
+        "list_rows": 5,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998898,
+        "cost": 0.011175
+      }
+    },
+    "omniai|Amazon Nova 2 Lite vision": {
+      "BANK_CHECK_102.png": {
+        "list_score": 0.760978,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.760978,
+        "cost": 0.009729
+      },
+      "BANK_CHECK_143.png": {
+        "list_score": 0.997685,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997685,
+        "cost": 0.002533
+      },
+      "BANK_CHECK_152.png": {
+        "list_score": 0.996914,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996914,
+        "cost": 0.002541
+      },
+      "BANK_CHECK_165.png": {
+        "list_score": 0.979541,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.979541,
+        "cost": 0.00275
+      },
+      "BANK_CHECK_201.png": {
+        "list_score": 0.974135,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.974135,
+        "cost": 0.006347
+      },
+      "BANK_CHECK_275.png": {
+        "list_score": 0.975309,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975309,
+        "cost": 0.002733
+      },
+      "BANK_CHECK_289.png": {
+        "list_score": 1.0,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.002467
+      },
+      "BANK_CHECK_322.png": {
+        "list_score": 0.962963,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962963,
+        "cost": 0.002553
+      },
+      "BANK_CHECK_355.png": {
+        "list_score": 0.852422,
+        "list_rows": 7,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.852422,
+        "cost": 0.01212
+      },
+      "BANK_CHECK_369.png": {
+        "list_score": 0.992361,
+        "list_rows": 2,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992361,
+        "cost": 0.003861
+      },
+      "BANK_CHECK_377.png": {
+        "list_score": 0.975309,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.975309,
+        "cost": 0.002717
+      },
+      "BANK_CHECK_404.png": {
+        "list_score": 0.93786,
+        "list_rows": 5,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93786,
+        "cost": 0.009784
+      }
+    }
+  },
+  "unfinished": {
+    "omniai|Textract, tables and layout": {
+      "BANK_CHECK_115.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      },
+      "BANK_CHECK_159.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 8,
+        "status": [
+          "FAILED"
+        ]
+      },
+      "BANK_CHECK_292.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 2,
+        "status": [
+          "FAILED"
+        ]
+      }
+    },
+    "omniai|Textract, layout only (recommended)": {
+      "BANK_CHECK_17.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      },
+      "BANK_CHECK_280.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      },
+      "BANK_CHECK_285.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      }
+    },
+    "omniai|Amazon Nova 2 Lite vision": {
+      "BANK_CHECK_252.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      },
+      "BANK_CHECK_408.png": {
+        "runs": 1,
+        "of": 3,
+        "list_rows": 1,
+        "status": [
+          "FAILED"
+        ]
+      }
     }
   }
 }

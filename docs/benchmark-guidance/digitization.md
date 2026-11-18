@@ -29,290 +29,146 @@ right in the page text, the fix is in your classification or extraction definiti
 
 | Setting | What it changes | Questions |
 |---|---|---|
-| OCR reader (`ocr.backend`) | Amazon Textract, a vision model, or a specialized OCR model | [DG-01](#does-the-ocr-reader-make-a-difference-to-extraction-accuracy) to [DG-03](#does-a-specialized-ocr-model-beat-textract) |
+| OCR reader (`ocr.backend`) | Amazon Textract, a vision model, or a specialized OCR model | [DG-01](#does-the-ocr-reader-make-a-difference-to-extraction-accuracy) to [DG-03](#planned) |
 | Resolution (`ocr.image.dpi`) | The DPI the accelerator renders pages at | [DG-04](#what-resolution-should-pages-be-rendered-at) |
-| Preprocessing (`ocr.image.preprocessing`) | Cleans up shadows, uneven lighting and low contrast | [DG-05](#does-image-preprocessing-help-on-poor-scans) |
+| Preprocessing (`ocr.image.preprocessing`) | Cleans up shadows, uneven lighting and low contrast | [DG-05](#planned) |
 | Textract features (`ocr.features`) | Tables, layout and signatures | [DG-06](#which-textract-features-do-i-need) |
 
 ## Questions
+
+<details>
+<summary>What the metrics mean</summary>
+
+- *Weighted accuracy:* Stickler's field-weighted score against ground truth.
+- *Documents with every field right:* the share of documents with no wrong field.
+
+Full definitions: Stickler's [Thresholds and Metrics](https://awslabs.github.io/stickler/Getting-Started/thresholds-and-metrics/), and [Field Weighting](../evaluation.md#field-weighting-for-business-criticality) in the evaluation guide.
+
+[Benchmark Datasets](datasets.md) describes each dataset.
+
+</details>
 
 <!-- BEGIN GENERATED FAQ -->
 
 ### Does the OCR reader make a difference to extraction accuracy?
 
-**Answer:** Keep Textract. On RealKIE invoices the three readers scored within the noise of each other (0.81, 0.80 and 0.81). On bank checks the Bedrock vision model scored lower than Textract (0.90 against 0.94), a gap near the edge of the noise. The vision model's shorter page text cut total tokens per page on invoices (16,400 against 19,600), but it returns no word confidence for the scoring model to use. [Details: DG-01](#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy)
+![Textract Layout only matches the other readers: weighted accuracy against cost per 1,000 documents, one point per OCR reader](../../images/benchmark-guidance/DG-01-fields.svg)
 
-![Keep Textract: the other readers scored no better: weighted accuracy against cost per 1,000 documents, one point per OCR reader](../../images/benchmark-guidance/DG-01-fields.svg)
+*Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-*Weighted accuracy against cost per 1,000 documents, one point per OCR reader. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [OmniAI, bank checks](datasets.md#omniai-ocr-benchmark-bank-checks-20). [Details: DG-01](#dg-01-does-the-ocr-reader-make-a-difference-to-extraction-accuracy). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+**Answer:** Amazon Textract with Layout only is a good place to start: on RealKIE invoices it scored as well as the other readers, for a third of the cost of Textract with tables. Test it on your own documents.
 
-### If I read pages with a vision model, which model?
+<details>
+<summary>Details</summary>
 
-**Answer:** Not yet measured. [Details: DG-02](#dg-02-if-i-read-pages-with-a-vision-model-which-model)
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 18 Test Studio runs (8 failed documents left out of the scores), listed in `benchmarks/results/guidance/DG-01.json`.*
 
-### Does a specialized OCR model beat Textract?
+On OmniAI bank checks, Textract with Layout only got every field right on 47% of checks, against 16% with Amazon Nova 2 Lite, which cost less ($4.84 against $7.76 per 1,000).
 
-**Answer:** Not yet measured. [Details: DG-03](#dg-03-does-a-specialized-ocr-model-beat-textract)
+| | |
+|---|---|
+| **Changes** | OCR reader |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [OmniAI-OCR-Benchmark, bank checks (20)](datasets.md#omniai-ocr-benchmark-bank-checks-20) |
+| **Models** | OCR: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. Classification by dataset: OmniAI, bank checks — Claude Haiku 5.5, holistic. |
+| **Runs** | 3 per document, per value; N: RealKIE — 20 documents × 3 runs; OmniAI, bank checks — 17–20 documents × 3 runs; up to 3 documents failed in a run and are left out of it |
+
+| Dataset | OCR reader | Weighted accuracy | Documents with every field right | OCR tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | [Cost per error prevented](marginal-cost-of-error.md) vs cheapest |
+|---|---|---|---|---|---|---|---|
+| RealKIE | **Textract, layout only (recommended)** | 0.8 ± 0.08 | 0 ± 0 | — | 16,908 ± 464 | **$22.8 ± $0.89** | — |
+| RealKIE | Textract, tables and layout | 0.76 ± 0.08 | 0 ± 0 | — | 18,054 ± 2,156 | $69.0 ± $0.66 | no measurable gain |
+| RealKIE | Amazon Nova 2 Lite vision | 0.79 ± 0.07 | 0 ± 0 | 2,020 ± 30 | 16,849 ± 185 | $26.2 ± $0.25 | no measurable gain |
+| OmniAI, bank checks | **Textract, layout only (recommended)** | 0.99 ± 0.01 | 0.47 ± 0.03 | — | 21,346 ± 945 | $7.76 ± $0.36 | $0.07 |
+| OmniAI, bank checks | Textract, tables and layout | 0.99 ± 0.01 | 0.31 ± 0.17 | — | 21,830 ± 480 | $18.7 ± $0.19 | no measurable gain |
+| OmniAI, bank checks | Amazon Nova 2 Lite vision | 0.95 ± 0.04 | 0.16 ± 0.06 | 750 ± 45 | 22,221 ± 322 | **$4.84 ± $0.21** | — |
+
+Failed documents per run: OmniAI, bank checks — Textract, layout only (recommended): 0, 2, 1; OmniAI, bank checks — Textract, tables and layout: 0, 0, 3; OmniAI, bank checks — Amazon Nova 2 Lite vision: 0, 1, 1.
+
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
+
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+
+</details>
 
 ### What resolution should pages be rendered at?
 
-**Answer:** Keep 300 DPI unless tokens matter more than a small accuracy risk. On RealKIE invoices 200 DPI scored the same as 300 (0.82 against 0.81) with 7% fewer tokens per page; 150 DPI scored 0.79, a drop within the noise, with 12% fewer. Below about 200 DPI Textract starts to drop small and faint characters, so test a lower resolution on your own scans first. [Details: DG-04](#dg-04-what-resolution-should-pages-be-rendered-at)
+![Lower resolution saved nothing; keep 300 DPI: weighted accuracy against cost per 1,000 documents, one point per page resolution](../../images/benchmark-guidance/DG-04-fields.svg)
 
-![200 DPI scored like 300 DPI; 150 DPI slipped slightly: weighted accuracy against cost per 1,000 documents, one point per page resolution](../../images/benchmark-guidance/DG-04-fields.svg)
+*Bands show ±2 standard errors.*
 
-*Weighted accuracy against cost per 1,000 documents, one point per page resolution. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices). [Details: DG-04](#dg-04-what-resolution-should-pages-be-rendered-at). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+**Answer:** 300 DPI is a good place to start: 200 and 150 DPI scored no better on RealKIE invoices and cost no less. Test it on your own documents.
 
-### Does image preprocessing help on poor scans?
+<details>
+<summary>Details</summary>
 
-**Answer:** Not yet measured. [Details: DG-05](#dg-05-does-image-preprocessing-help-on-poor-scans)
-
-### Which Textract features do I need?
-
-**Answer:** Pick the features your documents need; none of the combinations we tried changed accuracy measurably. On RealKIE invoices and W-2 forms every combination scored within the noise of the default, and LAYOUT alone used about 3% fewer total tokens per page because it sends less page text. Textract prices each page by the features you select, so dropping a feature your documents do not need saves Textract charges rather than tokens. [Details: DG-06](#dg-06-which-textract-features-do-i-need)
-
-![No Textract feature combination changed accuracy measurably: weighted accuracy against cost per 1,000 documents, one point per Textract features](../../images/benchmark-guidance/DG-06-fields.svg)
-
-*Weighted accuracy against cost per 1,000 documents, one point per Textract features. Bands show ±2 standard errors.* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: DG-06](#dg-06-which-textract-features-do-i-need). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
-### How much accuracy does scan quality cost?
-
-**Answer:** Not yet measured. [Details: DG-07](#dg-07-how-much-accuracy-does-scan-quality-cost)
-
-### Which reader handles handwriting best?
-
-**Answer:** Not yet measured. [Details: DG-08](#dg-08-which-reader-handles-handwriting-best)
-
-<!-- END GENERATED FAQ -->
-
-## Metrics on this page
-
-- *Weighted accuracy:* Stickler's field-weighted score against ground truth.
-- *Documents with every field right:* the share of documents with no wrong field.
-- *Completeness* and *cell accuracy:* see [Key Information Extraction Benchmarks](extraction.md).
-
-[Benchmark Datasets](datasets.md) describes each dataset.
-
-## Benchmark details
-
-<!-- BEGIN GENERATED ABLATIONS -->
-
-#### DG-01: Does the OCR reader make a difference to extraction accuracy?
-
-**Answer:** Keep Textract. On RealKIE invoices the three readers scored within the noise of each other (0.81, 0.80 and 0.81). On bank checks the Bedrock vision model scored lower than Textract (0.90 against 0.94), a gap near the edge of the noise. The vision model's shorter page text cut total tokens per page on invoices (16,400 against 19,600), but it returns no word confidence for the scoring model to use.
-
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-200107, RealKIE-FCC-Verified-20261113-200110, RealKIE-FCC-Verified-20261113-200111, RealKIE-FCC-Verified-20261113-200734, RealKIE-FCC-Verified-20261113-200735, RealKIE-FCC-Verified-20261113-200737, RealKIE-FCC-Verified-20261113-201141, RealKIE-FCC-Verified-20261113-201235, RealKIE-FCC-Verified-20261113-201255, OmniAI-OCR-Benchmark-20261113-201450, OmniAI-OCR-Benchmark-20261113-201607, OmniAI-OCR-Benchmark-20261113-201632, OmniAI-OCR-Benchmark-20261113-201740, OmniAI-OCR-Benchmark-20261113-201755, OmniAI-OCR-Benchmark-20261113-201803, OmniAI-OCR-Benchmark-20261113-201905, OmniAI-OCR-Benchmark-20261113-201929, OmniAI-OCR-Benchmark-20261113-201940`.*
-
-| | |
-|---|---|
-| **Changes** | OCR reader |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [OmniAI-OCR-Benchmark, bank checks (20)](datasets.md#omniai-ocr-benchmark-bank-checks-20); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: varies (the setting under test) · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. Classification by dataset: OmniAI, bank checks — Amazon Nova 2 Lite, page by page. Extraction by dataset: RealKIE — Claude Sonnet 5, single-pass; OmniAI, bank checks — Amazon Nova 2 Lite, single-pass. |
-| **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
-
-| Dataset | OCR reader | Weighted accuracy | OCR tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs cheapest |
-|---|---|---|---|---|---|---|
-| RealKIE | Textract, tables and layout (default) | 0.81 ± 0.06 | — | 19,629 ± 164 | $135 | no measurable gain |
-| RealKIE | Textract, layout only | 0.8 ± 0.07 | — | 19,810 ± 612 | $94.2 | — |
-| RealKIE | Bedrock vision model (Nova 2 Lite) | 0.81 ± 0.07 | 1,907 ± 111 | 16,382 ± 772 | $107 | no measurable gain |
-| ConfBench | Textract, tables and layout (default) | — | — | — | — | — |
-| ConfBench | Textract, layout only | — | — | — | — | — |
-| ConfBench | Bedrock vision model (Nova 2 Lite) | — | — | — | — | — |
-| OmniAI, bank checks | Textract, tables and layout (default) | 0.94 ± 0.03 | — | 9,613 ± 4.36 | $17.5 | no measurable gain |
-| OmniAI, bank checks | Textract, layout only | 0.94 ± 0.04 | — | 9,225 ± 1.45 | $6.46 | no measurable gain |
-| OmniAI, bank checks | Bedrock vision model (Nova 2 Lite) | 0.9 ± 0.06 | 727 ± 31 | 9,710 ± 111 | $3.74 | — |
-
-| Dataset | OCR reader | List recall | List precision | OCR tokens per page | Total tokens per page | Cost per 1,000 documents (USD) |
-|---|---|---|---|---|---|---|
-| Statement, 400 rows | Textract, tables and layout (default) | — | — | — | — | — |
-| Statement, 400 rows | Textract, layout only | — | — | — | — | — |
-| Statement, 400 rows | Bedrock vision model (Nova 2 Lite) | — | — | — | — | — |
-
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
-
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
-
-
-#### DG-02: If I read pages with a vision model, which model?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | Model used for Bedrock vision OCR |
-| **Everything else** | OCR reader set to the Bedrock vision model; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Model used for Bedrock vision OCR | Weighted accuracy | OCR tokens per page | Total tokens per page |
-|---|---|---|---|---|
-| RealKIE | Amazon Nova 2 Lite | — | — | — |
-| RealKIE | Claude Haiku 5.5 | — | — | — |
-| RealKIE | Claude Sonnet 5 | — | — | — |
-| ConfBench | Amazon Nova 2 Lite | — | — | — |
-| ConfBench | Claude Haiku 5.5 | — | — | — |
-| ConfBench | Claude Sonnet 5 | — | — | — |
-
-| Dataset | Model used for Bedrock vision OCR | List precision | OCR tokens per page | Total tokens per page |
-|---|---|---|---|---|
-| Statement, 400 rows | Amazon Nova 2 Lite | — | — | — |
-| Statement, 400 rows | Claude Haiku 5.5 | — | — | — |
-| Statement, 400 rows | Claude Sonnet 5 | — | — | — |
-
-
-#### DG-03: Does a specialized OCR model beat Textract?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | OCR reader |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [OmniAI-OCR-Benchmark, bank checks (20)](datasets.md#omniai-ocr-benchmark-bank-checks-20) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | OCR reader | Weighted accuracy | Documents with every field right | Total tokens per page |
-|---|---|---|---|---|
-| RealKIE | Textract, tables and layout (default) | — | — | — |
-| RealKIE | Chandra (Lambda hook) | — | — | — |
-| RealKIE | Mistral OCR (Lambda hook) | — | — | — |
-| RealKIE | Cohere Parse (Lambda hook) | — | — | — |
-| ConfBench | Textract, tables and layout (default) | — | — | — |
-| ConfBench | Chandra (Lambda hook) | — | — | — |
-| ConfBench | Mistral OCR (Lambda hook) | — | — | — |
-| ConfBench | Cohere Parse (Lambda hook) | — | — | — |
-| OmniAI, bank checks | Textract, tables and layout (default) | — | — | — |
-| OmniAI, bank checks | Chandra (Lambda hook) | — | — | — |
-| OmniAI, bank checks | Mistral OCR (Lambda hook) | — | — | — |
-| OmniAI, bank checks | Cohere Parse (Lambda hook) | — | — | — |
-
-
-#### DG-04: What resolution should pages be rendered at?
-
-**Answer:** Keep 300 DPI unless tokens matter more than a small accuracy risk. On RealKIE invoices 200 DPI scored the same as 300 (0.82 against 0.81) with 7% fewer tokens per page; 150 DPI scored 0.79, a drop within the noise, with 12% fewer. Below about 200 DPI Textract starts to drop small and faint characters, so test a lower resolution on your own scans first.
-
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-203126, RealKIE-FCC-Verified-20261113-203127, RealKIE-FCC-Verified-20261113-203128, RealKIE-FCC-Verified-20261113-203431, RealKIE-FCC-Verified-20261113-203443, RealKIE-FCC-Verified-20261113-203446, RealKIE-FCC-Verified-20261113-203719, RealKIE-FCC-Verified-20261113-203751, RealKIE-FCC-Verified-20261113-203812`.*
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 9 Test Studio runs, listed in `benchmarks/results/guidance/DG-04.json`.*
 
 | | |
 |---|---|
 | **Changes** | `ocr.image.dpi` |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
+| **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
-| Dataset | `ocr.image.dpi` | Weighted accuracy | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs 150 |
+| Dataset | `ocr.image.dpi` | Weighted accuracy | Total tokens per page | Cost per 1,000 documents (USD) | [Cost per error prevented](marginal-cost-of-error.md) vs 300 DPI (preset default) |
 |---|---|---|---|---|---|
-| RealKIE | 300 (default) | 0.81 ± 0.06 | 20,875 ± 745 | $143 | no measurable gain |
-| RealKIE | 200 | 0.82 ± 0.07 | 19,450 ± 67 | $134 | no measurable gain |
-| RealKIE | 150 | 0.79 ± 0.07 | 18,267 ± 646 | $119 | — |
-| ConfBench | 300 (default) | — | — | — | — |
-| ConfBench | 200 | — | — | — | — |
-| ConfBench | 150 | — | — | — | — |
+| RealKIE | **300 DPI (preset default)** | 0.81 ± 0.07 | 16,552 ± 394 | **$22.1 ± $0.14** | — |
+| RealKIE | 200 DPI | 0.81 ± 0.07 | 16,941 ± 360 | $26.0 ± $0.11 | no measurable gain |
+| RealKIE | 150 DPI | 0.77 ± 0.08 | **12,126 ± 166** | $23.8 ± $0.01 | no measurable gain |
 
-| Dataset | `ocr.image.dpi` | List precision | Total tokens per page | Cost per 1,000 documents (USD) |
-|---|---|---|---|---|
-| Statement, 400 rows | 300 (default) | — | — | — |
-| Statement, 400 rows | 200 | — | — | — |
-| Statement, 400 rows | 150 | — | — | — |
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+</details>
 
+### Which Textract features do I need?
 
-#### DG-05: Does image preprocessing help on poor scans?
+![Layout only scores best and costs least: weighted accuracy and documents with every field right against cost per 1,000 documents, one point per Textract features](../../images/benchmark-guidance/DG-06-fields.svg)
 
-**Answer:** Not yet measured.
+*Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-| | |
-|---|---|
-| **Changes** | `ocr.image.preprocessing` |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
-| **Runs** | 3 per document, per value |
+**Answer:** Layout only is a good place to start: it got every field right on 82% of W-2 forms, against 55% with the preset's tables, layout and signatures, for the lowest cost. Test it on your own documents.
 
-| Dataset | `ocr.image.preprocessing` | Weighted accuracy | Documents with every field right | Total tokens per page |
-|---|---|---|---|---|
-| ConfBench | Off (default) | — | — | — |
-| ConfBench | On | — | — | — |
-| RealKIE | Off (default) | — | — | — |
-| RealKIE | On | — | — | — |
+<details>
+<summary>Details</summary>
 
-
-#### DG-06: Which Textract features do I need?
-
-**Answer:** Pick the features your documents need; none of the combinations we tried changed accuracy measurably. On RealKIE invoices and W-2 forms every combination scored within the noise of the default, and LAYOUT alone used about 3% fewer total tokens per page because it sends less page text. Textract prices each page by the features you select, so dropping a feature your documents do not need saves Textract charges rather than tokens.
-
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-183155, RealKIE-FCC-Verified-20261113-183156, RealKIE-FCC-Verified-20261113-183157, RealKIE-FCC-Verified-20261113-183443, RealKIE-FCC-Verified-20261113-183516, RealKIE-FCC-Verified-20261113-183512, RealKIE-FCC-Verified-20261113-183741, RealKIE-FCC-Verified-20261113-183751, RealKIE-FCC-Verified-20261113-183840, RealKIE-FCC-Verified-20261113-184029, RealKIE-FCC-Verified-20261113-184136, RealKIE-FCC-Verified-20261113-184120, Fake-W2-Tax-Forms-20261113-184358, Fake-W2-Tax-Forms-20261113-184446, Fake-W2-Tax-Forms-20261113-184443, Fake-W2-Tax-Forms-20261113-184524, Fake-W2-Tax-Forms-20261113-184603, Fake-W2-Tax-Forms-20261113-184607, Fake-W2-Tax-Forms-20261113-184628, Fake-W2-Tax-Forms-20261113-184719, Fake-W2-Tax-Forms-20261113-184721, Fake-W2-Tax-Forms-20261113-184742, Fake-W2-Tax-Forms-20261113-184825, Fake-W2-Tax-Forms-20261113-184846`.*
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 24 Test Studio runs, listed in `benchmarks/results/guidance/DG-06.json`.*
 
 | | |
 |---|---|
 | **Changes** | `ocr.features` |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Models** | OCR: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
+| **Models** | OCR: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
-| Dataset | `ocr.features` | Weighted accuracy | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs LAYOUT only |
-|---|---|---|---|---|---|
-| RealKIE | TABLES, LAYOUT, SIGNATURES (default) | 0.8 ± 0.06 | 20,870 ± 671 | $137 | no measurable gain |
-| RealKIE | LAYOUT only | 0.79 ± 0.07 | 19,457 ± 676 | $87.5 | — |
-| RealKIE | TABLES only | 0.81 ± 0.06 | 21,293 ± 2,175 | $143 | no measurable gain |
-| RealKIE | TABLES, LAYOUT, SIGNATURES, FORMS | 0.79 ± 0.07 | 21,429 ± 2,720 | $339 | no measurable gain |
-| Fake-W2 | TABLES, LAYOUT, SIGNATURES (default) | 0.95 ± 0.02 | 15,195 ± 7.48 | $33.8 | — |
-| Fake-W2 | LAYOUT only | 0.96 ± 0.02 | 14,705 ± 7.77 | $20.2 | — |
-| Fake-W2 | TABLES only | 0.97 ± 0.01 | 15,178 ± 3.93 | $32.2 | no measurable gain |
-| Fake-W2 | TABLES, LAYOUT, SIGNATURES, FORMS | 0.97 ± 0.02 | 15,197 ± 1.59 | $82.2 | no measurable gain |
+| Dataset | `ocr.features` | Weighted accuracy | Documents with every field right | OCR tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | [Cost per error prevented](marginal-cost-of-error.md) vs Layout only (recommended) |
+|---|---|---|---|---|---|---|---|
+| RealKIE | **Layout only (recommended)** | 0.8 ± 0.08 | 0 ± 0 | — | 16,504 ± 300 | **$22.1 ± $0.10** | — |
+| RealKIE | Tables, layout, signatures (preset default) | 0.76 ± 0.08 | 0 ± 0 | — | 20,208 ± 0 | $69.4 | no measurable gain |
+| RealKIE | Tables only | 0.8 ± 0.07 | **0.05 ± 0** | — | 17,512 ± 1,460 | $67.0 ± $0.39 | no measurable gain |
+| RealKIE | Tables, layout, signatures, forms | 0.76 ± 0.07 | 0 ± 0 | — | 17,941 ± 351 | $270 ± $0.62 | no measurable gain |
+| Fake-W2 | **Layout only (recommended)** | **1 ± 0** | **0.82 ± 0.03** | — | **18,256 ± 197** | **$7.40 ± $0.02** | — |
+| Fake-W2 | Tables, layout, signatures (preset default) | 0.96 ± 0.01 | 0.55 ± 0.06 | — | 18,835 ± 375 | $18.5 ± $0.09 | no measurable gain |
+| Fake-W2 | Tables only | 0.93 ± 0.02 | 0.37 ± 0.15 | — | 18,895 ± 429 | $18.5 ± $0.06 | no measurable gain |
+| Fake-W2 | Tables, layout, signatures, forms | 0.97 ± 0.01 | 0.57 ± 0.03 | — | 18,696 ± 59 | $68.5 ± $0.03 | no measurable gain |
 
-| Dataset | `ocr.features` | List recall | List precision | Total tokens per page | Cost per 1,000 documents (USD) |
-|---|---|---|---|---|---|
-| Statement, 400 rows | TABLES, LAYOUT, SIGNATURES (default) | — | — | — | — |
-| Statement, 400 rows | LAYOUT only | — | — | — | — |
-| Statement, 400 rows | TABLES only | — | — | — | — |
-| Statement, 400 rows | TABLES, LAYOUT, SIGNATURES, FORMS | — | — | — | — |
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+</details>
 
+### Planned
 
-#### DG-07: How much accuracy does scan quality cost?
+We haven't run these yet.
 
-**Answer:** Not yet measured.
+- If I read pages with a vision model, which model? (DG-02)
+- Does a specialized OCR model beat Textract? (DG-03)
+- Does image preprocessing help on poor scans? (DG-05)
+- How much accuracy does scan quality cost? (DG-07)
+- Which reader handles handwriting best? (DG-08)
 
-| | |
-|---|---|
-| **Changes** | Scan quality |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Scan quality | Weighted accuracy | Documents with every field right | AUROC |
-|---|---|---|---|---|
-| ConfBench | Clean original | — | — | — |
-| ConfBench | Light noise | — | — | — |
-| ConfBench | Moderate noise | — | — | — |
-| ConfBench | Heavy noise | — | — | — |
-
-
-#### DG-08: Which reader handles handwriting best?
-
-**Answer:** Not yet measured.
-
-Needs a dataset we haven't built yet: Handwritten forms (to be built).
-
-| | |
-|---|---|
-| **Changes** | OCR reader |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [Handwritten forms (to be built)](datasets.md#handwritten-forms-to-be-built) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | OCR reader | Weighted accuracy | Documents with every field right | Total tokens per page |
-|---|---|---|---|---|
-| Handwritten forms | Textract, tables and layout (default) | — | — | — |
-| Handwritten forms | Bedrock vision model (Claude Sonnet 5) | — | — | — |
-| Handwritten forms | Chandra (Lambda hook) | — | — | — |
-
-<!-- END GENERATED ABLATIONS -->
+<!-- END GENERATED FAQ -->

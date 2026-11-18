@@ -1,0 +1,33 @@
+{
+  "ablation": "EX-07",
+  "verdict": "Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more ($257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.",
+  "runs": {
+    "realkie_long": {
+      "On": [
+        "realkie-fcc-long-20261116-210206",
+        "realkie-fcc-long-20261116-210241",
+        "realkie-fcc-long-20261116-210301"
+      ],
+      "Off": [
+        "realkie-fcc-long-20261116-210217",
+        "realkie-fcc-long-20261116-210227",
+        "realkie-fcc-long-20261116-210251"
+      ]
+    }
+  },
+  "max_failed": {
+    "realkie_long": 1
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "realkie-fcc-long-20261116-210206",
+    "realkie-fcc-long-20261116-210217",
+    "realkie-fcc-long-20261116-210227",
+    "realkie-fcc-long-20261116-210241",
+    "realkie-fcc-long-20261116-210251",
+    "realkie-fcc-long-20261116-210301"
+  ]
+}

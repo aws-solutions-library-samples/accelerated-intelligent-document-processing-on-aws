@@ -1,0 +1,57 @@
+{
+  "ablation": "SC-12",
+  "verdict": "Not yet: Claude Haiku 5.5 is a good place to start for naming sections. It labelled 0.96 of sections right, against 0.81 to 0.83 for the decision model, which cost about 5% less per packet ($101 to $103 against $108 per 1,000). The decision model's confidence ranks its own mistakes about as well as Claude Haiku 5.5's (AUROC 0.82 against 0.79), but it makes about twice as many, so after people review its least-confident 30% of sections, 11% of the rest are still wrong, against 4% for Claude Haiku 5.5. Test it on your own packets.",
+  "runs": {
+    "docsplit": {
+      "LLM \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261117-232545",
+        "DocSplit-Poly-Seq-20261117-232535",
+        "DocSplit-Poly-Seq-20261117-232555"
+      ],
+      "LLM \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-Poly-Seq-20261117-232959",
+        "DocSplit-Poly-Seq-20261117-232949",
+        "DocSplit-Poly-Seq-20261117-233038"
+      ],
+      "Decision model \u00b7 first page image": [
+        "DocSplit-Poly-Seq-20261117-233434",
+        "DocSplit-Poly-Seq-20261117-233412",
+        "DocSplit-Poly-Seq-20261117-233402"
+      ],
+      "Decision model \u00b7 first page image and text": [
+        "DocSplit-Poly-Seq-20261117-233842",
+        "DocSplit-Poly-Seq-20261117-233832",
+        "DocSplit-Poly-Seq-20261117-233822"
+      ],
+      "Decision model \u00b7 first 2 page images": [
+        "DocSplit-Poly-Seq-20261117-234308",
+        "DocSplit-Poly-Seq-20261117-234257",
+        "DocSplit-Poly-Seq-20261117-234247"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit": 6
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15-develop-d1be93f",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Poly-Seq-20261117-232535",
+    "DocSplit-Poly-Seq-20261117-232545",
+    "DocSplit-Poly-Seq-20261117-232555",
+    "DocSplit-Poly-Seq-20261117-232949",
+    "DocSplit-Poly-Seq-20261117-232959",
+    "DocSplit-Poly-Seq-20261117-233038",
+    "DocSplit-Poly-Seq-20261117-233402",
+    "DocSplit-Poly-Seq-20261117-233412",
+    "DocSplit-Poly-Seq-20261117-233434",
+    "DocSplit-Poly-Seq-20261117-233822",
+    "DocSplit-Poly-Seq-20261117-233832",
+    "DocSplit-Poly-Seq-20261117-233842",
+    "DocSplit-Poly-Seq-20261117-234247",
+    "DocSplit-Poly-Seq-20261117-234257",
+    "DocSplit-Poly-Seq-20261117-234308"
+  ]
+}

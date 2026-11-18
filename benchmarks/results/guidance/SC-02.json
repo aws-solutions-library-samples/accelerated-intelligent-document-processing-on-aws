@@ -2,96 +2,32 @@
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "region": "us-east-1",
-  "source": "Test Studio runs DocSplit-Poly-Seq-20261113-204126, DocSplit-Poly-Seq-20261113-204125, DocSplit-Poly-Seq-20261113-204127, DocSplit-Poly-Seq-20261113-204458, DocSplit-Poly-Seq-20261113-204500, DocSplit-Poly-Seq-20261113-204457, DocSplit-Poly-Seq-20261113-204849, DocSplit-Poly-Seq-20261113-204831, DocSplit-Poly-Seq-20261113-204830 (5 failed documents left out of the scores)",
-  "verdict": "On these packets, page images alone did best. Classifying page by page with Amazon Nova 2 Lite, images alone gave more pages the right class (0.84, against 0.82 with text and images) and got more sections exactly right (0.57, against 0.50), with 25% fewer classification tokens. Text alone scored lowest (0.79 and 0.46). DocSplit's pages are scans with noisy OCR text; on clean digital documents the text may count for more, so test on your own files before you turn it off.",
+  "source": "Test Studio runs DocSplit-Poly-Seq-20261116-173745, DocSplit-Poly-Seq-20261116-173756, DocSplit-Poly-Seq-20261116-173733, DocSplit-Poly-Seq-20261116-173722, DocSplit-Poly-Seq-20261116-173702, DocSplit-Poly-Seq-20261116-173712, DocSplit-Poly-Seq-20261116-174557, DocSplit-Poly-Seq-20261116-174607, DocSplit-Poly-Seq-20261116-174618 (3 failed documents left out of the scores)",
+  "verdict": "Text only is a good place to start: holistic Claude Haiku 5.5 got 0.88 of sections exactly right from the OCR text alone, against 0.76 with page images too, and cost less. Test it on your own packets.",
   "cells": {
-    "docsplit|Text and images (default)|weighted_accuracy": {
-      "mean": 0.305757,
-      "se": 0.039017
-    },
-    "docsplit|Text and images (default)|classification_tokens": {
-      "mean": 2842.367133,
-      "se": 0.499658
-    },
-    "docsplit|Text and images (default)|extraction_tokens": {
-      "mean": 7276.36014,
-      "se": 25.331029
-    },
-    "docsplit|Text and images (default)|scoring_tokens": {
-      "mean": 4763.213287,
-      "se": 21.256779
-    },
-    "docsplit|Text and images (default)|total_tokens": {
-      "mean": 14881.940559,
-      "se": 44.750123
-    },
-    "docsplit|Text and images (default)|median_seconds": {
-      "mean": 119.705533,
-      "se": 2.027295
-    },
-    "docsplit|Text and images (default)|list_precision": {
-      "mean": 0.0,
-      "se": 0.0
-    },
-    "docsplit|Text and images (default)|all_fields_right": {
-      "mean": 0.0,
-      "se": 0.0
-    },
-    "docsplit|Text and images (default)|calibration_error": {
-      "mean": 0.959899,
-      "se": 0.00259
-    },
-    "docsplit|Text and images (default)|errors_caught_30": {
-      "mean": 0.299671,
-      "se": 0.000214
-    },
-    "docsplit|Text and images (default)|errors_caught_30_random": {
-      "mean": 0.299671,
-      "se": 0.000214
-    },
-    "docsplit|Text and images (default)|page_accuracy": {
-      "mean": 0.820513,
-      "se": 0.003084
-    },
-    "docsplit|Text and images (default)|section_accuracy": {
-      "mean": 0.498039,
-      "se": 0.014139
-    },
-    "docsplit|Text and images (default)|grouping_score": {
-      "mean": 0.648413,
-      "se": 0.011482
-    },
-    "docsplit|Text and images (default)|boundary_accuracy": {
-      "mean": 0.49553,
-      "se": 0.023849
-    },
-    "docsplit|Text and images (default)|label_accuracy": {
-      "mean": 0.926716,
-      "se": 0.004938
-    },
     "docsplit|Text only|weighted_accuracy": {
-      "mean": 0.332765,
-      "se": 0.044034
+      "mean": 0.318027,
+      "se": 0.031571
     },
     "docsplit|Text only|classification_tokens": {
-      "mean": 2612.224019,
-      "se": 8.088592
+      "mean": 1201.393736,
+      "se": 20.026025
     },
     "docsplit|Text only|extraction_tokens": {
-      "mean": 7373.974304,
-      "se": 14.084658
+      "mean": 6810.951902,
+      "se": 7.930972
     },
     "docsplit|Text only|scoring_tokens": {
-      "mean": 4862.631553,
-      "se": 39.031899
+      "mean": 7972.941834,
+      "se": 6.035259
     },
     "docsplit|Text only|total_tokens": {
-      "mean": 14848.829876,
-      "se": 49.82658
+      "mean": 15985.287472,
+      "se": 27.66685
     },
     "docsplit|Text only|median_seconds": {
-      "mean": 129.531909,
-      "se": 6.892698
+      "mean": 96.669427,
+      "se": 6.250677
     },
     "docsplit|Text only|list_precision": {
       "mean": 0.0,
@@ -102,60 +38,140 @@
       "se": 0.0
     },
     "docsplit|Text only|calibration_error": {
-      "mean": 0.965583,
-      "se": 0.003903
+      "mean": 0.88659,
+      "se": 0.000612
     },
     "docsplit|Text only|errors_caught_30": {
-      "mean": 0.299324,
-      "se": 0.000376
+      "mean": 0.299154,
+      "se": 0.000322
     },
     "docsplit|Text only|errors_caught_30_random": {
-      "mean": 0.299324,
-      "se": 0.000376
+      "mean": 0.299154,
+      "se": 0.000322
+    },
+    "docsplit|Text only|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
     },
     "docsplit|Text only|page_accuracy": {
-      "mean": 0.786174,
-      "se": 0.001575
+      "mean": 0.951902,
+      "se": 0.002959
     },
     "docsplit|Text only|section_accuracy": {
-      "mean": 0.457298,
-      "se": 0.01024
+      "mean": 0.877778,
+      "se": 0.006415
     },
     "docsplit|Text only|grouping_score": {
-      "mean": 0.617822,
-      "se": 0.013615
+      "mean": 0.937806,
+      "se": 0.001216
     },
     "docsplit|Text only|boundary_accuracy": {
-      "mean": 0.468934,
-      "se": 0.014394
+      "mean": 0.911668,
+      "se": 0.008333
     },
     "docsplit|Text only|label_accuracy": {
-      "mean": 0.898002,
-      "se": 0.002044
+      "mean": 0.963987,
+      "se": 0.007721
+    },
+    "docsplit|Text only|classification_cost_per_1000_docs": {
+      "mean": 2.551729,
+      "se": 0.025922
+    },
+    "docsplit|Text and images (baseline)|weighted_accuracy": {
+      "mean": 0.330417,
+      "se": 0.031236
+    },
+    "docsplit|Text and images (baseline)|classification_tokens": {
+      "mean": 6073.571926,
+      "se": 6.294759
+    },
+    "docsplit|Text and images (baseline)|extraction_tokens": {
+      "mean": 6789.638791,
+      "se": 55.689229
+    },
+    "docsplit|Text and images (baseline)|scoring_tokens": {
+      "mean": 7922.242818,
+      "se": 55.338452
+    },
+    "docsplit|Text and images (baseline)|total_tokens": {
+      "mean": 20785.453535,
+      "se": 105.050872
+    },
+    "docsplit|Text and images (baseline)|median_seconds": {
+      "mean": 125.121221,
+      "se": 6.867862
+    },
+    "docsplit|Text and images (baseline)|list_precision": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Text and images (baseline)|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "docsplit|Text and images (baseline)|calibration_error": {
+      "mean": 0.884392,
+      "se": 0.002003
+    },
+    "docsplit|Text and images (baseline)|errors_caught_30": {
+      "mean": 0.299326,
+      "se": 0.000564
+    },
+    "docsplit|Text and images (baseline)|errors_caught_30_random": {
+      "mean": 0.299326,
+      "se": 0.000564
+    },
+    "docsplit|Text and images (baseline)|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "docsplit|Text and images (baseline)|page_accuracy": {
+      "mean": 0.905702,
+      "se": 0.010405
+    },
+    "docsplit|Text and images (baseline)|section_accuracy": {
+      "mean": 0.758824,
+      "se": 0.018305
+    },
+    "docsplit|Text and images (baseline)|grouping_score": {
+      "mean": 0.902139,
+      "se": 0.011528
+    },
+    "docsplit|Text and images (baseline)|boundary_accuracy": {
+      "mean": 0.803773,
+      "se": 0.021197
+    },
+    "docsplit|Text and images (baseline)|label_accuracy": {
+      "mean": 0.945833,
+      "se": 0.011024
+    },
+    "docsplit|Text and images (baseline)|classification_cost_per_1000_docs": {
+      "mean": 10.384651,
+      "se": 0.04245
     },
     "docsplit|Images only|weighted_accuracy": {
-      "mean": 0.330377,
-      "se": 0.034648
+      "mean": 0.337162,
+      "se": 0.028235
     },
     "docsplit|Images only|classification_tokens": {
-      "mean": 2126.130872,
-      "se": 0.951751
+      "mean": 5139.28926,
+      "se": 16.219153
     },
     "docsplit|Images only|extraction_tokens": {
-      "mean": 7266.740492,
-      "se": 4.841435
+      "mean": 6784.768937,
+      "se": 40.381995
     },
     "docsplit|Images only|scoring_tokens": {
-      "mean": 4688.458613,
-      "se": 6.869292
+      "mean": 7898.603475,
+      "se": 113.679065
     },
     "docsplit|Images only|total_tokens": {
-      "mean": 14081.329978,
-      "se": 9.921475
+      "mean": 19822.661672,
+      "se": 161.103357
     },
     "docsplit|Images only|median_seconds": {
-      "mean": 107.875583,
-      "se": 2.986174
+      "mean": 125.603353,
+      "se": 12.399299
     },
     "docsplit|Images only|list_precision": {
       "mean": 0.0,
@@ -166,66 +182,48 @@
       "se": 0.0
     },
     "docsplit|Images only|calibration_error": {
-      "mean": 0.960954,
-      "se": 0.005328
+      "mean": 0.881773,
+      "se": 0.00059
     },
     "docsplit|Images only|errors_caught_30": {
-      "mean": 0.298666,
-      "se": 0.000544
+      "mean": 0.29842,
+      "se": 0.000452
     },
     "docsplit|Images only|errors_caught_30_random": {
-      "mean": 0.298666,
-      "se": 0.000544
+      "mean": 0.29842,
+      "se": 0.000452
+    },
+    "docsplit|Images only|ecarb_30": {
+      "mean": 1.0,
+      "se": 0.0
     },
     "docsplit|Images only|page_accuracy": {
-      "mean": 0.841163,
-      "se": 0.002237
+      "mean": 0.877517,
+      "se": 0.023514
     },
     "docsplit|Images only|section_accuracy": {
-      "mean": 0.57037,
-      "se": 0.009799
+      "mean": 0.739657,
+      "se": 0.029264
     },
     "docsplit|Images only|grouping_score": {
-      "mean": 0.667912,
-      "se": 0.007274
+      "mean": 0.882808,
+      "se": 0.006521
     },
     "docsplit|Images only|boundary_accuracy": {
-      "mean": 0.54405,
-      "se": 0.012919
+      "mean": 0.748221,
+      "se": 0.024935
     },
     "docsplit|Images only|label_accuracy": {
-      "mean": 0.975,
-      "se": 0.0
+      "mean": 0.946039,
+      "se": 0.016104
+    },
+    "docsplit|Images only|classification_cost_per_1000_docs": {
+      "mean": 9.127246,
+      "se": 0.132952
     }
   },
   "sample": {
-    "docsplit|Text and images (default)": {
-      "docs": [
-        19,
-        19,
-        19
-      ],
-      "failed": [
-        1,
-        1,
-        1
-      ],
-      "runs": 3
-    },
     "docsplit|Text only": {
-      "docs": [
-        20,
-        19,
-        19
-      ],
-      "failed": [
-        0,
-        1,
-        1
-      ],
-      "runs": 3
-    },
-    "docsplit|Images only": {
       "docs": [
         20,
         20,
@@ -237,448 +235,517 @@
         0
       ],
       "runs": 3
+    },
+    "docsplit|Text and images (baseline)": {
+      "docs": [
+        20,
+        19,
+        20
+      ],
+      "failed": [
+        0,
+        1,
+        0
+      ],
+      "runs": 3
+    },
+    "docsplit|Images only": {
+      "docs": [
+        19,
+        19,
+        20
+      ],
+      "failed": [
+        1,
+        1,
+        0
+      ],
+      "runs": 3
     }
   },
   "models": {
-    "docsplit|Text and images (default)": {
-      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+    "docsplit|Text only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Classification": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "docsplit|Text only": {
-      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+    "docsplit|Text and images (baseline)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Classification": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
     "docsplit|Images only": {
-      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Classification": [
-          "us.amazon.nova-2-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     }
   },
   "usage": {
-    "docsplit|Text and images (default)": [
-      {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 27010.2632,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 183.6842,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 12304.1053,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3274.1053,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 25563.0,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 31590.9474,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12557.5263,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2625.5789,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 13639.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 677.7895,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 91077.9474,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4832.1053,
-        "textract/analyze_document-Tables|pages": 15.0526
-      },
-      {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 27193.9474,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 12304.1053,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3286.8947,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 22024.7368,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 35139.3684,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 11701.3158,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2473.0526,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 12595.5789,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 1274.8421,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 91014.1053,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4559.6842,
-        "textract/analyze_document-Tables|pages": 15.0526
-      },
-      {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 27193.9474,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 12304.1053,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3300.1579,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 25641.0526,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 31563.6842,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 11808.7895,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2407.6316,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 13052.6316,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 410.7368,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90951.2105,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4499.4737,
-        "textract/analyze_document-Tables|pages": 15.0526
-      }
-    ],
     "docsplit|Text only": [
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 24347.1,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 11342.5,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3473.55,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 38774.9,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 18161.85,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12197.45,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2834.2,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 14686.15,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90077.5,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4864.4,
-        "textract/analyze_document-Tables|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 103496.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 18841.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 104656.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11140.9,
+        "textract/analyze_document-Layout|pages": 14.9
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 24593.5789,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 11113.9474,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3488.3684,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37159.5263,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20057.4211,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12320.3684,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2977.9474,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 15210.7368,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90689.5789,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4922.0526,
-        "textract/analyze_document-Tables|pages": 15.0526
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 80746.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 41681.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 105262.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11226.25,
+        "textract/analyze_document-Layout|pages": 14.9
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 24593.5789,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 11113.9474,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3494.7895,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 40279.7895,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 18735.1579,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 12301.7368,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 3048.6316,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 15663.4737,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90765.3684,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4990.8947,
-        "textract/analyze_document-Tables|pages": 15.0526
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 77044.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 44985.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 104313.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11146.85,
+        "textract/analyze_document-Layout|pages": 14.9
+      }
+    ],
+    "docsplit|Text and images (baseline)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 83738.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 39912.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177688.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11255.3,
+        "textract/analyze_document-Layout|pages": 14.9
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 92783.3158,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 25635.7895,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 172718.8947,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 10546.4737,
+        "textract/analyze_document-Layout|pages": 14.6316
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 69827.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 52031.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 176700.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 10735.9,
+        "textract/analyze_document-Layout|pages": 14.9
       }
     ],
     "docsplit|Images only": [
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 27177.6,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1385.7,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3116.95,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 33976.85,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 23261.15,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 9965.65,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2566.9,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 13477.1,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90410.1,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4434.5,
-        "textract/analyze_document-Tables|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 54067.4737,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 68754.1053,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 163593.9474,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11938.1053,
+        "textract/analyze_document-Layout|pages": 14.9474
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 27177.6,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1385.7,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3140.15,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 31582.15,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 25426.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 10328.2,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2405.15,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 13451.65,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90398.45,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4282.65,
-        "textract/analyze_document-Tables|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 69394.8421,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 48636.3158,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 163105.3684,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 10360.2632,
+        "textract/analyze_document-Layout|pages": 14.9474
       },
       {
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 27177.6,
-        "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-2-lite-v1:0|inputTokens": 1385.7,
-        "bedrock/us.amazon.nova-2-lite-v1:0|outputTokens": 3091.05,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 36709.45,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 20269.75,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 10737.0,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2345.85,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 13564.1,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 90410.2,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 4394.55,
-        "textract/analyze_document-Tables|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 67939.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 55216.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 163249.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11685.7,
+        "textract/analyze_document-Layout|pages": 14.9
       }
     ]
   },
   "cost_basis": {
-    "docsplit|Text and images (default)": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-204125",
-      "index": 1
-    },
     "docsplit|Text only": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-204500",
-      "index": 1
+      "mode": "cache-isolated"
+    },
+    "docsplit|Text and images (baseline)": {
+      "mode": "cache-isolated"
     },
     "docsplit|Images only": {
-      "mode": "cold-run",
-      "run": "DocSplit-Poly-Seq-20261113-204831",
-      "index": 1
+      "mode": "cache-isolated"
     }
   },
   "per_doc": {
-    "docsplit|Text and images (default)": {
-      "packet_0001.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 0.6667
-      },
-      "packet_0002.pdf": {
-        "boundary_accuracy": 0.1111,
-        "label_accuracy": 1.0
-      },
-      "packet_0003.pdf": {
-        "boundary_accuracy": 0.666667,
-        "label_accuracy": 0.866667
-      },
-      "packet_0004.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 0.666667
-      },
-      "packet_0005.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0006.pdf": {
-        "boundary_accuracy": 0.6,
-        "label_accuracy": 1.0
-      },
-      "packet_0007.pdf": {
-        "boundary_accuracy": 0.4,
-        "label_accuracy": 1.0
-      },
-      "packet_0008.pdf": {
-        "boundary_accuracy": 0.0
-      },
-      "packet_0009.pdf": {
-        "boundary_accuracy": 0.333333,
-        "label_accuracy": 1.0
-      },
-      "packet_0010.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
-      },
-      "packet_0011.pdf": {
-        "boundary_accuracy": 0.5714,
-        "label_accuracy": 1.0
-      },
-      "packet_0012.pdf": {
-        "boundary_accuracy": 0.583333,
-        "label_accuracy": 0.555567
-      },
-      "packet_0013.pdf": {
-        "boundary_accuracy": 0.7778,
-        "label_accuracy": 1.0
-      },
-      "packet_0014.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
-      },
-      "packet_0015.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
-      },
-      "packet_0016.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
-      },
-      "packet_0017.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
-      },
-      "packet_0019.pdf": {
-        "boundary_accuracy": 0.904733,
-        "label_accuracy": 1.0
-      },
-      "packet_0020.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
-      }
-    },
     "docsplit|Text only": {
       "packet_0001.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 0.6667
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.418182,
+        "cost": 0.120045
       },
       "packet_0002.pdf": {
-        "boundary_accuracy": 0.0
-      },
-      "packet_0003.pdf": {
-        "boundary_accuracy": 0.666667,
-        "label_accuracy": 0.622233
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.083333,
+        "cost": 0.057235
       },
       "packet_0004.pdf": {
         "boundary_accuracy": 0.8,
-        "label_accuracy": 0.5
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.385185,
+        "cost": 0.047879
       },
       "packet_0005.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0006.pdf": {
-        "boundary_accuracy": 0.4,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.354167,
+        "cost": 0.028788
       },
       "packet_0007.pdf": {
-        "boundary_accuracy": 0.466667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.347099,
+        "cost": 0.082692
       },
       "packet_0008.pdf": {
-        "boundary_accuracy": 0.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.52381,
+        "cost": 0.093039
       },
       "packet_0009.pdf": {
-        "boundary_accuracy": 0.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.288889,
+        "cost": 0.055399
       },
       "packet_0010.pdf": {
-        "boundary_accuracy": 0.666667,
-        "label_accuracy": 0.611133
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.289474,
+        "cost": 0.086488
       },
       "packet_0011.pdf": {
-        "boundary_accuracy": 0.5714,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.904733,
+        "weighted_accuracy": 0.384403,
+        "cost": 0.103904
       },
       "packet_0012.pdf": {
-        "boundary_accuracy": 0.583333,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.552632,
+        "cost": 0.099899
       },
       "packet_0013.pdf": {
-        "boundary_accuracy": 0.444433,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.236842,
+        "cost": 0.07745
       },
       "packet_0014.pdf": {
-        "boundary_accuracy": 0.416667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.081301,
+        "cost": 0.102125
       },
       "packet_0015.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.188889,
+        "cost": 0.054366
       },
       "packet_0016.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.372512,
+        "cost": 0.098766
       },
       "packet_0017.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.441667,
+        "cost": 0.112775
+      },
+      "packet_0018.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.32611,
+        "cost": 0.067326
       },
       "packet_0019.pdf": {
-        "boundary_accuracy": 0.8095,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.311111,
+        "cost": 0.102533
       },
       "packet_0020.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.138889,
+        "cost": 0.069968
+      }
+    },
+    "docsplit|Text and images (baseline)": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.6111,
+        "label_accuracy": 0.85,
+        "weighted_accuracy": 0.423737,
+        "cost": 0.128905
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.15625,
+        "cost": 0.060273
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.377778,
+        "cost": 0.052112
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.347222,
+        "cost": 0.031371
+      },
+      "packet_0007.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.350304,
+        "cost": 0.084205
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.666667,
+        "weighted_accuracy": 0.489579,
+        "cost": 0.093376
+      },
+      "packet_0009.pdf": {
         "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.266667,
+        "cost": 0.06383
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.46792,
+        "cost": 0.095844
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 0.952367,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.391304,
+        "cost": 0.113988
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 0.916667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.538483,
+        "cost": 0.117357
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.236842,
+        "cost": 0.089529
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.081301,
+        "cost": 0.117784
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.188889,
+        "cost": 0.059719
+      },
+      "packet_0016.pdf": {
+        "boundary_accuracy": 0.6111,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474925,
+        "cost": 0.117618
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.425,
+        "cost": 0.128806
+      },
+      "packet_0018.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.267974,
+        "cost": 0.075077
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 0.714267,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.324444,
+        "cost": 0.115972
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.138889,
+        "cost": 0.071337
       }
     },
     "docsplit|Images only": {
       "packet_0001.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.388867,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.423232,
+        "cost": 0.130435
       },
       "packet_0002.pdf": {
-        "boundary_accuracy": 0.3333,
-        "label_accuracy": 1.0
-      },
-      "packet_0003.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.555533,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.239583,
+        "cost": 0.061501
       },
       "packet_0004.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 0.75
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.766667,
+        "weighted_accuracy": 0.348148,
+        "cost": 0.055229
       },
       "packet_0005.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0
-      },
-      "packet_0006.pdf": {
-        "boundary_accuracy": 0.6,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.354167,
+        "cost": 0.033404
       },
       "packet_0007.pdf": {
-        "boundary_accuracy": 0.6,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.533333,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.34071,
+        "cost": 0.088706
       },
       "packet_0008.pdf": {
-        "boundary_accuracy": 0.0
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.546032,
+        "cost": 0.099493
       },
       "packet_0009.pdf": {
-        "boundary_accuracy": 0.0
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.266667,
+        "cost": 0.065959
       },
       "packet_0010.pdf": {
-        "boundary_accuracy": 0.5,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.453634,
+        "cost": 0.096705
       },
       "packet_0011.pdf": {
-        "boundary_accuracy": 0.4286,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.904733,
+        "weighted_accuracy": 0.366932,
+        "cost": 0.113258
       },
       "packet_0012.pdf": {
-        "boundary_accuracy": 0.583333,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.561404,
+        "cost": 0.117796
       },
       "packet_0013.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.236842,
+        "cost": 0.092396
       },
       "packet_0014.pdf": {
-        "boundary_accuracy": 0.416667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.162602,
+        "cost": 0.121213
       },
       "packet_0015.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.188889,
+        "cost": 0.05662
       },
       "packet_0016.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.888867,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.342769,
+        "cost": 0.114181
       },
       "packet_0017.pdf": {
-        "boundary_accuracy": 0.25,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.434524,
+        "cost": 0.124151
+      },
+      "packet_0018.pdf": {
+        "boundary_accuracy": 0.933333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.362444,
+        "cost": 0.076178
       },
       "packet_0019.pdf": {
         "boundary_accuracy": 0.952367,
-        "label_accuracy": 1.0
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.301449,
+        "cost": 0.108884
       },
       "packet_0020.pdf": {
-        "boundary_accuracy": 0.833333,
-        "label_accuracy": 1.0
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.138889,
+        "cost": 0.073686
+      }
+    }
+  },
+  "unfinished": {
+    "docsplit|Text and images (baseline)": {
+      "packet_0006.pdf": {
+        "runs": 1,
+        "of": 3,
+        "status": [
+          "FAILED"
+        ]
+      }
+    },
+    "docsplit|Images only": {
+      "packet_0003.pdf": {
+        "runs": 2,
+        "of": 3,
+        "status": [
+          "FAILED"
+        ]
       }
     }
   }

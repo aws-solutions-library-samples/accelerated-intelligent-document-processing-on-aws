@@ -1,0 +1,1046 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-175524, RealKIE-FCC-Verified-20261116-175558, RealKIE-FCC-Verified-20261116-175514, RealKIE-FCC-Verified-20261116-175503, RealKIE-FCC-Verified-20261116-175537, Fake-W2-Tax-Forms-20261116-180006, Fake-W2-Tax-Forms-20261116-175942, Fake-W2-Tax-Forms-20261116-180058, Fake-W2-Tax-Forms-20261116-180212, Fake-W2-Tax-Forms-20261116-180341, Fake-W2-Tax-Forms-20261116-180557",
+  "verdict": "Leave them on; they changed nothing here. Across 400 sections on RealKIE invoices and W-2 forms, coercion changed no value and validation never failed, so turning either off can't change a result on these documents. Differences in the table are run-to-run noise.",
+  "cells": {
+    "realkie|Coercion off|weighted_accuracy": {
+      "mean": 0.788273,
+      "se": 0.038165
+    },
+    "realkie|Coercion off|extraction_tokens": {
+      "mean": 6762.907407,
+      "se": 4.746914
+    },
+    "realkie|Coercion off|scoring_tokens": {
+      "mean": 9586.944444,
+      "se": 114.191358
+    },
+    "realkie|Coercion off|total_tokens": {
+      "mean": 16349.851852,
+      "se": 109.444444
+    },
+    "realkie|Coercion off|median_seconds": {
+      "mean": 44.705077,
+      "se": 2.031004
+    },
+    "realkie|Coercion off|list_recall": {
+      "mean": 0.357393,
+      "se": 0.014445
+    },
+    "realkie|Coercion off|list_precision": {
+      "mean": 0.469288,
+      "se": 0.013238
+    },
+    "realkie|Coercion off|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Coercion off|auroc": {
+      "mean": 0.75492,
+      "se": 0.004104
+    },
+    "realkie|Coercion off|calibration_error": {
+      "mean": 0.178641,
+      "se": 0.002711
+    },
+    "realkie|Coercion off|errors_caught_30": {
+      "mean": 0.522378,
+      "se": 0.019521
+    },
+    "realkie|Coercion off|errors_caught_30_random": {
+      "mean": 0.299351,
+      "se": 0.000649
+    },
+    "realkie|Coercion off|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion off|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion off|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion off|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion off|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion and validation on (recommended)|weighted_accuracy": {
+      "mean": 0.799089,
+      "se": 0.036276
+    },
+    "realkie|Coercion and validation on (recommended)|extraction_tokens": {
+      "mean": 6768.09465,
+      "se": 6.071223
+    },
+    "realkie|Coercion and validation on (recommended)|scoring_tokens": {
+      "mean": 10336.333333,
+      "se": 185.303777
+    },
+    "realkie|Coercion and validation on (recommended)|total_tokens": {
+      "mean": 17104.427984,
+      "se": 191.37498
+    },
+    "realkie|Coercion and validation on (recommended)|median_seconds": {
+      "mean": 54.524115,
+      "se": 3.964065
+    },
+    "realkie|Coercion and validation on (recommended)|list_recall": {
+      "mean": 0.254808,
+      "se": 0.016026
+    },
+    "realkie|Coercion and validation on (recommended)|list_precision": {
+      "mean": 0.261302,
+      "se": 0.013669
+    },
+    "realkie|Coercion and validation on (recommended)|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Coercion and validation on (recommended)|auroc": {
+      "mean": 0.847837,
+      "se": 0.029557
+    },
+    "realkie|Coercion and validation on (recommended)|calibration_error": {
+      "mean": 0.177631,
+      "se": 0.003719
+    },
+    "realkie|Coercion and validation on (recommended)|errors_caught_30": {
+      "mean": 0.726906,
+      "se": 0.034105
+    },
+    "realkie|Coercion and validation on (recommended)|errors_caught_30_random": {
+      "mean": 0.298696,
+      "se": 0.000239
+    },
+    "realkie|Coercion and validation on (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion and validation on (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion and validation on (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion and validation on (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Coercion and validation on (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|weighted_accuracy": {
+      "mean": 0.997033,
+      "se": 0.00183
+    },
+    "fake_w2|Coercion and validation on (recommended)|extraction_tokens": {
+      "mean": 7423.283333,
+      "se": 7.719906
+    },
+    "fake_w2|Coercion and validation on (recommended)|scoring_tokens": {
+      "mean": 10721.483333,
+      "se": 28.553245
+    },
+    "fake_w2|Coercion and validation on (recommended)|total_tokens": {
+      "mean": 18144.766667,
+      "se": 26.487958
+    },
+    "fake_w2|Coercion and validation on (recommended)|median_seconds": {
+      "mean": 33.769498,
+      "se": 0.946194
+    },
+    "fake_w2|Coercion and validation on (recommended)|all_fields_right": {
+      "mean": 0.8,
+      "se": 0.028868
+    },
+    "fake_w2|Coercion and validation on (recommended)|auroc": {
+      "mean": 0.999176,
+      "se": 0.000206
+    },
+    "fake_w2|Coercion and validation on (recommended)|calibration_error": {
+      "mean": 0.048183,
+      "se": 0.000366
+    },
+    "fake_w2|Coercion and validation on (recommended)|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|errors_caught_30_random": {
+      "mean": 0.29963,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion and validation on (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion off|weighted_accuracy": {
+      "mean": 0.997009,
+      "se": 0.00183
+    },
+    "fake_w2|Coercion off|extraction_tokens": {
+      "mean": 7441.166667,
+      "se": 11.407831
+    },
+    "fake_w2|Coercion off|scoring_tokens": {
+      "mean": 11030.05,
+      "se": 225.282164
+    },
+    "fake_w2|Coercion off|total_tokens": {
+      "mean": 18471.216667,
+      "se": 235.553119
+    },
+    "fake_w2|Coercion off|median_seconds": {
+      "mean": 36.503245,
+      "se": 2.292228
+    },
+    "fake_w2|Coercion off|all_fields_right": {
+      "mean": 0.783333,
+      "se": 0.016667
+    },
+    "fake_w2|Coercion off|auroc": {
+      "mean": 0.962803,
+      "se": 0.036889
+    },
+    "fake_w2|Coercion off|calibration_error": {
+      "mean": 0.046686,
+      "se": 0.000797
+    },
+    "fake_w2|Coercion off|errors_caught_30": {
+      "mean": 0.888889,
+      "se": 0.111111
+    },
+    "fake_w2|Coercion off|errors_caught_30_random": {
+      "mean": 0.299753,
+      "se": 0.000123
+    },
+    "fake_w2|Coercion off|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion off|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion off|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion off|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Coercion off|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Coercion off": {
+      "docs": [
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0
+      ],
+      "runs": 2
+    },
+    "realkie|Coercion and validation on (recommended)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Coercion and validation on (recommended)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Coercion off": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Coercion off": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Coercion and validation on (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Coercion and validation on (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Coercion off": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Coercion off": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 18169.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 18473.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25306.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4709.75,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 35460.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25367.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4945.75,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Coercion and validation on (recommended)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 18250.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 21079.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25515.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5076.45,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 39750.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25407.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5009.5,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 30161.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 7177.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25350.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5040.05,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "fake_w2|Coercion and validation on (recommended)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 4346.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 4063.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5062.05,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7022.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1386.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5110.7,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 5407.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3001.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5018.95,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ],
+    "fake_w2|Coercion off": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8724.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 213.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4817.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5117.8,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4976.9,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8245.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 428.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4744.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5063.75,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Coercion off": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Coercion and validation on (recommended)": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Coercion and validation on (recommended)": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Coercion off": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Coercion off": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.013365
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.666458,
+        "cost": 0.006447
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.006161
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.784742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.940774,
+        "cost": 0.026721
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.262848,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474771,
+        "cost": 0.026667
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.427941,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.917866,
+        "cost": 0.059943
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006705
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.884574,
+        "cost": 0.053303
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.75,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.513987,
+        "cost": 0.041784
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.611667,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.958688,
+        "cost": 0.007181
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.595745,
+        "cost": 0.028718
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.044722
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.553191,
+        "cost": 0.006893
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.827577,
+        "cost": 0.031421
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005997
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.020229
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.011833
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.024723
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.433333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.72695,
+        "cost": 0.006515
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.717857,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89099,
+        "cost": 0.03482
+      }
+    },
+    "realkie|Coercion and validation on (recommended)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.796049,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978303,
+        "cost": 0.01305
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.754068,
+        "cost": 0.006328
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005965
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.025234
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.244156,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.472783,
+        "cost": 0.02703
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.497059,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.925219,
+        "cost": 0.064266
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006348
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.051535
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.833333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.517336,
+        "cost": 0.040662
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959929,
+        "cost": 0.006902
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.371429,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.628166,
+        "cost": 0.029271
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.050059
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.609929,
+        "cost": 0.006796
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.577056,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.862807,
+        "cost": 0.031104
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005899
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.019376
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.011506
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.024866
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.006574
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.664881,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.892446,
+        "cost": 0.034993
+      }
+    },
+    "fake_w2|Coercion and validation on (recommended)": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.007911
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007673
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007785
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007385
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.007332
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.00815
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.008005
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007781
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007936
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007937
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997159,
+        "cost": 0.007799
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.008013
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007484
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007868
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007411
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007648
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.008012
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007707
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007532
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007587
+      }
+    },
+    "fake_w2|Coercion off": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.007358
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.00716
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007688
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007283
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007375
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.007608
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007479
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007313
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.00797
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.00761
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.996686,
+        "cost": 0.007494
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007413
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007073
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007393
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007234
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007347
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.007457
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007207
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007576
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007431
+      }
+    }
+  }
+}

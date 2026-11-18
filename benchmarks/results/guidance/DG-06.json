@@ -2,460 +2,524 @@
   "release": "0.6.15.dev1",
   "measured": "November 2026",
   "region": "us-east-1",
-  "source": "Test Studio runs RealKIE-FCC-Verified-20261113-183155, RealKIE-FCC-Verified-20261113-183156, RealKIE-FCC-Verified-20261113-183157, RealKIE-FCC-Verified-20261113-183443, RealKIE-FCC-Verified-20261113-183516, RealKIE-FCC-Verified-20261113-183512, RealKIE-FCC-Verified-20261113-183741, RealKIE-FCC-Verified-20261113-183751, RealKIE-FCC-Verified-20261113-183840, RealKIE-FCC-Verified-20261113-184029, RealKIE-FCC-Verified-20261113-184136, RealKIE-FCC-Verified-20261113-184120, Fake-W2-Tax-Forms-20261113-184358, Fake-W2-Tax-Forms-20261113-184446, Fake-W2-Tax-Forms-20261113-184443, Fake-W2-Tax-Forms-20261113-184524, Fake-W2-Tax-Forms-20261113-184603, Fake-W2-Tax-Forms-20261113-184607, Fake-W2-Tax-Forms-20261113-184628, Fake-W2-Tax-Forms-20261113-184719, Fake-W2-Tax-Forms-20261113-184721, Fake-W2-Tax-Forms-20261113-184742, Fake-W2-Tax-Forms-20261113-184825, Fake-W2-Tax-Forms-20261113-184846",
-  "verdict": "Pick the features your documents need; none of the combinations we tried changed accuracy measurably. On RealKIE invoices and W-2 forms every combination scored within the noise of the default, and LAYOUT alone used about 3% fewer total tokens per page because it sends less page text. Textract prices each page by the features you select, so dropping a feature your documents do not need saves Textract charges rather than tokens.",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-181226, RealKIE-FCC-Verified-20261116-181239, RealKIE-FCC-Verified-20261116-181216, RealKIE-FCC-Verified-20261116-181323, RealKIE-FCC-Verified-20261116-181334, RealKIE-FCC-Verified-20261116-181556, RealKIE-FCC-Verified-20261116-181250, RealKIE-FCC-Verified-20261116-181313, RealKIE-FCC-Verified-20261116-181301, RealKIE-FCC-Verified-20261116-181651, RealKIE-FCC-Verified-20261116-181759, RealKIE-FCC-Verified-20261116-181730, Fake-W2-Tax-Forms-20261116-182120, Fake-W2-Tax-Forms-20261116-182302, Fake-W2-Tax-Forms-20261116-182043, Fake-W2-Tax-Forms-20261116-182350, Fake-W2-Tax-Forms-20261116-182325, Fake-W2-Tax-Forms-20261116-182400, Fake-W2-Tax-Forms-20261116-182435, Fake-W2-Tax-Forms-20261116-182811, Fake-W2-Tax-Forms-20261116-182652, Fake-W2-Tax-Forms-20261116-182846, Fake-W2-Tax-Forms-20261116-182824, Fake-W2-Tax-Forms-20261116-182859",
+  "verdict": "Layout only is a good place to start: it got every field right on 82% of W-2 forms, against 55% with the preset's tables, layout and signatures, for the lowest cost. Test it on your own documents.",
   "cells": {
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|weighted_accuracy": {
-      "mean": 0.795569,
-      "se": 0.030742
+    "realkie|Layout only (recommended)|weighted_accuracy": {
+      "mean": 0.798936,
+      "se": 0.03819
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|extraction_tokens": {
-      "mean": 7045.057613,
-      "se": 2.528648
+    "realkie|Layout only (recommended)|extraction_tokens": {
+      "mean": 6776.613169,
+      "se": 8.287502
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|scoring_tokens": {
-      "mean": 13825.185185,
-      "se": 337.503636
+    "realkie|Layout only (recommended)|scoring_tokens": {
+      "mean": 9727.769547,
+      "se": 150.064722
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|total_tokens": {
-      "mean": 20870.242798,
-      "se": 335.278205
+    "realkie|Layout only (recommended)|total_tokens": {
+      "mean": 16504.382716,
+      "se": 150.204885
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|median_seconds": {
-      "mean": 43.257854,
-      "se": 3.552496
+    "realkie|Layout only (recommended)|median_seconds": {
+      "mean": 35.996325,
+      "se": 0.352292
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|list_recall": {
-      "mean": 0.472187,
-      "se": 0.004847
+    "realkie|Layout only (recommended)|list_recall": {
+      "mean": 0.289033,
+      "se": 0.005897
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|list_precision": {
-      "mean": 0.222225,
-      "se": 0.003835
+    "realkie|Layout only (recommended)|list_precision": {
+      "mean": 0.292284,
+      "se": 0.003527
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|all_fields_right": {
-      "mean": 0.033333,
-      "se": 0.033333
+    "realkie|Layout only (recommended)|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|auroc": {
-      "mean": 0.387966,
-      "se": 0.00378
+    "realkie|Layout only (recommended)|auroc": {
+      "mean": 0.850569,
+      "se": 0.012098
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|calibration_error": {
-      "mean": 0.17528,
-      "se": 0.012481
+    "realkie|Layout only (recommended)|calibration_error": {
+      "mean": 0.166626,
+      "se": 0.005608
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|errors_caught_30": {
-      "mean": 0.145253,
-      "se": 0.003316
+    "realkie|Layout only (recommended)|errors_caught_30": {
+      "mean": 0.664599,
+      "se": 0.023708
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|errors_caught_30_random": {
-      "mean": 0.299079,
-      "se": 0.000195
+    "realkie|Layout only (recommended)|errors_caught_30_random": {
+      "mean": 0.298967,
+      "se": 0.000179
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|page_accuracy": {
+    "realkie|Layout only (recommended)|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|section_accuracy": {
+    "realkie|Layout only (recommended)|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)|grouping_score": {
+    "realkie|Layout only (recommended)|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|LAYOUT only|weighted_accuracy": {
-      "mean": 0.788171,
-      "se": 0.032716
+    "realkie|Layout only (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "realkie|LAYOUT only|extraction_tokens": {
-      "mean": 6623.300412,
-      "se": 11.049269
+    "realkie|Layout only (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "realkie|LAYOUT only|scoring_tokens": {
-      "mean": 12833.872428,
-      "se": 337.416676
+    "realkie|Tables only|weighted_accuracy": {
+      "mean": 0.804272,
+      "se": 0.037088
     },
-    "realkie|LAYOUT only|total_tokens": {
-      "mean": 19457.17284,
-      "se": 337.916645
+    "realkie|Tables only|extraction_tokens": {
+      "mean": 7153.251029,
+      "se": 7.078839
     },
-    "realkie|LAYOUT only|median_seconds": {
-      "mean": 35.476931,
-      "se": 2.837446
+    "realkie|Tables only|scoring_tokens": {
+      "mean": 10358.930041,
+      "se": 723.156062
     },
-    "realkie|LAYOUT only|list_recall": {
-      "mean": 0.602241,
-      "se": 0.012157
+    "realkie|Tables only|total_tokens": {
+      "mean": 17512.18107,
+      "se": 730.137745
     },
-    "realkie|LAYOUT only|list_precision": {
-      "mean": 0.414715,
-      "se": 0.012096
+    "realkie|Tables only|median_seconds": {
+      "mean": 34.635371,
+      "se": 0.910392
     },
-    "realkie|LAYOUT only|all_fields_right": {
+    "realkie|Tables only|list_recall": {
+      "mean": 0.269871,
+      "se": 0.014314
+    },
+    "realkie|Tables only|list_precision": {
+      "mean": 0.253383,
+      "se": 0.018468
+    },
+    "realkie|Tables only|all_fields_right": {
       "mean": 0.05,
       "se": 0.0
     },
-    "realkie|LAYOUT only|auroc": {
-      "mean": 0.423403,
-      "se": 0.008529
+    "realkie|Tables only|auroc": {
+      "mean": 0.842693,
+      "se": 0.050028
     },
-    "realkie|LAYOUT only|calibration_error": {
-      "mean": 0.208944,
-      "se": 0.007505
+    "realkie|Tables only|calibration_error": {
+      "mean": 0.125082,
+      "se": 0.005594
     },
-    "realkie|LAYOUT only|errors_caught_30": {
-      "mean": 0.17602,
-      "se": 0.0107
+    "realkie|Tables only|errors_caught_30": {
+      "mean": 0.753762,
+      "se": 0.087095
     },
-    "realkie|LAYOUT only|errors_caught_30_random": {
-      "mean": 0.299323,
-      "se": 0.000292
+    "realkie|Tables only|errors_caught_30_random": {
+      "mean": 0.299442,
+      "se": 0.000279
     },
-    "realkie|LAYOUT only|page_accuracy": {
+    "realkie|Tables only|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|LAYOUT only|section_accuracy": {
+    "realkie|Tables only|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|LAYOUT only|grouping_score": {
+    "realkie|Tables only|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES only|weighted_accuracy": {
-      "mean": 0.811923,
-      "se": 0.03209
-    },
-    "realkie|TABLES only|extraction_tokens": {
-      "mean": 7017.415638,
-      "se": 3.450982
-    },
-    "realkie|TABLES only|scoring_tokens": {
-      "mean": 14275.139918,
-      "se": 1084.588324
-    },
-    "realkie|TABLES only|total_tokens": {
-      "mean": 21292.555556,
-      "se": 1087.624796
-    },
-    "realkie|TABLES only|median_seconds": {
-      "mean": 34.608363,
-      "se": 1.675485
-    },
-    "realkie|TABLES only|list_recall": {
-      "mean": 0.569677,
-      "se": 0.052474
-    },
-    "realkie|TABLES only|list_precision": {
-      "mean": 0.347929,
-      "se": 0.069179
-    },
-    "realkie|TABLES only|all_fields_right": {
-      "mean": 0.05,
-      "se": 0.028868
-    },
-    "realkie|TABLES only|auroc": {
-      "mean": 0.393974,
-      "se": 0.030371
-    },
-    "realkie|TABLES only|calibration_error": {
-      "mean": 0.159752,
-      "se": 0.020108
-    },
-    "realkie|TABLES only|errors_caught_30": {
-      "mean": 0.126712,
-      "se": 0.024898
-    },
-    "realkie|TABLES only|errors_caught_30_random": {
-      "mean": 0.298955,
-      "se": 0.000379
-    },
-    "realkie|TABLES only|page_accuracy": {
+    "realkie|Tables only|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES only|section_accuracy": {
+    "realkie|Tables only|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES only|grouping_score": {
+    "realkie|Tables, layout, signatures (preset default)|weighted_accuracy": {
+      "mean": 0.763193,
+      "se": 0.040557
+    },
+    "realkie|Tables, layout, signatures (preset default)|extraction_tokens": {
+      "mean": 7293.765432,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures (preset default)|scoring_tokens": {
+      "mean": 12913.987654,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures (preset default)|total_tokens": {
+      "mean": 20207.753086,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures (preset default)|median_seconds": {
+      "mean": 36.67955,
+      "se": 1.641967
+    },
+    "realkie|Tables, layout, signatures (preset default)|list_recall": {
+      "mean": 0.377357,
+      "se": 0.035559
+    },
+    "realkie|Tables, layout, signatures (preset default)|list_precision": {
+      "mean": 0.198475,
+      "se": 0.025743
+    },
+    "realkie|Tables, layout, signatures (preset default)|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures (preset default)|auroc": {
+      "mean": 0.879915,
+      "se": 0.047784
+    },
+    "realkie|Tables, layout, signatures (preset default)|calibration_error": {
+      "mean": 0.162726,
+      "se": 0.010883
+    },
+    "realkie|Tables, layout, signatures (preset default)|errors_caught_30": {
+      "mean": 0.764068,
+      "se": 0.082375
+    },
+    "realkie|Tables, layout, signatures (preset default)|errors_caught_30_random": {
+      "mean": 0.299485,
+      "se": 0.000337
+    },
+    "realkie|Tables, layout, signatures (preset default)|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|weighted_accuracy": {
-      "mean": 0.793747,
-      "se": 0.034895
+    "realkie|Tables, layout, signatures (preset default)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|extraction_tokens": {
-      "mean": 7048.609053,
-      "se": 5.359297
+    "realkie|Tables, layout, signatures (preset default)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|scoring_tokens": {
-      "mean": 14380.037037,
-      "se": 1354.795416
+    "realkie|Tables, layout, signatures (preset default)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|total_tokens": {
-      "mean": 21428.646091,
-      "se": 1360.142996
+    "realkie|Tables, layout, signatures (preset default)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|median_seconds": {
-      "mean": 35.369624,
-      "se": 1.815267
+    "realkie|Tables, layout, signatures, forms|weighted_accuracy": {
+      "mean": 0.763094,
+      "se": 0.037088
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|list_recall": {
-      "mean": 0.505507,
-      "se": 0.046201
+    "realkie|Tables, layout, signatures, forms|extraction_tokens": {
+      "mean": 7217.193416,
+      "se": 5.774789
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|list_precision": {
-      "mean": 0.269592,
-      "se": 0.047623
+    "realkie|Tables, layout, signatures, forms|scoring_tokens": {
+      "mean": 10724.26749,
+      "se": 175.633785
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|all_fields_right": {
-      "mean": 0.066667,
+    "realkie|Tables, layout, signatures, forms|total_tokens": {
+      "mean": 17941.460905,
+      "se": 175.749681
+    },
+    "realkie|Tables, layout, signatures, forms|median_seconds": {
+      "mean": 38.018313,
+      "se": 0.158209
+    },
+    "realkie|Tables, layout, signatures, forms|list_recall": {
+      "mean": 0.243467,
+      "se": 0.007097
+    },
+    "realkie|Tables, layout, signatures, forms|list_precision": {
+      "mean": 0.213471,
+      "se": 0.003597
+    },
+    "realkie|Tables, layout, signatures, forms|all_fields_right": {
+      "mean": 0.0,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures, forms|auroc": {
+      "mean": 0.86706,
+      "se": 0.012137
+    },
+    "realkie|Tables, layout, signatures, forms|calibration_error": {
+      "mean": 0.132448,
+      "se": 0.023831
+    },
+    "realkie|Tables, layout, signatures, forms|errors_caught_30": {
+      "mean": 0.764104,
+      "se": 0.019592
+    },
+    "realkie|Tables, layout, signatures, forms|errors_caught_30_random": {
+      "mean": 0.298518,
+      "se": 0.000633
+    },
+    "realkie|Tables, layout, signatures, forms|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures, forms|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures, forms|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures, forms|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Tables, layout, signatures, forms|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Layout only (recommended)|weighted_accuracy": {
+      "mean": 0.998548,
+      "se": 0.001134
+    },
+    "fake_w2|Layout only (recommended)|extraction_tokens": {
+      "mean": 7469.45,
+      "se": 18.591486
+    },
+    "fake_w2|Layout only (recommended)|scoring_tokens": {
+      "mean": 10786.083333,
+      "se": 115.121133
+    },
+    "fake_w2|Layout only (recommended)|total_tokens": {
+      "mean": 18255.533333,
+      "se": 98.264033
+    },
+    "fake_w2|Layout only (recommended)|median_seconds": {
+      "mean": 30.173353,
+      "se": 0.376805
+    },
+    "fake_w2|Layout only (recommended)|all_fields_right": {
+      "mean": 0.816667,
       "se": 0.016667
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|auroc": {
-      "mean": 0.453135,
-      "se": 0.010044
+    "fake_w2|Layout only (recommended)|auroc": {
+      "mean": 0.998971,
+      "se": 0.000206
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|calibration_error": {
-      "mean": 0.202764,
-      "se": 0.022982
+    "fake_w2|Layout only (recommended)|calibration_error": {
+      "mean": 0.04866,
+      "se": 0.000939
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|errors_caught_30": {
-      "mean": 0.2313,
-      "se": 0.020648
-    },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|errors_caught_30_random": {
-      "mean": 0.299128,
-      "se": 0.000562
-    },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|page_accuracy": {
+    "fake_w2|Layout only (recommended)|errors_caught_30": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|section_accuracy": {
-      "mean": 1.0,
-      "se": 0.0
-    },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS|grouping_score": {
-      "mean": 1.0,
-      "se": 0.0
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|weighted_accuracy": {
-      "mean": 0.950318,
-      "se": 0.01005
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|extraction_tokens": {
-      "mean": 6878.233333,
-      "se": 1.345466
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|scoring_tokens": {
-      "mean": 8316.983333,
-      "se": 2.418735
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|total_tokens": {
-      "mean": 15195.216667,
-      "se": 3.742363
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|median_seconds": {
-      "mean": 26.011522,
-      "se": 0.725013
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|all_fields_right": {
-      "mean": 0.116667,
-      "se": 0.033333
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|auroc": {
-      "mean": 0.471101,
-      "se": 0.005689
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|calibration_error": {
-      "mean": 0.052327,
-      "se": 0.003093
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|errors_caught_30": {
-      "mean": 0.161332,
-      "se": 0.006062
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|errors_caught_30_random": {
+    "fake_w2|Layout only (recommended)|errors_caught_30_random": {
       "mean": 0.29963,
       "se": 0.0
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|page_accuracy": {
+    "fake_w2|Layout only (recommended)|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|section_accuracy": {
+    "fake_w2|Layout only (recommended)|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)|grouping_score": {
+    "fake_w2|Layout only (recommended)|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|LAYOUT only|weighted_accuracy": {
-      "mean": 0.961521,
-      "se": 0.010594
+    "fake_w2|Layout only (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "fake_w2|LAYOUT only|extraction_tokens": {
-      "mean": 6389.216667,
-      "se": 5.082678
+    "fake_w2|Layout only (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
     },
-    "fake_w2|LAYOUT only|scoring_tokens": {
-      "mean": 8315.383333,
-      "se": 1.68556
+    "fake_w2|Tables, layout, signatures (preset default)|weighted_accuracy": {
+      "mean": 0.957757,
+      "se": 0.006991
     },
-    "fake_w2|LAYOUT only|total_tokens": {
-      "mean": 14704.6,
-      "se": 3.884692
+    "fake_w2|Tables, layout, signatures (preset default)|extraction_tokens": {
+      "mean": 7946.916667,
+      "se": 24.015018
     },
-    "fake_w2|LAYOUT only|median_seconds": {
-      "mean": 24.507087,
-      "se": 0.130198
+    "fake_w2|Tables, layout, signatures (preset default)|scoring_tokens": {
+      "mean": 10888.416667,
+      "se": 163.359117
     },
-    "fake_w2|LAYOUT only|all_fields_right": {
-      "mean": 0.4,
+    "fake_w2|Tables, layout, signatures (preset default)|total_tokens": {
+      "mean": 18835.333333,
+      "se": 187.352692
+    },
+    "fake_w2|Tables, layout, signatures (preset default)|median_seconds": {
+      "mean": 31.29734,
+      "se": 0.168369
+    },
+    "fake_w2|Tables, layout, signatures (preset default)|all_fields_right": {
+      "mean": 0.55,
       "se": 0.028868
     },
-    "fake_w2|LAYOUT only|auroc": {
-      "mean": 0.431731,
-      "se": 0.03813
+    "fake_w2|Tables, layout, signatures (preset default)|auroc": {
+      "mean": 0.996698,
+      "se": 0.000684
     },
-    "fake_w2|LAYOUT only|calibration_error": {
-      "mean": 0.029468,
-      "se": 0.004943
+    "fake_w2|Tables, layout, signatures (preset default)|calibration_error": {
+      "mean": 0.065382,
+      "se": 0.00283
     },
-    "fake_w2|LAYOUT only|errors_caught_30": {
-      "mean": 0.11948,
-      "se": 0.038144
-    },
-    "fake_w2|LAYOUT only|errors_caught_30_random": {
-      "mean": 0.299508,
-      "se": 0.000188
-    },
-    "fake_w2|LAYOUT only|page_accuracy": {
+    "fake_w2|Tables, layout, signatures (preset default)|errors_caught_30": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|LAYOUT only|section_accuracy": {
+    "fake_w2|Tables, layout, signatures (preset default)|errors_caught_30_random": {
+      "mean": 0.299753,
+      "se": 0.000123
+    },
+    "fake_w2|Tables, layout, signatures (preset default)|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|LAYOUT only|grouping_score": {
+    "fake_w2|Tables, layout, signatures (preset default)|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES only|weighted_accuracy": {
-      "mean": 0.965242,
-      "se": 0.006219
-    },
-    "fake_w2|TABLES only|extraction_tokens": {
-      "mean": 6859.016667,
-      "se": 2.413561
-    },
-    "fake_w2|TABLES only|scoring_tokens": {
-      "mean": 8318.983333,
-      "se": 1.036554
-    },
-    "fake_w2|TABLES only|total_tokens": {
-      "mean": 15178.0,
-      "se": 1.963628
-    },
-    "fake_w2|TABLES only|median_seconds": {
-      "mean": 24.042139,
-      "se": 0.054059
-    },
-    "fake_w2|TABLES only|all_fields_right": {
-      "mean": 0.166667,
-      "se": 0.044096
-    },
-    "fake_w2|TABLES only|auroc": {
-      "mean": 0.446209,
-      "se": 0.027978
-    },
-    "fake_w2|TABLES only|calibration_error": {
-      "mean": 0.036948,
-      "se": 0.003792
-    },
-    "fake_w2|TABLES only|errors_caught_30": {
-      "mean": 0.124074,
-      "se": 0.048679
-    },
-    "fake_w2|TABLES only|errors_caught_30_random": {
-      "mean": 0.29963,
-      "se": 0.0
-    },
-    "fake_w2|TABLES only|page_accuracy": {
+    "fake_w2|Tables, layout, signatures (preset default)|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES only|section_accuracy": {
+    "fake_w2|Tables, layout, signatures (preset default)|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES only|grouping_score": {
+    "fake_w2|Tables, layout, signatures (preset default)|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|weighted_accuracy": {
-      "mean": 0.965886,
-      "se": 0.008931
+    "fake_w2|Tables only|weighted_accuracy": {
+      "mean": 0.932639,
+      "se": 0.008945
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|extraction_tokens": {
-      "mean": 6882.15,
-      "se": 0.125831
+    "fake_w2|Tables only|extraction_tokens": {
+      "mean": 7922.475,
+      "se": 5.975
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|scoring_tokens": {
-      "mean": 8314.65,
-      "se": 0.822091
+    "fake_w2|Tables only|scoring_tokens": {
+      "mean": 10972.375,
+      "se": 208.525
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|total_tokens": {
-      "mean": 15196.8,
-      "se": 0.79425
+    "fake_w2|Tables only|total_tokens": {
+      "mean": 18894.85,
+      "se": 214.5
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|median_seconds": {
-      "mean": 25.311935,
-      "se": 0.22301
+    "fake_w2|Tables only|median_seconds": {
+      "mean": 30.977306,
+      "se": 0.240793
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|all_fields_right": {
-      "mean": 0.3,
-      "se": 0.028868
+    "fake_w2|Tables only|all_fields_right": {
+      "mean": 0.366667,
+      "se": 0.072648
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|auroc": {
-      "mean": 0.458189,
-      "se": 0.01968
+    "fake_w2|Tables only|auroc": {
+      "mean": 0.99708,
+      "se": 0.001316
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|calibration_error": {
-      "mean": 0.035702,
-      "se": 0.002712
+    "fake_w2|Tables only|calibration_error": {
+      "mean": 0.074131,
+      "se": 0.002161
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|errors_caught_30": {
-      "mean": 0.107324,
-      "se": 0.034582
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|errors_caught_30_random": {
-      "mean": 0.29963,
-      "se": 0.0
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|page_accuracy": {
+    "fake_w2|Tables only|errors_caught_30": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|section_accuracy": {
+    "fake_w2|Tables only|errors_caught_30_random": {
+      "mean": 0.299712,
+      "se": 0.000288
+    },
+    "fake_w2|Tables only|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS|grouping_score": {
+    "fake_w2|Tables only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables, layout, signatures, forms|weighted_accuracy": {
+      "mean": 0.970542,
+      "se": 0.006663
+    },
+    "fake_w2|Tables, layout, signatures, forms|extraction_tokens": {
+      "mean": 7978.533333,
+      "se": 29.114348
+    },
+    "fake_w2|Tables, layout, signatures, forms|scoring_tokens": {
+      "mean": 10717.366667,
+      "se": 4.301776
+    },
+    "fake_w2|Tables, layout, signatures, forms|total_tokens": {
+      "mean": 18695.9,
+      "se": 29.582469
+    },
+    "fake_w2|Tables, layout, signatures, forms|median_seconds": {
+      "mean": 31.837311,
+      "se": 0.368047
+    },
+    "fake_w2|Tables, layout, signatures, forms|all_fields_right": {
+      "mean": 0.566667,
+      "se": 0.016667
+    },
+    "fake_w2|Tables, layout, signatures, forms|auroc": {
+      "mean": 0.995295,
+      "se": 0.001394
+    },
+    "fake_w2|Tables, layout, signatures, forms|calibration_error": {
+      "mean": 0.056466,
+      "se": 0.002491
+    },
+    "fake_w2|Tables, layout, signatures, forms|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables, layout, signatures, forms|errors_caught_30_random": {
+      "mean": 0.299753,
+      "se": 0.000123
+    },
+    "fake_w2|Tables, layout, signatures, forms|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables, layout, signatures, forms|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables, layout, signatures, forms|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables, layout, signatures, forms|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Tables, layout, signatures, forms|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     }
   },
   "sample": {
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)": {
+    "realkie|Layout only (recommended)": {
       "docs": [
         20,
         20,
@@ -468,7 +532,7 @@
       ],
       "runs": 3
     },
-    "realkie|LAYOUT only": {
+    "realkie|Tables only": {
       "docs": [
         20,
         20,
@@ -481,7 +545,7 @@
       ],
       "runs": 3
     },
-    "realkie|TABLES only": {
+    "realkie|Tables, layout, signatures (preset default)": {
       "docs": [
         20,
         20,
@@ -494,7 +558,7 @@
       ],
       "runs": 3
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS": {
+    "realkie|Tables, layout, signatures, forms": {
       "docs": [
         20,
         20,
@@ -507,7 +571,7 @@
       ],
       "runs": 3
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)": {
+    "fake_w2|Layout only (recommended)": {
       "docs": [
         20,
         20,
@@ -520,7 +584,7 @@
       ],
       "runs": 3
     },
-    "fake_w2|LAYOUT only": {
+    "fake_w2|Tables, layout, signatures (preset default)": {
       "docs": [
         20,
         20,
@@ -533,7 +597,7 @@
       ],
       "runs": 3
     },
-    "fake_w2|TABLES only": {
+    "fake_w2|Tables only": {
       "docs": [
         20,
         20,
@@ -546,7 +610,7 @@
       ],
       "runs": 3
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS": {
+    "fake_w2|Tables, layout, signatures, forms": {
       "docs": [
         20,
         20,
@@ -561,444 +625,1446 @@
     }
   },
   "models": {
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)": {
-      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
-      "billed": {
-        "Assessment": [
-          "us.amazon.nova-lite-v1:0",
-          "us.anthropic.claude-sonnet-5"
-        ],
-        "Extraction": [
-          "us.anthropic.claude-sonnet-5"
-        ]
-      }
-    },
-    "realkie|LAYOUT only": {
+    "realkie|Layout only (recommended)": {
       "OCR": "Amazon Textract (Layout)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "realkie|TABLES only": {
+    "realkie|Tables only": {
       "OCR": "Amazon Textract (Tables)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0",
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS": {
-      "OCR": "Amazon Textract (Tables, Layout, Signatures, Forms)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
-      "billed": {
-        "Assessment": [
-          "us.amazon.nova-lite-v1:0",
-          "us.anthropic.claude-sonnet-5"
-        ],
-        "Extraction": [
-          "us.anthropic.claude-sonnet-5"
-        ]
-      }
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)": {
+    "realkie|Tables, layout, signatures (preset default)": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     },
-    "fake_w2|LAYOUT only": {
-      "OCR": "Amazon Textract (Layout)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
-      "billed": {
-        "Assessment": [
-          "us.amazon.nova-lite-v1:0"
-        ],
-        "Extraction": [
-          "us.anthropic.claude-sonnet-5"
-        ]
-      }
-    },
-    "fake_w2|TABLES only": {
-      "OCR": "Amazon Textract (Tables)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
-      "billed": {
-        "Assessment": [
-          "us.amazon.nova-lite-v1:0"
-        ],
-        "Extraction": [
-          "us.anthropic.claude-sonnet-5"
-        ]
-      }
-    },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS": {
+    "realkie|Tables, layout, signatures, forms": {
       "OCR": "Amazon Textract (Tables, Layout, Signatures, Forms)",
-      "Classification": "Amazon Nova 2 Lite, page by page (no calls billed)",
-      "Extraction": "Claude Sonnet 5, single-pass",
-      "Confidence": "Amazon Nova Lite, escalating to Claude Sonnet 5",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
       "billed": {
         "Assessment": [
-          "us.amazon.nova-lite-v1:0"
+          "us.anthropic.claude-haiku-5-5"
         ],
         "Extraction": [
-          "us.anthropic.claude-sonnet-5"
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Layout only (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Tables, layout, signatures (preset default)": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Tables only": {
+      "OCR": "Amazon Textract (Tables)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Tables, layout, signatures, forms": {
+      "OCR": "Amazon Textract (Tables, Layout, Signatures, Forms)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
         ]
       }
     }
   },
   "usage": {
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)": [
+    "realkie|Layout only (recommended)": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 46702.6,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1118.6,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3823.7,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1613.4,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25276.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1593.8,
-        "textract/analyze_document-Tables|pages": 4.05
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 47895.8,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1122.8,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3889.0,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1705.25,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4318.1,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25310.4,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1614.6,
-        "textract/analyze_document-Tables|pages": 4.05
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 47295.5,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1719.15,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3906.05,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1718.25,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4318.1,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25315.45,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1636.1,
-        "textract/analyze_document-Tables|pages": 4.05
-      }
-    ],
-    "realkie|LAYOUT only": [
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 37834.25,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 8874.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3880.35,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1714.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1619.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 35460.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25378.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4900.65,
         "textract/analyze_document-Layout|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44107.45,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 110.05,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3640.9,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1606.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1493.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 37499.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25407.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4932.5,
         "textract/analyze_document-Layout|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 45227.65,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 3298.25,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3783.4,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1855.25,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 23613.7,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1479.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 36388.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25391.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5168.75,
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|TABLES only": [
+    "realkie|Tables only": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 42350.8,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 3227.95,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3741.45,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1736.5,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 2600.9,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25204.05,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1597.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 43919.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27104.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5698.85,
         "textract/analyze_document-Tables|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 57592.1,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 254.3,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4139.3,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1957.3,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4280.9,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25203.95,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1609.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 35460.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 26880.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4672.65,
         "textract/analyze_document-Tables|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 47676.9,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 0.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3832.55,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1600.05,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25170.45,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1568.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 36808.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 26960.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5268.9,
         "textract/analyze_document-Tables|pages": 4.05
       }
     ],
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS": [
+    "realkie|Tables, layout, signatures (preset default)": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 44774.9,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 3303.1,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3823.0,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1851.7,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4318.1,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25349.2,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1600.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 35885.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 11607.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27706.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6642.7,
+        "textract/analyze_document-Tables|pages": 4.05
+      }
+    ],
+    "realkie|Tables, layout, signatures, forms": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 38942.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27124.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5324.95,
         "textract/analyze_document-Tables+Forms|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 43080.05,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1313.1,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 3642.2,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 1704.35,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 1680.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25315.6,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1515.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 37267.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 2589.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27219.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5666.3,
         "textract/analyze_document-Tables+Forms|pages": 4.05
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 59497.9,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 58.3,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 4161.3,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 2051.3,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 4318.1,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 25349.2,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 1650.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 33769.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 7354.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 27206.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5522.8,
         "textract/analyze_document-Tables+Forms|pages": 4.05
       }
     ],
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)": [
+    "fake_w2|Layout only (recommended)": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 775.8,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 3798.6,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2790.95,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 953.4,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 2501.6,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 625.4,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2860.5,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 892.25,
-        "textract/analyze_document-Tables|pages": 1.0
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3466.8,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 1107.65,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.45,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 946.3,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2860.5,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 888.05,
-        "textract/analyze_document-Tables|pages": 1.0
-      },
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3661.35,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 913.05,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.45,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 954.15,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2860.5,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 891.9,
-        "textract/analyze_document-Tables|pages": 1.0
-      }
-    ],
-    "fake_w2|LAYOUT only": [
-      {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4024.4,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 550.3,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.5,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 946.35,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2355.9,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 905.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8195.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 214.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5058.9,
         "textract/analyze_document-Layout|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3843.0,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 731.75,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.25,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 951.75,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2355.9,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 897.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8673.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4744.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5033.0,
         "textract/analyze_document-Layout|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4209.65,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 364.95,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.65,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 947.6,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2355.9,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 915.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.65,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5095.0,
         "textract/analyze_document-Layout|pages": 1.0
       }
     ],
-    "fake_w2|TABLES only": [
+    "fake_w2|Tables, layout, signatures (preset default)": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 3837.65,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 737.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.05,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 950.25,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2839.85,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 894.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8672.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5246.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5286.45,
         "textract/analyze_document-Tables|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4028.7,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 545.95,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2792.1,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 952.9,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2839.85,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 894.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5175.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5115.7,
         "textract/analyze_document-Tables|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4392.0,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 182.6,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.7,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 954.05,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2839.85,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 887.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5174.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5016.25,
         "textract/analyze_document-Tables|pages": 1.0
       }
     ],
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS": [
+    "fake_w2|Tables only": [
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4394.0,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 180.6,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.75,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 946.75,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2867.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 887.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5152.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5118.95,
+        "textract/analyze_document-Tables|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8672.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5224.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5212.9,
+        "textract/analyze_document-Tables|pages": 1.0
+      }
+    ],
+    "fake_w2|Tables, layout, signatures, forms": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5182.15,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5066.85,
         "textract/analyze_document-Tables+Forms|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4027.15,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 547.45,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.7,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 949.6,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2867.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 887.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5182.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5162.45,
         "textract/analyze_document-Tables+Forms|pages": 1.0
       },
       {
-        "bedrock/us.amazon.nova-lite-v1:0|cacheReadInputTokens": 4212.55,
-        "bedrock/us.amazon.nova-lite-v1:0|cacheWriteInputTokens": 362.0,
-        "bedrock/us.amazon.nova-lite-v1:0|inputTokens": 2791.2,
-        "bedrock/us.amazon.nova-lite-v1:0|outputTokens": 949.2,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheReadInputTokens": 3127.0,
-        "bedrock/us.anthropic.claude-sonnet-5|cacheWriteInputTokens": 0.0,
-        "bedrock/us.anthropic.claude-sonnet-5|inputTokens": 2867.8,
-        "bedrock/us.anthropic.claude-sonnet-5|outputTokens": 887.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8409.25,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 5181.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5084.1,
         "textract/analyze_document-Tables+Forms|pages": 1.0
       }
     ]
   },
   "cost_basis": {
-    "realkie|TABLES, LAYOUT, SIGNATURES (default)": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-183157",
-      "index": 2
+    "realkie|Layout only (recommended)": {
+      "mode": "cache-isolated"
     },
-    "realkie|LAYOUT only": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-183443",
-      "index": 0
+    "realkie|Tables only": {
+      "mode": "cache-isolated"
     },
-    "realkie|TABLES only": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-183741",
-      "index": 0
+    "realkie|Tables, layout, signatures (preset default)": {
+      "mode": "cache-isolated"
     },
-    "realkie|TABLES, LAYOUT, SIGNATURES, FORMS": {
-      "mode": "cold-run",
-      "run": "RealKIE-FCC-Verified-20261113-184029",
-      "index": 0
+    "realkie|Tables, layout, signatures, forms": {
+      "mode": "cache-isolated"
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES (default)": {
-      "mode": "cold-run",
-      "run": "Fake-W2-Tax-Forms-20261113-184358",
-      "index": 0
+    "fake_w2|Layout only (recommended)": {
+      "mode": "cache-isolated"
     },
-    "fake_w2|LAYOUT only": {
-      "mode": "cold-run",
-      "run": "Fake-W2-Tax-Forms-20261113-184603",
-      "index": 1
+    "fake_w2|Tables, layout, signatures (preset default)": {
+      "mode": "cache-isolated"
     },
-    "fake_w2|TABLES only": {
-      "mode": "cold-run",
-      "run": "Fake-W2-Tax-Forms-20261113-184628",
-      "index": 0
+    "fake_w2|Tables only": {
+      "mode": "cache-isolated"
     },
-    "fake_w2|TABLES, LAYOUT, SIGNATURES, FORMS": {
-      "mode": "cold-run",
-      "run": "Fake-W2-Tax-Forms-20261113-184825",
-      "index": 1
+    "fake_w2|Tables, layout, signatures, forms": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Layout only (recommended)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.796049,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978303,
+        "cost": 0.012369
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.745724,
+        "cost": 0.00604
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005635
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.024791
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.21439,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.469616,
+        "cost": 0.027288
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.670588,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94368,
+        "cost": 0.060616
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.8,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.96415,
+        "cost": 0.006387
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.04894
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.766667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510244,
+        "cost": 0.038566
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959929,
+        "cost": 0.006177
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.560284,
+        "cost": 0.026545
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.044972
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.609929,
+        "cost": 0.00648
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.93396,
+        "cost": 0.029822
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005612
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.018744
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.01081
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.009662,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894645,
+        "cost": 0.024778
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.555556,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.739953,
+        "cost": 0.006293
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.717857,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89099,
+        "cost": 0.032023
+      }
+    },
+    "realkie|Tables only": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.034402
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.4,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.914894,
+        "cost": 0.016956
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.929078,
+        "cost": 0.016623
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.866306,
+        "cost": 0.046782
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.394632,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.488791,
+        "cost": 0.082358
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.510638,
+        "cost": 0.194137
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893228,
+        "cost": 0.017258
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.045,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.877128,
+        "cost": 0.160654
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.8,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.519307,
+        "cost": 0.126663
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.957447,
+        "cost": 0.017548
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.77305,
+        "cost": 0.081899
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.298878,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.684066,
+        "cost": 0.144541
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.797436,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.552919,
+        "cost": 0.017507
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.498551,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.854456,
+        "cost": 0.085266
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.822695,
+        "cost": 0.017047
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.724961,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.963648,
+        "cost": 0.051451
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.890476,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988349,
+        "cost": 0.032869
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.079957
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.017294
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.099017
+      }
+    },
+    "realkie|Tables, layout, signatures (preset default)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.034263
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.366667,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.681894,
+        "cost": 0.017057
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.016879
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.046814
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.446407,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.494299,
+        "cost": 0.087401
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.439716,
+        "cost": 0.205008
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.949966,
+        "cost": 0.017317
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.290957,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.903293,
+        "cost": 0.174141
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.533333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474389,
+        "cost": 0.1336
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.964539,
+        "cost": 0.017783
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.081824
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.151791
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.539007,
+        "cost": 0.017506
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.598344,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.723228,
+        "cost": 0.086748
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.016745
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.618124,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959375,
+        "cost": 0.051607
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.032822
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.080011
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.017232
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.5375,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871803,
+        "cost": 0.09934
+      }
+    },
+    "realkie|Tables, layout, signatures, forms": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.8,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978723,
+        "cost": 0.134391
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.674802,
+        "cost": 0.067007
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.066876
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.585912,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901892,
+        "cost": 0.147198
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.390693,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.488372,
+        "cost": 0.334169
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.614118,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.795828,
+        "cost": 0.794155
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.942874,
+        "cost": 0.067508
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.045,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.586348,
+        "cost": 0.661129
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.522459,
+        "cost": 0.531248
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.8,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.907801,
+        "cost": 0.067706
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.567376,
+        "cost": 0.332048
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.596685
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.546099,
+        "cost": 0.067424
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.445379,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.848799,
+        "cost": 0.336441
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.066997
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.202178
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.835714,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.982523,
+        "cost": 0.132884
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.005797,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.894234,
+        "cost": 0.329908
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.6,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.744681,
+        "cost": 0.067266
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.659772,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.88481,
+        "cost": 0.399319
+      }
+    },
+    "fake_w2|Layout only (recommended)": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.007402
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007245
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007491
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007529
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007383
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.007737
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007283
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.00736
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007338
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.00741
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997159,
+        "cost": 0.007426
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007491
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007414
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007406
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.00728
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007241
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.0074
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007273
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007464
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007493
+      }
+    },
+    "fake_w2|Tables, layout, signatures (preset default)": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953209,
+        "cost": 0.018371
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.018404
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.018544
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.018579
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.018643
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.967566,
+        "cost": 0.018614
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.018674
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.01838
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.939394,
+        "cost": 0.018612
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.018412
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.999527,
+        "cost": 0.018525
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.018511
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.018496
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.018387
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.018179
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.0183
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.018431
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.018549
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.018558
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.018672
+      }
+    },
+    "fake_w2|Tables only": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.877451,
+        "cost": 0.018573
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863636,
+        "cost": 0.018578
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.018509
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.018333
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.018702
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.990294,
+        "cost": 0.018619
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.018661
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.018573
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.878788,
+        "cost": 0.018409
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.018386
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.921402,
+        "cost": 0.018505
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.909091,
+        "cost": 0.018566
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.018407
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.018137
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.018206
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.018385
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.018517
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.018411
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901515,
+        "cost": 0.018707
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94697,
+        "cost": 0.018613
+      }
+    },
+    "fake_w2|Tables, layout, signatures, forms": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.068466
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.06864
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.068517
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.068427
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.068644
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.068551
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.06854
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.068467
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.068464
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.954545,
+        "cost": 0.068491
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.959754,
+        "cost": 0.068661
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901515,
+        "cost": 0.068548
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.992424,
+        "cost": 0.068451
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.068378
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.068147
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.068357
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.068345
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.068461
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.068448
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.068401
+      }
     }
   }
 }

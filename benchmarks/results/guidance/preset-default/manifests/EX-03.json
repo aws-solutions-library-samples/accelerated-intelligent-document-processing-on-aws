@@ -1,0 +1,44 @@
+{
+  "ablation": "EX-03",
+  "verdict": "A little, for few tokens. High effort raised accuracy from 0.79 to 0.83 on RealKIE invoices and from 0.95 to 0.97 on W-2 forms, for 2 to 5% more total tokens per page and a few seconds per document. Both gains are near the edge of the noise on 20 documents, so confirm on your own test set before you change the default.",
+  "runs": {
+    "realkie": {
+      "Low (default)": [
+        "RealKIE-FCC-Verified-20261113-182228",
+        "RealKIE-FCC-Verified-20261113-182227",
+        "RealKIE-FCC-Verified-20261113-182229"
+      ],
+      "Medium": [
+        "RealKIE-FCC-Verified-20261113-182526",
+        "RealKIE-FCC-Verified-20261113-182544",
+        "RealKIE-FCC-Verified-20261113-182545"
+      ],
+      "High": [
+        "RealKIE-FCC-Verified-20261113-182844",
+        "RealKIE-FCC-Verified-20261113-182910",
+        "RealKIE-FCC-Verified-20261113-182913"
+      ]
+    },
+    "fake_w2": {
+      "Low (default)": [
+        "Fake-W2-Tax-Forms-20261113-183212",
+        "Fake-W2-Tax-Forms-20261113-183229",
+        "Fake-W2-Tax-Forms-20261113-183239"
+      ],
+      "Medium": [
+        "Fake-W2-Tax-Forms-20261113-183329",
+        "Fake-W2-Tax-Forms-20261113-183342",
+        "Fake-W2-Tax-Forms-20261113-183353"
+      ],
+      "High": [
+        "Fake-W2-Tax-Forms-20261113-183514",
+        "Fake-W2-Tax-Forms-20261113-183519",
+        "Fake-W2-Tax-Forms-20261113-183520"
+      ]
+    }
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026"
+}

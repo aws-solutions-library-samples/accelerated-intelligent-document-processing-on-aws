@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """Render the ablation tables of the "Benchmarks by Problem Set" pages.
 
-Reads the ablation registry (benchmarks/matrices/guidance_ablations.yaml) and writes three
-regions of each page under docs/benchmark-guidance/, each between a pair of markers:
+Reads the ablation registry (benchmarks/matrices/guidance_ablations.yaml) and writes the
+region of each page under docs/benchmark-guidance/ between
 
-    <!-- BEGIN GENERATED FAQ -->       each question, its answer and its headline plot
-    <!-- BEGIN GENERATED ABLATIONS --> each ablation's details and results tables
+    <!-- BEGIN GENERATED FAQ --> and <!-- END GENERATED FAQ -->
 
-(each closed by the matching END marker), and the dataset list of datasets.md between
-DATASETS markers. Text outside the
-markers is hand-written and left alone. When a results file exists at
-benchmarks/results/guidance/<ID>.json, its values fill the table; otherwise every cell is
-"—" and the answer reads "Not yet measured". A results file looks like:
+and the dataset list of datasets.md between DATASETS markers. Text outside the markers is
+hand-written and left alone. Each question gets its headline chart directly under its
+heading, then its answer (the results file's `verdict`), then a collapsed
+<details> block holding what was run and the results tables. When a results file exists
+at benchmarks/results/guidance/<ID>.json, its values fill the entry; otherwise, or when
+the ablation is `deprecated`, the question is listed, with its ID, under "Planned" at the
+end of the page's FAQ. An ablation with a `baseline` says in its details that everything
+else is that configuration (the recommended setup), and its `reference` value is bold in
+every results table. A dataset where every value scores CEILING weighted accuracy or more
+is not charted: one line says it is too easy to separate.
+A results file looks like:
 
     {
       "release": "0.6.15",
@@ -39,8 +44,8 @@ ablation marked `families` colors and shapes its points by model family.
 Each FAQ entry carries one chart. An ablation with a `by_size` key gets a chart of one
 per-document score against the document's own size, drawn from the results file's
 `per_doc` block, which is that chart: a mean over a dataset says which value wins, and
-this says at what size it starts winning. Its scatter, like the chart of an ablation
-with a `grid` (whose tables answer the question), goes to the details section.
+this says at what size it starts winning. Its scatter goes to the details. An ablation
+with a `grid` gets the grid's tables in its details in place of the results table.
 
 `models` is optional: the model in force at each step of the pipeline. Each details
 table states it in full, and a step whose model differs across the values reads
@@ -57,7 +62,11 @@ column to every table. `cost_basis` says which runs to price: by default only th
 coldest run of each value, because repeat runs read the prompt cache the first run
 wrote. When every plotted point has a cost, the plot puts cost on the x-axis, and when
 the plotted metric is an accuracy, it draws the marginal cost of error from the
-cheapest value to each more accurate one (marginal-cost-of-error.md).
+cheapest value to each more accurate one (marginal-cost-of-error.md). An ablation
+with a `cost_metric` (such as classification_cost_per_1000_docs, which the collector
+writes) uses that cell instead of the whole pipeline's cost, everywhere a cost is
+shown: the chart's x-axis, the tables' cost column, the cost per error prevented and
+the cheapest value.
 
 Usage:
     python3 benchmarks/harness/render_guidance.py           # rewrite the pages
@@ -70,12 +79,15 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import html
 import json
 import math
+import os
 import re
 import statistics
 import subprocess
 import sys
+from collections.abc import Callable
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -84,20 +96,24 @@ import yaml
 from guidance_plots import (
     ERROR_RATE_METRICS,
     LOWER_IS_BETTER,
+    RATIO_METRICS,
     SHARE_METRICS,
     draw_by_size,
     draw_plot,
     draw_scatter,
     fmt,
     lower_name,
-    marginal_cost_of_error,
     money,
+    times,
     x_axes_differ,
 )
 
 REPO = Path(__file__).resolve().parents[2]
 REGISTRY = REPO / "benchmarks" / "matrices" / "guidance_ablations.yaml"
-RESULTS = REPO / "benchmarks" / "results" / "guidance"
+RESULTS = Path(
+    os.environ.get("GUIDANCE_RESULTS_DIR")
+    or REPO / "benchmarks" / "results" / "guidance"
+)
 PRICING = REPO / "config_library" / "pricing.yaml"
 COST = "cost_per_1000_docs"
 MCOE_PAGE = "marginal-cost-of-error.md"
@@ -114,9 +130,12 @@ MCOE_CAPTION = (
 BANDS_CAPTION = "Bands show ±2 standard errors."
 DIFFER_CAPTION = " Cost axes differ by dataset."
 PAGES = REPO / "docs" / "benchmark-guidance"
-#: Generated regions of a page. ABLATIONS is required; the others are optional.
-REGIONS = ("FAQ", "ABLATIONS")
+#: Generated regions of a page. Each question's details are collapsed under its answer.
+REGIONS = ("FAQ",)
 PRESETS = "index.md#how-we-run-a-benchmark"
+RECOMMEND = "index.md#what-we-recommend"
+#: The heading the unmeasured questions of a page are listed under, at the FAQ's end.
+PLANNED = "Planned"
 DATASETS_PAGE = "datasets.md"
 PLOTS = REPO / "images" / "benchmark-guidance"
 PLOTS_FROM_PAGES = "../../images/benchmark-guidance"
@@ -161,9 +180,51 @@ def markers(region: str) -> tuple[str, str]:
     )
 
 
+#: Reader-facing names that override the registry's: one name for the line-item score
+#: everywhere a table, caption or chart names it.
+METRIC_NAMES = {
+    "list_score": {
+        "name": "Line-item score",
+        "short": "Line-item score",
+        "axis": "Line items matched, line-item score (%)",
+    },
+}
+#: The note under an answer measured on each dataset's preset, not the baseline.
+INTERIM_NOTE = "*Measured on each dataset's preset, not the baseline setup.*"
+#: A value as the registry names it, and as a reader sees it.
+VALUE_NAMES = {"Default": "Preset default"}
+
+
 def load_registry() -> dict[str, Any]:
     with REGISTRY.open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        reg = interim_overlay(yaml.safe_load(f), RESULTS)
+    for key, names in METRIC_NAMES.items():
+        if key in reg.get("metrics", {}):
+            reg["metrics"][key] = {**reg["metrics"][key], **names}
+    return reg
+
+
+def interim_overlay(reg: dict[str, Any], results_dir: Path) -> dict[str, Any]:
+    # Interim results: a results file carrying `interim_ablation` (a full registry
+    # entry) was measured against that entry, not the current one, so the entry it
+    # carries replaces the registry's until a re-run overwrites the results file.
+    ablations = reg.get("ablations") or []
+    for i, ab in enumerate(ablations):
+        path = results_dir / f"{ab['id']}.json"
+        try:
+            entry = json.loads(path.read_text(encoding="utf-8")).get("interim_ablation")
+        except (OSError, ValueError):
+            continue
+        if isinstance(entry, dict):
+            # The question and a deprecation are the registry's own: a retitled
+            # question keeps its new heading, and links to it, while its results
+            # are interim. So is the cost a page shows, which is how it reads the
+            # results rather than what was measured.
+            keep = {
+                k: ab[k] for k in ("question", "deprecated", "cost_metric") if k in ab
+            }
+            ablations[i] = {**entry, "on_preset": True, **keep}
+    return reg
 
 
 def load_results(ablation_id: str) -> dict[str, Any] | None:
@@ -172,6 +233,58 @@ def load_results(ablation_id: str) -> dict[str, Any] | None:
         return None
     with path.open(encoding="utf-8") as f:
         return json.load(f)
+
+
+def shown_results(ab: dict[str, Any]) -> dict[str, Any] | None:
+    """An ablation's results as its page shows them: none for a `deprecated` one,
+    which is listed under Planned with its results kept but not shown."""
+    return None if ab.get("deprecated") else load_results(ab["id"])
+
+
+#: A dataset whose every value scores at least this weighted accuracy is too easy to
+#: compare settings on: its chart is left out (ceiling_sets).
+CEILING = 0.99
+ALL_RIGHT = "all_fields_right"
+
+
+def separates(found: list[Cell | None]) -> bool:
+    """Whether the best and worst of these cells differ by more than clear_gap."""
+    means = [c for c in found if isinstance(c, dict)]
+    if len(means) < 2:
+        return False
+    hi = max(means, key=lambda c: c["mean"])
+    lo = min(means, key=lambda c: c["mean"])
+    return hi["mean"] - lo["mean"] > clear_gap(hi, lo)
+
+
+def ceiling_sets(
+    ab: dict[str, Any],
+    cells: dict[str, Cell],
+    kind_sets: list[str],
+    plot_metrics: list[str],
+) -> tuple[list[str], set[str]]:
+    """The datasets too easy to chart, and those charted on every-field-right only.
+
+    A dataset where every value scores CEILING or more weighted accuracy says nothing
+    about the setting. When the chart also plots documents with every field right
+    and that still separates the values, the dataset is charted on it alone.
+    """
+    ceiling: list[str] = []
+    rows_only: set[str] = set()
+    for k in kind_sets:
+        found = [
+            c
+            for v in ab["values"]
+            if isinstance(c := cells.get(f"{k}|{v}|weighted_accuracy"), dict)
+        ]
+        if not found or any(c["mean"] < CEILING for c in found):
+            continue
+        right = [cells.get(f"{k}|{v}|{ALL_RIGHT}") for v in ab["values"]]
+        if ALL_RIGHT in plot_metrics and separates(right):
+            rows_only.add(k)
+        else:
+            ceiling.append(k)
+    return ceiling, rows_only
 
 
 @cache
@@ -234,11 +347,47 @@ def price_caveat_svg(region: str) -> str:
     )
 
 
-def cost_note(region: str) -> str:
+def cost_note(region: str, note: str = "") -> str:
+    """The note under a table with a cost column: the price list, and what the cost
+    counts (`note`, a cost metric's own, or the whole pipeline's by default)."""
+    if note:
+        return f"*{price_caveat(region)} {note}*"
     return (
         f"*{price_caveat(region)} Amazon Bedrock and Amazon Textract only; Lambda and "
         "other AWS charges are not included.*"
     )
+
+
+def is_cost_metric(metric: str) -> bool:
+    """Whether a metric is a cost per 1,000 documents: the whole pipeline's, or one
+    step's (`<step>_cost_per_1000_docs`)."""
+    return metric == COST or metric.endswith(f"_{COST}")
+
+
+def cost_column(ab: dict[str, Any], kind: str, metrics: dict[str, Any]) -> str:
+    """The cost an ablation shows for a dataset kind: its `cost_metric` where that
+    applies to the kind, else the whole pipeline's."""
+    chosen = ab.get("cost_metric")
+    if not chosen:
+        return COST
+    if chosen not in metrics or not is_cost_metric(str(chosen)):
+        raise SystemExit(f"{ab['id']}: cost_metric {chosen} is not a cost metric")
+    return str(chosen) if kind in metrics[chosen]["kinds"] else COST
+
+
+def cost_words(metric: str, metrics: dict[str, Any]) -> str:
+    """What a cost metric counts, as a column names it: "Cost" for the whole pipeline,
+    "Classification cost" for the classification step."""
+    return "Cost" if metric == COST else metrics[metric]["name"].split(" per 1,000")[0]
+
+
+def cost_axis_title(metric: str, metrics: dict[str, Any], unit: str) -> str:
+    """A step's cost axis: "Classification cost per 1,000 packets ($)"; "" for the
+    whole pipeline's, which the chart titles itself."""
+    if metric == COST:
+        return ""
+    m = metrics[metric]
+    return unit_name(m.get("axis") or m["name"].replace(" (USD)", " ($)"), unit)
 
 
 def mean_se(values: list[float]) -> dict[str, float]:
@@ -323,8 +472,14 @@ def model_steps(
     return out
 
 
+#: A step as a caption or table names it: the confidence step is the scoring model.
+STEP_LABELS = {"Confidence": "Scoring"}
+
+
 def models_text(steps: dict[str, str]) -> str:
-    return " · ".join(f"{s}: {steps[s]}" for s in MODEL_STEPS if s in steps)
+    return " · ".join(
+        f"{STEP_LABELS.get(s, s)}: {steps[s]}" for s in MODEL_STEPS if s in steps
+    )
 
 
 def models_sentence(
@@ -346,7 +501,7 @@ def models_sentence(
             continue
         if len(texts) < len(present) or len(set(texts)) > 1:
             parts.append(
-                f"{step} by dataset: "
+                f"{STEP_LABELS.get(step, step)} by dataset: "
                 + "; ".join(
                     f"{datasets[k].get('short', datasets[k]['name'])} — {steps[k][step]}"
                     for k in present
@@ -354,7 +509,7 @@ def models_sentence(
                 )
             )
         else:
-            common.append(f"{step}: {texts[0]}")
+            common.append(f"{STEP_LABELS.get(step, step)}: {texts[0]}")
     if common:
         parts.insert(0, " · ".join(common))
     return "Models: " + ". ".join(parts) + "." if parts else ""
@@ -385,18 +540,23 @@ def sample_sizes(
     return out
 
 
-def n_short(entry: tuple[str, str, int]) -> str:
+def n_short(entry: tuple[str, str, int], unit: str = "documents") -> str:
     docs, runs, _ = entry
-    return f"{docs} documents × {runs} runs"
+    return f"{docs} {unit} × {runs} runs"
 
 
-def n_full(entry: tuple[str, str, int]) -> str:
+def n_full(entry: tuple[str, str, int], unit: str = "documents") -> str:
     """The sample size, and what a failed document took out of it."""
     failed = entry[2]
     if not failed:
-        return n_short(entry)
-    word = "document" if failed == 1 else "documents"
-    return f"{n_short(entry)}, {failed} failed {word} per run left out"
+        return n_short(entry, unit)
+    one = unit.removesuffix("s")
+    if failed == 1:
+        return f"{n_short(entry, unit)}; a {one} that failed in a run is left out of that run"
+    return (
+        f"{n_short(entry, unit)}; up to {failed} {unit} failed in a run and are left "
+        "out of it"
+    )
 
 
 def sample_sentence(
@@ -408,7 +568,7 @@ def sample_sentence(
     present = [k for k in ds_keys if k in sizes]
     if not present:
         return ""
-    texts = {k: n_full(sizes[k]) for k in present}
+    texts = {k: n_full(sizes[k], per_unit(datasets[k]["kind"])) for k in present}
     if len(set(texts.values())) == 1:
         return f"N = {texts[present[0]]}."
     return (
@@ -472,12 +632,15 @@ def lead_line(
 
 
 def panel_subtitle(
-    steps: dict[str, str], size: tuple[str, str, int] | None, lead: str = ""
+    steps: dict[str, str],
+    size: tuple[str, str, int] | None,
+    lead: str = "",
+    unit: str = "documents",
 ) -> tuple[str, str]:
     """The lines under a panel title: the page's own model, then every step and N."""
     parts = [models_text(steps)] if steps else []
     if size:
-        parts.append(f"N = {n_short(size)}")
+        parts.append(f"N = {n_short(size, unit)}")
     return lead, " · ".join(p for p in parts if p)
 
 
@@ -507,6 +670,8 @@ def short_label(value: str, ab: dict[str, Any]) -> str:
     to a short form; a model name drops its vendor. The default value is marked.
     """
     shorts: dict[str, str] = ab.get("short_values") or {}
+    if value in VALUE_NAMES:
+        return VALUE_NAMES[value]
     if value in shorts:
         text = shorts[value]
     else:
@@ -587,11 +752,125 @@ def cell_text(cell: Cell | None, metric: str = "") -> str:
         return EMPTY
     if isinstance(cell, str):
         return cell
-    if metric == COST:
+    if is_cost_metric(metric):
         if not cell.get("se"):
             return money(cell["mean"])
         return f"{money(cell['mean'])} ± {money(2 * cell['se'])}"
+    if metric in RATIO_METRICS:
+        return f"{times(cell['mean'])} ± {times(2 * cell.get('se', 0))}"
     return f"{fmt(cell['mean'])} ± {fmt(2 * cell.get('se', 0))}"
+
+
+#: Columns where a lower figure is better; columns in NO_BEST have no better direction.
+LOWER_BETTER_COLUMNS = LOWER_IS_BETTER | {COST, "median_seconds"}
+NO_BEST = {"list_rows", "cached_share", "alert_rate", "errors_caught_30_random"}
+
+
+def direction(metric: str) -> int:
+    """+1 where higher is better, -1 where lower is, 0 where neither is."""
+    if metric in NO_BEST:
+        return 0
+    if (
+        metric in LOWER_BETTER_COLUMNS
+        or metric.endswith("_tokens")
+        or is_cost_metric(metric)
+    ):
+        return -1
+    return 1
+
+
+def clear_gap(a: dict[str, float], b: dict[str, float]) -> float:
+    """Twice the combined standard error of two means: the gap a winner must beat."""
+    return 2 * math.hypot(float(a.get("se") or 0), float(b.get("se") or 0))
+
+
+def winner(cells: dict[Any, Cell | None], metric: str) -> Any:
+    """The key whose mean beats the runner-up's by more than clear_gap, or None.
+
+    A tie, a single measured cell, or a column with no better direction has none.
+    """
+    sign = direction(metric)
+    found = [(k, c) for k, c in cells.items() if isinstance(c, dict)]
+    if not sign or len(found) < 2:
+        return None
+    found.sort(key=lambda kc: -sign * kc[1]["mean"])
+    (top, a), (_, b) = found[0], found[1]
+    return top if sign * (a["mean"] - b["mean"]) > clear_gap(a, b) else None
+
+
+def bold(text: str, on: bool) -> str:
+    return f"**{text}**" if on else text
+
+
+BOLD_FIGURE = (
+    "A bold figure beats every other in its column, for that dataset, by more than "
+    "twice the combined standard error."
+)
+
+
+def mcoe_cells(
+    points: list[tuple[str, dict[str, float], dict[str, float]]],
+) -> tuple[str, dict[str, str]]:
+    """The cheapest value, and each value's "Cost per error prevented" cell against it.
+
+    A price only where both the accuracy gain and the extra cost beat clear_gap;
+    "same cost" where the gain does and the cost does not; "no measurable gain" where
+    the gain does not; and "—" for the cheapest value and anything no dearer.
+    """
+    ref, rx, ry = min(points, key=lambda p: (p[1]["mean"], p[2]["mean"]))
+    out: dict[str, str] = {}
+    for value, x, y in points:
+        extra = x["mean"] - rx["mean"]
+        gain = y["mean"] - ry["mean"]
+        if value == ref or extra <= 0:
+            out[value] = EMPTY
+        elif gain <= clear_gap(y, ry):
+            out[value] = "no measurable gain"
+        elif extra <= clear_gap(x, rx):
+            out[value] = "same cost"
+        else:
+            price = extra / 1000 / gain
+            out[value] = "under $0.01" if price < 0.005 else money(price)
+    return ref, out
+
+
+def failures_line(
+    sample: dict[str, dict[str, Any]],
+    ds_keys: list[str],
+    values: list[str],
+    ab: dict[str, Any],
+    datasets: dict[str, Any],
+) -> str:
+    """ "Failed packets per run: Page by page · Claude Haiku 5.5: 2, 2, 0; ..." for
+    the values a run of which left out a failed document; empty when none did."""
+    parts = []
+    for ds_key in ds_keys:
+        for value in values:
+            failed = [
+                int(f)
+                for f in (sample.get(f"{ds_key}|{value}") or {}).get("failed") or []
+            ]
+            if not any(failed):
+                continue
+            name = VALUE_NAMES.get(value, value)
+            if len(ds_keys) > 1:
+                short = datasets[ds_key].get("short", datasets[ds_key]["name"])
+                name = f"{short} — {name}"
+            parts.append(f"{name}: {', '.join(str(f) for f in failed)}")
+    if not parts:
+        return ""
+    unit = per_unit(datasets[ds_keys[0]]["kind"])
+    return f"Failed {unit} per run: " + "; ".join(parts) + "."
+
+
+def unit_name(name: str, unit: str) -> str:
+    """A metric's name counted in the dataset's unit: per 1,000 packets for DocSplit."""
+    if unit == "documents":
+        return name
+    one = unit.removesuffix("s")
+    return name.replace("1,000 documents", f"1,000 {unit}").replace(
+        "per document", f"per {one}"
+    )
 
 
 def lower_first(text: str) -> str:
@@ -599,13 +878,13 @@ def lower_first(text: str) -> str:
     return text[:1].lower() + text[1:]
 
 
-def with_cost(cols: list[str]) -> list[str]:
-    """Add the cost column after the last tokens column, or at the end."""
-    if COST in cols:
+def with_cost(cols: list[str], metric: str = COST) -> list[str]:
+    """Add the cost column (`metric`) after the last tokens column, or at the end."""
+    if metric in cols:
         return cols
     last = max((i for i, m in enumerate(cols) if m.endswith("_tokens")), default=-1)
     at = last + 1 if last >= 0 else len(cols)
-    return [*cols[:at], COST, *cols[at:]]
+    return [*cols[:at], metric, *cols[at:]]
 
 
 def dataset_anchor(key: str, datasets: dict[str, Any]) -> str:
@@ -619,7 +898,7 @@ def dataset_label(key: str, datasets: dict[str, Any], short: bool = False) -> st
 
 
 LIST_SCORE_CAPTION = (
-    "A list score is Stickler's score for the list: matched rows over the larger of "
+    "A line-item score is Stickler's score for the list: matched rows over the larger of "
     "the true and returned row counts."
 )
 
@@ -752,8 +1031,9 @@ def series_slots(
 
 def render_by_size(
     ab: dict[str, Any], reg: dict[str, Any], results: dict[str, Any]
-) -> tuple[list[str], dict[str, str]]:
-    """The by-size chart of an ablation that has one, and its markdown.
+) -> tuple[list[list[str]], list[str], dict[str, str]]:
+    """The by-size charts of an ablation that has them: each chart's markdown, the
+    tables that go with them, and the plots.
 
     One chart per pool of datasets (dataset_pools), drawn from the results file's
     per-document scores: where a mean over a dataset says which value wins, this says
@@ -763,13 +1043,14 @@ def render_by_size(
     spec = ab.get("by_size") or {}
     per_doc = results.get("per_doc") or {}
     if not spec or not per_doc:
-        return [], {}
+        return [], [], {}
     datasets: dict[str, Any] = reg["datasets"]
     metrics: dict[str, Any] = reg["metrics"]
     metric, x_metric = str(spec["metric"]), str(spec["x"])
     models = results.get("models") or {}
     sample = results.get("sample") or {}
-    md: list[str] = []
+    charts: list[list[str]] = []
+    tables: list[str] = []
     plots: dict[str, str] = {}
     for pool in dataset_pools(ab["datasets"]):
         sources = pool_sources(pool, ab["values"], per_doc)
@@ -788,10 +1069,10 @@ def render_by_size(
             ]
             or [ab.get("runs", 0)]
         )
-        n_text = f"N = {len(drawn)} documents × {runs} runs"
         y_name = metrics[metric]["name"]
         strata = ab.get("strata") or {}
         things = str(strata.get("documents") or "documents")
+        n_text = f"N = {len(drawn)} {things} × {runs} runs"
         thing = things.removesuffix("s")
         x_title = (
             f"{str(strata['noun'])[:1].upper()}{str(strata['noun'])[1:]} per {thing} "
@@ -824,20 +1105,21 @@ def render_by_size(
             f"{lower_first(x_title.removesuffix(' (log scale)'))}"
         )
         caption = (
-            f"*{y_name} per {thing}, against "
-            f"{lower_first(x_title.removesuffix(' (log scale)'))} on a log scale: one "
-            f"point per {thing} per {varies_text(ab)}, and a line through each one's "
-            "running median."
-            + (f" {LIST_SCORE_CAPTION}" if metric == "list_score" else "")
-            + "*"
-            + f" {n_text}. Datasets: "
+            f"*One point per {thing} per {varies_text(ab)}; each line is its running "
+            "median.*"
+        )
+        charts.append([f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""])
+        tables += [
+            f"*{n_text}. Datasets: "
             + ", ".join(dataset_label(k, datasets, short=True) for k in used)
             + "."
-        )
-        md += [f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""]
+            + (f" {LIST_SCORE_CAPTION}" if metric == "list_score" else "")
+            + "*",
+            "",
+        ]
         if ab.get("strata"):
-            md += render_strata(ab, reg, results, sources)
-    return md, plots
+            tables += render_strata(ab, reg, results, sources)
+    return charts, tables, plots
 
 
 def band_labels(bands: list[int], noun: str) -> list[str]:
@@ -941,6 +1223,165 @@ def render_strata(
     return out
 
 
+StrataMeans = Callable[[list[str], str, str], float | None]
+
+
+def per_doc_cell(scores: list[float]) -> dict[str, float] | None:
+    """A mean and standard error over per-document scores; None under two scores."""
+    if len(scores) < 2:
+        return None
+    return {
+        "mean": statistics.fmean(scores),
+        "se": statistics.stdev(scores) / math.sqrt(len(scores)),
+    }
+
+
+def strata_markdown(
+    values: list[str],
+    labels: dict[str, str],
+    pairs: list[tuple[str, str, str]],
+    rows: list[tuple[str, list[str]]],
+    means: StrataMeans,
+    found: Callable[[list[str], str, str], list[float]],
+    score: str,
+    score_name: str,
+    noun: str,
+    things: str,
+) -> list[str]:
+    """The strata as one Markdown table, every value side by side (values that do
+    not pair into single-pass and agentic for one model)."""
+    header = [noun[:1].upper() + noun[1:], things[:1].upper() + things[1:]]
+    for v in values:
+        header += [
+            f"{labels[v]}: {score_name}",
+            f"{labels[v]}: weighted accuracy",
+            f"{labels[v]}: cost per 1,000",
+        ]
+    header += [
+        "Agentic costs" if len(pairs) == 1 else f"Agentic costs, {model}"
+        for model, _, _ in pairs
+    ]
+    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    for label, group in rows:
+        if not group:
+            continue
+        scores = {v: means(group, v, score) for v in values}
+        best = winner({v: per_doc_cell(found(group, v, score)) for v in values}, score)
+        row = [
+            label if not label.startswith("All ") else f"**{label}**",
+            f"{len(group):,}",
+        ]
+        for v in values:
+            m = scores[v]
+            text = bold(EMPTY if m is None else f"{m:.2f}", best == v)
+            acc = means(group, v, "weighted_accuracy")
+            cost = means(group, v, "cost")
+            row += [
+                text,
+                EMPTY if acc is None else f"{acc:.2f}",
+                EMPTY if cost is None else money(cost * 1000),
+            ]
+        for _, single, agent in pairs:
+            row.append(
+                ratio_text(means(group, agent, "cost"), means(group, single, "cost"))
+            )
+        out.append("| " + " | ".join(row) + " |")
+    return out
+
+
+def strata_html(
+    model: str,
+    single: str,
+    agent: str,
+    rows: list[tuple[str, list[str]]],
+    found: Callable[[list[str], str, str], list[float]],
+    score: str,
+    score_name: str,
+    noun: str,
+    things: str,
+    sizes: dict[str, float],
+) -> list[str]:
+    """One model's strata as an HTML table: a header row of metric groups, each
+    with single-pass and agentic side by side, and a rule before each group
+    (`table.strata` in docs-site/src/styles/custom.css).
+
+    The better score of a row is bold only where the gap exceeds twice its standard
+    error, from the per-document scores of the row's documents. A row of documents
+    with no list (every size 0) has no score.
+    """
+
+    def means(group: list[str], value: str, metric: str) -> float | None:
+        scores = found(group, value, metric)
+        return statistics.fmean(scores) if scores else None
+
+    def se(scores: list[float]) -> float | None:
+        if len(scores) < 2:
+            return None
+        return statistics.stdev(scores) / math.sqrt(len(scores))
+
+    pair = (single, agent)
+    groups = [
+        score_name[:1].upper() + score_name[1:],
+        "Weighted accuracy",
+        f"Cost per 1,000 {things}",
+    ]
+    out = [
+        '<table class="strata">',
+        f"<caption>{html.escape(model)}</caption>",
+        "<thead>",
+        "<tr>"
+        f'<th rowspan="2">{html.escape(noun[:1].upper() + noun[1:])}</th>'
+        f'<th rowspan="2">{html.escape(things[:1].upper() + things[1:])}</th>'
+        + "".join(
+            f'<th colspan="2" class="group">{html.escape(g)}</th>' for g in groups
+        )
+        + '<th rowspan="2" class="group">Agentic costs</th>'
+        "</tr>",
+        "<tr>"
+        + '<th class="group">Single\u2011pass</th><th>Agentic</th>' * len(groups)
+        + "</tr>",
+        "</thead>",
+        "<tbody>",
+    ]
+
+    def cells(texts: list[str]) -> str:
+        return f'<td class="group">{texts[0]}</td><td>{texts[1]}</td>'
+
+    for label, group in rows:
+        if not group:
+            continue
+        per = [found(group, v, score) for v in pair]
+        if all(sizes.get(d) == 0 for d in group):
+            per = [[], []]
+        scores = [statistics.fmean(s) if s else None for s in per]
+        errors = [se(s) for s in per]
+        better = None
+        if None not in scores and None not in errors:
+            a, b = (float(x) for x in scores if x is not None)
+            ea, eb = (float(x) for x in errors if x is not None)
+            if abs(a - b) > 2 * math.sqrt(ea**2 + eb**2):
+                better = 0 if a > b else 1
+        score_texts = []
+        for i, m in enumerate(scores):
+            text = EMPTY if m is None else f"{m:.2f}"
+            score_texts.append(f"<strong>{text}</strong>" if i == better else text)
+        acc = [means(group, v, "weighted_accuracy") for v in pair]
+        cost = [means(group, v, "cost") for v in pair]
+        name = html.escape(label)
+        out.append(
+            "<tr>"
+            f"<td>{f'<strong>{name}</strong>' if label.startswith('All ') else name}</td>"
+            f"<td>{len(group):,}</td>"
+            + cells(score_texts)
+            + cells([EMPTY if a is None else f"{a:.2f}" for a in acc])
+            + cells([EMPTY if c is None else money(c * 1000) for c in cost])
+            + f'<td class="group">{ratio_text(cost[1], cost[0])}</td>'
+            "</tr>"
+        )
+    out += ["</tbody>", "</table>", ""]
+    return out
+
+
 def strata_table(
     ab: dict[str, Any],
     reg: dict[str, Any],
@@ -979,59 +1420,44 @@ def strata_table(
             pairs.append((model, single, agent))
     score_name = noun.removesuffix("s").replace(" ", "-") + " score"
 
-    def means(group: list[str], value: str, metric: str) -> float | None:
-        found = [
+    def found(group: list[str], value: str, metric: str) -> list[float]:
+        return [
             float(e[metric])
             for doc in group
             if metric
             in (e := (per_doc.get(f"{docs[doc][0]}|{value}") or {}).get(doc) or {})
         ]
-        return statistics.fmean(found) if found else None
 
-    header = [noun[:1].upper() + noun[1:], things[:1].upper() + things[1:]]
-    for v in values:
-        header += [
-            f"{labels[v]}: {score_name}",
-            f"{labels[v]}: weighted accuracy",
-            f"{labels[v]}: cost per 1,000",
-        ]
-    header += [
-        "Agentic costs" if len(pairs) == 1 else f"Agentic costs, {model}"
-        for model, _, _ in pairs
-    ]
-    out = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+    def means(group: list[str], value: str, metric: str) -> float | None:
+        scores = found(group, value, metric)
+        return statistics.fmean(scores) if scores else None
+
     groups = [
         [d for d, (_, x) in docs.items() if band_of(x, bands) == i]
         for i in range(len(bands))
     ]
     rows = list(zip(band_labels(bands, noun), groups, strict=True))
     rows.append((f"All {things}", sorted(docs)))
-    for label, group in rows:
-        if not group:
-            continue
-        scores = {v: means(group, v, score) for v in values}
-        best = max((m for m in scores.values() if m is not None), default=None)
-        row = [
-            label if not label.startswith("All ") else f"**{label}**",
-            f"{len(group):,}",
-        ]
-        for v in values:
-            m = scores[v]
-            text = EMPTY if m is None else f"{m:.2f}"
-            if m is not None and best is not None and len(values) > 1:
-                text = f"**{text}**" if f"{m:.2f}" == f"{best:.2f}" else text
-            acc = means(group, v, "weighted_accuracy")
-            cost = means(group, v, "cost")
-            row += [
-                text,
-                EMPTY if acc is None else f"{acc:.2f}",
-                EMPTY if cost is None else money(cost * 1000),
-            ]
-        for _, single, agent in pairs:
-            row.append(
-                ratio_text(means(group, agent, "cost"), means(group, single, "cost"))
+    paired = {v for _, single, agent in pairs for v in (single, agent)}
+    if pairs and paired == set(values):
+        out = []
+        for model, single, agent in pairs:
+            out += strata_html(
+                model,
+                single,
+                agent,
+                rows,
+                found,
+                score,
+                score_name,
+                noun,
+                things,
+                {d: x for d, (_, x) in docs.items()},
             )
-        out.append("| " + " | ".join(row) + " |")
+    else:
+        out = strata_markdown(
+            values, labels, pairs, rows, means, found, score, score_name, noun, things
+        )
     out.append("")
 
     used = sorted({k for k, _ in docs.values()}, key=sources.index)
@@ -1050,20 +1476,29 @@ def strata_table(
         for k in used
         for v in values
     )
+    bold_rule = (
+        f"No {score_name} for {things} with no {noun}. Bold: the better mode, where "
+        "the gap exceeds twice its standard error."
+        if pairs and paired == set(values)
+        else f"A bold {score_name} beats every other in its row by more than twice the "
+        "combined standard error."
+    )
     note = (
         f"*{things[:1].upper() + things[1:]} grouped by the {noun} their ground truth "
-        f"holds. Each score and cost is a mean over the row's {things}; only {things} every "
-        f"run of every value scored are counted, each once. The "
-        f"{score_name} is Stickler's score for the list: matched rows over the larger "
+        f"holds. Each score and cost is a mean over the row's {things}; only {things} "
+        "every run of every value scored are counted, each once. The "
+        f"{score_name} is the share of rows matched: matched rows over the larger "
         "of the true and returned row counts. Cost is each "
-        f"{thing}'s own Amazon Bedrock and Amazon Textract metering"
+        f"{thing}'s own Amazon Bedrock and Amazon Textract metering, without the "
+        f"{things} left out, so it can be lower than the run cost in the table above"
         + (
             ", from each value's first, cold-cache run"
             if cold
             else ", averaged over runs that share no prompt cache"
         )
         + "; Agentic costs is agentic's cost over single-pass's for the same model. "
-        f"The best {score_name} in each row is bold.* Datasets: "
+        + bold_rule
+        + "* Datasets: "
         + ", ".join(dataset_label(k, datasets, short=True) for k in used)
         + f". N = {len(docs)} {things} × {runs} runs."
     )
@@ -1117,8 +1552,51 @@ def strata_table(
     return out
 
 
-def details_heading(ab: dict[str, Any]) -> str:
-    return f"{ab['id']}: {ab['question']}"
+def value_cell(value: str, ab: dict[str, Any]) -> str:
+    """A value as a results table names it: the `reference` value bold, and marked
+    "(baseline)" or "(recommended)" unless its name already carries a note in
+    parentheses."""
+    text = VALUE_NAMES.get(value, value)
+    if value != ab.get("reference"):
+        return text
+    mark = "baseline" if ab.get("baseline") else "recommended"
+    return f"**{text}**" if text.endswith(")") else f"**{text} ({mark})**"
+
+
+def reference_setup(ab: dict[str, Any]) -> str:
+    """The setup the `reference` value stands for, as a link: the baseline setup the
+    ablation changes one setting from, or else the recommended setup."""
+    on_index = ab["page"] == "index"
+    if ab.get("baseline"):
+        return f"[baseline setup]({'#how-we-run-a-benchmark' if on_index else PRESETS})"
+    return f"[recommended setup]({'#what-we-recommend' if on_index else RECOMMEND})"
+
+
+def reference_note(ab: dict[str, Any]) -> str:
+    """The sentence under a results table saying what the bold name is."""
+    if not ab.get("reference"):
+        return ""
+    if ab.get("baseline"):
+        return f"The bold name is the value the {reference_setup(ab)} uses."
+    return f"The bold name is the {reference_setup(ab)}."
+
+
+RUN_LIST = re.compile(r"^Test Studio runs ([^(]*?)\s*(\(.*\))?$")
+
+
+def source_text(ab: dict[str, Any], results: dict[str, Any]) -> str:
+    """Where the results come from: a list of Test Studio runs is counted, and its
+    run IDs left to the results file."""
+    source = str(results.get("source") or "")
+    m = RUN_LIST.match(source)
+    if not m:
+        return f"`{source}`"
+    runs = [r for r in m.group(1).split(", ") if r]
+    tail = f" {m.group(2)}" if m.group(2) else ""
+    return (
+        f"{len(runs)} Test Studio runs{tail}, listed in "
+        f"`benchmarks/results/guidance/{ab['id']}.json`"
+    )
 
 
 class Rendered:
@@ -1150,36 +1628,45 @@ def render_ablation(
                 file=sys.stderr,
             )
     cells.update({f"{key}|{COST}": cell for key, cell in costs.items()})
-    shows_cost = False
+    # The cost columns the tables show, each noted once under them.
+    shows_cost: list[str] = []
     shows_cold = False
     out = Rendered()
     answer = results["verdict"] if results else "Not yet measured."
-    details_link = f"[Details: {ab['id']}](#{slugify(details_heading(ab))})"
 
-    # Details: heading, answer, what was run.
+    # Details, collapsed under the answer: what was run, then the tables.
     d = out.details
-    d += [f"#### {details_heading(ab)}", "", f"**Answer:** {answer}"]
+    on_preset = bool(results) and (
+        bool(ab.get("on_preset") or ab.get("interim")) or not ab.get("baseline")
+    )
+    if on_preset:
+        d += [INTERIM_NOTE, ""]
     if results:
         d += [
-            "",
             f"*Measured on release {results['release']}, {results['measured']}, "
-            f"{results['region']}. Source: `{results['source']}`.*",
+            f"{results['region']}. Source: {source_text(ab, results)}.*",
+            "",
         ]
+    if ab.get("notes"):
+        d += [str(ab["notes"]).strip(), ""]
     new_sets = [datasets[k]["name"] for k in ab["datasets"] if datasets[k].get("new")]
     if new_sets:
-        d += ["", "Needs a dataset we haven't built yet: " + "; ".join(new_sets) + "."]
+        d += ["Needs a dataset we haven't built yet: " + "; ".join(new_sets) + ".", ""]
     held = ab.get("holds")
-    fixed_text = (
-        f"{held}; the rest as each dataset's [preset]({presets}) sets it"
-        if held
-        else f"As each dataset's [preset]({presets}) sets it"
-    )
+    base = reg.get("baselines", {}).get(ab["baseline"]) if ab.get("baseline") else None
+    if base:
+        # The baseline is described once, on the index page.
+        setup = reference_setup(ab)
+        fixed_text = f"{held}; the rest as in the {setup}" if held else f"The {setup}"
+    elif held:
+        fixed_text = f"{held}; the rest as each dataset's [preset]({presets}) sets it"
+    else:
+        fixed_text = f"As each dataset's [preset]({presets}) sets it"
     if ab.get("derives"):
         runs_text = f"None: computed from the {ab['derives']} runs"
     else:
         runs_text = f"{ab['runs']} per document, per value"
     d += [
-        "",
         "| | |",
         "|---|---|",
         f"| **Changes** | {ab['changes']} |",
@@ -1206,11 +1693,12 @@ def render_ablation(
         if datasets[ds_key]["kind"] not in kinds:
             kinds.append(datasets[ds_key]["kind"])
     headline: list[str] = []
-    # One chart per question in the FAQ entry. Where a by-size chart or a grid of
-    # tables answers the question, every other chart goes to the details.
+    # One chart per question, under its heading. Where a by-size chart answers the
+    # question, every other chart goes to the details.
     by_size_first = bool(results and ab.get("by_size") and results.get("per_doc"))
-    charts_in_details = by_size_first or bool(results and ab.get("grid"))
+    charts_in_details = by_size_first
     drawn_any = False
+    too_easy: list[str] = []
     for kind in kinds:
         cols = [m for m in ab["metrics"] if kind in metrics[m]["kinds"]]
         if not cols:
@@ -1219,16 +1707,48 @@ def render_ablation(
         wanted = [wanted] if isinstance(wanted, str) else list(wanted)
         plot_metrics = [m for m in wanted if m in cols] or [cols[0]]
         plot_metric = plot_metrics[0]
-        if usage and kind in metrics[COST]["kinds"]:
-            cols = with_cost(cols)
         kind_sets = [k for k in ab["datasets"] if datasets[k]["kind"] == kind]
+        cost_col = cost_column(ab, kind, metrics)
+        # The `dataset|value`s that have the cost shown.
+        priced_keys = {
+            f"{k}|{v}"
+            for k in kind_sets
+            for v in ab["values"]
+            if (
+                f"{k}|{v}" in costs
+                if cost_col == COST
+                else isinstance(cells.get(f"{k}|{v}|{cost_col}"), dict)
+            )
+        }
+        priced = (
+            bool(usage) and kind in metrics[COST]["kinds"]
+            if cost_col == COST
+            else bool(priced_keys)
+        )
+        if cost_col != COST and results and not priced:
+            print(
+                f"warning: {ab['id']}: cost_metric {cost_col} has no cells in its "
+                "results file; re-collect it",
+                file=sys.stderr,
+            )
+        if priced:
+            cols = with_cost(cols, cost_col)
+        ceiling, rows_only = ceiling_sets(ab, cells, kind_sets, plot_metrics)
+        too_easy += [
+            f"*{datasets[k].get('short', datasets[k]['name'])}: every value scored "
+            f"{CEILING:.2f} or higher, too easy to separate.*"
+            for k in ceiling
+        ]
+        chart_sets = [k for k in kind_sets if k not in ceiling]
+        unit = per_unit(kind)
         steps = model_steps(models, kind_sets, ab["values"])
         sizes = sample_sizes(sample, kind_sets, ab["values"])
         panels = []
-        for ds_key in kind_sets:
+        for ds_key in chart_sets:
+            panel_metric = ALL_RIGHT if ds_key in rows_only else plot_metric
             rows = []
             for value in ab["values"]:
-                cell = cells.get(f"{ds_key}|{value}|{plot_metric}")
+                cell = cells.get(f"{ds_key}|{value}|{panel_metric}")
                 rows.append((value, cell if isinstance(cell, dict) else None))
             panels.append(
                 (
@@ -1237,6 +1757,7 @@ def render_ablation(
                         steps.get(ds_key, {}),
                         sizes.get(ds_key),
                         lead_line(ab["page"], models, ds_key, ab["values"]),
+                        unit,
                     ),
                     rows,
                 )
@@ -1244,7 +1765,7 @@ def render_ablation(
         panels = [p for p in panels if any(cell for _, cell in p[2])]
         measured = [
             f"{ds_key}|{value}"
-            for ds_key in kind_sets
+            for ds_key in chart_sets
             for value in ab["values"]
             if any(
                 isinstance(cells.get(f"{ds_key}|{value}|{m}"), dict)
@@ -1252,12 +1773,12 @@ def render_ablation(
             )
         ]
         use_cost = (
-            plot_metric != COST
+            plot_metric != cost_col
             and bool(measured)
-            and all(isinstance(cells.get(f"{k}|{COST}"), dict) for k in measured)
+            and all(isinstance(cells.get(f"{k}|{cost_col}"), dict) for k in measured)
         )
         x_metric = (
-            (COST if use_cost else None)
+            (cost_col if use_cost else None)
             or ab.get("plot_x")
             or (
                 "total_tokens"
@@ -1272,22 +1793,23 @@ def render_ablation(
         # column carries it for the first plotted metric it applies to.
         mcoe_metrics = (
             {m for m in plot_metrics if m in ERROR_RATE_METRICS}
-            if x_metric == COST
+            if x_metric == cost_col
             else set()
         )
         table_mcoe = next((m for m in plot_metrics if m in mcoe_metrics), None)
-        mcoe: dict[str, tuple[str, dict[str, float | None]]] = {}
+        mcoe: dict[str, tuple[str, dict[str, str]]] = {}
         scatter: list[tuple[str, list[Any], dict[str, tuple[float, str]]]] = []
         baseline_specs: dict[str, dict[str, Any]] = {}
         if x_metric and not plot_metric.endswith("_tokens"):
-            for ds_key in kind_sets:
+            for ds_key in chart_sets:
                 pts = []
                 for value in ab["values"]:
                     x = cells.get(f"{ds_key}|{value}|{x_metric}")
                     ys = {
                         m: y
                         for m in plot_metrics
-                        if isinstance(y := cells.get(f"{ds_key}|{value}|{m}"), dict)
+                        if (ds_key not in rows_only or m == ALL_RIGHT)
+                        and isinstance(y := cells.get(f"{ds_key}|{value}|{m}"), dict)
                     }
                     if isinstance(x, dict) and ys:
                         pts.append((value, x, ys))
@@ -1314,24 +1836,22 @@ def render_ablation(
                         baselines[m] = (statistics.fmean(found), spec["name"])
                         baseline_specs[m] = spec
                 scatter.append((ds_key, pts, baselines))
-                if table_mcoe:
-                    mcoe[ds_key] = marginal_cost_of_error(
+                if table_mcoe and any(table_mcoe in ys for _, _, ys in pts):
+                    mcoe[ds_key] = mcoe_cells(
                         [(v, x, ys[table_mcoe]) for v, x, ys in pts if table_mcoe in ys]
                     )
-        plotted = [
-            k
-            for k in kind_sets
-            if datasets[k].get("short", datasets[k]["name"]) in {p[0] for p in panels}
-        ]
         if panels:
             name = f"{ab['id']}-{kind}.svg"
             metric_name = metrics[plot_metric]["name"]
-            on_cost = x_metric == COST or plot_metric == COST
+            on_cost = x_metric == cost_col or plot_metric == cost_col
             prices = price_caveat_svg(region) if on_cost else ""
-            unit = per_unit(kind)
+            # A step's cost axis names the step; the whole pipeline's is the chart's
+            # default.
+            cost_axis = (
+                cost_axis_title(cost_col, metrics, unit) if x_metric == cost_col else ""
+            )
             # The first chart carries the takeaway. Under a by-size chart, which
             # carries it already, it carries its own (`details_takeaway`).
-            first = not headline and not charts_in_details
             title = (
                 str(
                     ab.get("details_takeaway" if by_size_first else "takeaway")
@@ -1393,26 +1913,26 @@ def render_ablation(
                     subtitle=subtitle,
                     labels={v: short_label(v, ab) for v in ab["values"]},
                     default=default_value(ab),
-                    x_money=x_metric == COST,
+                    x_money=x_metric == cost_col,
                     unit=unit,
                     mcoe=mcoe_metrics,
                     prices=prices,
                     families=bool(ab.get("families")),
+                    cost_axis=cost_axis,
                 )
                 out.plots[name] = svg
                 x_words = (
                     f"cost per 1,000 {unit}"
                     if x_metric == COST
+                    else lower_first(cost_axis.removesuffix(" ($)"))
+                    if cost_axis
                     else lower_first(x_name)
                 )
                 alt = (
                     f"{title}: {lower_name(metric_name)} against {x_words}, one point "
                     f"per {varies_text(ab)}"
                 )
-                caption = (
-                    f"*{metric_name} against {x_words}, one point per "
-                    f"{varies_text(ab)}. {BANDS_CAPTION}"
-                )
+                caption = f"*{BANDS_CAPTION}"
                 if 'class="mcoe"' in svg:
                     caption += MCOE_CAPTION
                 marks = [
@@ -1432,54 +1952,78 @@ def render_ablation(
                 caption += "*"
             else:
                 out.plots[name] = draw_plot(
-                    metric_name, panels, ab.get("runs", 0), prices=prices
+                    metric_name,
+                    panels,
+                    ab.get("runs", 0),
+                    prices=prices,
+                    ratio=plot_metric in RATIO_METRICS,
                 )
                 alt = f"{metric_name} for each value of {ab['changes']}"
-                caption = f"*{metric_name}. {CAPTION}*"
-            plot_n = sample_sentence(sizes, plotted, datasets)
-            if plot_n:
-                caption += f" {plot_n}"
-            caption += (
-                " Datasets: "
-                + ", ".join(dataset_label(k, datasets, short=True) for k in plotted)
-                + "."
-            )
-            if first:
-                caption += f" {details_link}."
-            if on_cost:
-                caption += f" {price_caveat(region)}"
+                caption = f"*{CAPTION}*"
             plot_md = [f"![{alt}]({PLOTS_FROM_PAGES}/{name})", "", caption, ""]
             if headline or charts_in_details:
                 d += plot_md
             else:
                 headline = plot_md
-        header = ["Dataset", ab["changes"]] + [metrics[m]["name"] for m in cols]
+        # Datasets with no measured cell in this kind get no rows, and a kind with
+        # none at all gets no table.
+        table_sets = [
+            k
+            for k in kind_sets
+            if any(
+                cells.get(f"{k}|{v}|{m}") is not None
+                for v in ab["values"]
+                for m in cols
+            )
+        ]
+        if not table_sets or ab.get("grid"):
+            # A grid's own tables (render_grid) carry its results.
+            continue
+        header = ["Dataset", ab["changes"]] + [
+            unit_name(metrics[m]["name"], unit) for m in cols
+        ]
         refs = {ref for ref, _ in mcoe.values()}
         if mcoe:
+            versus = short_label(next(iter(refs)), ab) if len(refs) == 1 else "cheapest"
             header.append(
-                f"MCoE vs {next(iter(refs))}" if len(refs) == 1 else "MCoE vs cheapest"
+                f"[{cost_words(cost_col, metrics)} per error prevented]({MCOE_PAGE}) "
+                f"vs {versus}"
             )
         d.append("| " + " | ".join(header) + " |")
         d.append("|" + "---|" * len(header))
-        for ds_key in kind_sets:
-            ref, gains = mcoe.get(ds_key, ("", {}))
+        any_bold = False
+        for ds_key in table_sets:
+            _, prices_for = mcoe.get(ds_key, ("", {}))
+            best = {
+                m: winner({v: cells.get(f"{ds_key}|{v}|{m}") for v in ab["values"]}, m)
+                for m in cols
+            }
             for value in ab["values"]:
-                row = [datasets[ds_key].get("short", datasets[ds_key]["name"]), value]
-                row += [cell_text(cells.get(f"{ds_key}|{value}|{m}"), m) for m in cols]
-                if mcoe:
+                row = [
+                    datasets[ds_key].get("short", datasets[ds_key]["name"]),
+                    value_cell(value, ab),
+                ]
+                for m in cols:
+                    on = best[m] == value
+                    any_bold = any_bold or on
                     row.append(
-                        EMPTY
-                        if value not in gains
-                        else "no measurable gain"
-                        if gains[value] is None
-                        else f"{money(gains[value] or 0.0)} per error prevented"
+                        bold(cell_text(cells.get(f"{ds_key}|{value}|{m}"), m), on)
                     )
+                if mcoe:
+                    row.append(prices_for.get(value, EMPTY))
                 d.append("| " + " | ".join(row) + " |")
         d.append("")
-        if COST in cols and any(
-            f"{k}|{v}" in costs for k in kind_sets for v in ab["values"]
-        ):
-            shows_cost = True
+        failed = failures_line(sample, table_sets, ab["values"], ab, datasets)
+        if failed:
+            d += [failed, ""]
+        notes = [BOLD_FIGURE] if any_bold else []
+        if any(value_cell(v, ab) != VALUE_NAMES.get(v, v) for v in ab["values"]):
+            notes.append(reference_note(ab))
+        if notes:
+            d += ["*" + " ".join(notes) + "*", ""]
+        if cost_col in cols and priced_keys:
+            if cost_col not in shows_cost:
+                shows_cost.append(cost_col)
             shows_cold = shows_cold or any(
                 f"{k}|{v}" in cold for k in kind_sets for v in ab["values"]
             )
@@ -1494,25 +2038,49 @@ def render_ablation(
             if missing:
                 d += ["Not priced: " + ", ".join(f"`{n}`" for n in missing) + ".", ""]
     if shows_cost:
-        d += [cost_note(region), ""]
+        for metric in shows_cost:
+            d += [cost_note(region, str(metrics[metric].get("note") or "")), ""]
         if shows_cold:
             d += [COLD_NOTE, ""]
     d.append("")
 
-    # FAQ entry: the question, the answer, the headline plot, a link to details.
-    out.faq += [f"### {ab['question']}", "", f"**Answer:** {answer} {details_link}", ""]
+    # FAQ entry: the question, its chart, the answer, and the details collapsed.
     if results:
-        by_size, by_size_plots = render_by_size(ab, reg, results)
-        out.faq += by_size
+        charts, tables, by_size_plots = render_by_size(ab, reg, results)
         out.plots.update(by_size_plots)
-    if ab.get("grid") and results:
-        # The grid's tables answer the question; the chart, when there is one,
-        # follows them.
-        out.faq += render_grid(ab, reg, cells, region, spec_n, spec_models)
-        out.faq += headline
-    else:
-        out.faq += headline
+        if charts:
+            headline = charts[0]
+            tables = [line for chart in charts[1:] for line in chart] + tables
+        if ab.get("grid"):
+            # The grid's tables answer the question, so they come first.
+            tables = render_grid(ab, reg, cells, region, sample) + tables
+        # Under the settings table, before the per-kind tables.
+        at = next(i for i, line in enumerate(d) if line.startswith("| **Runs**")) + 2
+        d[at:at] = tables
+    out.faq += [f"### {ab['question']}", "", *headline]
+    if too_easy:
+        out.faq += [" ".join(too_easy), ""]
+    out.faq += [f"**Answer:** {answer}", ""]
+    if results:
+        while d and d[-1] == "":
+            d.pop()
+        out.faq += [
+            "<details>",
+            "<summary>Details</summary>",
+            "",
+            *d,
+            "",
+            "</details>",
+            "",
+        ]
     return out
+
+
+def grid_number(v: float, metric: str) -> str:
+    """A figure in a grid table: dollars for a cost, "2.5×" for a ratio, else 0.81."""
+    if is_cost_metric(metric):
+        return money(v)
+    return times(v) if metric in RATIO_METRICS else f"{v:.2f}"
 
 
 def render_grid(
@@ -1520,12 +2088,12 @@ def render_grid(
     reg: dict[str, Any],
     cells: dict[str, Cell],
     region: str,
-    sample_text: str,
-    models_text: str,
+    sample: dict[str, dict[str, Any]],
 ) -> list[str]:
     """One small table per metric, rows and columns from the ablation's grid.
 
-    The best value in each table is bold: the highest score, or the lowest cost.
+    A value is bold where it beats the runner-up of its table by more than twice the
+    combined standard error (winner): the highest score, or the lowest cost.
     """
     metrics: dict[str, Any] = reg["metrics"]
     grid = ab["grid"]
@@ -1537,13 +2105,20 @@ def render_grid(
         shown.remove(plot)
         shown.insert(0, plot)
     out: list[str] = []
+    any_bold = False
+    # The cost columns shown, each noted once under the tables.
+    priced: list[str] = []
     for ds_key in ab["datasets"]:
+        unit = per_unit(reg["datasets"][ds_key]["kind"])
+        cost_col = cost_column(ab, reg["datasets"][ds_key]["kind"], metrics)
         has_cost = any(
-            isinstance(cells.get(f"{ds_key}|{r} · {c}|{COST}"), dict)
+            isinstance(cells.get(f"{ds_key}|{r} · {c}|{cost_col}"), dict)
             for r in rows
             for c in cols
         )
-        for metric in shown + ([COST] if has_cost else []):
+        if has_cost and cost_col not in priced:
+            priced.append(cost_col)
+        for metric in shown + ([cost_col] if has_cost else []):
             values = {
                 (r, c): cells.get(f"{ds_key}|{r} · {c}|{metric}")
                 for r in rows
@@ -1552,12 +2127,11 @@ def render_grid(
             means = {k: v["mean"] for k, v in values.items() if isinstance(v, dict)}
             if not means:
                 continue
-            best = (min if metric == COST else max)(means.values())
-            name = (
-                "Cost per 1,000 documents (USD)"
-                if metric == COST
-                else metrics[metric]["name"]
-            )
+            best = winner(values, metric)
+            name = unit_name(metrics[metric]["name"], unit)
+            if len(ab["datasets"]) > 1:
+                short = reg["datasets"][ds_key].get("short", ds_key)
+                name = f"{short}: {lower_first(name)}"
             out += [f"**{name}**", "", "| | " + " | ".join(cols) + " |"]
             out.append("|---|" + "---|" * len(cols))
             for r in rows:
@@ -1567,21 +2141,67 @@ def render_grid(
                     if m is None:
                         row.append(EMPTY)
                         continue
-                    text = f"${m:,.0f}" if metric == COST else f"{m:.2f}"
-                    row.append(f"**{text}**" if m == best else text)
+                    se = (values.get((r, c)) or {}).get("se")
+                    text = grid_number(m, metric)
+                    if isinstance(se, (int, float)) and se > 0:
+                        text += f" ± {grid_number(se, metric)}"
+                    any_bold = any_bold or best == (r, c)
+                    row.append(bold(text, best == (r, c)))
                 out.append("| " + " | ".join(row) + " |")
             out.append("")
-    notes = [t for t in (sample_text, models_text) if t]
+    failed = failures_line(
+        sample,
+        ab["datasets"],
+        [f"{r} · {c}" for r in rows for c in cols],
+        ab,
+        reg["datasets"],
+    )
+    if failed:
+        out += [failed, ""]
+    notes: list[str] = []
+    ref = ab.get("reference")
+    if ref and " · " in ref:
+        row, col = ref.split(" · ", 1)
+        notes.append(f"The {reference_setup(ab)} is *{row}* with *{col}*.")
+    if any_bold:
+        notes.append(
+            "A bold figure beats every other in its table by more than twice the "
+            "combined standard error."
+        )
     if notes:
-        out += ["*" + " ".join(notes) + " The best value in each table is bold.*", ""]
-    if any(
-        isinstance(cells.get(f"{k}|{r} · {c}|{COST}"), dict)
-        for k in ab["datasets"]
-        for r in rows
-        for c in cols
-    ):
-        out += [cost_note(region), ""]
+        out += ["*" + " ".join(notes) + "*", ""]
+    for metric in priced:
+        out += [cost_note(region, str(metrics[metric].get("note") or "")), ""]
     return out
+
+
+def question_anchor(ab: dict[str, Any]) -> str:
+    """Where a link to an ablation goes: its question once measured, else Planned."""
+    measured = shown_results(ab) is not None
+    return slugify(ab["question"] if measured else PLANNED)
+
+
+#: A link whose text is an ablation ID: "[EX-02](#planned)", "[EX-02](extraction.md#x)".
+ID_LINK = re.compile(r"\[([A-Z]{2}-\d{2})\]\((?:([\w-]+)\.md)?#[\w-]*\)")
+
+
+def fix_id_links(text: str, page: str, reg: dict[str, Any]) -> str:
+    """Point every ablation-ID link on a page at its question, or at Planned.
+
+    The settings tables are written by hand and name the ablations that answer each
+    setting; a link written before an ablation was measured goes to Planned, so it is
+    moved to the question when the results arrive.
+    """
+    by_id = {ab["id"]: ab for ab in reg["ablations"]}
+
+    def sub(m: re.Match[str]) -> str:
+        ab = by_id.get(m.group(1))
+        if ab is None:
+            return m.group(0)
+        target = "" if ab["page"] == page else f"{ab['page']}.md"
+        return f"[{m.group(1)}]({target}#{question_anchor(ab)})"
+
+    return ID_LINK.sub(sub, text)
 
 
 def render_datasets(reg: dict[str, Any]) -> str:
@@ -1602,7 +2222,9 @@ def render_datasets(reg: dict[str, Any]) -> str:
         for k in keys:
             ds = datasets[k]
             lines += [f"### {ds['name']}", ""]
-            if ds.get("link"):
+            if ds.get("about"):
+                lines.append(f"- **About the dataset:** {ds['about']}")
+            elif ds.get("link"):
                 lines.append(
                     f"- **About the dataset:** [{ds['name'].split(' (')[0].split(',')[0]}]({ds['link']})"
                 )
@@ -1619,7 +2241,8 @@ def render_datasets(reg: dict[str, Any]) -> str:
                 )
             if used[k]:
                 links = ", ".join(
-                    f"[{ab['id']}]({ab['page']}.md#{slugify(details_heading(ab))})"
+                    f"[{ab['id']}]({ab['page']}.md#{question_anchor(ab)})"
+                    + ("" if shown_results(ab) is not None else " (planned)")
                     for ab in used[k]
                 )
                 lines.append(f"- **Used by:** {links}")
@@ -1632,28 +2255,28 @@ def render_page(
 ) -> tuple[dict[str, str], dict[str, str]]:
     """Return the page's generated regions and its plots."""
     faq: list[str] = []
-    details: list[str] = []
     plots: dict[str, str] = {}
+    planned: list[str] = []
     for ab in reg["ablations"]:
-        if ab["page"] == page:
-            r = render_ablation(ab, reg, load_results(ab["id"]))
-            faq += r.faq
-            details += r.details
-            plots.update(r.plots)
-    regions = {
-        "FAQ": "\n".join(faq).rstrip() + "\n",
-        "ABLATIONS": "\n".join(details).rstrip() + "\n",
-    }
-    return regions, plots
+        if ab["page"] != page:
+            continue
+        results = shown_results(ab)
+        if results is None:
+            planned.append(f"- {ab['question']} ({ab['id']})")
+            continue
+        r = render_ablation(ab, reg, results)
+        faq += r.faq
+        plots.update(r.plots)
+    if planned:
+        faq += [f"### {PLANNED}", "", "We haven't run these yet.", "", *planned, ""]
+    return {"FAQ": "\n".join(faq).rstrip() + "\n"}, plots
 
 
 def splice(text: str, regions: dict[str, str], path: Path) -> str:
     for region in REGIONS:
         begin, end = markers(region)
         if begin not in text or end not in text:
-            if region == "ABLATIONS":
-                raise SystemExit(f"{path}: missing {begin} / {end} markers")
-            continue
+            raise SystemExit(f"{path}: missing {begin} / {end} markers")
         head, rest = text.split(begin, 1)
         _, tail = rest.split(end, 1)
         text = f"{head}{begin}\n\n{regions[region]}\n{end}{tail}"
@@ -1698,6 +2321,8 @@ def main() -> int:
         regions, plots = render_page(page, reg)
         expected.update(plots)
         updated = splice(text, regions, path)
+        if page != "index":  # index.md's hand-written text is edited by hand
+            updated = fix_id_links(updated, page, reg)
         if updated != text:
             if args.check:
                 stale.append(str(path.relative_to(REPO)))

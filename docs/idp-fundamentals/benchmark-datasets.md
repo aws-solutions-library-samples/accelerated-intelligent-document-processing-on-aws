@@ -74,9 +74,9 @@ narrative text, and none measures rule validation. For those, build a test set f
 - **Ground truth:** the document class of every page and the page range of every section.
 - **Measures:** page classification, section boundaries, and document class confidence.
 - **How far it carries:** the packets carry no field values, so the dataset measures
-  splitting and classification but not extraction. No document class appears twice in a
-  packet, so the dataset does not test runs of same-class documents, such as several pay
-  stubs in a row.
+  splitting and classification but not extraction. A document class can appear more than
+  once in a packet but never twice in a row, so the dataset does not test runs of
+  same-class documents, such as several pay stubs in a row.
 - **In Test Studio:** [DocSplit-Poly-Seq](../test-studio.md#docsplit-poly-seq).
 
 ## OmniAI-OCR-Benchmark

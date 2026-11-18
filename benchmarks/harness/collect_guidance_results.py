@@ -40,9 +40,18 @@ Metrics (cell keys `dataset|value|metric`, each a mean and standard error):
     errors_caught_30_random
                         the share the same review finds when it picks values at
                         random (about 0.30), per run; SE across runs
+    ecarb_30            error capture at a 30% review budget: errors_caught_30 over
+                        errors_caught_30_random (Stickler's `gain`), per run; SE
+                        across runs
     page_accuracy       share of pages with the right class, per run; SE across runs
     section_accuracy    share of sections with the right pages and class, per run
     grouping_score      DocSplit packet score for grouping pages into documents
+    classification_cost_per_1000_docs
+                        USD per 1,000 documents for the classification steps alone
+                        (CLASSIFICATION_STEPS): per run, the mean over the documents
+                        it scored of each one's own metering for those steps, priced
+                        like `cost` below; on the cost basis below, so the coldest
+                        run alone (SE 0) unless the value's runs are cache-isolated
 
 A metric is written only when the runs report it (confidence metrics need confidence
 on; page accuracy needs page-level class ground truth).
@@ -127,7 +136,7 @@ the configuration does not name as a step's model still shows up.
 
 Usage:
     AWS_PROFILE=... python3 benchmarks/harness/collect_guidance_results.py \\
-        manifest.json --results-dir /tmp/ex01/results
+        manifest.json --results-dir /tmp/ex01/results [--out scratch/EX-01.json]
 """
 
 from __future__ import annotations
@@ -135,6 +144,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -160,16 +170,20 @@ STEP_METRICS = {
 DOC_SPLIT_METRICS = ("boundary_accuracy", "label_accuracy")
 #: Where per-document evaluations are cached: one file per run and document, plus one
 #: row-count file per test set under `_rows/`.
-DOC_EVAL_CACHE = Path("/tmp/guidance-runs/doceval")
+# Caches live beside the runner's workdir, outside /tmp, which a reboot empties.
+WORKDIR = Path(
+    os.environ.get("GUIDANCE_WORKDIR", "~/bench-work/guidance-runs")
+).expanduser()
+DOC_EVAL_CACHE = WORKDIR / "doceval"
 DOC_EVAL_WORKERS = 8
 #: Where tracking-table items are cached: one file per run, the fields below only.
-TRACKING_CACHE = Path("/tmp/guidance-runs/tracking")
+TRACKING_CACHE = WORKDIR / "tracking"
 TRACKING_FIELDS = ("WorkflowStartTime", "CompletionTime", "ObjectStatus", "Metering")
 #: The review budget behind `errors_caught_30`: the share of values a reviewer checks,
 #: lowest confidence first, as Test Studio keys it under error_capture_at_budget.
 REVIEW_BUDGET = "0.30"
 #: Cost-breakdown services kept as usage, and units that carry no price of their own.
-PRICED_SERVICES = ("bedrock/", "textract/")
+PRICED_SERVICES = ("bedrock/", "textract/", "bda/", "decision_model/")
 UNPRICED_UNITS = ("requests", "totalTokens")
 #: Display names by model ID, without a region prefix or a long-context suffix. A
 #: model that is not listed keeps its raw ID: a wrong name is worse than an ugly one.
@@ -204,6 +218,13 @@ STEP_BILLING = {
     "Extraction": ("Extraction",),
     "Confidence": ("Assessment",),
 }
+#: The metering steps `classification_cost_per_1000_docs` counts. Classifying in one
+#: step meters `Classification/bedrock/<model>`; splitting first meters
+#: `Splitting/bedrock/<model>` and then `SectionClassification/bedrock/<model>`, or
+#: `SectionClassification/decision_model/<function>` (the decision model's Lambda
+#: duration) when a decision model names the sections.
+CLASSIFICATION_STEPS = STEP_BILLING["Classification"]
+CLASSIFICATION_COST = "classification_cost_per_1000_docs"
 
 
 def mean_se(values: list[float]) -> dict[str, float]:
@@ -391,7 +412,15 @@ def run_usage(result: dict[str, Any]) -> dict[str, float]:
         for key, item in items.items():
             if not key.startswith(PRICED_SERVICES):
                 continue
-            service_id, _, unit = key.rpartition("_")
+            # The item names its unit, and a unit can hold an underscore
+            # (`gb_seconds`), so split the key at the unit rather than at the last "_".
+            unit = str(item.get("unit") or "")
+            service_id = (
+                key[: -len(unit) - 1]
+                if unit and key.endswith(f"_{unit}")
+                else key.rpartition("_")[0]
+            )
+            unit = unit or key.rpartition("_")[2]
             if not service_id or unit in UNPRICED_UNITS:
                 continue
             name = f"{service_id}|{unit}"
@@ -399,8 +428,11 @@ def run_usage(result: dict[str, Any]) -> dict[str, float]:
     return {k: round(v / docs, 4) for k, v in sorted(totals.items())}
 
 
-def metering_cost(metering: dict[str, Any], unpriced: set[str]) -> float:
-    """One document's Bedrock and Textract cost in USD, from its own metering.
+def metering_cost(
+    metering: dict[str, Any], unpriced: set[str], steps: tuple[str, ...] = ()
+) -> tuple[float, float]:
+    """One document's Bedrock and Textract cost in USD, from its own metering, and
+    the part of it the metering `steps` billed.
 
     Metering keys look like `<step>/bedrock/<model id>` with a unit map under each,
     and are priced the way the renderer prices a run's usage: per `bedrock/<model
@@ -408,8 +440,9 @@ def metering_cost(metering: dict[str, Any], unpriced: set[str]) -> float:
     counts as $0 and is added to `unpriced`.
     """
     total = 0.0
+    in_steps = 0.0
     for key, units in metering.items():
-        _, _, service_id = str(key).partition("/")
+        step, _, service_id = str(key).partition("/")
         if not service_id.startswith(PRICED_SERVICES) or not isinstance(units, dict):
             continue
         for unit, amount in units.items():
@@ -420,7 +453,9 @@ def metering_cost(metering: dict[str, Any], unpriced: set[str]) -> float:
                 unpriced.add(f"{service_id}|{unit}")
                 continue
             total += float(amount) * price
-    return total
+            if step in steps:
+                in_steps += float(amount) * price
+    return total, in_steps
 
 
 def list_field(result: dict[str, Any]) -> str | None:
@@ -486,6 +521,13 @@ def run_metrics(result: dict[str, Any]) -> dict[str, float]:
         out["errors_caught_30"] = float(budget["pct_errors_caught"])
     if budget.get("pct_errors_random") is not None:
         out["errors_caught_30_random"] = float(budget["pct_errors_random"])
+    # ECARB: errors the review catches over what a random review of as many values
+    # catches. Stickler reports it as `gain`; an older result has only the shares.
+    caught, by_chance = budget.get("pct_errors_caught"), budget.get("pct_errors_random")
+    if budget.get("gain") is not None:
+        out["ecarb_30"] = float(budget["gain"])
+    elif caught is not None and by_chance:
+        out["ecarb_30"] = float(caught) / float(by_chance)
     split = result.get("splitClassificationMetrics") or {}
     if split.get("page_level_accuracy") is not None:
         out["page_accuracy"] = float(split["page_level_accuracy"])
@@ -618,7 +660,26 @@ class DocEvals:
 
 
 def pages(result: dict[str, Any]) -> int:
-    return int(result.get("splitClassificationMetrics", {}).get("total_pages") or 0)
+    """The run's page count: from the split metrics, else from Textract's billed pages.
+
+    Test Studio sometimes leaves `splitClassificationMetrics` empty; a run without
+    either count returns 0, and its tokens are not counted per page at all, rather
+    than divided by 1.
+    """
+    split = int(
+        (result.get("splitClassificationMetrics") or {}).get("total_pages") or 0
+    )
+    if split:
+        return split
+    ocr = ((result.get("costBreakdown") or {}).get("OCR")) or {}
+    billed = [
+        int(item.get("value") or 0)
+        for key, item in ocr.items()
+        if key.startswith(("textract/", "bda/"))
+        and isinstance(item, dict)
+        and item.get("unit") == "pages"
+    ]
+    return max(billed, default=0)
 
 
 class TrackingItems:
@@ -741,6 +802,11 @@ def main() -> int:
         action="store_true",
         help="skip the per-document evaluations (no S3 reads beyond the run results)",
     )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="results file to write (default: benchmarks/results/guidance/<ID>.json)",
+    )
     args = parser.parse_args()
 
     man = json.loads(args.manifest.read_text(encoding="utf-8"))
@@ -807,6 +873,8 @@ def main() -> int:
             # Each document's cost per run, by run index, and the runs that missed it.
             doc_costs: dict[str, dict[int, float]] = {}
             missed: dict[str, list[str]] = {}
+            # Each run's classification cost per 1,000 documents, by run index.
+            run_classification: dict[int, float] = {}
             for index, run_id in enumerate(ids):
                 path = args.results_dir / f"{run_id}-result.json"
                 result = json.loads(path.read_text(encoding="utf-8"))
@@ -826,10 +894,17 @@ def main() -> int:
                 scores = result.get("weightedOverallScores") or {}
                 for key, score in scores.items():
                     per_doc.setdefault(key.split("/", 1)[1], []).append(float(score))
-                n_pages = pages(result) or 1
-                for metric, step in STEP_METRICS.items():
-                    tokens[metric].append(step_tokens(result, step) / n_pages)
-                tokens["total"].append(step_tokens(result, None) / n_pages)
+                n_pages = pages(result)
+                # A run Test Studio cached with an empty cost breakdown (metering not
+                # yet in Athena when the result was built) has no token counts either.
+                if n_pages and result.get("costBreakdown"):
+                    for metric, step in STEP_METRICS.items():
+                        tokens[metric].append(step_tokens(result, step) / n_pages)
+                    tokens["total"].append(step_tokens(result, None) / n_pages)
+                else:
+                    print(
+                        f"  {run_id}: no page count or usage; tokens per page left out"
+                    )
                 runs_usage.append(run_usage(result))
                 coldest.append(
                     (
@@ -873,10 +948,21 @@ def main() -> int:
                         per_run.setdefault(metric, []).append(statistics.fmean(vals))
                 names = [k.split("/", 1)[1] for k in scores]
                 items = tracking.items(run_id, names)
+                classified: list[float] = []
                 for doc, item in items.items():
                     if isinstance(item.get("Metering"), dict):
-                        doc_costs.setdefault(doc, {})[index] = metering_cost(
-                            item["Metering"], unpriced
+                        cost, classifying = metering_cost(
+                            item["Metering"], unpriced, CLASSIFICATION_STEPS
+                        )
+                        doc_costs.setdefault(doc, {})[index] = cost
+                        classified.append(classifying)
+                # Over the documents the run scored, as its run cost is.
+                if classified:
+                    run_classification[index] = 1000 * statistics.fmean(classified)
+                    if len(classified) < len(names):
+                        print(
+                            f"  {run_id}: classification cost from {len(classified)} "
+                            f"of {len(names)} documents' metering"
                         )
                 for doc in sorted(universe[ds_key] - set(names)):
                     missed.setdefault(doc, []).append(run_id)
@@ -896,14 +982,27 @@ def main() -> int:
             cells[cell + "total_tokens"] = mean_se(tokens["total"])
             if medians:
                 cells[cell + "median_seconds"] = mean_se(medians)
+            # Test Studio sometimes leaves a run's packet metrics empty; two runs are
+            # enough for a mean and an SE, so a cell needs all its runs but one.
             for metric, vals in per_run.items():
-                if len(vals) == len(ids):
+                if len(vals) >= max(2, len(ids) - 1):
                     cells[cell + metric] = mean_se(vals)
             key = f"{ds_key}|{value}"
             all_isolated = bool(ids) and all(i in isolated for i in ids)
             # A document's cost follows the run cost's basis: every run when the runs
             # are cache-isolated, otherwise the coldest run alone.
             cold_index = min(coldest)[3] if coldest else 0
+            # Classification cost follows the same basis: the mean over every run
+            # when the runs are cache-isolated, otherwise the coldest run alone.
+            if all_isolated and run_classification:
+                cells[cell + CLASSIFICATION_COST] = mean_se(
+                    [run_classification[i] for i in sorted(run_classification)]
+                )
+            elif cold_index in run_classification:
+                cells[cell + CLASSIFICATION_COST] = {
+                    "mean": round(run_classification[cold_index], 6),
+                    "se": 0.0,
+                }
             if evals is not None and doc_metrics:
                 shown = [
                     d
@@ -1010,10 +1109,10 @@ def main() -> int:
         out["per_doc"] = by_doc
     if unfinished:
         out["unfinished"] = unfinished
-    OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / f"{man['ablation']}.json"
+    path = args.out or OUT / f"{man['ablation']}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {path.relative_to(REPO)}")
+    print(f"wrote {path.relative_to(REPO) if path.is_relative_to(REPO) else path}")
     for k, v in cells.items():
         print(f"  {k}: {v['mean']:.4g} ± {2 * v['se']:.2g}")
     for k, entries in by_doc.items():

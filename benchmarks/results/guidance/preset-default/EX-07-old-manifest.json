@@ -1,0 +1,49 @@
+{
+  "ablation": "EX-07",
+  "verdict": "No difference on our synthetic bank statements: agentic extraction with Claude Haiku 5.5 got every row right with table parsing on and off, on 400- and 800-row statements. These synthetic statements are too clean to separate the two; a real long-table dataset is still to come.",
+  "runs": {
+    "synth_400": {
+      "Off": [
+        "synth-statements-400-20261116-175622",
+        "synth-statements-400-20261116-175751",
+        "synth-statements-400-20261116-175718"
+      ],
+      "On (default)": [
+        "synth-statements-400-20261116-175612",
+        "synth-statements-400-20261116-175738",
+        "synth-statements-400-20261116-175645"
+      ]
+    },
+    "synth_800": {
+      "On (default)": [
+        "synth-statements-800-20261116-180305",
+        "synth-statements-800-20261116-180130",
+        "synth-statements-800-20261116-180234"
+      ],
+      "Off": [
+        "synth-statements-800-20261116-180352",
+        "synth-statements-800-20261116-180405",
+        "synth-statements-800-20261116-181518"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "synth-statements-400-20261116-175612",
+    "synth-statements-400-20261116-175622",
+    "synth-statements-400-20261116-175645",
+    "synth-statements-400-20261116-175718",
+    "synth-statements-400-20261116-175738",
+    "synth-statements-400-20261116-175751",
+    "synth-statements-800-20261116-180130",
+    "synth-statements-800-20261116-180234",
+    "synth-statements-800-20261116-180305",
+    "synth-statements-800-20261116-180352",
+    "synth-statements-800-20261116-180405",
+    "synth-statements-800-20261116-181518"
+  ]
+}

@@ -1,0 +1,1055 @@
+{
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "region": "us-east-1",
+  "source": "Test Studio runs RealKIE-FCC-Verified-20261116-175632, RealKIE-FCC-Verified-20261116-175655, RealKIE-FCC-Verified-20261116-175706, RealKIE-FCC-Verified-20261116-175812, RealKIE-FCC-Verified-20261116-175728, RealKIE-FCC-Verified-20261116-175802, Fake-W2-Tax-Forms-20261116-175953, Fake-W2-Tax-Forms-20261116-180330, Fake-W2-Tax-Forms-20261116-180017, Fake-W2-Tax-Forms-20261116-180516, Fake-W2-Tax-Forms-20261116-180608, Fake-W2-Tax-Forms-20261116-180702",
+  "verdict": "Yes, keep page images. On W-2 forms, OCR text alone dropped weighted accuracy from 0.997 to 0.89 and the share of forms with every field right from 78% to 3%, and cost slightly more ($8.05 against $7.51 per 1,000), because the replies got longer. On RealKIE invoices text alone scored the same (0.80) and saved about 9% ($20.40 against $22.30 per 1,000).",
+  "cells": {
+    "realkie|Text and images (recommended)|weighted_accuracy": {
+      "mean": 0.797946,
+      "se": 0.035301
+    },
+    "realkie|Text and images (recommended)|extraction_tokens": {
+      "mean": 6775.744856,
+      "se": 7.304784
+    },
+    "realkie|Text and images (recommended)|scoring_tokens": {
+      "mean": 9772.633745,
+      "se": 292.505341
+    },
+    "realkie|Text and images (recommended)|total_tokens": {
+      "mean": 16548.378601,
+      "se": 285.268259
+    },
+    "realkie|Text and images (recommended)|median_seconds": {
+      "mean": 44.500106,
+      "se": 1.008125
+    },
+    "realkie|Text and images (recommended)|list_recall": {
+      "mean": 0.269095,
+      "se": 0.017781
+    },
+    "realkie|Text and images (recommended)|list_precision": {
+      "mean": 0.282354,
+      "se": 0.010508
+    },
+    "realkie|Text and images (recommended)|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "realkie|Text and images (recommended)|auroc": {
+      "mean": 0.839714,
+      "se": 0.017246
+    },
+    "realkie|Text and images (recommended)|calibration_error": {
+      "mean": 0.170309,
+      "se": 0.009866
+    },
+    "realkie|Text and images (recommended)|errors_caught_30": {
+      "mean": 0.684213,
+      "se": 0.017901
+    },
+    "realkie|Text and images (recommended)|errors_caught_30_random": {
+      "mean": 0.298877,
+      "se": 0.000562
+    },
+    "realkie|Text and images (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text and images (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text and images (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text and images (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text and images (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text only|weighted_accuracy": {
+      "mean": 0.802191,
+      "se": 0.031571
+    },
+    "realkie|Text only|extraction_tokens": {
+      "mean": 2130.617284,
+      "se": 21.417716
+    },
+    "realkie|Text only|scoring_tokens": {
+      "mean": 10353.897119,
+      "se": 396.801888
+    },
+    "realkie|Text only|total_tokens": {
+      "mean": 12484.514403,
+      "se": 396.159036
+    },
+    "realkie|Text only|median_seconds": {
+      "mean": 42.868794,
+      "se": 2.419611
+    },
+    "realkie|Text only|list_recall": {
+      "mean": 0.289582,
+      "se": 0.034616
+    },
+    "realkie|Text only|list_precision": {
+      "mean": 0.328963,
+      "se": 0.054662
+    },
+    "realkie|Text only|all_fields_right": {
+      "mean": 0.016667,
+      "se": 0.016667
+    },
+    "realkie|Text only|auroc": {
+      "mean": 0.728854,
+      "se": 0.08238
+    },
+    "realkie|Text only|calibration_error": {
+      "mean": 0.179935,
+      "se": 0.012876
+    },
+    "realkie|Text only|errors_caught_30": {
+      "mean": 0.538346,
+      "se": 0.041471
+    },
+    "realkie|Text only|errors_caught_30_random": {
+      "mean": 0.298877,
+      "se": 0.000284
+    },
+    "realkie|Text only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "realkie|Text only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|weighted_accuracy": {
+      "mean": 0.996962,
+      "se": 0.001832
+    },
+    "fake_w2|Text and images (recommended)|extraction_tokens": {
+      "mean": 7434.35,
+      "se": 5.525471
+    },
+    "fake_w2|Text and images (recommended)|scoring_tokens": {
+      "mean": 10783.0,
+      "se": 126.267586
+    },
+    "fake_w2|Text and images (recommended)|total_tokens": {
+      "mean": 18217.35,
+      "se": 128.376851
+    },
+    "fake_w2|Text and images (recommended)|median_seconds": {
+      "mean": 35.992124,
+      "se": 2.901028
+    },
+    "fake_w2|Text and images (recommended)|all_fields_right": {
+      "mean": 0.783333,
+      "se": 0.016667
+    },
+    "fake_w2|Text and images (recommended)|auroc": {
+      "mean": 0.998147,
+      "se": 0.000356
+    },
+    "fake_w2|Text and images (recommended)|calibration_error": {
+      "mean": 0.048463,
+      "se": 0.000449
+    },
+    "fake_w2|Text and images (recommended)|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|errors_caught_30_random": {
+      "mean": 0.29963,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text and images (recommended)|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text only|weighted_accuracy": {
+      "mean": 0.889026,
+      "se": 0.009876
+    },
+    "fake_w2|Text only|extraction_tokens": {
+      "mean": 7474.566667,
+      "se": 54.179119
+    },
+    "fake_w2|Text only|scoring_tokens": {
+      "mean": 11186.4,
+      "se": 63.218042
+    },
+    "fake_w2|Text only|total_tokens": {
+      "mean": 18660.966667,
+      "se": 52.595765
+    },
+    "fake_w2|Text only|median_seconds": {
+      "mean": 38.904179,
+      "se": 1.492619
+    },
+    "fake_w2|Text only|all_fields_right": {
+      "mean": 0.033333,
+      "se": 0.016667
+    },
+    "fake_w2|Text only|auroc": {
+      "mean": 0.984486,
+      "se": 0.013062
+    },
+    "fake_w2|Text only|calibration_error": {
+      "mean": 0.048417,
+      "se": 0.001287
+    },
+    "fake_w2|Text only|errors_caught_30": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text only|errors_caught_30_random": {
+      "mean": 0.299127,
+      "se": 0.000303
+    },
+    "fake_w2|Text only|page_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text only|section_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text only|grouping_score": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text only|boundary_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    },
+    "fake_w2|Text only|label_accuracy": {
+      "mean": 1.0,
+      "se": 0.0
+    }
+  },
+  "sample": {
+    "realkie|Text and images (recommended)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "realkie|Text only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Text and images (recommended)": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    },
+    "fake_w2|Text only": {
+      "docs": [
+        20,
+        20,
+        20
+      ],
+      "failed": [
+        0,
+        0,
+        0
+      ],
+      "runs": 3
+    }
+  },
+  "models": {
+    "realkie|Text and images (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "realkie|Text only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Text and images (recommended)": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    },
+    "fake_w2|Text only": {
+      "OCR": "Amazon Textract (Layout)",
+      "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
+      "Extraction": "Claude Haiku 5.5, single-pass",
+      "Confidence": "Claude Haiku 5.5",
+      "billed": {
+        "Assessment": [
+          "us.anthropic.claude-haiku-5-5"
+        ],
+        "Extraction": [
+          "us.anthropic.claude-haiku-5-5"
+        ]
+      }
+    }
+  },
+  "usage": {
+    "realkie|Text and images (recommended)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 35460.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25373.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5124.3,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 33678.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1782.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25397.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4918.1,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 36909.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1937.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 25384.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5097.85,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "realkie|Text only": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 41570.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 6113.4,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5983.15,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 36643.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 6085.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5578.3,
+        "textract/analyze_document-Layout|pages": 4.05
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 37991.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 6103.9,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5617.1,
+        "textract/analyze_document-Layout|pages": 4.05
+      }
+    ],
+    "fake_w2|Text and images (recommended)": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 6471.75,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1937.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5036.85,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7554.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 855.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4671.6,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 4981.4,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 8241.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 432.1,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4744.35,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 5054.15,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ],
+    "fake_w2|Text only": [
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7978.55,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 430.7,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4011.8,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6307.65,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7979.95,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 429.3,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4012.5,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6135.65,
+        "textract/analyze_document-Layout|pages": 1.0
+      },
+      {
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 7331.2,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 1078.05,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 4012.45,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 6275.1,
+        "textract/analyze_document-Layout|pages": 1.0
+      }
+    ]
+  },
+  "cost_basis": {
+    "realkie|Text and images (recommended)": {
+      "mode": "cache-isolated"
+    },
+    "realkie|Text only": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Text and images (recommended)": {
+      "mode": "cache-isolated"
+    },
+    "fake_w2|Text only": {
+      "mode": "cache-isolated"
+    }
+  },
+  "per_doc": {
+    "realkie|Text and images (recommended)": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.798025,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.978513,
+        "cost": 0.012352
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.3,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.82499,
+        "cost": 0.006008
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005759
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.584742,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.919498,
+        "cost": 0.024959
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.22596,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.470847,
+        "cost": 0.02853
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.480392,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.923446,
+        "cost": 0.059859
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.733333,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.94051,
+        "cost": 0.006366
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.015,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.881028,
+        "cost": 0.049207
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.933333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.527975,
+        "cost": 0.038571
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.889007,
+        "cost": 0.006729
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.309091,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.621534,
+        "cost": 0.026466
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.25,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.678866,
+        "cost": 0.044893
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.8,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.609929,
+        "cost": 0.006498
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.579221,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.863038,
+        "cost": 0.029824
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.680851,
+        "cost": 0.005723
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.564706,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.953692,
+        "cost": 0.018745
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.890476,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.988349,
+        "cost": 0.010864
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.013527,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.895056,
+        "cost": 0.026628
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.555556,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.739953,
+        "cost": 0.006392
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.717857,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89099,
+        "cost": 0.032175
+      }
+    },
+    "realkie|Text only": {
+      "033f718b16cb597c065930410752c294.pdf": {
+        "list_score": 0.729383,
+        "list_rows": 10,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.829367,
+        "cost": 0.011418
+      },
+      "03f65053aea282ad8d5e759a9f18bdbb.pdf": {
+        "list_score": 0.233333,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.659366,
+        "cost": 0.005515
+      },
+      "08e2649c3291ee569a116260d46e9866.pdf": {
+        "list_score": 1.0,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.858156,
+        "cost": 0.005349
+      },
+      "0d0fc87f34a2263cdd4b96cdac891240.pdf": {
+        "list_score": 0.646017,
+        "list_rows": 57,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.950234,
+        "cost": 0.024992
+      },
+      "1220d048d2a75d910c52e7f290e32ca0.pdf": {
+        "list_score": 0.25583,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474024,
+        "cost": 0.025389
+      },
+      "1449e9c1e67662cb3c806eea0b1771e1.pdf": {
+        "list_score": 0.55,
+        "list_rows": 20,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.930851,
+        "cost": 0.05548
+      },
+      "1b238269de30dec67297e7ad8630116e.pdf": {
+        "list_score": 0.355556,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.931442,
+        "cost": 0.005844
+      },
+      "1b26192b674944e82347df9cfa3288ff.pdf": {
+        "list_score": 0.02,
+        "list_rows": 80,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.88156,
+        "cost": 0.044773
+      },
+      "21762bcc61029b7a5020647d7ced6aa5.pdf": {
+        "list_score": 0.971429,
+        "list_rows": 1,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.537544,
+        "cost": 0.03447
+      },
+      "26372a567adab41e404cab267067d73f.pdf": {
+        "list_score": 0.623333,
+        "list_rows": 6,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.889007,
+        "cost": 0.006053
+      },
+      "2de731d64adfecacda0bf2e4d9a8fcfe.pdf": {
+        "list_score": 0.4,
+        "list_rows": 11,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.024369
+      },
+      "33fe0051cbf2e777e47a1e717091c61f.pdf": {
+        "list_score": 0.253968,
+        "list_rows": 12,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.683187,
+        "cost": 0.040443
+      },
+      "3aac2d4d386a203e8d6419043f1adfa1.pdf": {
+        "list_score": 0.6,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.702128,
+        "cost": 0.006871
+      },
+      "3b768c37cd4670c0f28b0e89d7507e05.pdf": {
+        "list_score": 0.71342,
+        "list_rows": 22,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.806392,
+        "cost": 0.027207
+      },
+      "3b9f33e058641d47cf2ebe76b9382648.pdf": {
+        "list_score": 0.666667,
+        "list_rows": 0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.751773,
+        "cost": 0.005281
+      },
+      "3d239b34e970a6f5ad4d1417352cf82e.pdf": {
+        "list_score": 0.577902,
+        "list_rows": 17,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.955096,
+        "cost": 0.017592
+      },
+      "3dabc131205d3a2c74a73eb545494d3f.pdf": {
+        "list_score": 0.818685,
+        "list_rows": 4,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.980711,
+        "cost": 0.010214
+      },
+      "4d96667dff249bbfb513294f95313b71.pdf": {
+        "list_score": 0.011594,
+        "list_rows": 69,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.89485,
+        "cost": 0.022709
+      },
+      "52f1588f1bedc25f07c5cb6981e5f7dd.pdf": {
+        "list_score": 0.688889,
+        "list_rows": 3,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.754137,
+        "cost": 0.005915
+      },
+      "536c5c90c803552970cad769b6caef45.pdf": {
+        "list_score": 0.538149,
+        "list_rows": 16,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.871872,
+        "cost": 0.029047
+      }
+    },
+    "fake_w2|Text and images (recommended)": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.998663,
+        "cost": 0.007299
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007568
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007897
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007497
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007593
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.997869,
+        "cost": 0.007796
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007615
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007094
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007509
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007528
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.995739,
+        "cost": 0.007381
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007627
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007262
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007295
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.0075
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007299
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.969697,
+        "cost": 0.007757
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007497
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.977273,
+        "cost": 0.007585
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 1.0,
+        "cost": 0.007587
+      }
+    },
+    "fake_w2|Text only": {
+      "w2_test_0000.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.896046,
+        "cost": 0.007624
+      },
+      "w2_test_0001.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.869975,
+        "cost": 0.008519
+      },
+      "w2_test_0002.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.893939,
+        "cost": 0.008198
+      },
+      "w2_test_0003.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.886364,
+        "cost": 0.007511
+      },
+      "w2_test_0004.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.984848,
+        "cost": 0.008178
+      },
+      "w2_test_0005.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.82268,
+        "cost": 0.008422
+      },
+      "w2_test_0006.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.80303,
+        "cost": 0.008096
+      },
+      "w2_test_0007.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.007999
+      },
+      "w2_test_0008.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.856061,
+        "cost": 0.007658
+      },
+      "w2_test_0009.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.88961,
+        "cost": 0.007784
+      },
+      "w2_test_0010.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.90483,
+        "cost": 0.008229
+      },
+      "w2_test_0011.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.856061,
+        "cost": 0.008213
+      },
+      "w2_test_0012.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.833333,
+        "cost": 0.008144
+      },
+      "w2_test_0013.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.901515,
+        "cost": 0.007785
+      },
+      "w2_test_0014.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.962121,
+        "cost": 0.007847
+      },
+      "w2_test_0015.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.889807,
+        "cost": 0.00886
+      },
+      "w2_test_0016.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.008057
+      },
+      "w2_test_0017.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.916667,
+        "cost": 0.007714
+      },
+      "w2_test_0018.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.856061,
+        "cost": 0.00827
+      },
+      "w2_test_0019.jpg": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.924242,
+        "cost": 0.007837
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
   "ablation": "EX-01",
-  "verdict": "When an invoice has more than about 100 line items, and then with Claude Haiku 5.5. On all 75 RealKIE invoices, single-pass scored as well as agentic or better up to 100 line items (0.69 against 0.57 with Claude Haiku 5.5 at 1 to 20 items), and with the 5.5 models agentic cost about the same there. Above 100 line items single-pass got almost no line items right (0.00 to 0.22) while agentic got 0.44 to 0.79. On those long invoices agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($316 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, so the long bands rest on few invoices; Test Studio could not score the longest (1,490 items), because its evaluation step timed out although extraction finished.",
+  "verdict": "Single-pass is a good place to start, with agentic on Claude Haiku 5.5 above about 100 line items: there single-pass got almost no line items right and agentic got 0.44 to 0.79. Test it on your own documents.",
   "runs": {
     "realkie": {
       "Single-pass (Simple, default)": [

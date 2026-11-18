@@ -14,11 +14,16 @@ of those sections a document class.
 [Splitting and Section Classification](../idp-fundamentals/splitting-and-classification.md) explains how it
 works.
 
+![Four ways to find the documents in a packet and classify each one: page by page, holistic, split then an LLM classifies each section, and split then a decision model classifies each section](../../images/benchmark-guidance/figures/splitting-approaches.svg)
+
 ## How to improve splitting and classification on your documents
 
 **Your definitions.** The classification model picks a document class by comparing each
 section with the description of every document class. Name the features that tell a class
 apart from its closest neighbor. For classes that still get confused, add a few-shot example.
+A small decision model is more sensitive to this wording than an LLM: give it one line per
+class about what the page looks like, such as "a typed formal letter with a salutation
+(Dear ...) and a signature" ([SC-12](#can-a-decision-model-classify-the-sections)).
 See [Improving accuracy](../idp-fundamentals/splitting-and-classification.md#improving-accuracy-once-your-pipeline-is-running).
 
 **Data quality.** Long files, documents of the same class back to back, and pages that match
@@ -30,130 +35,18 @@ find where a document starts.
 | Setting | What it changes | Questions |
 |---|---|---|
 | Granularity and strategy | Page by page or the whole file at once, in one call or with section detection first | [SC-11](#does-holistic-classification-beat-page-by-page-classification) |
-| What the model reads | Page text, page images, or both | [SC-02](#do-i-need-page-images-in-the-classification-prompt), [SC-09](#how-small-can-classification-images-be) |
-| Classification model | The model that reads the pages | [SC-03](#which-classification-model-should-i-use) |
-| Window size | How many pages a holistic call sees at once | [SC-04](#how-long-a-packet-can-holistic-classification-handle) |
-| Context pages | Neighboring pages sent with each page, page by page | [SC-05](#does-neighboring-page-context-help-page-by-page-classification) |
-| Few-shot examples | Sample pages with their correct class, added to the prompt | [SC-06](#do-few-shot-examples-help-classification) |
-| Section splitting | Detect sections, or keep every file as one section | [SC-10](#if-every-file-is-one-document-should-i-turn-splitting-off) |
+| What the model reads | Page text, page images, or both | [SC-02](#do-i-need-page-images-in-the-classification-prompt), [SC-09](#planned) |
+| Classification model | The model that reads the pages | [SC-11](#does-holistic-classification-beat-page-by-page-classification), [SC-13](#which-way-of-splitting-and-classifying-should-i-use) |
+| Who classifies each section | An LLM, or a small decision model, after section detection | [SC-12](#can-a-decision-model-classify-the-sections), [SC-13](#which-way-of-splitting-and-classifying-should-i-use) |
+| Class descriptions | Descriptions written for the LLM prompt, or one line about what each page looks like | [SC-12](#can-a-decision-model-classify-the-sections) |
+| Window size | How many pages a holistic call sees at once | [SC-04](#planned) |
+| Few-shot examples | Sample pages with their correct class, added to the prompt | [SC-06](#planned) |
+| Section splitting | Detect sections, or keep every file as one section | [SC-10](#planned) |
 
 ## Questions
 
-<!-- BEGIN GENERATED FAQ -->
-
-### Does holistic classification beat page-by-page classification?
-
-**Answer:** Yes, once a Claude model classifies. Holistic classification with Claude Haiku 5.5 got 0.80 of DocSplit sections exactly right, against 0.52 for the default (Amazon Nova 2 Lite, page by page), at about the same cost ($470 against $493 per 1,000 packets). With Claude Sonnet 5.5 it got 0.90, for about $200 more per 1,000 packets. Holistic wins on finding where each document starts (boundary accuracy 0.92 with Claude Sonnet 5.5, against 0.75 page by page); once a document is found, every setup names it correctly (label accuracy 0.86 to 0.99). With Amazon Nova 2 Lite holistic barely helps, and splitting page by page first does a little better (0.65). [Details: SC-11](#sc-11-does-holistic-classification-beat-page-by-page-classification)
-
-**Section accuracy**
-
-| | Amazon Nova 2 Lite (default) | Claude Haiku 5.5 | Claude Sonnet 5.5 |
-|---|---|---|---|
-| Page by page | 0.52 | 0.71 | 0.76 |
-| Holistic | 0.55 | 0.80 | **0.90** |
-| Two steps: split page by page, then classify | 0.65 | 0.73 | 0.78 |
-| Two steps: split holistically, then classify | 0.55 | 0.76 | 0.87 |
-
-**Page accuracy**
-
-| | Amazon Nova 2 Lite (default) | Claude Haiku 5.5 | Claude Sonnet 5.5 |
-|---|---|---|---|
-| Page by page | 0.82 | 0.87 | 0.88 |
-| Holistic | 0.70 | 0.91 | 0.95 |
-| Two steps: split page by page, then classify | 0.81 | 0.84 | 0.94 |
-| Two steps: split holistically, then classify | 0.76 | 0.87 | **0.96** |
-
-**Grouping score**
-
-| | Amazon Nova 2 Lite (default) | Claude Haiku 5.5 | Claude Sonnet 5.5 |
-|---|---|---|---|
-| Page by page | 0.66 | 0.81 | 0.85 |
-| Holistic | 0.90 | 0.90 | **0.93** |
-| Two steps: split page by page, then classify | 0.80 | 0.88 | 0.88 |
-| Two steps: split holistically, then classify | 0.90 | 0.91 | 0.93 |
-
-**Boundary accuracy**
-
-| | Amazon Nova 2 Lite (default) | Claude Haiku 5.5 | Claude Sonnet 5.5 |
-|---|---|---|---|
-| Page by page | 0.51 | 0.71 | 0.75 |
-| Holistic | 0.67 | 0.84 | **0.92** |
-| Two steps: split page by page, then classify | 0.68 | 0.75 | 0.77 |
-| Two steps: split holistically, then classify | 0.62 | 0.78 | 0.88 |
-
-**Label accuracy**
-
-| | Amazon Nova 2 Lite (default) | Claude Haiku 5.5 | Claude Sonnet 5.5 |
-|---|---|---|---|
-| Page by page | 0.92 | 0.98 | **0.99** |
-| Holistic | 0.86 | 0.95 | 0.98 |
-| Two steps: split page by page, then classify | 0.92 | 0.94 | **0.99** |
-| Two steps: split holistically, then classify | 0.91 | 0.95 | 0.98 |
-
-**Cost per 1,000 documents (USD)**
-
-| | Amazon Nova 2 Lite (default) | Claude Haiku 5.5 | Claude Sonnet 5.5 |
-|---|---|---|---|
-| Page by page | $493 | $488 | $729 |
-| Holistic | **$454** | $470 | $671 |
-| Two steps: split page by page, then classify | $484 | $477 | $826 |
-| Two steps: split holistically, then classify | $463 | $475 | $803 |
-
-*N = 19–20 documents × 3 runs, 1 failed document per run left out. Models: OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. The best value in each table is bold.*
-
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
-
-### Do I need page images in the classification prompt?
-
-**Answer:** On these packets, page images alone did best. Classifying page by page with Amazon Nova 2 Lite, images alone gave more pages the right class (0.84, against 0.82 with text and images) and got more sections exactly right (0.57, against 0.50), with 25% fewer classification tokens. Text alone scored lowest (0.79 and 0.46). DocSplit's pages are scans with noisy OCR text; on clean digital documents the text may count for more, so test on your own files before you turn it off. [Details: SC-02](#sc-02-do-i-need-page-images-in-the-classification-prompt)
-
-![Page images alone classified the most pages correctly: page accuracy against cost per 1,000 packets, one point per classification input](../../images/benchmark-guidance/SC-02-packet.svg)
-
-*Page accuracy against cost per 1,000 packets, one point per classification input. Bands show ±2 standard errors.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). [Details: SC-02](#sc-02-do-i-need-page-images-in-the-classification-prompt). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
-### Which classification model should I use?
-
-**Answer:** Claude Haiku 5.5 or Claude Sonnet 5 for packets. On DocSplit both got 0.71 of sections exactly right, against 0.51 for the default, Amazon Nova 2 Lite, and classified more pages correctly (0.86 and 0.89, against 0.82). They used about three times the classification tokens (about 8,800 per page, against 2,850) and about 37% more total tokens. Amazon Nova Pro scored below the default. [Details: SC-03](#sc-03-which-classification-model-should-i-use)
-
-![Claude Haiku 5.5 matches Claude Sonnet 5 at the default's cost: section accuracy against cost per 1,000 packets, one point per classification model](../../images/benchmark-guidance/SC-03-packet.svg)
-
-*Section accuracy against cost per 1,000 packets, one point per classification model. Bands show ±2 standard errors.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). [Details: SC-03](#sc-03-which-classification-model-should-i-use). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
-### How long a packet can holistic classification handle?
-
-**Answer:** Not yet measured. [Details: SC-04](#sc-04-how-long-a-packet-can-holistic-classification-handle)
-
-### Does neighboring-page context help page-by-page classification?
-
-**Answer:** Leave it at 0. One neighboring page got more sections exactly right (0.64 against 0.51) but gave fewer pages the right class (0.78 against 0.82), for 67% more classification tokens; two neighboring pages did no better than none. [Details: SC-05](#sc-05-does-neighboring-page-context-help-page-by-page-classification)
-
-![One neighboring page finds more boundaries; two help less: boundary accuracy against cost per 1,000 packets, one point per neighboring pages in the prompt](../../images/benchmark-guidance/SC-05-packet.svg)
-
-*Boundary accuracy against cost per 1,000 packets, one point per neighboring pages in the prompt. Bands show ±2 standard errors.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). [Details: SC-05](#sc-05-does-neighboring-page-context-help-page-by-page-classification). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
-### Do few-shot examples help classification?
-
-**Answer:** Not yet measured. [Details: SC-06](#sc-06-do-few-shot-examples-help-classification)
-
-### How much do class descriptions matter?
-
-**Answer:** Not yet measured. [Details: SC-07](#sc-07-how-much-do-class-descriptions-matter)
-
-### Does accuracy drop as I add document classes?
-
-**Answer:** Not yet measured. [Details: SC-08](#sc-08-does-accuracy-drop-as-i-add-document-classes)
-
-### How small can classification images be?
-
-**Answer:** Not yet measured. [Details: SC-09](#sc-09-how-small-can-classification-images-be)
-
-### If every file is one document, should I turn splitting off?
-
-**Answer:** Not yet measured. [Details: SC-10](#sc-10-if-every-file-is-one-document-should-i-turn-splitting-off)
-
-<!-- END GENERATED FAQ -->
-
-## Metrics on this page
+<details>
+<summary>What the metrics mean</summary>
 
 - *Page accuracy:* the share of pages with the right document class.
 - *Section accuracy:* the share of true sections returned with exactly the right pages and
@@ -166,247 +59,288 @@ find where a document starts.
 - *Label accuracy:* of the sections with the right page range, the share with the right
   document class.
 
+Full definitions: [Document Split Classification Metrics](../evaluation.md#document-split-classification-metrics) in the evaluation guide, [Telling a wrong boundary from a wrong label](../classification.md#telling-a-wrong-boundary-from-a-wrong-label) for boundary and label accuracy, and Stickler's [Document Packet Splitting Evaluation](https://awslabs.github.io/stickler/Guides/Document_Packet_Splitting/), which computes page accuracy, section accuracy and the grouping score.
+
 [Benchmark Datasets](datasets.md) describes each dataset.
 
-## Benchmark details
+</details>
 
-<!-- BEGIN GENERATED ABLATIONS -->
+<!-- BEGIN GENERATED FAQ -->
 
-#### SC-11: Does holistic classification beat page-by-page classification?
+### Does holistic classification beat page-by-page classification?
 
-**Answer:** Yes, once a Claude model classifies. Holistic classification with Claude Haiku 5.5 got 0.80 of DocSplit sections exactly right, against 0.52 for the default (Amazon Nova 2 Lite, page by page), at about the same cost ($470 against $493 per 1,000 packets). With Claude Sonnet 5.5 it got 0.90, for about $200 more per 1,000 packets. Holistic wins on finding where each document starts (boundary accuracy 0.92 with Claude Sonnet 5.5, against 0.75 page by page); once a document is found, every setup names it correctly (label accuracy 0.86 to 0.99). With Amazon Nova 2 Lite holistic barely helps, and splitting page by page first does a little better (0.65).
+![Holistic classification with Claude Sonnet 5.5 beats page by page: section accuracy against classification cost per 1,000 packets, one point per granularity, strategy and model](../../images/benchmark-guidance/SC-11-packet.svg)
 
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs DocSplit-Poly-Seq-20261113-192327, DocSplit-Poly-Seq-20261113-192328, DocSplit-Poly-Seq-20261113-192329, DocSplit-Poly-Seq-20261113-192706, DocSplit-Poly-Seq-20261113-192708, DocSplit-Poly-Seq-20261113-192711, DocSplit-Poly-Seq-20261113-194400, DocSplit-Poly-Seq-20261113-194401, DocSplit-Poly-Seq-20261113-194402, DocSplit-Poly-Seq-20261113-195220, DocSplit-Poly-Seq-20261113-195216, DocSplit-Poly-Seq-20261113-195221, DocSplit-Poly-Seq-20261113-205038, DocSplit-Poly-Seq-20261113-205043, DocSplit-Poly-Seq-20261113-205044, DocSplit-Poly-Seq-20261113-205039, DocSplit-Poly-Seq-20261113-205040, DocSplit-Poly-Seq-20261113-205041, DocSplit-Poly-Seq-20261113-205452, DocSplit-Poly-Seq-20261113-205554, DocSplit-Poly-Seq-20261113-205629, DocSplit-Poly-Seq-20261113-205634, DocSplit-Poly-Seq-20261113-205745, DocSplit-Poly-Seq-20261113-205746, DocSplit-Poly-Seq-20261113-230441, DocSplit-Poly-Seq-20261113-230443, DocSplit-Poly-Seq-20261113-230445, DocSplit-Poly-Seq-20261113-230442, DocSplit-Poly-Seq-20261113-230444, DocSplit-Poly-Seq-20261113-230446, DocSplit-Poly-Seq-20261113-230454, DocSplit-Poly-Seq-20261113-230456, DocSplit-Poly-Seq-20261113-230457, DocSplit-Poly-Seq-20261113-230455, DocSplit-Poly-Seq-20261113-230458, DocSplit-Poly-Seq-20261113-230459 (16 failed documents left out of the scores)`.*
+*Bands show ±2 standard errors.*
+
+**Answer:** Holistic classification is a good place to start. With Claude Sonnet 5.5 it got 0.91 of sections exactly right, against 0.76 page by page, for $201 of classification per 1,000 packets; with Claude Haiku 5.5 reading text only it got 0.88 for $2.55 (SC-02). Test it on your own packets.
+
+<details>
+<summary>Details</summary>
+
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 36 Test Studio runs (28 failed documents left out of the scores), listed in `benchmarks/results/guidance/SC-11.json`.*
 
 | | |
 |---|---|
 | **Changes** | Granularity and strategy, by classification model |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
-| **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
+| **Models** | OCR: Amazon Textract (Layout) · Classification: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
+| **Runs** | 3 per document, per value; N = 14–20 packets × 3 runs; up to 6 packets failed in a run and are left out of it |
 
-![Holistic classification with a Claude model gets the most sections right: section accuracy against cost per 1,000 packets, one point per granularity, strategy and model](../../images/benchmark-guidance/SC-11-packet.svg)
+**Section accuracy**
 
-*Section accuracy against cost per 1,000 packets, one point per granularity, strategy and model. Bands show ±2 standard errors. Lines give the [marginal cost of error](marginal-cost-of-error.md) from the cheapest value: the extra cost per error prevented.* N = 19–20 documents × 3 runs, 1 failed document per run left out. Datasets: [DocSplit](datasets.md#docsplit-poly-seq-20-packets). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.57 ± 0.01 | 0.69 ± 0.01 | 0.76 ± 0.00 |
+| Holistic | 0.60 ± 0.00 | 0.76 ± 0.01 | 0.91 ± 0.01 |
+| Two steps: split page by page, then classify | 0.73 ± 0.01 | 0.70 ± 0.02 | 0.82 ± 0.01 |
+| Two steps: split holistically, then classify | 0.56 ± 0.03 | 0.76 ± 0.03 | 0.89 ± 0.01 |
 
-| Dataset | Granularity and strategy, by classification model | Page accuracy | Section accuracy | Grouping score | Boundary accuracy | Label accuracy | Classification tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | MCoE vs Holistic · Amazon Nova 2 Lite (default) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| DocSplit | Page by page · Amazon Nova 2 Lite (default) | 0.82 ± 0.02 | 0.52 ± 0.02 | 0.66 ± 0.02 | 0.51 ± 0.02 | 0.92 ± 0.01 | 2,859 ± 16 | 14,822 ± 58 | $493 | — |
-| DocSplit | Holistic · Amazon Nova 2 Lite (default) | 0.7 ± 0.03 | 0.55 ± 0.05 | 0.9 ± 0.01 | 0.67 ± 0.05 | 0.86 ± 0.05 | 1,133 ± 0.65 | 11,857 ± 96 | $454 | — |
-| DocSplit | Two steps: split page by page, then classify · Amazon Nova 2 Lite (default) | 0.81 ± 0.02 | 0.65 ± 0.01 | 0.8 ± 0.01 | 0.68 ± 0.01 | 0.92 ± 0 | 2,821 ± 28 | 14,408 ± 116 | $484 | $0.29 per error prevented |
-| DocSplit | Two steps: split holistically, then classify · Amazon Nova 2 Lite (default) | 0.76 ± 0.02 | 0.55 ± 0.04 | 0.9 ± 0.01 | 0.62 ± 0.05 | 0.91 ± 0.01 | 1,741 ± 26 | 12,350 ± 42 | $463 | — |
-| DocSplit | Page by page · Claude Haiku 5.5 | 0.87 ± 0.01 | 0.71 ± 0.01 | 0.81 ± 0.01 | 0.71 ± 0.01 | 0.98 ± 0.01 | 8,987 ± 40 | 20,563 ± 110 | $488 | $0.21 per error prevented |
-| DocSplit | Holistic · Claude Haiku 5.5 | 0.91 ± 0.01 | 0.8 ± 0.03 | 0.9 ± 0.01 | 0.84 ± 0.02 | 0.95 ± 0.01 | 6,297 ± 19 | 17,392 ± 120 | $470 | $0.06 per error prevented |
-| DocSplit | Two steps: split page by page, then classify · Claude Haiku 5.5 | 0.84 ± 0.02 | 0.73 ± 0.02 | 0.88 ± 0 | 0.75 ± 0.02 | 0.94 ± 0.03 | 11,297 ± 36 | 22,632 ± 14 | $477 | $0.13 per error prevented |
-| DocSplit | Two steps: split holistically, then classify · Claude Haiku 5.5 | 0.87 ± 0.02 | 0.76 ± 0.05 | 0.91 ± 0.01 | 0.78 ± 0.06 | 0.95 ± 0.02 | 10,295 ± 96 | 21,614 ± 412 | $475 | $0.10 per error prevented |
-| DocSplit | Page by page · Claude Sonnet 5.5 | 0.88 ± 0 | 0.76 ± 0.02 | 0.85 ± 0.01 | 0.75 ± 0.02 | 0.99 ± 0 | 8,749 ± 4.67 | 20,186 ± 76 | $729 ± $0.78 | $1.28 per error prevented |
-| DocSplit | Holistic · Claude Sonnet 5.5 | 0.95 ± 0.03 | 0.9 ± 0 | 0.93 ± 0 | 0.92 ± 0.01 | 0.98 ± 0.02 | 6,234 ± 15 | 17,287 ± 37 | $671 ± $3.43 | $0.61 per error prevented |
-| DocSplit | Two steps: split page by page, then classify · Claude Sonnet 5.5 | 0.94 ± 0 | 0.78 ± 0.01 | 0.88 ± 0.01 | 0.77 ± 0.02 | 0.99 ± 0 | 11,292 ± 23 | 22,552 ± 128 | $826 ± $4.61 | $1.63 per error prevented |
-| DocSplit | Two steps: split holistically, then classify · Claude Sonnet 5.5 | 0.96 ± 0.01 | 0.87 ± 0.02 | 0.93 ± 0.02 | 0.88 ± 0.02 | 0.98 ± 0.01 | 10,192 ± 252 | 21,387 ± 94 | $803 ± $10.4 | $1.07 per error prevented |
+**Page accuracy**
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.83 ± 0.00 | 0.85 ± 0.02 | 0.88 ± 0.00 |
+| Holistic | 0.77 ± 0.01 | 0.92 ± 0.01 | 0.95 ± 0.02 |
+| Two steps: split page by page, then classify | 0.87 ± 0.00 | 0.82 ± 0.03 | 0.95 ± 0.00 |
+| Two steps: split holistically, then classify | 0.73 ± 0.03 | 0.90 ± 0.01 | 0.96 ± 0.01 |
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+**Grouping score**
 
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.68 ± 0.00 | 0.80 ± 0.01 | 0.85 ± 0.00 |
+| Holistic | 0.90 ± 0.00 | 0.90 ± 0.00 | 0.94 ± 0.01 |
+| Two steps: split page by page, then classify | 0.83 ± 0.01 | 0.91 ± 0.01 | 0.89 ± 0.00 |
+| Two steps: split holistically, then classify | 0.89 ± 0.01 | 0.91 ± 0.01 | 0.93 ± 0.00 |
 
-#### SC-02: Do I need page images in the classification prompt?
+**Boundary accuracy**
 
-**Answer:** On these packets, page images alone did best. Classifying page by page with Amazon Nova 2 Lite, images alone gave more pages the right class (0.84, against 0.82 with text and images) and got more sections exactly right (0.57, against 0.50), with 25% fewer classification tokens. Text alone scored lowest (0.79 and 0.46). DocSplit's pages are scans with noisy OCR text; on clean digital documents the text may count for more, so test on your own files before you turn it off.
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.55 ± 0.00 | 0.69 ± 0.01 | 0.76 ± 0.00 |
+| Holistic | 0.67 ± 0.00 | 0.79 ± 0.01 | 0.92 ± 0.01 |
+| Two steps: split page by page, then classify | 0.75 ± 0.01 | 0.73 ± 0.02 | 0.81 ± 0.01 |
+| Two steps: split holistically, then classify | 0.63 ± 0.01 | 0.77 ± 0.04 | 0.90 ± 0.00 |
 
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs DocSplit-Poly-Seq-20261113-204126, DocSplit-Poly-Seq-20261113-204125, DocSplit-Poly-Seq-20261113-204127, DocSplit-Poly-Seq-20261113-204458, DocSplit-Poly-Seq-20261113-204500, DocSplit-Poly-Seq-20261113-204457, DocSplit-Poly-Seq-20261113-204849, DocSplit-Poly-Seq-20261113-204831, DocSplit-Poly-Seq-20261113-204830 (5 failed documents left out of the scores)`.*
+**Label accuracy**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.94 ± 0.01 | 0.96 ± 0.00 | 0.99 ± 0.00 |
+| Holistic | 0.92 ± 0.00 | 0.95 ± 0.02 | 0.98 ± 0.01 |
+| Two steps: split page by page, then classify | 0.94 ± 0.01 | 0.91 ± 0.02 | 0.99 ± 0.00 |
+| Two steps: split holistically, then classify | 0.90 ± 0.01 | 0.96 ± 0.01 | 0.98 ± 0.00 |
+
+**Classification cost per 1,000 packets (USD)**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | $13.2 ± $0.03 | $14.9 ± $0.10 | $254 ± $1.72 |
+| Holistic | **$5.31 ± $0.02** | $10.4 ± $0.01 | $201 ± $0.35 |
+| Two steps: split page by page, then classify | $12.7 ± $0.01 | $18.0 ± $0.66 | $349 ± $0.53 |
+| Two steps: split holistically, then classify | $7.90 ± $0.14 | $16.9 ± $0.38 | $326 ± $0.46 |
+
+Failed packets per run: Page by page · Amazon Nova 2 Lite: 1, 0, 0; Page by page · Claude Haiku 5.5: 0, 2, 2; Page by page · Claude Sonnet 5.5: 0, 0, 2; Holistic · Claude Sonnet 5.5: 0, 0, 1; Two steps: split page by page, then classify · Amazon Nova 2 Lite: 1, 0, 0; Two steps: split page by page, then classify · Claude Haiku 5.5: 2, 5, 6; Two steps: split page by page, then classify · Claude Sonnet 5.5: 0, 0, 2; Two steps: split holistically, then classify · Amazon Nova 2 Lite: 0, 0, 1; Two steps: split holistically, then classify · Claude Haiku 5.5: 0, 0, 3.
+
+*The [baseline setup](index.md#how-we-run-a-benchmark) is *Holistic* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
+
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
+
+</details>
+
+### Do I need page images in the classification prompt?
+
+![Text alone gets the most sections right, for the least: section accuracy against classification cost per 1,000 packets, one point per classification input](../../images/benchmark-guidance/SC-02-packet.svg)
+
+*Bands show ±2 standard errors.*
+
+**Answer:** Text only is a good place to start: holistic Claude Haiku 5.5 got 0.88 of sections exactly right from the OCR text alone, against 0.76 with page images too, and cost less. Test it on your own packets.
+
+<details>
+<summary>Details</summary>
+
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 9 Test Studio runs (3 failed documents left out of the scores), listed in `benchmarks/results/guidance/SC-02.json`.*
 
 | | |
 |---|---|
 | **Changes** | What the classification model reads |
-| **Everything else** | Page-by-page granularity; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
-| **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
+| **Models** | OCR: Amazon Textract (Layout) · Classification: Claude Haiku 5.5, holistic · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
+| **Runs** | 3 per document, per value; N = 19–20 packets × 3 runs; a packet that failed in a run is left out of that run |
 
-| Dataset | What the classification model reads | Page accuracy | Boundary accuracy | Label accuracy | Classification tokens per page | Cost per 1,000 documents (USD) | MCoE vs Images only |
-|---|---|---|---|---|---|---|---|
-| DocSplit | Text and images (default) | 0.82 ± 0.01 | 0.5 ± 0.05 | 0.93 ± 0.01 | 2,842 ± 1 | $498 | — |
-| DocSplit | Text only | 0.79 ± 0 | 0.47 ± 0.03 | 0.9 ± 0 | 2,612 ± 16 | $499 | — |
-| DocSplit | Images only | 0.84 ± 0 | 0.54 ± 0.03 | 0.97 ± 0 | 2,126 ± 1.9 | $484 | — |
+| Dataset | What the classification model reads | Section accuracy | Page accuracy | Boundary accuracy | Label accuracy | Classification tokens per page | Classification cost per 1,000 packets (USD) | [Classification cost per error prevented](marginal-cost-of-error.md) vs Text only |
+|---|---|---|---|---|---|---|---|---|
+| DocSplit | **Text and images (baseline)** | 0.76 ± 0.04 | 0.91 ± 0.02 | 0.8 ± 0.04 | 0.95 ± 0.02 | 6,074 ± 13 | $10.4 ± $0.08 | no measurable gain |
+| DocSplit | Text only | **0.88 ± 0.01** | **0.95 ± 0.01** | **0.91 ± 0.02** | 0.96 ± 0.02 | **1,201 ± 40** | **$2.55 ± $0.05** | — |
+| DocSplit | Images only | 0.74 ± 0.06 | 0.88 ± 0.05 | 0.75 ± 0.05 | 0.95 ± 0.03 | 5,139 ± 32 | $9.13 ± $0.27 | no measurable gain |
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+Failed packets per run: Text and images (baseline): 0, 1, 0; Images only: 1, 1, 0.
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
-#### SC-03: Which classification model should I use?
+</details>
 
-**Answer:** Claude Haiku 5.5 or Claude Sonnet 5 for packets. On DocSplit both got 0.71 of sections exactly right, against 0.51 for the default, Amazon Nova 2 Lite, and classified more pages correctly (0.86 and 0.89, against 0.82). They used about three times the classification tokens (about 8,800 per page, against 2,850) and about 37% more total tokens. Amazon Nova Pro scored below the default.
+### Can a decision model classify the sections?
 
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs DocSplit-Poly-Seq-20261113-195743, DocSplit-Poly-Seq-20261113-195742, DocSplit-Poly-Seq-20261113-195744, DocSplit-Poly-Seq-20261113-200102, DocSplit-Poly-Seq-20261113-200054, DocSplit-Poly-Seq-20261113-200100, DocSplit-Poly-Seq-20261113-200705, DocSplit-Poly-Seq-20261113-200700, DocSplit-Poly-Seq-20261113-200701, DocSplit-Poly-Seq-20261113-201125, DocSplit-Poly-Seq-20261113-201126, DocSplit-Poly-Seq-20261113-201048 (5 failed documents left out of the scores)`.*
+![With the preset's descriptions, Claude Haiku 5.5 classifies sections better than the Decider 2B: label accuracy against classification cost per 1,000 packets, one point per which model classifies each section](../../images/benchmark-guidance/SC-12-packet.svg)
+
+*Bands show ±2 standard errors.*
+
+**Answer:** Not yet, with the preset's class descriptions: Claude Haiku 5.5 classified 0.96 of sections right, against 0.81 to 0.83 for the Strands Decider 2B, whose classification cost slightly more ($19 to $20 against $17 per 1,000 packets). The decision model is more sensitive to how classes are described: a 100-packet re-run with one-line descriptions of what each page looks like is in progress, and in its first runs the Strands Decider 2B classified 0.90 of sections right with them. Test it on your own packets.
+
+<details>
+<summary>Details</summary>
+
+*Measured on each dataset's preset, not the baseline setup.*
+
+*Measured on release 0.6.15-develop-d1be93f, November 2026, us-east-1. Source: 15 Test Studio runs (6 failed documents left out of the scores), listed in `benchmarks/results/guidance/SC-12.json`.*
+
+The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit), on AWS Lambda, reading each section's first page at 448 pixels; its cost is the function's duration, with cold starts left out. These runs used the docsplit preset's class descriptions, written for the LLM prompt.
 
 | | |
 |---|---|
-| **Changes** | Classification model |
-| **Everything else** | Run at both granularities: page by page and holistic; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
+| **Changes** | Which model classifies each section after Claude Haiku 5.5 detects the sections: an LLM or a decision model |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
 | **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: varies (the setting under test) · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
-| **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
+| **Models** | OCR: Amazon Textract (Layout) · Classification: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
+| **Runs** | 3 per document, per value; N = 18–20 packets × 3 runs; up to 2 packets failed in a run and are left out of it |
 
-| Dataset | Classification model | Page accuracy | Section accuracy | Grouping score | Boundary accuracy | Label accuracy | Classification tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Claude Haiku 5.5 |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| DocSplit | Amazon Nova 2 Lite (default) | 0.82 ± 0.01 | 0.51 ± 0.02 | 0.65 ± 0.02 | 0.5 ± 0.03 | 0.92 ± 0.01 | 2,850 ± 15 | 14,865 ± 38 | $494 | 114 ± 11 | — |
-| DocSplit | Amazon Nova Pro | 0.76 ± 0 | 0.48 ± 0 | 0.6 ± 0.02 | 0.5 ± 0 | 0.85 ± 0.01 | 4,357 ± 9.85 | 16,630 ± 60 | $513 | 112 ± 8.2 | — |
-| DocSplit | Claude Haiku 5.5 | 0.86 ± 0.01 | 0.71 ± 0.03 | 0.8 ± 0.02 | 0.7 ± 0.02 | 0.98 ± 0.01 | 8,987 ± 21 | 20,667 ± 124 | $488 | 144 ± 15 | — |
-| DocSplit | Claude Sonnet 5 | 0.89 ± 0 | 0.71 ± 0.02 | 0.79 ± 0.02 | 0.67 ± 0.03 | 0.99 ± 0 | 8,671 ± 15 | 20,274 ± 67 | $738 | 120 ± 37 | no measurable gain |
+| Dataset | Which model classifies each section after Claude Haiku 5.5 detects the sections: an LLM or a decision model | Section accuracy | Label accuracy | Page accuracy | Boundary accuracy | Classification tokens per page | Total tokens per page | Classification cost per 1,000 packets (USD) | Median seconds per packet |
+|---|---|---|---|---|---|---|---|---|---|
+| DocSplit | **LLM · Claude Haiku 5.5 (baseline)** | 0.77 ± 0.05 | **0.96 ± 0.01** | 0.89 ± 0.05 | 0.76 ± 0.07 | 9,988 ± 57 | 24,723 ± 126 | $17.2 ± $0.17 | 112 ± 14 |
+| DocSplit | LLM · Amazon Nova 2 Lite | 0.74 ± 0.06 | 0.94 ± 0.02 | 0.87 ± 0.04 | 0.75 ± 0.08 | 6,894 ± 16 | 21,658 ± 67 | **$15.3 ± $0.11** | 128 ± 18 |
+| DocSplit | Decision model · first page image | 0.66 ± 0.01 | 0.81 ± 0.02 | 0.76 ± 0 | 0.79 ± 0.02 | 6,000 ± 3.69 | 20,790 ± 51 | $20.3 ± $0.71 | 139 ± 9.2 |
+| DocSplit | Decision model · first page image and text | 0.64 ± 0.04 | 0.83 ± 0.02 | 0.8 ± 0.01 | 0.72 ± 0.05 | 6,009 ± 3.13 | 20,757 ± 28 | $20.5 ± $0.12 | 131 ± 12 |
+| DocSplit | Decision model · first 2 page images | 0.65 ± 0.02 | 0.82 ± 0.03 | 0.81 ± 0 | 0.77 ± 0.03 | 5,999 ± 2.41 | 20,787 ± 54 | $19.0 ± $0.43 | 151 ± 21 |
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+Failed packets per run: Decision model · first page image and text: 2, 2, 2.
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
 
-#### SC-04: How long a packet can holistic classification handle?
+</details>
 
-**Answer:** Not yet measured.
+### Which way of splitting and classifying should I use?
 
-Needs a dataset we haven't built yet: Long packets, 30-60 pages (to be built).
+![To be measured: section accuracy against classification cost per 1,000 packets, one point per approach and model](../../images/benchmark-guidance/SC-13-packet.svg)
 
-| | |
-|---|---|
-| **Changes** | Pages per holistic call (`window_pages`) |
-| **Everything else** | Holistic, one call; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [Long packets, 30-60 pages (to be built)](datasets.md#long-packets-30-60-pages-to-be-built); [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Runs** | 3 per document, per value |
+*Bands show ±2 standard errors.*
 
-| Dataset | Pages per holistic call (`window_pages`) | Page accuracy | Boundary accuracy | Label accuracy | Classification tokens per page |
-|---|---|---|---|---|---|
-| Long packets | 20 (default) | — | — | — | — |
-| Long packets | 10 | — | — | — | — |
-| Long packets | 40 | — | — | — | — |
-| DocSplit | 20 (default) | — | — | — | — |
-| DocSplit | 10 | — | — | — | — |
-| DocSplit | 40 | — | — | — | — |
+**Answer:** Measured; see the table.
 
+<details>
+<summary>Details</summary>
 
-#### SC-05: Does neighboring-page context help page-by-page classification?
+*Measured on each dataset's preset, not the baseline setup.*
 
-**Answer:** Leave it at 0. One neighboring page got more sections exactly right (0.64 against 0.51) but gave fewer pages the right class (0.78 against 0.82), for 67% more classification tokens; two neighboring pages did no better than none.
+*Measured on release 0.6.15-develop-d1be93f, November 2026, us-east-1. Source: 26 Test Studio runs (22 failed documents left out of the scores), listed in `benchmarks/results/guidance/SC-13.json`.*
 
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs DocSplit-Poly-Seq-20261113-205249, DocSplit-Poly-Seq-20261113-205248, DocSplit-Poly-Seq-20261113-205247, DocSplit-Poly-Seq-20261113-205744, DocSplit-Poly-Seq-20261113-205750, DocSplit-Poly-Seq-20261113-205747, DocSplit-Poly-Seq-20261113-210239, DocSplit-Poly-Seq-20261113-210357, DocSplit-Poly-Seq-20261113-210612 (3 failed documents left out of the scores)`.*
-
-Needs a dataset we haven't built yet: Same-class documents back to back (to be built).
+In the two split rows the model named in the column finds the section boundaries (reading the whole packet); the LLM row then has that same model classify each section, and the decision-model row has the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit, on AWS Lambda, images at 448 pixels) classify it from the section's first page image.
 
 | | |
 |---|---|
-| **Changes** | `contextPagesCount` |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets); [Same-class documents back to back (to be built)](datasets.md#same-class-documents-back-to-back-to-be-built) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Classification: Amazon Nova 2 Lite, page by page · Extraction: Claude Sonnet 5, single-pass · Confidence: Amazon Nova Lite, escalating to Claude Sonnet 5. |
-| **Runs** | 3 per document, per value; N = 19–20 documents × 3 runs, 1 failed document per run left out |
+| **Changes** | How the packet is split and who names each section, by model |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [DocSplit-Poly-Seq (100 packets)](datasets.md#docsplit-poly-seq-100-packets); [DocSplit same-class runs (60 packets)](datasets.md#docsplit-same-class-runs-60-packets) |
+| **Models** | OCR: Amazon Textract (Layout) · Classification: varies (the setting under test) · Extraction: Claude Haiku 5.5, single-pass · Scoring: Claude Haiku 5.5. |
+| **Runs** | 3 per document, per value; N = 90–100 packets × 2–3 runs; up to 10 packets failed in a run and are left out of it |
 
-| Dataset | `contextPagesCount` | Boundary accuracy | Label accuracy | Over-splits | Merges | Classification tokens per page | Cost per 1,000 documents (USD) |
-|---|---|---|---|---|---|---|---|
-| DocSplit | 0 (default) | 0.49 ± 0.02 | 0.92 ± 0.01 | — | — | 2,859 ± 14 | $496 |
-| DocSplit | 1 | 0.63 ± 0.07 | 0.96 ± 0 | — | — | 4,762 ± 67 | $496 |
-| DocSplit | 2 | 0.53 ± 0 | 0.94 ± 0.02 | — | — | 6,381 ± 76 | $505 |
-| Same-class packets | 0 (default) | — | — | — | — | — | — |
-| Same-class packets | 1 | — | — | — | — | — | — |
-| Same-class packets | 2 | — | — | — | — | — | — |
+**DocSplit: section accuracy**
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
-
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
-
-
-#### SC-06: Do few-shot examples help classification?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | Few-shot examples |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Few-shot examples | Page accuracy | Label accuracy | Classification tokens per page |
-|---|---|---|---|---|
-| DocSplit | None (default) | — | — | — |
-| DocSplit | One example per class | — | — | — |
-| DocSplit | Two examples per class | — | — | — |
-
-
-#### SC-07: How much do class descriptions matter?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | Class descriptions |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Class descriptions | Page accuracy | Label accuracy |
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
 |---|---|---|---|
-| DocSplit | Class names only | — | — |
-| DocSplit | Generic descriptions | — | — |
-| DocSplit | Descriptions that name distinguishing features | — | — |
+| Page by page | 0.49 ± 0.01 | 0.70 ± 0.00 | 0.73 ± 0.00 |
+| Holistic | 0.51 ± 0.01 | 0.75 ± 0.02 | **0.90 ± 0.00** |
+| Split, then an LLM names each section | 0.46 ± 0.01 | 0.75 ± 0.01 | 0.88 ± 0.01 |
+| Split, then a decision model names each section | — | — | — |
 
+**DocSplit: boundary accuracy**
 
-#### SC-08: Does accuracy drop as I add document classes?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | Number of document classes in the configuration |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Number of document classes in the configuration | Page accuracy | Label accuracy | Classification tokens per page |
-|---|---|---|---|---|
-| DocSplit | 5 | — | — | — |
-| DocSplit | 13 | — | — | — |
-| DocSplit | 30 (13 plus 17 distractor classes) | — | — | — |
-
-
-#### SC-09: How small can classification images be?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | Classification image size (long edge) |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Classification image size (long edge) | Page accuracy | Boundary accuracy | Classification tokens per page |
-|---|---|---|---|---|
-| DocSplit | As rendered (default) | — | — | — |
-| DocSplit | 1,024 pixels | — | — | — |
-| DocSplit | 512 pixels | — | — | — |
-
-
-#### SC-10: If every file is one document, should I turn splitting off?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | Section splitting |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | Section splitting | Weighted accuracy | Classification tokens per page |
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
 |---|---|---|---|
-| RealKIE | Model decides (default) | — | — |
-| RealKIE | One section | — | — |
+| Page by page | 0.49 ± 0.01 | 0.70 ± 0.01 | 0.74 ± 0.01 |
+| Holistic | 0.63 ± 0.02 | 0.80 ± 0.02 | **0.91 ± 0.00** |
+| Split, then an LLM names each section | 0.56 ± 0.02 | 0.77 ± 0.00 | 0.89 ± 0.01 |
+| Split, then a decision model names each section | — | — | — |
 
-| Dataset | Section splitting | List recall | Classification tokens per page |
+**DocSplit: label accuracy**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
 |---|---|---|---|
-| Statement, 400 rows | Model decides (default) | — | — |
-| Statement, 400 rows | One section | — | — |
-| Statement, 800 rows | Model decides (default) | — | — |
-| Statement, 800 rows | One section | — | — |
+| Page by page | 0.91 ± 0.01 | 0.98 ± 0.00 | **0.99 ± 0.00** |
+| Holistic | 0.86 ± 0.00 | 0.95 ± 0.01 | 0.98 ± 0.00 |
+| Split, then an LLM names each section | 0.90 ± 0.01 | 0.97 ± 0.01 | 0.98 ± 0.00 |
+| Split, then a decision model names each section | — | — | — |
 
-<!-- END GENERATED ABLATIONS -->
+**DocSplit: page accuracy**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.83 ± 0.00 | 0.88 ± 0.00 | 0.90 ± 0.00 |
+| Holistic | 0.80 ± 0.01 | 0.90 ± 0.00 | 0.96 ± 0.00 |
+| Split, then an LLM names each section | 0.75 ± 0.01 | 0.93 ± 0.02 | 0.96 ± 0.00 |
+| Split, then a decision model names each section | — | — | — |
+
+**DocSplit: grouping score**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.66 ± 0.00 | 0.82 ± 0.01 | 0.85 ± 0.00 |
+| Holistic | 0.90 ± 0.00 | 0.91 ± 0.01 | **0.94 ± 0.00** |
+| Split, then an LLM names each section | 0.88 ± 0.01 | 0.89 ± 0.00 | 0.94 ± 0.00 |
+| Split, then a decision model names each section | — | — | — |
+
+**DocSplit: calibration error**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 0.89 ± 0.00 | 0.89 ± 0.00 | 0.89 ± 0.00 |
+| Holistic | 0.89 ± 0.00 | 0.89 ± 0.00 | 0.89 ± 0.00 |
+| Split, then an LLM names each section | 0.90 ± 0.00 | 0.89 ± 0.00 | 0.89 ± 0.00 |
+| Split, then a decision model names each section | — | — | — |
+
+**DocSplit: median seconds per packet**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | 207.78 ± 57.24 | 294.29 ± 54.02 | 144.31 ± 13.55 |
+| Holistic | 122.26 ± 6.29 | 137.64 ± 4.05 | 128.63 ± 6.22 |
+| Split, then an LLM names each section | **106.08 ± 2.36** | 210.32 ± 20.29 | 143.69 ± 5.90 |
+| Split, then a decision model names each section | — | — | — |
+
+**DocSplit: classification cost per 1,000 packets (USD)**
+
+| | Amazon Nova 2 Lite | Claude Haiku 5.5 | Claude Sonnet 5.5 |
+|---|---|---|---|
+| Page by page | $13.2 ± $0.01 | $14.5 ± $0.03 | $252 ± $0.53 |
+| Holistic | **$5.39 ± $0.00** | $10.4 ± $0.03 | $200 ± $0.37 |
+| Split, then an LLM names each section | $7.83 ± $0.03 | $16.4 ± $0.05 | $315 ± $0.46 |
+| Split, then a decision model names each section | — | — | — |
+
+Failed packets per run: DocSplit — Holistic · Claude Haiku 5.5: 1, 0, 1; DocSplit — Split, then an LLM names each section · Amazon Nova 2 Lite: 1, 1, 0; DocSplit — Split, then an LLM names each section · Claude Haiku 5.5: 8, 10.
+
+*The [baseline setup](index.md#how-we-run-a-benchmark) is *Holistic* with *Claude Haiku 5.5*. A bold figure beats every other in its table by more than twice the combined standard error.*
+
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Classification cost counts only the classification step: its Amazon Bedrock calls and a decision model's AWS Lambda time. OCR, extraction, confidence scoring and other AWS charges are left out.*
+
+</details>
+
+### Planned
+
+We haven't run these yet.
+
+- How long a packet can holistic classification handle? (SC-04)
+- Do few-shot examples help classification? (SC-06)
+- How much do class descriptions matter? (SC-07)
+- Does accuracy drop as I add document classes? (SC-08)
+- How small can classification images be? (SC-09)
+- If every file is one document, should I turn splitting off? (SC-10)
+- Do long packets change which approach to use? (SC-14)
+
+<!-- END GENERATED FAQ -->

@@ -1,6 +1,6 @@
 {
   "ablation": "TU-04",
-  "verdict": "Claude Haiku 5.5 for extraction, Amazon Textract with Layout only, and confidence off or scored by Claude Haiku 5.5. On RealKIE invoices it cost $21 per 1,000 documents against $135 for the default, and scored the same (0.83 against 0.82); on W-2 forms it cost $5 against $32 and scored higher (0.998 against 0.966). Scoring with Claude Haiku 5.5 added $7 per 1,000 invoices and gave confidence that separates right from wrong (AUROC 0.84, against 0.51 for the default).",
+  "verdict": "Claude Haiku 5.5 extraction, Textract Layout only, and confidence off or scored by Claude Haiku 5.5 is a good place to start: $21 per 1,000 invoices against $135 for the default, at the same accuracy. Test it on your own documents.",
   "runs": {
     "realkie": {
       "Default": [

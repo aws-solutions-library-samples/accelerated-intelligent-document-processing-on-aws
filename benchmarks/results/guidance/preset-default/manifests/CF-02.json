@@ -1,0 +1,84 @@
+{
+  "ablation": "CF-02",
+  "verdict": "Claude Haiku 5.5, or Claude Sonnet 5.5 for the most accuracy on invoices. On W-2 forms both caught every error when a reviewer checks the 30% of values with the lowest confidence (AUROC 0.98 and 0.99), at about the default's cost for Claude Haiku 5.5. On RealKIE invoices Claude Sonnet 5.5 caught 87% of errors that way (AUROC 0.92) against 66% for Claude Haiku 5.5 (0.81), for about $104 more per 1,000 invoices. The default, Amazon Nova Lite, caught 14% to 19%: fewer than reviewing values at random (30%).",
+  "runs": {
+    "realkie": {
+      "Amazon Nova Lite (default)": [
+        "RealKIE-FCC-Verified-20261113-181724",
+        "RealKIE-FCC-Verified-20261113-181722",
+        "RealKIE-FCC-Verified-20261113-181723"
+      ],
+      "Amazon Nova 2 Lite": [
+        "RealKIE-FCC-Verified-20261113-182034",
+        "RealKIE-FCC-Verified-20261113-182041",
+        "RealKIE-FCC-Verified-20261113-182113"
+      ],
+      "Claude Haiku 5.5": [
+        "RealKIE-FCC-Verified-20261113-182352",
+        "RealKIE-FCC-Verified-20261113-182430",
+        "RealKIE-FCC-Verified-20261113-182432"
+      ],
+      "Claude Sonnet 5": [
+        "RealKIE-FCC-Verified-20261113-182712",
+        "RealKIE-FCC-Verified-20261113-182736",
+        "RealKIE-FCC-Verified-20261113-182750"
+      ],
+      "Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-145733",
+        "RealKIE-FCC-Verified-20261116-145735",
+        "RealKIE-FCC-Verified-20261116-145734"
+      ]
+    },
+    "fake_w2": {
+      "Amazon Nova Lite (default)": [
+        "Fake-W2-Tax-Forms-20261113-213105",
+        "Fake-W2-Tax-Forms-20261113-213106",
+        "Fake-W2-Tax-Forms-20261113-213107"
+      ],
+      "Amazon Nova 2 Lite": [
+        "Fake-W2-Tax-Forms-20261113-213108",
+        "Fake-W2-Tax-Forms-20261113-213109",
+        "Fake-W2-Tax-Forms-20261113-213110"
+      ],
+      "Claude Haiku 5.5": [
+        "Fake-W2-Tax-Forms-20261113-213111",
+        "Fake-W2-Tax-Forms-20261113-213117",
+        "Fake-W2-Tax-Forms-20261113-213119"
+      ],
+      "Claude Sonnet 5": [
+        "Fake-W2-Tax-Forms-20261113-213118",
+        "Fake-W2-Tax-Forms-20261113-213120",
+        "Fake-W2-Tax-Forms-20261113-213121"
+      ],
+      "Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261116-145735",
+        "Fake-W2-Tax-Forms-20261116-145733",
+        "Fake-W2-Tax-Forms-20261116-145734"
+      ]
+    }
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "Fake-W2-Tax-Forms-20261113-213105",
+    "Fake-W2-Tax-Forms-20261113-213106",
+    "Fake-W2-Tax-Forms-20261113-213107",
+    "Fake-W2-Tax-Forms-20261113-213108",
+    "Fake-W2-Tax-Forms-20261113-213109",
+    "Fake-W2-Tax-Forms-20261113-213110",
+    "Fake-W2-Tax-Forms-20261113-213111",
+    "Fake-W2-Tax-Forms-20261113-213117",
+    "Fake-W2-Tax-Forms-20261113-213118",
+    "Fake-W2-Tax-Forms-20261113-213119",
+    "Fake-W2-Tax-Forms-20261113-213120",
+    "Fake-W2-Tax-Forms-20261113-213121",
+    "Fake-W2-Tax-Forms-20261116-145735",
+    "RealKIE-FCC-Verified-20261116-145733",
+    "Fake-W2-Tax-Forms-20261116-145733",
+    "Fake-W2-Tax-Forms-20261116-145734",
+    "RealKIE-FCC-Verified-20261116-145735",
+    "RealKIE-FCC-Verified-20261116-145734"
+  ]
+}

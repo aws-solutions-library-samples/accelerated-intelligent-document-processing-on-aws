@@ -1,0 +1,40 @@
+{
+  "ablation": "SC-14",
+  "verdict": "Measured; see the table.",
+  "runs": {
+    "docsplit_100": {
+      "Page by page \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-151451",
+        "DocSplit-Poly-Seq-20261118-160137",
+        "DocSplit-Poly-Seq-20261118-160148"
+      ],
+      "Holistic \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-160211",
+        "DocSplit-Poly-Seq-20261118-160158",
+        "DocSplit-Poly-Seq-20261118-160233"
+      ],
+      "Split, then an LLM classifies each section \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-162508",
+        "DocSplit-Poly-Seq-20261118-161841"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit_100": 10,
+    "docsplit_long": 4
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15-develop-d1be93f",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Poly-Seq-20261118-151451",
+    "DocSplit-Poly-Seq-20261118-160137",
+    "DocSplit-Poly-Seq-20261118-160148",
+    "DocSplit-Poly-Seq-20261118-160158",
+    "DocSplit-Poly-Seq-20261118-160211",
+    "DocSplit-Poly-Seq-20261118-160233",
+    "DocSplit-Poly-Seq-20261118-161841",
+    "DocSplit-Poly-Seq-20261118-162508"
+  ]
+}

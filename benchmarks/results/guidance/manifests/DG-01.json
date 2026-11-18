@@ -1,45 +1,67 @@
 {
   "ablation": "DG-01",
-  "verdict": "Keep Textract. On RealKIE invoices the three readers scored within the noise of each other (0.81, 0.80 and 0.81). On bank checks the Bedrock vision model scored lower than Textract (0.90 against 0.94), a gap near the edge of the noise. The vision model's shorter page text cut total tokens per page on invoices (16,400 against 19,600), but it returns no word confidence for the scoring model to use.",
+  "verdict": "Amazon Textract with Layout only is a good place to start: on RealKIE invoices it scored as well as the other readers, for a third of the cost of Textract with tables. Test it on your own documents.",
   "runs": {
     "realkie": {
-      "Textract, tables and layout (default)": [
-        "RealKIE-FCC-Verified-20261113-200107",
-        "RealKIE-FCC-Verified-20261113-200110",
-        "RealKIE-FCC-Verified-20261113-200111"
+      "Textract, layout only (recommended)": [
+        "RealKIE-FCC-Verified-20261116-173806",
+        "RealKIE-FCC-Verified-20261116-173820",
+        "RealKIE-FCC-Verified-20261116-173830"
       ],
-      "Textract, layout only": [
-        "RealKIE-FCC-Verified-20261113-200734",
-        "RealKIE-FCC-Verified-20261113-200735",
-        "RealKIE-FCC-Verified-20261113-200737"
+      "Textract, tables and layout": [
+        "RealKIE-FCC-Verified-20261116-173853",
+        "RealKIE-FCC-Verified-20261116-173840",
+        "RealKIE-FCC-Verified-20261116-173903"
       ],
-      "Bedrock vision model (Nova 2 Lite)": [
-        "RealKIE-FCC-Verified-20261113-201141",
-        "RealKIE-FCC-Verified-20261113-201235",
-        "RealKIE-FCC-Verified-20261113-201255"
+      "Amazon Nova 2 Lite vision": [
+        "RealKIE-FCC-Verified-20261116-174433",
+        "RealKIE-FCC-Verified-20261116-174329",
+        "RealKIE-FCC-Verified-20261116-174636"
       ]
     },
     "omniai": {
-      "Textract, tables and layout (default)": [
-        "OmniAI-OCR-Benchmark-20261113-201450",
-        "OmniAI-OCR-Benchmark-20261113-201607",
-        "OmniAI-OCR-Benchmark-20261113-201632"
+      "Textract, tables and layout": [
+        "OmniAI-OCR-Benchmark-20261116-175036",
+        "OmniAI-OCR-Benchmark-20261116-174930",
+        "OmniAI-OCR-Benchmark-20261116-175234"
       ],
-      "Textract, layout only": [
-        "OmniAI-OCR-Benchmark-20261113-201740",
-        "OmniAI-OCR-Benchmark-20261113-201755",
-        "OmniAI-OCR-Benchmark-20261113-201803"
+      "Textract, layout only (recommended)": [
+        "OmniAI-OCR-Benchmark-20261116-174811",
+        "OmniAI-OCR-Benchmark-20261116-174727",
+        "OmniAI-OCR-Benchmark-20261116-174822"
       ],
-      "Bedrock vision model (Nova 2 Lite)": [
-        "OmniAI-OCR-Benchmark-20261113-201905",
-        "OmniAI-OCR-Benchmark-20261113-201929",
-        "OmniAI-OCR-Benchmark-20261113-201940"
+      "Amazon Nova 2 Lite vision": [
+        "OmniAI-OCR-Benchmark-20261116-175932",
+        "OmniAI-OCR-Benchmark-20261116-175245",
+        "OmniAI-OCR-Benchmark-20261116-175412"
       ]
     }
   },
-  "max_failed": {},
+  "max_failed": {
+    "omniai": 3
+  },
   "stack": "sr-testing",
   "region": "us-east-1",
   "release": "0.6.15.dev1",
-  "measured": "November 2026"
+  "measured": "November 2026",
+  "cache_isolated": [
+    "OmniAI-OCR-Benchmark-20261116-174727",
+    "OmniAI-OCR-Benchmark-20261116-174811",
+    "OmniAI-OCR-Benchmark-20261116-174822",
+    "OmniAI-OCR-Benchmark-20261116-174930",
+    "OmniAI-OCR-Benchmark-20261116-175036",
+    "OmniAI-OCR-Benchmark-20261116-175234",
+    "OmniAI-OCR-Benchmark-20261116-175245",
+    "OmniAI-OCR-Benchmark-20261116-175412",
+    "OmniAI-OCR-Benchmark-20261116-175932",
+    "RealKIE-FCC-Verified-20261116-173806",
+    "RealKIE-FCC-Verified-20261116-173820",
+    "RealKIE-FCC-Verified-20261116-173830",
+    "RealKIE-FCC-Verified-20261116-173840",
+    "RealKIE-FCC-Verified-20261116-173853",
+    "RealKIE-FCC-Verified-20261116-173903",
+    "RealKIE-FCC-Verified-20261116-174329",
+    "RealKIE-FCC-Verified-20261116-174433",
+    "RealKIE-FCC-Verified-20261116-174636"
+  ]
 }

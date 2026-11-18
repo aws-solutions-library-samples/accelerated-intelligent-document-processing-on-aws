@@ -80,7 +80,6 @@ export default defineConfig({
             },
             { label: "Key Information Extraction", slug: "benchmark-guidance/extraction" },
             { label: "Confidence Assessment", slug: "benchmark-guidance/confidence-assessment" },
-            { label: "Rule Validation", slug: "benchmark-guidance/rule-validation" },
             { label: "Token Use and Cost", slug: "benchmark-guidance/token-use" },
             { label: "Marginal Cost of Error", slug: "benchmark-guidance/marginal-cost-of-error" },
             { label: "Benchmark Datasets", slug: "benchmark-guidance/datasets" },

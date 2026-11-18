@@ -30,246 +30,147 @@ which adds scan noise to real invoices.
 |---|---|---|
 | Scoring mode | A separate scoring pass, scores inside the extraction call, or none | [CF-03](#separate-scoring-pass-or-integrated-into-extraction) |
 | Scoring model | The model that scores each value | [CF-02](#which-scoring-model-should-i-use) |
-| Confidence threshold | The score below which a value goes to review | [CF-01](#can-i-route-human-review-by-confidence), [CF-04](#what-confidence-threshold-should-i-set) |
-| Page images | Whether the scoring model sees the pages | [CF-06](#does-the-scoring-model-need-page-images) |
-| List batch size | How many list rows the scoring model scores in one request | [CF-07](#how-should-long-lists-be-scored) |
+| Confidence threshold | The score below which a value goes to review | [CF-01](#planned), [CF-04](#planned) |
+| Page images | Whether the scoring model sees the pages | [CF-06](#planned) |
 
 ## Questions
 
-<!-- BEGIN GENERATED FAQ -->
-
-### Can I route human review by confidence?
-
-**Answer:** Not yet measured. [Details: CF-01](#cf-01-can-i-route-human-review-by-confidence)
-
-### Which scoring model should I use?
-
-**Answer:** Claude Haiku 5.5, or Claude Sonnet 5.5 for the most accuracy on invoices. On W-2 forms both caught every error when a reviewer checks the 30% of values with the lowest confidence (AUROC 0.98 and 0.99), at about the default's cost for Claude Haiku 5.5. On RealKIE invoices Claude Sonnet 5.5 caught 87% of errors that way (AUROC 0.92) against 66% for Claude Haiku 5.5 (0.81), for about $104 more per 1,000 invoices. The default, Amazon Nova Lite, caught 14% to 19%: fewer than reviewing values at random (30%). [Details: CF-02](#cf-02-which-scoring-model-should-i-use)
-
-![Claude Haiku 5.5 catches errors; the default doesn't: AUROC and errors caught reviewing 30% of values against cost per 1,000 documents, one point per scoring model](../../images/benchmark-guidance/CF-02-fields.svg)
-
-*AUROC and errors caught reviewing 30% of values against cost per 1,000 documents, one point per scoring model. Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (what a review of a random 30% of values catches).* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: CF-02](#cf-02-which-scoring-model-should-i-use). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
-### Separate scoring pass or integrated into extraction?
-
-**Answer:** Separate, with a scoring model that works, or off. On W-2 forms integrated scoring separated right from wrong values better than the default separate pass with Amazon Nova Lite (AUROC 0.76 against 0.47) and used 36% fewer tokens per page, but it lowered extraction accuracy from 0.96 to 0.92. Turning confidence off changed no extracted value and cut tokens per page by 55% to 65%. On RealKIE invoices integrated ran as a separate pass, because in single-pass extraction the accelerator scores a class with list fields separately. For confidence you can act on, use a separate pass with Claude Haiku 5.5 or Claude Sonnet 5 (see CF-02). [Details: CF-03](#cf-03-separate-scoring-pass-or-integrated-into-extraction)
-
-![Integrated scoring catches more W-2 errors but lowers accuracy: weighted accuracy and errors caught reviewing 30% of values against cost per 1,000 documents, one point per confidence mode](../../images/benchmark-guidance/CF-03-fields.svg)
-
-*Weighted accuracy and errors caught reviewing 30% of values against cost per 1,000 documents, one point per confidence mode. Bands show ±2 standard errors. The dashed line marks random review (what a review of a random 30% of values catches).* N = 20 documents × 3 runs. Datasets: [RealKIE](datasets.md#realkie-fcc-verified-20-invoices), [Fake-W2](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields). [Details: CF-03](#cf-03-separate-scoring-pass-or-integrated-into-extraction). Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13.
-
-### What confidence threshold should I set?
-
-**Answer:** Not yet measured. [Details: CF-04](#cf-04-what-confidence-threshold-should-i-set)
-
-### Does classification confidence flag the wrong document class?
-
-**Answer:** Not yet measured. [Details: CF-05](#cf-05-does-classification-confidence-flag-the-wrong-document-class)
-
-### Does the scoring model need page images?
-
-**Answer:** Not yet measured. [Details: CF-06](#cf-06-does-the-scoring-model-need-page-images)
-
-### How should long lists be scored?
-
-**Answer:** Not yet measured. [Details: CF-07](#cf-07-how-should-long-lists-be-scored)
-
-<!-- END GENERATED FAQ -->
-
-## Metrics on this page
+<details>
+<summary>What the metrics mean</summary>
 
 - *AUROC:* the chance that a wrong value scores lower than a right one. 0.5 is a coin flip.
 - *Calibration error:* the gap between the scores and the measured accuracy.
 - *Values below threshold:* the share of values the threshold sends to review.
 - *Errors below threshold:* the share of wrong values the threshold sends to review.
+- *ECARB at a 30% review budget:* review the 30% of values with the lowest scores, and count how many times as many wrong values you find as a random 30% review would. 1× is no better than random, which the charts draw as a dashed line; the most possible is about 3.3×.
 - *Errors caught reviewing 30% of values:* the share of wrong values a reviewer finds by
   checking the 30% of values with the lowest scores. Checking 30% picked at random finds
-  about 30%, which the charts draw as a dashed line labeled "random review".
+  about 30%.
+
+Full definitions: Stickler's [Confidence Metrics](https://awslabs.github.io/stickler/Advanced/confidence-metrics/), which computes AUROC and calibration error.
 
 [Benchmark Datasets](datasets.md) describes each dataset.
 
-## Benchmark details
+</details>
 
-<!-- BEGIN GENERATED ABLATIONS -->
+<!-- BEGIN GENERATED FAQ -->
 
-#### CF-01: Can I route human review by confidence?
+### Which scoring model should I use?
 
-**Answer:** Not yet measured.
+![Haiku 5.5 catches errors like Sonnet 5.5, at a fifth the cost: AUROC and ECARB at a 30% review budget against cost per 1,000 documents, one point per scoring model](../../images/benchmark-guidance/CF-02-fields.svg)
 
-| | |
-|---|---|
-| **Changes** | Scoring model |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages) |
-| **Runs** | 3 per document, per value |
+*Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (1×, what reviewing a random 30% of values catches).*
 
-| Dataset | Scoring model | AUROC | Calibration error | Values below threshold | Errors below threshold |
-|---|---|---|---|---|---|
-| ConfBench | Amazon Nova Lite (default) | — | — | — | — |
-| ConfBench | Claude Sonnet 5 | — | — | — | — |
-| RealKIE | Amazon Nova Lite (default) | — | — | — | — |
-| RealKIE | Claude Sonnet 5 | — | — | — | — |
+**Answer:** Claude Haiku 5.5 is a good place to start: reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as a random 30% review (ECARB) on RealKIE invoices, as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset default, found fewer than a random review (0.6 times). Test it on your own documents.
 
-| Dataset | Scoring model | AUROC | Calibration error | Values below threshold | Errors below threshold |
-|---|---|---|---|---|---|
-| Statement, 400 rows | Amazon Nova Lite (default) | — | — | — | — |
-| Statement, 400 rows | Claude Sonnet 5 | — | — | — | — |
+<details>
+<summary>Details</summary>
 
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 23 Test Studio runs, listed in `benchmarks/results/guidance/CF-02.json`.*
 
-#### CF-02: Which scoring model should I use?
-
-**Answer:** Claude Haiku 5.5, or Claude Sonnet 5.5 for the most accuracy on invoices. On W-2 forms both caught every error when a reviewer checks the 30% of values with the lowest confidence (AUROC 0.98 and 0.99), at about the default's cost for Claude Haiku 5.5. On RealKIE invoices Claude Sonnet 5.5 caught 87% of errors that way (AUROC 0.92) against 66% for Claude Haiku 5.5 (0.81), for about $104 more per 1,000 invoices. The default, Amazon Nova Lite, caught 14% to 19%: fewer than reviewing values at random (30%).
-
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-181724, RealKIE-FCC-Verified-20261113-181722, RealKIE-FCC-Verified-20261113-181723, RealKIE-FCC-Verified-20261113-182034, RealKIE-FCC-Verified-20261113-182041, RealKIE-FCC-Verified-20261113-182113, RealKIE-FCC-Verified-20261113-182352, RealKIE-FCC-Verified-20261113-182430, RealKIE-FCC-Verified-20261113-182432, RealKIE-FCC-Verified-20261113-182712, RealKIE-FCC-Verified-20261113-182736, RealKIE-FCC-Verified-20261113-182750, RealKIE-FCC-Verified-20261116-145733, RealKIE-FCC-Verified-20261116-145735, RealKIE-FCC-Verified-20261116-145734, Fake-W2-Tax-Forms-20261113-213105, Fake-W2-Tax-Forms-20261113-213106, Fake-W2-Tax-Forms-20261113-213107, Fake-W2-Tax-Forms-20261113-213108, Fake-W2-Tax-Forms-20261113-213109, Fake-W2-Tax-Forms-20261113-213110, Fake-W2-Tax-Forms-20261113-213111, Fake-W2-Tax-Forms-20261113-213117, Fake-W2-Tax-Forms-20261113-213119, Fake-W2-Tax-Forms-20261113-213118, Fake-W2-Tax-Forms-20261113-213120, Fake-W2-Tax-Forms-20261113-213121, Fake-W2-Tax-Forms-20261116-145735, Fake-W2-Tax-Forms-20261116-145733, Fake-W2-Tax-Forms-20261116-145734`.*
+Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48% at the same cost as Claude Haiku 5.5, not measurably worse, but it varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models.
 
 | | |
 |---|---|
 | **Changes** | Scoring model |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: varies (the setting under test). |
-| **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
+| **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: varies (the setting under test). |
+| **Runs** | 3 per document, per value; N = 20 documents × 2–3 runs |
 
-| Dataset | Scoring model | AUROC | Errors caught reviewing 30% of values | Calibration error | Values below threshold | Errors below threshold | Scoring tokens per page | Cost per 1,000 documents (USD) |
+| Dataset | Scoring model | AUROC | ECARB at a 30% review budget | Errors caught reviewing 30% of values | Calibration error | Scoring tokens per page | Total tokens per page | Cost per 1,000 documents (USD) |
 |---|---|---|---|---|---|---|---|---|
-| ConfBench | Amazon Nova Lite (default) | — | — | — | — | — | — | — |
-| ConfBench | Amazon Nova 2 Lite | — | — | — | — | — | — | — |
-| ConfBench | Claude Haiku 5.5 | — | — | — | — | — | — | — |
-| ConfBench | Claude Sonnet 5.5 | — | — | — | — | — | — | — |
-| RealKIE | Amazon Nova Lite (default) | 0.42 ± 0.07 | 0.14 ± 0.11 | 0.17 ± 0.02 | — | — | 14,079 ± 166 | $143 |
-| RealKIE | Amazon Nova 2 Lite | 0.61 ± 0.13 | 0.46 ± 0.13 | 0.18 ± 0.05 | — | — | 5,290 ± 331 | $139 |
-| RealKIE | Claude Haiku 5.5 | 0.81 ± 0.07 | 0.66 ± 0.19 | 0.1 ± 0.03 | — | — | 13,193 ± 1,006 | $140 |
-| RealKIE | Claude Sonnet 5.5 | 0.92 ± 0.01 | 0.87 ± 0.06 | 0.11 ± 0.04 | — | — | 12,244 ± 318 | $245 ± $0.92 |
-| Fake-W2 | Amazon Nova Lite (default) | 0.47 ± 0.06 | 0.18 ± 0.07 | 0.04 ± 0.01 | — | — | 61,579 ± 106,479 | $32.3 ± $0.10 |
-| Fake-W2 | Amazon Nova 2 Lite | 0.88 ± 0.09 | 0.78 ± 0.19 | 0.02 ± 0.01 | — | — | 83,245 ± 77,145 | $34.9 ± $0.07 |
-| Fake-W2 | Claude Haiku 5.5 | 0.98 ± 0 | 1 ± 0 | 0.06 ± 0 | — | — | 215,723 ± 1,227 | $34.1 ± $0.30 |
-| Fake-W2 | Claude Sonnet 5.5 | 0.99 ± 0 | 1 ± 0 | 0.02 ± 0.01 | — | — | 8,720 ± 25 | $61.9 ± $0.29 |
+| RealKIE | Amazon Nova Lite (preset default) | 0.51 ± 0.03 | 0.6× ± 0.0× | 0.18 ± 0 | 0.27 ± 0 | 8,497 ± 437 | 15,264 ± 426 | **$20.0 ± $0.03** |
+| RealKIE | Amazon Nova 2 Lite | 0.66 ± 0.09 | 1.6× ± 0.4× | 0.48 ± 0.11 | 0.25 ± 0.01 | **3,695 ± 101** | **10,466 ± 104** | $24.2 ± $0.04 |
+| RealKIE | **Claude Haiku 5.5 (baseline)** | 0.84 ± 0.07 | 2.4× ± 0.4× | 0.71 ± 0.11 | 0.17 ± 0.01 | 9,751 ± 496 | 16,521 ± 496 | $24.4 ± $1.81 |
+| RealKIE | Claude Sonnet 5.5 | 0.89 ± 0.01 | 2.3× ± 0.1× | 0.69 ± 0.03 | 0.17 ± 0.02 | 9,010 ± 505 | 15,774 ± 491 | $119 ± $4.22 |
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
+</details>
 
-#### CF-03: Separate scoring pass or integrated into extraction?
+### Separate scoring pass or integrated into extraction?
 
-**Answer:** Separate, with a scoring model that works, or off. On W-2 forms integrated scoring separated right from wrong values better than the default separate pass with Amazon Nova Lite (AUROC 0.76 against 0.47) and used 36% fewer tokens per page, but it lowered extraction accuracy from 0.96 to 0.92. Turning confidence off changed no extracted value and cut tokens per page by 55% to 65%. On RealKIE invoices integrated ran as a separate pass, because in single-pass extraction the accelerator scores a class with list fields separately. For confidence you can act on, use a separate pass with Claude Haiku 5.5 or Claude Sonnet 5 (see CF-02).
+![Integrated scoring costs W-2 accuracy; off is cheapest: weighted accuracy against cost per 1,000 documents, one point per confidence mode](../../images/benchmark-guidance/CF-03-fields.svg)
 
-*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: `Test Studio runs RealKIE-FCC-Verified-20261113-202145, RealKIE-FCC-Verified-20261113-202146, RealKIE-FCC-Verified-20261113-202147, RealKIE-FCC-Verified-20261113-202440, RealKIE-FCC-Verified-20261113-202454, RealKIE-FCC-Verified-20261113-202607, RealKIE-FCC-Verified-20261113-202740, RealKIE-FCC-Verified-20261113-202800, RealKIE-FCC-Verified-20261113-202905, Fake-W2-Tax-Forms-20261113-203253, Fake-W2-Tax-Forms-20261113-203254, Fake-W2-Tax-Forms-20261113-203255, Fake-W2-Tax-Forms-20261113-203428, Fake-W2-Tax-Forms-20261113-203420, Fake-W2-Tax-Forms-20261113-203440, Fake-W2-Tax-Forms-20261113-203545, Fake-W2-Tax-Forms-20261113-203554, Fake-W2-Tax-Forms-20261113-203604`.*
+*Bands show ±2 standard errors. Cost axes differ by dataset.*
+
+**Answer:** A separate scoring pass is a good place to start if people review by confidence; if nobody does, turn confidence off, which kept accuracy and cut cost by 13% to 28%. Test it on your own documents.
+
+<details>
+<summary>Details</summary>
+
+*Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 18 Test Studio runs, listed in `benchmarks/results/guidance/CF-03.json`.*
+
+Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,000 forms. On RealKIE invoices it ran as a separate pass anyway: the accelerator scores a document with line items in a separate pass even when integrated scoring is on.
 
 | | |
 |---|---|
 | **Changes** | Confidence mode |
-| **Everything else** | Single-pass (Simple) extraction; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
-| **Models** | OCR: Amazon Textract (Tables, Layout, Signatures) · Extraction: Claude Sonnet 5, single-pass · Confidence: varies (the setting under test). |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
+| **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: varies (the setting under test). |
 | **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
-| Dataset | Confidence mode | Weighted accuracy | AUROC | Errors caught reviewing 30% of values | Scoring tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | MCoE vs Off |
-|---|---|---|---|---|---|---|---|---|
-| ConfBench | Separate (default) | — | — | — | — | — | — | — |
-| ConfBench | Integrated | — | — | — | — | — | — | — |
-| ConfBench | Off | — | — | — | — | — | — | — |
-| RealKIE | Separate (default) | 0.81 ± 0.07 | 0.42 ± 0.02 | 0.18 ± 0.03 | 13,240 ± 1,063 | $137 | 36 ± 4.47 | no measurable gain |
-| RealKIE | Integrated | 0.81 ± 0.06 | 0.41 ± 0.04 | 0.18 ± 0.09 | 13,206 ± 600 | $135 | 32 ± 3.84 | no measurable gain |
-| RealKIE | Off | 0.8 ± 0.06 | — | — | — | $134 | 23 ± 0.76 | — |
-| Fake-W2 | Separate (default) | 0.96 ± 0.02 | 0.47 ± 0.03 | 0.13 ± 0.05 | 8,319 ± 1.49 | $35.3 | 28 ± 0.71 | no measurable gain |
-| Fake-W2 | Integrated | 0.92 ± 0.02 | 0.76 ± 0.01 | 0.47 ± 0.05 | — | $61.5 | 33 ± 0.67 | — |
-| Fake-W2 | Off | 0.96 ± 0.02 | — | — | — | $31.8 | 17 ± 0.23 | — |
+| Dataset | Confidence mode | Weighted accuracy | AUROC | ECARB at a 30% review budget | Extraction tokens per page | Scoring tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | [Cost per error prevented](marginal-cost-of-error.md) vs Off |
+|---|---|---|---|---|---|---|---|---|---|---|
+| RealKIE | **Separate (recommended)** | 0.8 ± 0.07 | 0.83 ± 0.07 | 2.2× ± 0.5× | 6,774 ± 11 | 10,041 ± 423 | 16,815 ± 431 | $22.2 ± $0.14 | 37 ± 6.14 | no measurable gain |
+| RealKIE | Integrated | 0.82 ± 0.07 | 0.83 ± 0.09 | 2.2× ± 0.1× | 6,774 ± 6.42 | 10,763 ± 1,068 | 17,537 ± 1,061 | $22.3 ± $0.13 | 38 ± 4.41 | no measurable gain |
+| RealKIE | Off | 0.82 ± 0.07 | — | — | 6,774 ± 25 | — | **6,774 ± 25** | **$19.4 ± $0.06** | **21 ± 2.07** | — |
+| Fake-W2 | **Separate (recommended)** | 1 ± 0 | **1 ± 0** | 3.3× ± 0.0× | **7,412 ± 16** | 10,828 ± 291 | 18,240 ± 307 | $7.42 ± $0.03 | 31 ± 0.95 | no measurable gain |
+| Fake-W2 | Integrated | 0.96 ± 0.01 | 0.9 ± 0.02 | 3.2× ± 0.2× | 9,782 ± 352 | — | 9,782 ± 352 | $6.61 ± $0.22 | 23 ± 2.91 | no measurable gain |
+| Fake-W2 | Off | 1 ± 0 | — | — | 7,453 ± 21 | — | **7,453 ± 21** | **$5.37 ± $0.01** | **17 ± 0.41** | — |
 
-| Dataset | Confidence mode | List recall | AUROC | Scoring tokens per page | Cost per 1,000 documents (USD) | Median seconds per document |
-|---|---|---|---|---|---|---|
-| Statement, 800 rows | Separate (default) | — | — | — | — | — |
-| Statement, 800 rows | Integrated | — | — | — | — | — |
-| Statement, 800 rows | Off | — | — | — | — | — |
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
-*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-13. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
-*Costs come from each value's first, cold-cache run: repeat runs reuse the prompt cache the first run wrote, which a document processed once would not.*
+</details>
 
+### Can a decision model score confidence?
 
-#### CF-04: What confidence threshold should I set?
+![An LLM scores confidence better than the Strands Decider 2B, for less: AUROC and ECARB at a 30% review budget against cost per 1,000 documents, one point per who scores the values](../../images/benchmark-guidance/CF-08-fields.svg)
 
-**Answer:** Not yet measured.
+*Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (1×, what reviewing a random 30% of values catches).*
 
-| | |
-|---|---|
-| **Changes** | Confidence threshold |
-| **Everything else** | Computed from the CF-02 runs, per scoring model; the rest as each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
-| **Runs** | None: computed from the CF-02 runs |
+**Answer:** Not yet: score confidence with an LLM; Claude Haiku 5.5 is a good place to start. The Strands Decider 2B reading page images separated right from wrong values less well (AUROC 0.68 against 0.80), at more than three times the cost ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, a gap within run-to-run variation; Claude Sonnet 5.5 found the most (3.0 times) for $130. Test it on your own documents.
 
-| Dataset | Confidence threshold | Values below threshold | Errors below threshold |
-|---|---|---|---|
-| ConfBench | 0.5 | — | — |
-| ConfBench | 0.7 | — | — |
-| ConfBench | 0.8 (default) | — | — |
-| ConfBench | 0.9 | — | — |
-| ConfBench | 0.95 | — | — |
-| RealKIE | 0.5 | — | — |
-| RealKIE | 0.7 | — | — |
-| RealKIE | 0.8 (default) | — | — |
-| RealKIE | 0.9 | — | — |
-| RealKIE | 0.95 | — | — |
+<details>
+<summary>Details</summary>
 
+*Measured on release 0.6.15-develop-d1be93f, November 2026, us-east-1. Source: 12 Test Studio runs, listed in `benchmarks/results/guidance/CF-08.json`.*
 
-#### CF-05: Does classification confidence flag the wrong document class?
-
-**Answer:** Not yet measured.
+The decision model is the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit), on an AWS Lambda function with 10 GB of memory; its cost is that function's duration, with cold starts left out. It asks one yes/no question per extracted value against each page image of the section (up to 20 pages). Extraction ran on Claude Haiku 5.5 for every value. Reading OCR text instead of page images could not be measured on this release: the accelerator sent each section's whole text in one request, longer than the 4,096 tokens the model reads, so half the invoices got no score (issue #2032). Its raw scores are not calibrated, so its calibration error depends on how often values are wrong and does not carry over to other documents.
 
 | | |
 |---|---|
-| **Changes** | Classification model |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [DocSplit-Poly-Seq (20 packets)](datasets.md#docsplit-poly-seq-20-packets) |
-| **Runs** | 3 per document, per value |
+| **Changes** | Who scores each extracted value: an LLM or a decision model (one yes/no question per value) |
+| **Everything else** | The [baseline setup](index.md#how-we-run-a-benchmark) |
+| **Datasets** | [RealKIE-FCC-Verified (20 invoices)](datasets.md#realkie-fcc-verified-20-invoices) |
+| **Models** | OCR: Amazon Textract (Layout) · Extraction: Claude Haiku 5.5, single-pass · Scoring: varies (the setting under test). |
+| **Runs** | 3 per document, per value; N = 20 documents × 3 runs |
 
-| Dataset | Classification model | Label accuracy | AUROC | Values below threshold | Errors below threshold | Classification tokens per page |
-|---|---|---|---|---|---|---|
-| DocSplit | Amazon Nova 2 Lite (default) | — | — | — | — | — |
-| DocSplit | Claude Haiku 5.5 | — | — | — | — | — |
-| DocSplit | Claude Sonnet 5 | — | — | — | — | — |
+| Dataset | Who scores each extracted value: an LLM or a decision model (one yes/no question per value) | AUROC | ECARB at a 30% review budget | Errors caught reviewing 30% of values | Calibration error | Scoring tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document |
+|---|---|---|---|---|---|---|---|---|---|
+| RealKIE | **LLM · Claude Haiku 5.5 (baseline)** | 0.8 ± 0.03 | 2.5× ± 0.4× | 0.76 ± 0.11 | 0.06 ± 0.02 | 15,178 ± 673 | 22,295 ± 568 | **$29.0 ± $0.54** | 84 ± 8.54 |
+| RealKIE | LLM · Claude Sonnet 5.5 | **0.9 ± 0.01** | **3.0× ± 0.0×** | **0.91 ± 0.01** | 0.05 ± 0.02 | **12,305 ± 2,129** | 19,272 ± 2,305 | $130 ± $8.39 | **52 ± 17** |
+| RealKIE | Decision model · page images | 0.68 ± 0.11 | 2.0× ± 0.5× | 0.6 ± 0.14 | 0.3 ± 0.02 | — | **7,064 ± 64** | $104 ± $10.2 | 114 ± 29 |
 
+*A bold figure beats every other in its column, for that dataset, by more than twice the combined standard error. The bold name is the value the [baseline setup](index.md#how-we-run-a-benchmark) uses.*
 
-#### CF-06: Does the scoring model need page images?
+*Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18. Amazon Bedrock and Amazon Textract only; Lambda and other AWS charges are not included.*
 
-**Answer:** Not yet measured.
+</details>
 
-| | |
-|---|---|
-| **Changes** | Page images in the scoring prompt |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [ConfBench (RealKIE invoices with scan noise)](datasets.md#confbench-realkie-invoices-with-scan-noise); [Fake-W2-Tax-Forms (W-2 forms, 45 fields)](datasets.md#fake-w2-tax-forms-w-2-forms-45-fields) |
-| **Runs** | 3 per document, per value |
+### Planned
 
-| Dataset | Page images in the scoring prompt | AUROC | Calibration error | Scoring tokens per page |
-|---|---|---|---|---|
-| ConfBench | Text and images (default) | — | — | — |
-| ConfBench | Text only | — | — | — |
-| Fake-W2 | Text and images (default) | — | — | — |
-| Fake-W2 | Text only | — | — | — |
+We haven't run these yet.
 
+- Can I route human review by confidence? (CF-01)
+- What confidence threshold should I set? (CF-04)
+- Does classification confidence flag the wrong document class? (CF-05)
+- Does the scoring model need page images? (CF-06)
 
-#### CF-07: How should long lists be scored?
-
-**Answer:** Not yet measured.
-
-| | |
-|---|---|
-| **Changes** | `extraction.confidence.list_batch_size` |
-| **Everything else** | As each dataset's [preset](index.md#how-we-run-a-benchmark) sets it |
-| **Datasets** | [Synthetic statement, 400 rows (9 pages)](datasets.md#synthetic-statement-400-rows-9-pages); [Synthetic statement, 800 rows (17 pages)](datasets.md#synthetic-statement-800-rows-17-pages); [Synthetic statement, 1,600 rows (33 pages)](datasets.md#synthetic-statement-1600-rows-33-pages) |
-| **Runs** | 3 per document, per value |
-
-| Dataset | `extraction.confidence.list_batch_size` | List recall | AUROC | Scoring tokens per page | Median seconds per document |
-|---|---|---|---|---|---|
-| Statement, 400 rows | 25 (default) | — | — | — | — |
-| Statement, 400 rows | 12 | — | — | — | — |
-| Statement, 400 rows | 50 | — | — | — | — |
-| Statement, 800 rows | 25 (default) | — | — | — | — |
-| Statement, 800 rows | 12 | — | — | — | — |
-| Statement, 800 rows | 50 | — | — | — | — |
-| Statement, 1,600 rows | 25 (default) | — | — | — | — |
-| Statement, 1,600 rows | 12 | — | — | — | — |
-| Statement, 1,600 rows | 50 | — | — | — | — |
-
-<!-- END GENERATED ABLATIONS -->
+<!-- END GENERATED FAQ -->

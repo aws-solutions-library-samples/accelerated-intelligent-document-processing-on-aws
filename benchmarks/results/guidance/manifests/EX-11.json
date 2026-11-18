@@ -1,0 +1,43 @@
+{
+  "ablation": "EX-11",
+  "verdict": "Warn is a good place to start: validation never failed on these documents, so escalating to Claude Sonnet 5.5 never ran. Test it on your own documents.",
+  "runs": {
+    "realkie": {
+      "Warn (recommended)": [
+        "RealKIE-FCC-Verified-20261116-175836",
+        "RealKIE-FCC-Verified-20261116-175825",
+        "RealKIE-FCC-Verified-20261116-175909"
+      ],
+      "Escalate to Claude Sonnet 5.5": [
+        "RealKIE-FCC-Verified-20261116-175919",
+        "RealKIE-FCC-Verified-20261116-175846",
+        "RealKIE-FCC-Verified-20261116-175859"
+      ]
+    },
+    "fake_w2": {
+      "Warn (recommended)": [
+        "Fake-W2-Tax-Forms-20261116-180223",
+        "Fake-W2-Tax-Forms-20261116-180249"
+      ],
+      "Escalate to Claude Sonnet 5.5": [
+        "Fake-W2-Tax-Forms-20261116-180723"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "Fake-W2-Tax-Forms-20261116-180223",
+    "Fake-W2-Tax-Forms-20261116-180249",
+    "Fake-W2-Tax-Forms-20261116-180723",
+    "RealKIE-FCC-Verified-20261116-175825",
+    "RealKIE-FCC-Verified-20261116-175836",
+    "RealKIE-FCC-Verified-20261116-175846",
+    "RealKIE-FCC-Verified-20261116-175859",
+    "RealKIE-FCC-Verified-20261116-175909",
+    "RealKIE-FCC-Verified-20261116-175919"
+  ]
+}

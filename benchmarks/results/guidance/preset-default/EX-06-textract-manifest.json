@@ -1,0 +1,49 @@
+{
+  "ablation": "EX-06",
+  "verdict": "Yes, keep page images. On W-2 forms, OCR text alone dropped weighted accuracy from 0.997 to 0.89 and the share of forms with every field right from 78% to 3%, and cost slightly more ($8.05 against $7.51 per 1,000), because the replies got longer. On RealKIE invoices text alone scored the same (0.80) and saved about 9% ($20.40 against $22.30 per 1,000).",
+  "runs": {
+    "realkie": {
+      "Text and images (recommended)": [
+        "RealKIE-FCC-Verified-20261116-175632",
+        "RealKIE-FCC-Verified-20261116-175655",
+        "RealKIE-FCC-Verified-20261116-175706"
+      ],
+      "Text only": [
+        "RealKIE-FCC-Verified-20261116-175812",
+        "RealKIE-FCC-Verified-20261116-175728",
+        "RealKIE-FCC-Verified-20261116-175802"
+      ]
+    },
+    "fake_w2": {
+      "Text and images (recommended)": [
+        "Fake-W2-Tax-Forms-20261116-175953",
+        "Fake-W2-Tax-Forms-20261116-180330",
+        "Fake-W2-Tax-Forms-20261116-180017"
+      ],
+      "Text only": [
+        "Fake-W2-Tax-Forms-20261116-180516",
+        "Fake-W2-Tax-Forms-20261116-180608",
+        "Fake-W2-Tax-Forms-20261116-180702"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "Fake-W2-Tax-Forms-20261116-175953",
+    "Fake-W2-Tax-Forms-20261116-180017",
+    "Fake-W2-Tax-Forms-20261116-180330",
+    "Fake-W2-Tax-Forms-20261116-180516",
+    "Fake-W2-Tax-Forms-20261116-180608",
+    "Fake-W2-Tax-Forms-20261116-180702",
+    "RealKIE-FCC-Verified-20261116-175632",
+    "RealKIE-FCC-Verified-20261116-175655",
+    "RealKIE-FCC-Verified-20261116-175706",
+    "RealKIE-FCC-Verified-20261116-175728",
+    "RealKIE-FCC-Verified-20261116-175802",
+    "RealKIE-FCC-Verified-20261116-175812"
+  ]
+}

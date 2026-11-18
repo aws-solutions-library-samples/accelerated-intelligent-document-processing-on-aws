@@ -1,0 +1,45 @@
+{
+  "ablation": "CF-03",
+  "verdict": "Separate, with a scoring model that works, or off. On W-2 forms integrated scoring separated right from wrong values better than the default separate pass with Amazon Nova Lite (AUROC 0.76 against 0.47) and used 36% fewer tokens per page, but it lowered extraction accuracy from 0.96 to 0.92. Turning confidence off changed no extracted value and cut tokens per page by 55% to 65%. On RealKIE invoices integrated ran as a separate pass, because in single-pass extraction the accelerator scores a class with list fields separately. For confidence you can act on, use a separate pass with Claude Haiku 5.5 or Claude Sonnet 5 (see CF-02).",
+  "runs": {
+    "realkie": {
+      "Separate (default)": [
+        "RealKIE-FCC-Verified-20261113-202145",
+        "RealKIE-FCC-Verified-20261113-202146",
+        "RealKIE-FCC-Verified-20261113-202147"
+      ],
+      "Integrated": [
+        "RealKIE-FCC-Verified-20261113-202440",
+        "RealKIE-FCC-Verified-20261113-202454",
+        "RealKIE-FCC-Verified-20261113-202607"
+      ],
+      "Off": [
+        "RealKIE-FCC-Verified-20261113-202740",
+        "RealKIE-FCC-Verified-20261113-202800",
+        "RealKIE-FCC-Verified-20261113-202905"
+      ]
+    },
+    "fake_w2": {
+      "Separate (default)": [
+        "Fake-W2-Tax-Forms-20261113-203253",
+        "Fake-W2-Tax-Forms-20261113-203254",
+        "Fake-W2-Tax-Forms-20261113-203255"
+      ],
+      "Integrated": [
+        "Fake-W2-Tax-Forms-20261113-203428",
+        "Fake-W2-Tax-Forms-20261113-203420",
+        "Fake-W2-Tax-Forms-20261113-203440"
+      ],
+      "Off": [
+        "Fake-W2-Tax-Forms-20261113-203545",
+        "Fake-W2-Tax-Forms-20261113-203554",
+        "Fake-W2-Tax-Forms-20261113-203604"
+      ]
+    }
+  },
+  "max_failed": {},
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026"
+}
