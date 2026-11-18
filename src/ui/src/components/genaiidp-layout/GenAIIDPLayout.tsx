@@ -24,7 +24,7 @@ import DiscoveryJobDetails from '../discovery/DiscoveryJobDetails';
 import UserManagementLayout from '../user-management/UserManagementLayout';
 import ConfigPrefixMappingsLayout from '../config-prefix-mappings/ConfigPrefixMappingsLayout';
 import McpConfigurationLayout from '../mcp-configuration/McpConfigurationLayout';
-import { appLayoutLabels } from '../common/labels';
+import { useAppLayoutLabels } from '../common/labels';
 
 import Navigation from './navigation';
 import Breadcrumbs from './breadcrumbs';
@@ -48,6 +48,7 @@ interface GenAIIDPLayoutProps {
 
 const GenAIIDPLayout = ({ children, tools }: GenAIIDPLayoutProps): React.JSX.Element => {
   const { navigationOpen, setNavigationOpen } = useAppContext();
+  const appLayoutLabels = useAppLayoutLabels();
 
   const notifications = useNotifications();
   const [toolsOpen, setToolsOpen] = useState(false);

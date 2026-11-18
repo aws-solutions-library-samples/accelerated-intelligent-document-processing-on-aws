@@ -7,6 +7,142 @@
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
   },
+  "appLayout.ariaLabels.navigation": {
+    "defaultMessage": "Side navigation",
+    "description": "Screen-reader name of the side navigation landmark of every page."
+  },
+  "appLayout.ariaLabels.navigationClose": {
+    "defaultMessage": "Close side navigation",
+    "description": "Screen-reader label of the button that closes the side navigation."
+  },
+  "appLayout.ariaLabels.navigationToggle": {
+    "defaultMessage": "Open side navigation",
+    "description": "Screen-reader label of the button that opens the side navigation."
+  },
+  "appLayout.ariaLabels.notifications": {
+    "defaultMessage": "Notifications",
+    "description": "Screen-reader name of the region at the top of every page that holds the flash messages."
+  },
+  "appLayout.ariaLabels.tools": {
+    "defaultMessage": "Help panel",
+    "description": "Screen-reader name of the info panel on the right of a page."
+  },
+  "appLayout.ariaLabels.toolsClose": {
+    "defaultMessage": "Close help panel",
+    "description": "Screen-reader label of the button that closes the info panel."
+  },
+  "appLayout.ariaLabels.toolsToggle": {
+    "defaultMessage": "Open help panel",
+    "description": "Screen-reader label of the button that opens the info panel."
+  },
+  "breadcrumbs.configuration.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Configuration page."
+  },
+  "breadcrumbs.configuration.configuration": {
+    "defaultMessage": "Configuration",
+    "description": "Last crumb of the breadcrumb trail on the Configuration page: the page itself."
+  },
+  "breadcrumbs.configuration.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the Configuration page: the document list."
+  },
+  "breadcrumbs.configuration.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Configuration page: the application home, which opens the document list."
+  },
+  "breadcrumbs.documentDetails.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on a document page."
+  },
+  "breadcrumbs.documentList.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the document list page."
+  },
+  "breadcrumbs.documentList.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the document list and on every page under it: the document list itself."
+  },
+  "breadcrumbs.documentList.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the document list and on every page under it: the application home, which opens the document list."
+  },
+  "breadcrumbs.layout.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Extensions catalog and the configuration and analysis pages."
+  },
+  "breadcrumbs.layout.extensions": {
+    "defaultMessage": "Extensions",
+    "description": "Last crumb of the breadcrumb trail on the Extensions catalog and on an extension page."
+  },
+  "breadcrumbs.layout.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Extensions catalog pages: the application home, which opens the document list."
+  },
+  "breadcrumbs.page.capacityPlanning": {
+    "defaultMessage": "Capacity Planning",
+    "description": "Last crumb of the breadcrumb trail on the Capacity Planning page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.customModels": {
+    "defaultMessage": "Custom Models",
+    "description": "Last crumb of the breadcrumb trail on the Custom Models page and on a fine-tuning job, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.discovery": {
+    "defaultMessage": "Discovery",
+    "description": "Last crumb of the breadcrumb trail on the Discovery page and on a discovery job, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.documentAnalytics": {
+    "defaultMessage": "Document Analytics",
+    "description": "Last crumb of the breadcrumb trail on the Document Analytics page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.knowledgeBase": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Last crumb of the breadcrumb trail on the Knowledge Base query page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.modelLimits": {
+    "defaultMessage": "Model Limits",
+    "description": "Last crumb of the breadcrumb trail on the Model Limits configuration page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.pricing": {
+    "defaultMessage": "Pricing",
+    "description": "Last crumb of the breadcrumb trail on the Pricing configuration page, after Document Processing and Documents."
+  },
+  "breadcrumbs.page.userManagement": {
+    "defaultMessage": "User Management",
+    "description": "Last crumb of the breadcrumb trail on the User Management page, after Document Processing and Documents."
+  },
+  "breadcrumbs.prefixMappings.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Prefix Mappings page."
+  },
+  "breadcrumbs.prefixMappings.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the Prefix Mappings page: the document list."
+  },
+  "breadcrumbs.prefixMappings.prefixMappings": {
+    "defaultMessage": "Prefix Mappings",
+    "description": "Last crumb of the breadcrumb trail on the Prefix Mappings page: the page itself."
+  },
+  "breadcrumbs.prefixMappings.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Prefix Mappings page: the application home, which opens the document list."
+  },
+  "breadcrumbs.uploadDocument.ariaLabel": {
+    "defaultMessage": "Breadcrumbs",
+    "description": "Screen-reader name of the breadcrumb navigation landmark on the Upload Documents page."
+  },
+  "breadcrumbs.uploadDocument.documents": {
+    "defaultMessage": "Documents",
+    "description": "Second crumb of the breadcrumb trail on the Upload Documents page: the document list."
+  },
+  "breadcrumbs.uploadDocument.root": {
+    "defaultMessage": "Document Processing",
+    "description": "First crumb of the breadcrumb trail on the Upload Documents page: the application home, which opens the document list."
+  },
+  "breadcrumbs.uploadDocument.upload": {
+    "defaultMessage": "Upload Documents",
+    "description": "Last crumb of the breadcrumb trail on the Upload Documents page: the page itself."
+  },
   "capacityPlanning.quotaNotRead.body": {
     "defaultMessage": "The quota analysis below leaves out the steps that use these models.",
     "description": "Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated."
@@ -146,6 +282,194 @@
   "editScreen.reviewActivity.section": {
     "defaultMessage": "Section {sectionId}",
     "description": "Part of a Review Activity note in the edit page History: the section the review event was for. {sectionId} is the section id, e.g. \"2\"."
+  },
+  "guidedTour.i18n.closeAnnotation": {
+    "defaultMessage": "Close annotation",
+    "description": "Screen-reader label of the marker of the current guided tour step while its popover is open; clicking it closes the popover."
+  },
+  "guidedTour.i18n.dismiss": {
+    "defaultMessage": "Dismiss tour",
+    "description": "Screen-reader label of the close (X) button of a guided tour step, which exits the tour."
+  },
+  "guidedTour.i18n.finish": {
+    "defaultMessage": "Finish",
+    "description": "Button of the last guided tour step that ends the tour."
+  },
+  "guidedTour.i18n.next": {
+    "defaultMessage": "Next",
+    "description": "Button of a guided tour step that moves to the next step."
+  },
+  "guidedTour.i18n.openAnnotation": {
+    "defaultMessage": "Open annotation",
+    "description": "Screen-reader label of the marker of a guided tour step while its popover is closed; clicking it opens the popover."
+  },
+  "guidedTour.i18n.previous": {
+    "defaultMessage": "Previous",
+    "description": "Button of a guided tour step that moves back to the previous step."
+  },
+  "guidedTour.i18n.stepCounter": {
+    "defaultMessage": "Step {stepNumber} of {totalStepCount}",
+    "description": "Step counter in the footer of a guided tour step. {stepNumber} is the 1-based number of the current step, {totalStepCount} the number of steps in the tour."
+  },
+  "guidedTour.i18n.taskTitle": {
+    "defaultMessage": "Task {taskNumber}: {taskTitle}",
+    "description": "Header of a guided tour step. {taskNumber} is the 1-based number of the task, {taskTitle} its title (guidedTour.task.findYourWay)."
+  },
+  "guidedTour.step.agentChat.content": {
+    "defaultMessage": "Chat with the IDP assistant for help with analytics, errors, and questions about your documents and the system.",
+    "description": "Text of the guided tour step that points at the Agent Chat entry of the side navigation."
+  },
+  "guidedTour.step.agentChat.title": {
+    "defaultMessage": "Agent Chat",
+    "description": "Title of the guided tour step that points at the Agent Chat entry of the side navigation."
+  },
+  "guidedTour.step.capacityPlanning.content": {
+    "defaultMessage": "Analyze throughput, predict resource needs, and get AWS service-quota recommendations for your workload.",
+    "description": "Text of the guided tour step that points at the Capacity Planning entry of the side navigation."
+  },
+  "guidedTour.step.capacityPlanning.title": {
+    "defaultMessage": "Capacity Planning",
+    "description": "Title of the guided tour step that points at the Capacity Planning entry of the side navigation."
+  },
+  "guidedTour.step.configuration.content": {
+    "defaultMessage": "Review, edit, and activate configuration profiles — the document classes and fields IDP extracts.",
+    "description": "Text of the guided tour step that points at the configuration entry of the side navigation."
+  },
+  "guidedTour.step.configuration.title": {
+    "defaultMessage": "View / edit configuration",
+    "description": "Title of the guided tour step that points at the configuration entry of the side navigation."
+  },
+  "guidedTour.step.customModels.content": {
+    "defaultMessage": "Fine-tune specialized classification models on your own document types for higher accuracy.",
+    "description": "Text of the guided tour step that points at the Custom Models entry of the side navigation."
+  },
+  "guidedTour.step.customModels.title": {
+    "defaultMessage": "Custom Models",
+    "description": "Title of the guided tour step that points at the Custom Models entry of the side navigation."
+  },
+  "guidedTour.step.discovery.content": {
+    "defaultMessage": "Infer document classes and a schema automatically from a set of example documents.",
+    "description": "Text of the guided tour step that points at the Discovery entry of the side navigation."
+  },
+  "guidedTour.step.discovery.title": {
+    "defaultMessage": "Discovery",
+    "description": "Title of the guided tour step that points at the Discovery entry of the side navigation."
+  },
+  "guidedTour.step.documents.content": {
+    "defaultMessage": "Your processed documents live here — each with status, extracted fields, and confidence scores.",
+    "description": "Text of the guided tour step that points at the Documents entry of the side navigation."
+  },
+  "guidedTour.step.documents.title": {
+    "defaultMessage": "Documents",
+    "description": "Title of the guided tour step that points at the Documents entry of the side navigation."
+  },
+  "guidedTour.step.extensions.content": {
+    "defaultMessage": "IDP is extensible. Browse and install optional add-ons here — this list grows as new extensions become available, so capabilities can be added without redeploying.",
+    "description": "Text of the guided tour step that points at the Extensions entry of the side navigation."
+  },
+  "guidedTour.step.extensions.title": {
+    "defaultMessage": "Extensions",
+    "description": "Title of the guided tour step that points at the Extensions entry of the side navigation."
+  },
+  "guidedTour.step.getStarted.content": {
+    "defaultMessage": "Open the Quick Start assistant any time to set up a configuration or ask questions. Click Finish to open it now.",
+    "description": "Text of the last guided tour step, which points at the Quick Start assistant button. \"Finish\" is the label of the button that ends the tour (guidedTour.i18n.finish)."
+  },
+  "guidedTour.step.getStarted.title": {
+    "defaultMessage": "Get started",
+    "description": "Title of the last guided tour step, which points at the Quick Start assistant button."
+  },
+  "guidedTour.step.knowledgeBase.content": {
+    "defaultMessage": "Ask natural-language questions about your processed documents using the document knowledge base.",
+    "description": "Text of the guided tour step that points at the document Knowledge Base entry of the side navigation."
+  },
+  "guidedTour.step.knowledgeBase.title": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Title of the guided tour step that points at the document Knowledge Base entry of the side navigation."
+  },
+  "guidedTour.step.pricing.content": {
+    "defaultMessage": "Review and adjust the per-service pricing used for document cost estimates.",
+    "description": "Text of the guided tour step that points at the pricing entry of the side navigation."
+  },
+  "guidedTour.step.pricing.title": {
+    "defaultMessage": "View / Edit Pricing",
+    "description": "Title of the guided tour step that points at the pricing entry of the side navigation."
+  },
+  "guidedTour.step.testExecutions.content": {
+    "defaultMessage": "Run a configuration against a test set and review accuracy and confidence results here.",
+    "description": "Text of the guided tour step that points at the Test executions entry of the side navigation."
+  },
+  "guidedTour.step.testExecutions.title": {
+    "defaultMessage": "Test executions",
+    "description": "Title of the guided tour step that points at the Test executions entry of the side navigation."
+  },
+  "guidedTour.step.testSets.content": {
+    "defaultMessage": "Manage labeled test sets to measure extraction accuracy.",
+    "description": "Text of the guided tour step that points at the Test sets entry of the side navigation."
+  },
+  "guidedTour.step.testSets.title": {
+    "defaultMessage": "Test sets",
+    "description": "Title of the guided tour step that points at the Test sets entry of the side navigation."
+  },
+  "guidedTour.step.upload.content": {
+    "defaultMessage": "Upload one or more documents to run them through your active configuration.",
+    "description": "Text of the guided tour step that points at the Upload documents entry of the side navigation."
+  },
+  "guidedTour.step.upload.title": {
+    "defaultMessage": "Upload documents",
+    "description": "Title of the guided tour step that points at the Upload documents entry of the side navigation."
+  },
+  "guidedTour.step.userManagement.content": {
+    "defaultMessage": "Manage users and their roles (Admin, Author, Reviewer, Viewer) for the console.",
+    "description": "Text of the guided tour step that points at the User Management entry of the side navigation. The role names in parentheses are the console roles."
+  },
+  "guidedTour.step.userManagement.title": {
+    "defaultMessage": "User Management",
+    "description": "Title of the guided tour step that points at the User Management entry of the side navigation."
+  },
+  "guidedTour.task.findYourWay": {
+    "defaultMessage": "Find your way around",
+    "description": "Title of the single task of the guided tour, which walks through the side navigation. Shown in the header of every tour step."
+  },
+  "guidedTour.tutorial.completed": {
+    "defaultMessage": "That's the tour!",
+    "description": "Text shown when the guided tour is completed on a deployment where the Quick Start assistant is turned off."
+  },
+  "guidedTour.tutorial.completedWithQuickStart": {
+    "defaultMessage": "That's the tour! Open the Quick Start assistant any time to build a configuration or get help.",
+    "description": "Text shown when the guided tour is completed on a deployment where the Quick Start assistant is enabled. \"Quick Start\" is the name of the assistant."
+  },
+  "guidedTour.tutorial.description": {
+    "defaultMessage": "A quick walkthrough of the main areas of the console.",
+    "description": "One-sentence description of the guided tour, shown under its title."
+  },
+  "guidedTour.tutorial.title": {
+    "defaultMessage": "Get started with GenAI IDP",
+    "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
+  },
+  "helpPanel.feedback.intro": {
+    "defaultMessage": "Report bugs or suggest enhancements on GitHub — your deployment details are filled in automatically.",
+    "description": "Sentence under the heading of the feedback block, above its three links."
+  },
+  "helpPanel.feedback.reportBug": {
+    "defaultMessage": "Report a bug",
+    "description": "Link in the feedback block that opens a pre-filled GitHub bug report in a new tab."
+  },
+  "helpPanel.feedback.requestFeature": {
+    "defaultMessage": "Request a feature",
+    "description": "Link in the feedback block that opens a pre-filled GitHub feature request in a new tab."
+  },
+  "helpPanel.feedback.title": {
+    "defaultMessage": "Feedback & support",
+    "description": "Heading of the feedback block at the bottom of the Documents help panel, which lists the GitHub feedback links."
+  },
+  "helpPanel.feedback.troubleshootHint": {
+    "defaultMessage": "For document-processing failures, run the <strong>Troubleshoot</strong> agent on a failed document and use <strong>Report this issue on GitHub</strong> to attach its findings. Issues are public — please redact sensitive data before submitting.",
+    "description": "Note under the links of the feedback block. The two <strong> phrases are the names of controls rendered elsewhere, shown in bold: \"Troubleshoot\" is the action button on a document, \"Report this issue on GitHub\" the button in the dialog that shows its findings. Keep each consistent with the translation of that control."
+  },
+  "helpPanel.feedback.viewIssues": {
+    "defaultMessage": "View existing issues",
+    "description": "Link in the feedback block that opens the list of GitHub issues of the project in a new tab."
   },
   "home.toolsPanels.goodToKnow": {
     "defaultMessage": "Good to know",
@@ -346,6 +670,14 @@
   "i18n.switcher.label": {
     "defaultMessage": "Language",
     "description": "Tooltip of the language menu button in the top navigation. The button itself shows the current language by its own name (English, Français (Canada))."
+  },
+  "inbox.navLink.text": {
+    "defaultMessage": "Inbox",
+    "description": "Side-navigation link, first in the Home section of every user, to the Inbox of notifications."
+  },
+  "inbox.navLink.unread": {
+    "defaultMessage": "{count, plural, one {unread} other {unread}}",
+    "description": "Read by screen readers after the count badge of the Inbox link, as in \"3 unread\". {count} is the number of unread messages; the badge itself shows the number."
   },
   "mcp.configuration.adminOnly": {
     "defaultMessage": "MCP Configuration is available to Admin users only.",
@@ -743,13 +1075,241 @@
     "defaultMessage": "Yes",
     "description": "Table cell value: the credential may use the write tools."
   },
+  "navigation.assistants.agentChat": {
+    "defaultMessage": "Agent Chat",
+    "description": "Side navigation link, in the Assistants section, to the chat with the analytics agent."
+  },
+  "navigation.assistants.knowledgeBase": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Side navigation link, in the Assistants section, to the page that queries the knowledge base built from the documents."
+  },
+  "navigation.assistants.section": {
+    "defaultMessage": "Assistants",
+    "description": "Side navigation section that holds the Knowledge Base and Agent Chat assistants. Admin users only."
+  },
+  "navigation.configuration.capacityPlanning": {
+    "defaultMessage": "Capacity Planning",
+    "description": "Side navigation link, in the Configuration section, to the page that plans model throughput capacity."
+  },
+  "navigation.configuration.customModels": {
+    "defaultMessage": "Custom Models",
+    "description": "Side navigation link, in the Configuration section, to the page that fine-tunes custom models."
+  },
+  "navigation.configuration.customModelsRegionBadge": {
+    "defaultMessage": "us-east-1 only",
+    "description": "Badge next to the Custom Models link when the deployment is not in the us-east-1 AWS Region, where that link is greyed out. \"us-east-1\" is a Region code and stays as it is."
+  },
+  "navigation.configuration.customModelsRegionNote": {
+    "defaultMessage": "Custom Models requires Amazon Nova fine-tuning, which is currently available in us-east-1 only. Deploy your stack in us-east-1 to use this feature.",
+    "description": "Popover text behind the badge of the Custom Models link when the deployment is not in the us-east-1 AWS Region, where that link is greyed out. \"us-east-1\" is a Region code and stays as it is."
+  },
+  "navigation.configuration.discovery": {
+    "defaultMessage": "Discovery",
+    "description": "Side navigation link, in the Configuration section, to the page that discovers document classes and attributes from sample documents."
+  },
   "navigation.configuration.mcpConfiguration": {
     "defaultMessage": "MCP Configuration",
     "description": "Side navigation link, in the Configuration section, to the page that manages MCP server credentials. Admin users only."
   },
+  "navigation.configuration.prefixMappings": {
+    "defaultMessage": "Prefix Mappings",
+    "description": "Side navigation link, in the Configuration section, to the page that maps upload prefixes to configuration profiles. Admin users only."
+  },
+  "navigation.configuration.section": {
+    "defaultMessage": "Configuration",
+    "description": "Side navigation section that holds the configuration pages (processing configuration, discovery, pricing, users)."
+  },
+  "navigation.configuration.userManagement": {
+    "defaultMessage": "User Management",
+    "description": "Side navigation link, in the Configuration section, to the page that manages the users of the application. Admin users only."
+  },
+  "navigation.configuration.view": {
+    "defaultMessage": "View Configuration",
+    "description": "Side navigation link, in the Configuration section, to the processing configuration page, for users who may only read it (Viewer)."
+  },
+  "navigation.configuration.viewEdit": {
+    "defaultMessage": "View/Edit Configuration",
+    "description": "Side navigation link, in the Configuration section, to the processing configuration page, for users who may edit it (Admin, Author)."
+  },
+  "navigation.configuration.viewEditModelLimits": {
+    "defaultMessage": "View / Edit Model Limits",
+    "description": "Side navigation link, in the Configuration section, to the model limits page, for Admin users, who may edit it."
+  },
+  "navigation.configuration.viewEditPricing": {
+    "defaultMessage": "View / Edit Pricing",
+    "description": "Side navigation link, in the Configuration section, to the model pricing page, for Admin users, who may edit it."
+  },
+  "navigation.configuration.viewModelLimits": {
+    "defaultMessage": "View Model Limits",
+    "description": "Side navigation link, in the Configuration section, to the model limits page, for users who may only read it (Author, Viewer)."
+  },
+  "navigation.configuration.viewPricing": {
+    "defaultMessage": "View Pricing",
+    "description": "Side navigation link, in the Configuration section, to the model pricing page, for users who may only read it (Author, Viewer)."
+  },
+  "navigation.deploymentInfo.build": {
+    "defaultMessage": "Build: {buildDateTime}",
+    "description": "Entry of the Deployment Info section. {buildDateTime} is the build timestamp of the deployed solution, as the build wrote it."
+  },
+  "navigation.deploymentInfo.contactAdministrator": {
+    "defaultMessage": "Contact your administrator to update this deployment to the latest version.",
+    "description": "Small print of the Update available popover for users who are not Admins and cannot update the stack themselves."
+  },
+  "navigation.deploymentInfo.currentVersion": {
+    "defaultMessage": "Currently deployed: <strong>v{version}</strong>",
+    "description": "Second line of the Update available popover. {version} is the version number deployed here, such as 0.4.2; <strong> puts it in bold."
+  },
+  "navigation.deploymentInfo.latestVersion": {
+    "defaultMessage": "Latest published version: <strong>v{version}</strong>",
+    "description": "First line of the Update available popover. {version} is the newest published version number, such as 0.4.3; <strong> puts it in bold."
+  },
+  "navigation.deploymentInfo.pattern": {
+    "defaultMessage": "Pattern: {pattern}",
+    "description": "Entry of the Deployment Info section. {pattern} is the name of the deployed processing pattern, such as Pattern-2 or Unified."
+  },
+  "navigation.deploymentInfo.region": {
+    "defaultMessage": "Region: {region}",
+    "description": "Entry of the Deployment Info section. {region} is the code of the AWS Region of this deployment, such as us-east-1."
+  },
+  "navigation.deploymentInfo.section": {
+    "defaultMessage": "Deployment Info",
+    "description": "Last section of the side navigation: facts about this deployment (stack name, version, build, pattern, Region). Its entries are not links."
+  },
+  "navigation.deploymentInfo.stackName": {
+    "defaultMessage": "Stack Name: {stackName}",
+    "description": "Entry of the Deployment Info section. {stackName} is the name of the CloudFormation stack of this deployment."
+  },
+  "navigation.deploymentInfo.updateAvailable": {
+    "defaultMessage": "Update available",
+    "description": "Header of the popover behind the Update badge of the Version entry, shown when a newer version of the solution is published."
+  },
+  "navigation.deploymentInfo.updateBadge": {
+    "defaultMessage": "Update",
+    "description": "Badge next to the Version entry of the Deployment Info section when a newer version of the solution is published. Opens the popover."
+  },
+  "navigation.deploymentInfo.updateStackHelp": {
+    "defaultMessage": "Opens the AWS CloudFormation console with the new template URL pre-filled. Review parameters before applying.",
+    "description": "Small print under the CloudFormation link of the Update available popover, for Admin users."
+  },
+  "navigation.deploymentInfo.updateStackLink": {
+    "defaultMessage": "Update stack in CloudFormation →",
+    "description": "Link in the Update available popover, for Admin users, that opens the AWS CloudFormation console on the stack update page (new tab)."
+  },
+  "navigation.deploymentInfo.version": {
+    "defaultMessage": "Version: {version}",
+    "description": "Entry of the Deployment Info section. {version} is the version number of the deployed solution, such as 0.4.2."
+  },
+  "navigation.documents.list": {
+    "defaultMessage": "Document List",
+    "description": "Side navigation link, in the Documents section, to the list of processed documents."
+  },
+  "navigation.documents.section": {
+    "defaultMessage": "Documents",
+    "description": "Side navigation section that holds the document list and the upload page."
+  },
+  "navigation.documents.upload": {
+    "defaultMessage": "Upload Documents",
+    "description": "Side navigation link, in the Documents section, to the page that uploads documents for processing."
+  },
+  "navigation.extensions.browseCatalog": {
+    "defaultMessage": "Browse catalog",
+    "description": "First link of the Extensions section of the side navigation, to the catalog browser that lists every extension."
+  },
+  "navigation.extensions.comingSoon": {
+    "defaultMessage": "Coming soon",
+    "description": "Badge next to an extension announced in the Extensions section of the side navigation but not published yet."
+  },
+  "navigation.extensions.install": {
+    "defaultMessage": "Install",
+    "description": "Badge, for an Admin, next to an extension in the Extensions section of the side navigation that is not installed yet."
+  },
+  "navigation.extensions.marketplaceSubscriptionNote": {
+    "defaultMessage": "Requires an AWS Marketplace subscription.",
+    "description": "Sentence appended to the hover text of a not-yet-installed marketplace extension in the Extensions section of the side navigation."
+  },
+  "navigation.extensions.notInRegion": {
+    "defaultMessage": "Not in this Region",
+    "description": "Badge next to an extension in the Extensions section of the side navigation that is not published for the AWS Region of this deployment, so it cannot be installed here."
+  },
+  "navigation.extensions.notInstalled": {
+    "defaultMessage": "Not installed",
+    "description": "Badge, for a user who cannot install, next to an extension in the Extensions section of the side navigation that is not installed yet."
+  },
+  "navigation.extensions.section": {
+    "defaultMessage": "Extensions",
+    "description": "Side navigation section that lists the installed extensions and the ones the catalog offers."
+  },
+  "navigation.extensions.update": {
+    "defaultMessage": "Update",
+    "description": "Badge, for an Admin, next to an installed extension in the Extensions section of the side navigation whose catalog has a newer version."
+  },
+  "navigation.extensions.updateAvailable": {
+    "defaultMessage": "Update available",
+    "description": "Badge, for a user who cannot install, next to an installed extension in the Extensions section of the side navigation whose catalog has a newer version."
+  },
   "navigation.home.jobs": {
     "defaultMessage": "Jobs",
     "description": "Side-navigation link under Home to the list of bulk Skip All Reviews jobs (Admins and Reviewers)."
+  },
+  "navigation.home.queues": {
+    "defaultMessage": "Queues",
+    "description": "Side-navigation link under Home to the review queues that list the user as an Annotator."
+  },
+  "navigation.home.section": {
+    "defaultMessage": "Home",
+    "description": "First section of the side navigation, for every user: the Inbox, and for an Annotator the Tasks and Queues."
+  },
+  "navigation.home.tasks": {
+    "defaultMessage": "Tasks",
+    "description": "Side-navigation link under Home to the review items assigned to the user (Annotators)."
+  },
+  "navigation.home.tasksAssigned": {
+    "defaultMessage": "{count, plural, one {assigned} other {assigned}}",
+    "description": "Read by screen readers after the count badge of the Tasks link, as in \"3 assigned\". {count} is the number of review items assigned to the user; the badge itself shows the number."
+  },
+  "navigation.quickStart.button": {
+    "defaultMessage": "Quick Start",
+    "description": "Button above the side navigation that opens the Quick Start guide of the application."
+  },
+  "navigation.resources.blog": {
+    "defaultMessage": "Blog",
+    "description": "Side navigation link, in the Resources section, to the blog post about the solution (opens in a new tab)."
+  },
+  "navigation.resources.documentation": {
+    "defaultMessage": "Documentation",
+    "description": "Side navigation link, in the Resources section, to the published documentation of the solution (opens in a new tab)."
+  },
+  "navigation.resources.reportIssue": {
+    "defaultMessage": "Report an issue",
+    "description": "Side navigation link, in the Resources section, to the issue tracker of the solution on GitHub (opens in a new tab)."
+  },
+  "navigation.resources.section": {
+    "defaultMessage": "Resources",
+    "description": "Side navigation section of external links: the blog, the documentation, the source code and the issue tracker."
+  },
+  "navigation.resources.sourceCode": {
+    "defaultMessage": "Source Code",
+    "description": "Side navigation link, in the Resources section, to the source repository of the solution on GitHub (opens in a new tab)."
+  },
+  "navigation.reviewStudio.management": {
+    "defaultMessage": "Review Management",
+    "description": "Side-navigation link, in the Review Studio section, to the page where review queues are defined and work is assigned (Admins)."
+  },
+  "navigation.reviewStudio.section": {
+    "defaultMessage": "Review Studio",
+    "description": "Side-navigation section, for Admins, that holds Review Management."
+  },
+  "navigation.testStudio.executions": {
+    "defaultMessage": "Test Executions",
+    "description": "Side navigation link, in the Test Studio section, to the Test Executions tab, which lists the test runs."
+  },
+  "navigation.testStudio.section": {
+    "defaultMessage": "Test Studio",
+    "description": "Side navigation section that holds the test sets and the test executions. \"Test Studio\" is the name of that part of the application."
+  },
+  "navigation.testStudio.sets": {
+    "defaultMessage": "Test Sets",
+    "description": "Side navigation link, in the Test Studio section, to the Test Sets tab."
   },
   "pricing.layout.cannotSaveInvalidPrices": {
     "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",
@@ -1343,9 +1903,85 @@
     "defaultMessage": "Sent to review: {reason}",
     "description": "Header of the info alert on a review task whose document was sent to review by hand. {reason} is the reason chosen when sending it."
   },
+  "routes.auth.signOut": {
+    "defaultMessage": "Sign Out",
+    "description": "The one button of the /logout page, which signs the user out."
+  },
   "routes.myWork.jobCrumb": {
     "defaultMessage": "Job",
     "description": "Last breadcrumb on the page of one bulk Skip All Reviews job, after Home › Jobs."
+  },
+  "routes.requireRole.body": {
+    "defaultMessage": "Your role doesn't include this page.",
+    "description": "Body of the notice shown in place of a page the user’s role does not include; followed by the link to the home page."
+  },
+  "routes.requireRole.header": {
+    "defaultMessage": "You don't have access to this page",
+    "description": "Header of the notice shown in place of a page the user’s role does not include."
+  },
+  "routes.requireRole.homeLink": {
+    "defaultMessage": "Go to your home page",
+    "description": "Link in the notice shown in place of a page the user’s role does not include; opens the user’s home page."
+  },
+  "routes.reviewQueues.testSetCrumb": {
+    "defaultMessage": "Test set: {name}",
+    "description": "Breadcrumb of a test set’s queue page, after Review Management or Home › Queues. {name} is the test set’s name."
+  },
+  "routes.session.errorBody": {
+    "defaultMessage": "You are signed in, but the app could not obtain AWS credentials for your session. This is usually temporary — retrying or reloading normally resolves it. If it persists, sign out and sign in again.",
+    "description": "Body of the error notice shown when the app could not obtain AWS credentials after a valid sign-in."
+  },
+  "routes.session.errorHeader": {
+    "defaultMessage": "Could not establish your session",
+    "description": "Header of the error notice shown when the app could not obtain AWS credentials after a valid sign-in."
+  },
+  "routes.session.infoIconAriaLabel": {
+    "defaultMessage": "Info",
+    "description": "Screen-reader label of the status icon of the no-role notice."
+  },
+  "routes.session.loading": {
+    "defaultMessage": "Establishing your session…",
+    "description": "Text under the spinner shown after sign-in while the app waits for the AWS credentials of the session."
+  },
+  "routes.session.noRoleBody": {
+    "defaultMessage": "Your sign-in worked, but your account has not been given a role yet, so there is nothing for you to view. Ask an administrator to grant you one — Admin, Author, Reviewer, Annotator or Viewer. If your organization signs you in through its own identity provider, the role comes from your group membership there rather than from this application. Reload this page once it has been granted.",
+    "description": "Body of the notice shown to a signed-in user whose account is in no Cognito group. Admin, Author, Reviewer, Annotator and Viewer are the names of the application roles."
+  },
+  "routes.session.noRoleHeader": {
+    "defaultMessage": "Your account has not been granted access yet",
+    "description": "Header of the notice shown to a signed-in user whose account is in no Cognito group, so no page can be shown."
+  },
+  "routes.session.reloadPage": {
+    "defaultMessage": "Reload the page",
+    "description": "Button of the session error notice and of the no-role notice that reloads the browser page."
+  },
+  "routes.session.retry": {
+    "defaultMessage": "Retry",
+    "description": "Button of the session error notice that requests the credentials again."
+  },
+  "routes.session.signOut": {
+    "defaultMessage": "Sign out",
+    "description": "Button of the no-role notice that signs the user out."
+  },
+  "routes.unauth.emailRequired": {
+    "defaultMessage": "Email is required",
+    "description": "Validation error of the sign-up form when the e-mail field is left empty."
+  },
+  "routes.unauth.federatedSignIn": {
+    "defaultMessage": "Sign in with {provider}",
+    "description": "Button above the sign-in form that signs in through the external identity provider. {provider} is its configured name."
+  },
+  "routes.unauth.header": {
+    "defaultMessage": "Welcome to GenAI Intelligent Document Processing!",
+    "description": "Heading above the sign-in form. \"GenAI Intelligent Document Processing\" is the product name and may stay as it is in the translation."
+  },
+  "routes.unauth.orUsername": {
+    "defaultMessage": "— or sign in with username —",
+    "description": "Separator between the external identity provider button and the username and password form below it."
+  },
+  "routes.unauth.redirecting": {
+    "defaultMessage": "Redirecting to {provider}...",
+    "description": "Text shown instead of the sign-in form while the browser is sent to the external identity provider. {provider} is its configured name."
   },
   "testStudio.addProcessedDocuments.notCompletedBody": {
     "defaultMessage": "Only documents that finished processing can be added to a test set.",
@@ -1406,5 +2042,129 @@
   "testStudio.itemEdit.regroupRereadFailed": {
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
+  },
+  "topNavigation.feedback.ariaLabel": {
+    "defaultMessage": "Feedback and issue reporting",
+    "description": "Screen-reader label of the feedback menu button in the top navigation."
+  },
+  "topNavigation.feedback.reportBug": {
+    "defaultMessage": "Report a bug",
+    "description": "Feedback menu item that opens a pre-filled GitHub bug report in a new tab."
+  },
+  "topNavigation.feedback.requestFeature": {
+    "defaultMessage": "Request a feature",
+    "description": "Feedback menu item that opens a pre-filled GitHub feature request in a new tab."
+  },
+  "topNavigation.feedback.text": {
+    "defaultMessage": "Feedback",
+    "description": "Text and tooltip of the feedback menu button in the top navigation, which lists the GitHub feedback links."
+  },
+  "topNavigation.feedback.viewIssues": {
+    "defaultMessage": "View existing issues",
+    "description": "Feedback menu item that opens the list of GitHub issues of the project in a new tab."
+  },
+  "topNavigation.identity.defaultTitle": {
+    "defaultMessage": "AWS IDP Accelerator Console",
+    "description": "Title in the top navigation bar when the deployment sets no console title of its own. \"AWS IDP Accelerator\" is the product name and may stay as it is in the translation."
+  },
+  "topNavigation.overflowMenuTriggerText": {
+    "defaultMessage": "More",
+    "description": "Text of the button that opens the collapsed utilities when the top navigation is too narrow to show them all."
+  },
+  "topNavigation.role.admin": {
+    "defaultMessage": "Admin",
+    "description": "Role label of a user in the Admin group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.annotator": {
+    "defaultMessage": "Annotator",
+    "description": "Role label of a user in the Annotator group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.author": {
+    "defaultMessage": "Author",
+    "description": "Role label of a user in the Author group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.reviewer": {
+    "defaultMessage": "Reviewer",
+    "description": "Role label of a user in the Reviewer group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.role.viewer": {
+    "defaultMessage": "Viewer",
+    "description": "Role label of a user in the Viewer group, shown next to the name in the user menu of the top navigation."
+  },
+  "topNavigation.signOutModal.body": {
+    "defaultMessage": "Sign out of the application?",
+    "description": "Question asked in the body of the sign-out confirmation dialog."
+  },
+  "topNavigation.signOutModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button of the sign-out confirmation dialog that closes it without signing out."
+  },
+  "topNavigation.signOutModal.closeAriaLabel": {
+    "defaultMessage": "Close modal",
+    "description": "Screen-reader label of the close (X) button of the sign-out confirmation dialog."
+  },
+  "topNavigation.signOutModal.confirm": {
+    "defaultMessage": "Sign Out",
+    "description": "Primary button of the sign-out confirmation dialog, which signs the user out."
+  },
+  "topNavigation.signOutModal.header": {
+    "defaultMessage": "Sign Out",
+    "description": "Title of the sign-out confirmation dialog."
+  },
+  "topNavigation.user.fallback": {
+    "defaultMessage": "user",
+    "description": "Stands in for the name in the user menu of the top navigation when the signed-in user has neither a display name nor a username."
+  },
+  "topNavigation.user.signOut": {
+    "defaultMessage": "Sign out",
+    "description": "The item of the user menu in the top navigation that opens the sign-out confirmation dialog."
+  },
+  "topNavigation.user.withRole": {
+    "defaultMessage": "{user} ({role})",
+    "description": "Text of the user menu button in the top navigation. {user} is the display name or username, {role} the role label (Admin, Author, Reviewer, Viewer or Annotator)."
+  },
+  "welcome.page.description": {
+    "defaultMessage": "Get a working configuration in minutes — or jump straight into the console.",
+    "description": "Subtitle under the heading of the Welcome page."
+  },
+  "welcome.page.dismiss": {
+    "defaultMessage": "Don't show this again",
+    "description": "Link at the bottom of the Welcome page that hides the page on later visits and opens the document list."
+  },
+  "welcome.page.enterConsole": {
+    "defaultMessage": "Enter IDP Console",
+    "description": "Button of the Welcome page that opens the document list. \"IDP\" is the product abbreviation and may stay as it is in the translation."
+  },
+  "welcome.page.goToQueue": {
+    "defaultMessage": "Go to my annotation queue",
+    "description": "Button of the Welcome page for a user who can only annotate; it opens their task queue."
+  },
+  "welcome.page.haveConfigHint": {
+    "defaultMessage": "<b>Already have a config?</b> Go to <link>Configuration > View/Edit Configuration</link> to review or update it.",
+    "description": "Second hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the path to the configuration editor in the side navigation (section > page, with the same names) and opens it."
+  },
+  "welcome.page.helpHeading": {
+    "defaultMessage": "Not sure where to begin?",
+    "description": "Heading above the hints on the Welcome page."
+  },
+  "welcome.page.noConfigHint": {
+    "defaultMessage": "<b>No configuration yet?</b> Use <link>Quick Start</link> to describe your document type (or upload an example) and we'll build a config for you.",
+    "description": "First hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the name of the Quick Start feature (the same as the Quick Start button) and opens it."
+  },
+  "welcome.page.quickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Primary button of the Welcome page that opens the Quick Start chat, which builds a configuration from a description or an example document. The first hint names the same feature in its link."
+  },
+  "welcome.page.takeTour": {
+    "defaultMessage": "Take the tour",
+    "description": "Button of the Welcome page that starts the guided tour of the console."
+  },
+  "welcome.page.testDocumentHint": {
+    "defaultMessage": "<b>Want to test a document?</b> Head to <link>Upload Documents</link> to run one through your active configuration.",
+    "description": "Third hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the name of the Upload Documents page in the side navigation and opens it."
+  },
+  "welcome.page.title": {
+    "defaultMessage": "Welcome to GenAI IDP",
+    "description": "Heading of the Welcome page. \"GenAI IDP\" is the product name and may stay as it is in the translation."
   }
 }

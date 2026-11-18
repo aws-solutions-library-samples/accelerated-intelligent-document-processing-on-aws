@@ -29,6 +29,8 @@ const messages = defineMessages<{ jobCrumb: NoMessageValues }>({
 
 /** The Cognito groups that see Home › Jobs (group names, not display text). */
 const JOBS_ROLES = ['Admin', 'Reviewer'] as const;
+/** The Cognito groups that see Home › Tasks and Home › Queues (group names, not display text). */
+const WORK_ROLES = ['Annotator', 'Reviewer'] as const;
 
 const JobsRoutes = (): React.JSX.Element => {
   const intl = useIntl();
@@ -67,7 +69,7 @@ const MyWorkRoutes = (): React.JSX.Element => (
       <Route
         path="*"
         element={
-          <RequireRole roles={['Annotator', 'Reviewer']}>
+          <RequireRole roles={WORK_ROLES}>
             <Routes>
               <Route
                 path="tasks"

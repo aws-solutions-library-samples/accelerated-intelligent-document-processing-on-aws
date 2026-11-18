@@ -1,14 +1,76 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
-export const appLayoutLabels = {
-  navigation: 'Side navigation',
-  navigationToggle: 'Open side navigation',
-  navigationClose: 'Close side navigation',
-  notifications: 'Notifications',
-  tools: 'Help panel',
-  toolsToggle: 'Open help panel',
-  toolsClose: 'Close help panel',
-} as const;
+import { useMemo } from 'react';
+import type { AppLayoutProps } from '@cloudscape-design/components';
+import { defineMessages, useIntl, type NoMessageValues } from 'react-intl';
+
+/**
+ * The AppLayout aria labels every page layout passes, declared here and not per layout so
+ * the side navigation has one name across the app. Every one of them is set under every
+ * locale: with no label of the app's own, the layout's landmarks would go unnamed in English.
+ */
+const appLayoutMessages = defineMessages<{
+  navigation: NoMessageValues;
+  navigationToggle: NoMessageValues;
+  navigationClose: NoMessageValues;
+  notifications: NoMessageValues;
+  tools: NoMessageValues;
+  toolsToggle: NoMessageValues;
+  toolsClose: NoMessageValues;
+}>({
+  navigation: {
+    id: 'appLayout.ariaLabels.navigation',
+    defaultMessage: 'Side navigation',
+    description: 'Screen-reader name of the side navigation landmark of every page.',
+  },
+  navigationToggle: {
+    id: 'appLayout.ariaLabels.navigationToggle',
+    defaultMessage: 'Open side navigation',
+    description: 'Screen-reader label of the button that opens the side navigation.',
+  },
+  navigationClose: {
+    id: 'appLayout.ariaLabels.navigationClose',
+    defaultMessage: 'Close side navigation',
+    description: 'Screen-reader label of the button that closes the side navigation.',
+  },
+  notifications: {
+    id: 'appLayout.ariaLabels.notifications',
+    defaultMessage: 'Notifications',
+    description: 'Screen-reader name of the region at the top of every page that holds the flash messages.',
+  },
+  tools: {
+    id: 'appLayout.ariaLabels.tools',
+    defaultMessage: 'Help panel',
+    description: 'Screen-reader name of the info panel on the right of a page.',
+  },
+  toolsToggle: {
+    id: 'appLayout.ariaLabels.toolsToggle',
+    defaultMessage: 'Open help panel',
+    description: 'Screen-reader label of the button that opens the info panel.',
+  },
+  toolsClose: {
+    id: 'appLayout.ariaLabels.toolsClose',
+    defaultMessage: 'Close help panel',
+    description: 'Screen-reader label of the button that closes the info panel.',
+  },
+});
+
+/** The AppLayout aria labels in the UI's language: one object per locale, safe in a dependency list. */
+export const useAppLayoutLabels = (): AppLayoutProps.Labels => {
+  const intl = useIntl();
+  return useMemo(
+    () => ({
+      navigation: intl.formatMessage(appLayoutMessages.navigation),
+      navigationToggle: intl.formatMessage(appLayoutMessages.navigationToggle),
+      navigationClose: intl.formatMessage(appLayoutMessages.navigationClose),
+      notifications: intl.formatMessage(appLayoutMessages.notifications),
+      tools: intl.formatMessage(appLayoutMessages.tools),
+      toolsToggle: intl.formatMessage(appLayoutMessages.toolsToggle),
+      toolsClose: intl.formatMessage(appLayoutMessages.toolsClose),
+    }),
+    [intl],
+  );
+};
 
 export const paginationLabels = {
   nextPageLabel: 'Next page',

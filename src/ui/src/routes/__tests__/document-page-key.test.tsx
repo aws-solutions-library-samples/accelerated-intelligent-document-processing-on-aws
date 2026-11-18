@@ -12,6 +12,7 @@ import React from 'react';
 import { render, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getDocumentDetailsFromIds = vi.fn();
@@ -29,6 +30,12 @@ vi.mock('../../components/document-panel', () => ({ default: () => null }));
 import DocumentDetails from '../../components/document-details/DocumentDetails';
 import DocumentDetailsBreadcrumbs from '../../components/document-details/breadcrumbs';
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderAt = (path: string) =>
   render(
     <MemoryRouter initialEntries={[path]}>
@@ -39,6 +46,7 @@ const renderAt = (path: string) =>
         <Route path="/documents/*" element={<DocumentDetails />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 beforeEach(() => {

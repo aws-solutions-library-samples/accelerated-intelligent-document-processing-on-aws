@@ -15,9 +15,16 @@
 import { render, screen } from '@testing-library/react';
 import React from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import Breadcrumbs from '../breadcrumbs';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const crumbsAt = (entry: string): string[] => {
   render(
@@ -28,6 +35,7 @@ const crumbsAt = (entry: string): string[] => {
         <Route path="/documents/*" element={<Breadcrumbs />} />
       </Routes>
     </MemoryRouter>,
+    { wrapper: English },
   );
   const nav = screen.getByRole('navigation', { name: 'Breadcrumbs' });
   // Cloudscape renders the list twice (the second copy is hidden and used to measure

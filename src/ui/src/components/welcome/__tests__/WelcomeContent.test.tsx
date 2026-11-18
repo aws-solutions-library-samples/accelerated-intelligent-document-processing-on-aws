@@ -4,6 +4,7 @@
 import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import { IntlProvider } from 'react-intl';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import WelcomeContent from '../WelcomeContent';
@@ -15,11 +16,18 @@ vi.mock('../../../hooks/use-user-role', () => ({
   default: () => ({ isAnnotatorOnly: false }),
 }));
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderWelcome = () =>
   render(
     <MemoryRouter>
       <WelcomeContent />
     </MemoryRouter>,
+    { wrapper: English },
   );
 
 describe('WelcomeContent', () => {
