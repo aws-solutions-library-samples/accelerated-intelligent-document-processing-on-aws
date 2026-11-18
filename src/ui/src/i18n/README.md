@@ -336,8 +336,9 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    constructor are excluded callees): those messages reach users through `.message` paths that
    the stable-error-code work addresses separately.
 3. **Single lowercase tokens** (`[a-z][a-zA-Z0-9]*`, about 1,300 strings such as `'error'`,
-   `'link'`, `'primary'`) are treated as technical. The one known user-facing miss is the wizard's
-   `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx).
+   `'link'`, `'primary'`) are treated as technical. Some of them are user-facing, such as the
+   wizard's `optional: 'optional'` in [`CreateTestSetWizard.tsx`](../components/test-studio/CreateTestSetWizard.tsx),
+   and the conversion PRs find the others by reading each screen.
    To re-measure: remove that pattern from `WORDS` in `eslint.i18n.config.js`, run
    `npm run i18n:lint`, and count the findings it adds (then restore the pattern: the gate pins
    the configuration's hash).
@@ -347,6 +348,12 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    (`CircuitBreakerPanel.tsx`'s state labels, `TestSets.tsx`'s type badges). To re-measure: remove
    that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against
    the committed run, restore it.
+5. **Words that contain a slash.** The `WORDS` pattern for MIME types and slash paths
+   (`[\w.+-]+/[\w.+/-]+`) also skips user-facing words with a slash: **109 findings in 19 files**
+   when this entry was added (`N/A` 95, `Service/Api` 6, `YYYY/MM/DD` 5, `Class/Type` 2,
+   `Docs/Hour` 1). The conversion PRs convert them with their screens. To re-measure: remove that
+   pattern from `WORDS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, count the findings it
+   adds, then restore it (the gate pins the configuration's hash).
 
 ## Coverage
 

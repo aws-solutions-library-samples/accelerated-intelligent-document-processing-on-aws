@@ -279,6 +279,34 @@
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
   },
+  "documents.configSource.activeProfile": {
+    "defaultMessage": "Active profile",
+    "description": "Why the document got its configuration profile: the active profile applied."
+  },
+  "documents.configSource.documentPin": {
+    "defaultMessage": "Kept from the previous run",
+    "description": "Why the document got its configuration profile: it kept the one of its previous processing run."
+  },
+  "documents.configSource.explicitRequest": {
+    "defaultMessage": "Chosen when reprocessing",
+    "description": "Why the document got its configuration profile: a user chose it when reprocessing."
+  },
+  "documents.configSource.internalProducer": {
+    "defaultMessage": "Pinned by the submitting feature",
+    "description": "Why the document got its configuration profile: the feature that submitted the document pinned it."
+  },
+  "documents.configSource.metadata": {
+    "defaultMessage": "Specified at upload",
+    "description": "Why the document got its configuration profile: the upload named it."
+  },
+  "documents.configSource.prefixMapping": {
+    "defaultMessage": "Assigned by prefix mapping",
+    "description": "Why the document got its configuration profile: a prefix mapping assigned it."
+  },
+  "documents.configSource.rejected": {
+    "defaultMessage": "Refused at ingest",
+    "description": "Why the document has no configuration profile: it was refused at ingest."
+  },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
     "description": "Tooltip of the Add to test set button when no selected document can be added."
@@ -390,6 +418,154 @@
   "documents.list.unknownError": {
     "defaultMessage": "Unknown error",
     "description": "Used as the error of a failed bulk document export when there is no error message."
+  },
+  "documents.malwareScan.admittedUnscanned.detail": {
+    "defaultMessage": "Amazon GuardDuty could not scan this file, and this deployment is configured to process documents it cannot scan, so it was processed without a malware verdict.",
+    "description": "Explanation of a document processed although it could not be scanned."
+  },
+  "documents.malwareScan.admittedUnscanned.detailWithReasons": {
+    "defaultMessage": "Amazon GuardDuty could not scan this file ({reasons}), and this deployment is configured to process documents it cannot scan, so it was processed without a malware verdict.",
+    "description": "Explanation of a document processed although it could not be scanned; {reasons} lists why, in English."
+  },
+  "documents.malwareScan.admittedUnscanned.label": {
+    "defaultMessage": "Admitted unscanned",
+    "description": "Malware-scan verdict of a document processed although it could not be scanned."
+  },
+  "documents.malwareScan.admittedUnscanned.labelWithReasons": {
+    "defaultMessage": "Admitted unscanned: {reasons}",
+    "description": "Malware-scan verdict of a document processed although it could not be scanned; {reasons} lists why, in English."
+  },
+  "documents.malwareScan.clean.detail": {
+    "defaultMessage": "Amazon GuardDuty scanned this file and found no threats.",
+    "description": "Explanation of a clean malware scan."
+  },
+  "documents.malwareScan.clean.label": {
+    "defaultMessage": "Clean",
+    "description": "Malware-scan verdict of a document the scanner found no threat in."
+  },
+  "documents.malwareScan.notScanned.detail": {
+    "defaultMessage": "Amazon GuardDuty could not scan this file, and this deployment is configured not to process documents it cannot scan. The file was not processed. If it is a legitimate document — a password-protected PDF, for example — re-upload an unprotected copy so it can be scanned.",
+    "description": "Explanation of a document refused because it could not be scanned."
+  },
+  "documents.malwareScan.notScanned.detailWithReasons": {
+    "defaultMessage": "Amazon GuardDuty could not scan this file ({reasons}), and this deployment is configured not to process documents it cannot scan. The file was not processed. If it is a legitimate document — a password-protected PDF, for example — re-upload an unprotected copy so it can be scanned.",
+    "description": "Explanation of a document refused because it could not be scanned; {reasons} lists why, in English."
+  },
+  "documents.malwareScan.notScanned.label": {
+    "defaultMessage": "Not scanned",
+    "description": "Malware-scan verdict of a document refused because it could not be scanned."
+  },
+  "documents.malwareScan.notScanned.labelWithReasons": {
+    "defaultMessage": "Not scanned: {reasons}",
+    "description": "Malware-scan verdict of a document refused because it could not be scanned; {reasons} lists why, in English."
+  },
+  "documents.malwareScan.pending.detail": {
+    "defaultMessage": "This document is held at the ingest gate until Amazon GuardDuty reports a malware-scan verdict. No processing has started.",
+    "description": "Explanation of a pending malware scan."
+  },
+  "documents.malwareScan.pending.label": {
+    "defaultMessage": "Scan pending",
+    "description": "Malware-scan verdict of a document waiting for its scan result."
+  },
+  "documents.malwareScan.threat.detail": {
+    "defaultMessage": "Amazon GuardDuty detected a threat in this file, so it was never processed. It remains in the input bucket, tagged with its scan result. Review it, then delete it.",
+    "description": "Explanation of a quarantined document whose threat has no name."
+  },
+  "documents.malwareScan.threat.detailNamed": {
+    "defaultMessage": "Amazon GuardDuty detected {threat} in this file, so it was never processed. It remains in the input bucket, tagged with its scan result. Review it, then delete it.",
+    "description": "Explanation of a quarantined document; {threat} is the threat name the scanner reported."
+  },
+  "documents.malwareScan.threat.label": {
+    "defaultMessage": "Threat found",
+    "description": "Malware-scan verdict of a quarantined document whose threat has no name."
+  },
+  "documents.malwareScan.threat.labelNamed": {
+    "defaultMessage": "Threat found: {threat}",
+    "description": "Malware-scan verdict of a quarantined document; {threat} is the threat name the scanner reported."
+  },
+  "documents.panel.field.completed": {
+    "defaultMessage": "Completed",
+    "description": "Document Details field label for the time processing completed."
+  },
+  "documents.panel.field.confidenceAlerts": {
+    "defaultMessage": "Confidence Alerts",
+    "description": "Document Details field label for the count of fields below the confidence threshold."
+  },
+  "documents.panel.field.configProfile": {
+    "defaultMessage": "Config Profile",
+    "description": "Document Details field label for the configuration profile the document was processed with."
+  },
+  "documents.panel.field.documentId": {
+    "defaultMessage": "Document ID",
+    "description": "Document Details field label for the object key of the document."
+  },
+  "documents.panel.field.duration": {
+    "defaultMessage": "Duration",
+    "description": "Document Details field label for how long processing took."
+  },
+  "documents.panel.field.evaluation": {
+    "defaultMessage": "Evaluation",
+    "description": "Document Details field label for the evaluation status."
+  },
+  "documents.panel.field.malwareScan": {
+    "defaultMessage": "Malware scan",
+    "description": "Document Details field label for the malware-scan verdict."
+  },
+  "documents.panel.field.missingRequiredFields": {
+    "defaultMessage": "Missing Required Fields",
+    "description": "Document Details field label for the count of required fields extraction left empty."
+  },
+  "documents.panel.field.pageCount": {
+    "defaultMessage": "Page Count",
+    "description": "Document Details field label for the number of pages."
+  },
+  "documents.panel.field.reviewCompletedBy": {
+    "defaultMessage": "Review Completed By",
+    "description": "Document Details field label for the reviewer who finished the review."
+  },
+  "documents.panel.field.reviewOwner": {
+    "defaultMessage": "Review Owner",
+    "description": "Document Details field label for the reviewer the review is assigned to."
+  },
+  "documents.panel.field.reviewStatus": {
+    "defaultMessage": "Review Status",
+    "description": "Document Details field label for the human review status."
+  },
+  "documents.panel.field.skipReason": {
+    "defaultMessage": "Skip Reason",
+    "description": "Document Details field label for why all reviews of the document were skipped."
+  },
+  "documents.panel.field.status": {
+    "defaultMessage": "Status",
+    "description": "Document Details field label for the processing status."
+  },
+  "documents.panel.field.submitted": {
+    "defaultMessage": "Submitted",
+    "description": "Document Details field label for the time the document was submitted."
+  },
+  "documents.panel.field.summary": {
+    "defaultMessage": "Summary",
+    "description": "Document Details field label for whether a summary report exists."
+  },
+  "documents.panel.malwareAlert.notScanned": {
+    "defaultMessage": "Document was not malware-scanned",
+    "description": "Heading of the alert on a document refused because the malware scan could not scan it."
+  },
+  "documents.panel.malwareAlert.threat": {
+    "defaultMessage": "Malware detected — document quarantined",
+    "description": "Heading of the alert on a document the malware scan quarantined."
+  },
+  "documents.panel.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Value of a Document Details field with nothing to show, such as no summary or no evaluation."
+  },
+  "documents.panel.summaryAvailable": {
+    "defaultMessage": "Available",
+    "description": "Value of the Summary field when the document has a summary report."
+  },
+  "documents.panel.title": {
+    "defaultMessage": "Document Details",
+    "description": "Heading of the panel that lists the fields of a document on its page."
   },
   "documents.reviewStatus.completed": {
     "defaultMessage": "Review Completed",
@@ -1122,6 +1298,86 @@
   "guidedTour.tutorial.title": {
     "defaultMessage": "Get started with GenAI IDP",
     "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
+  },
+  "helpPanel.documentDetails.actionBar": {
+    "defaultMessage": "The action bar",
+    "description": "Sub-heading above the bullets about the bar of buttons at the top of the document page."
+  },
+  "helpPanel.documentDetails.barButtons": {
+    "defaultMessage": "<b>Refresh</b> the page, <b>Troubleshoot</b> what went wrong, and <b>Edit</b> the document's extracted values.",
+    "description": "Help panel bullet about the action bar; each bold word is a button label on the bar."
+  },
+  "helpPanel.documentDetails.barMoreActions": {
+    "defaultMessage": "<b>More Actions</b>: Edit Page Grouping, Re-extract Sections, Edit Page Text, Reset Page Class, Use As Evaluation Baseline, Skip All Reviews; then the downloads (the document's outputs as a ZIP); then Reprocess, Abort and Delete.",
+    "description": "Help panel bullet about the action bar; the bold text and the action names match the More Actions menu."
+  },
+  "helpPanel.documentDetails.barReports": {
+    "defaultMessage": "<b>Reports</b>: the Summary, Evaluation Report, Rule Validation Summary, Estimated Cost and Processing Flow, each in a dialog.",
+    "description": "Help panel bullet about the action bar; the bold text and the report names match the Reports menu."
+  },
+  "helpPanel.documentDetails.barSwitch": {
+    "defaultMessage": "<b>Details | Source</b> switches between the page's panels and the original file.",
+    "description": "Help panel bullet about the action bar; the bold text names the two-way switch as the bar labels it."
+  },
+  "helpPanel.documentDetails.docsAssessment": {
+    "defaultMessage": "Assessment",
+    "description": "Documentation link in the document page help panel: the page about confidence assessment."
+  },
+  "helpPanel.documentDetails.docsClassification": {
+    "defaultMessage": "Classification",
+    "description": "Documentation link in the document page help panel: the page about document classification."
+  },
+  "helpPanel.documentDetails.docsExtraction": {
+    "defaultMessage": "Extraction",
+    "description": "Documentation link in the document page help panel: the page about field extraction."
+  },
+  "helpPanel.documentDetails.docsHumanReview": {
+    "defaultMessage": "Human Review",
+    "description": "Documentation link in the document page help panel: the page about human review of documents."
+  },
+  "helpPanel.documentDetails.docsWebUi": {
+    "defaultMessage": "Web UI",
+    "description": "Documentation link in the document page help panel: the page about the web interface."
+  },
+  "helpPanel.documentDetails.intro": {
+    "defaultMessage": "Inspect a document's processing results, and act on it from one bar at the top of the page.",
+    "description": "First sentence of the document page help panel."
+  },
+  "helpPanel.documentDetails.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the document page help panel."
+  },
+  "helpPanel.documentDetails.onThePage": {
+    "defaultMessage": "On the page",
+    "description": "Sub-heading above the bullets about the panels of the document page."
+  },
+  "helpPanel.documentDetails.pageColumns": {
+    "defaultMessage": "The ⚙ icon on each table chooses which columns it shows",
+    "description": "Help panel bullet about the column preferences; ⚙ is the settings icon and stays as it is."
+  },
+  "helpPanel.documentDetails.pageFields": {
+    "defaultMessage": "The document's fields and status",
+    "description": "Help panel bullet about the Document Details panel of the page."
+  },
+  "helpPanel.documentDetails.pagePages": {
+    "defaultMessage": "Each page's class, confidence and thumbnail; its ⋮ menu opens the page text",
+    "description": "Help panel bullet about the pages table; ⋮ is the row menu icon and stays as it is."
+  },
+  "helpPanel.documentDetails.pageSections": {
+    "defaultMessage": "Each section's class, pages and status; its ⋮ menu opens or downloads its data",
+    "description": "Help panel bullet about the sections table; ⋮ is the row menu icon and stays as it is."
+  },
+  "helpPanel.documentDetails.pageVersions": {
+    "defaultMessage": "Version History, to view (from each row's ⋮ menu) or compare past processing runs, and Chat with the document",
+    "description": "Help panel bullet about the Version History and Chat panels; ⋮ is the row menu icon and stays as it is."
+  },
+  "helpPanel.documentDetails.title": {
+    "defaultMessage": "Document Details",
+    "description": "Heading of the help panel of a document page."
+  },
+  "helpPanel.documentDetails.unavailableActions": {
+    "defaultMessage": "Actions your role can't perform are not shown. One that doesn't apply now, for example while you view a past version, stays in place, disabled; hover it to see why.",
+    "description": "Paragraph under the action bar bullets: why an action can be missing or disabled."
   },
   "helpPanel.documents.docsCircuitBreaker": {
     "defaultMessage": "Circuit Breaker",
