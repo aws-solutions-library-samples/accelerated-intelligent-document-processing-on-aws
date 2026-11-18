@@ -142,12 +142,35 @@ the UI, has no CloudFront resources, and serves the UI through API Gateway.
 The module source URL is the HTTPS S3 URL of the zip, for example
 `https://s3.us-west-2.amazonaws.com/<bucket>/<prefix>/<version>/terraform/idp-terraform-<version>.zip`.
 Terraform accepts an HTTPS URL ending in `.zip` as a module source, downloads it at
-`terraform init` and extracts it. For the public release, the bucket and prefix per
-Region are the ones in the Launch Stack table of the
-[Deployment Guide](./deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users).
-If `idp-terraform-latest.json` is not present in your Region's bucket, no Terraform
-module has been published there yet; you can build and publish one yourself with
+`terraform init` and extracts it. The public release is published to the same bucket
+and prefix as the Launch Stack templates of the
+[Deployment Guide](./deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users),
+so for a release `<version>` (for example `0.6.15`) the module source in each Region
+is:
+
+| Region | Module source |
+|---|---|
+| us-west-2 | `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+| us-east-1 | `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+| eu-central-1 | `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+| ca-central-1 | `https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+
+The newest module's URL in a Region is the `moduleUrl` of the pointer beside it,
+`.../artifacts/genai-idp/terraform/idp-terraform-latest.json` in the same bucket. If
+that pointer is not present in your Region's bucket, no Terraform module has been
+published there yet; you can build and publish one yourself with
 `idp-cli publish --terraform` (see [IDP CLI](./idp-cli.md#publish)).
+
+You do not need a checkout of this repository to deploy a published module from your
+own root configuration. The module declares no provider blocks of its own, so it uses
+the `aws` and `awscc` providers your root configuration sets up (and the `time`
+provider, which needs no settings), as the example under
+[Your own root configuration](#your-own-root-configuration) shows.
+
+The published zip is the only form the module is distributed in. It has no Terraform
+Registry entry, and it cannot be used as a `git::` source, because the module is
+generated from the templates when a release is published and is not committed to
+the repository. Serving the zip from a private module registry has not been tested.
 
 A plain HTTPS module source is fetched without AWS credentials, so it works only for
 an object that is publicly readable. For a module you published to a private bucket,
@@ -236,7 +259,7 @@ provider "awscc" {
 }
 
 module "idp" {
-  source = "https://s3.us-west-2.amazonaws.com/<bucket>/<prefix>/<version>/terraform/idp-terraform-<version>.zip"
+  source = "https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip"
 
   stack_name  = "idp-tf"
   admin_email = "admin@example.com"
@@ -522,24 +545,41 @@ were left, as the CloudFormation path does.
 If you deployed with your own root configuration, do the same steps yourself. The
 module's `idp-terraform.json` lists the retained resources in `retainedAddresses`,
 relative to the module and without instance keys. After `terraform init` the module is
-normally extracted under `.terraform/modules/idp/`. The following loop removes every
-instance of those resources from state; it does what `idp-cli` does but has not itself
-been run against a live deployment, so check its output before you destroy:
+normally extracted under `.terraform/modules/idp/`. The following commands collect
+every instance of those resources in state into `remove.txt`, then remove them all
+with one `terraform state rm`, as `idp-cli` does; each call reads and writes the
+whole state, so one call per address is slow with a remote backend. They do
+what `idp-cli` does, and select the same addresses as `idp-cli` from a state list
+built from the generated module, but have not themselves been run against a live
+deployment, so read `remove.txt` before you run the last two commands.
 
 ```bash
 jq -r '.retainedAddresses[]' .terraform/modules/idp/idp-terraform.json > retained.txt
-terraform state list | while read -r addr; do
+terraform state list | while IFS= read -r addr; do
   bare=$(printf '%s' "$addr" | sed -E 's/\[[^]]*\]//g')
   if grep -qxF "${bare#module.idp.}" retained.txt; then
-    terraform state rm "$addr"
+    printf '%s\n' "$addr"
   fi
-done
-terraform destroy
+done > remove.txt
+# Read remove.txt, then:
+addrs=(); while IFS= read -r a; do addrs+=("$a"); done < remove.txt
+terraform state rm "${addrs[@]}"
 ```
 
-Empty any bucket that is not retained before `terraform destroy` if it holds objects.
-Retained resources keep running up costs (storage, mostly) until you delete them
-yourself.
+Before `terraform destroy`, empty every bucket it will delete that holds objects, or
+its deletion fails. The module's own custom-resource bridge buckets (`cfn_bridge`)
+are created with `force_destroy` and need nothing. Run after the `terraform state rm`
+above, this lists the module's other buckets still in state, such as the Jobs API
+staging bucket when `EnableJobsApi` is `true`:
+
+```bash
+terraform state list | grep -E '^module\.idp\..*(aws|awscc)_s3_bucket\.' \
+  | grep -v '\.cfn_bridge$'
+```
+
+Buckets of your own in the same root configuration need the same treatment. Then run
+`terraform destroy`. Retained resources keep running up costs (storage, mostly) until
+you delete them yourself.
 
 ## Upgrading
 
