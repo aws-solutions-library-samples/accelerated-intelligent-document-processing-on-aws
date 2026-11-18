@@ -1251,6 +1251,202 @@
     "defaultMessage": "Upload process failed: {error}",
     "description": "Error on the Upload Documents page when the upload as a whole fails. {error} is the error message."
   },
+  "documents.versions.actionsAriaLabel": {
+    "defaultMessage": "Actions for version {runId}",
+    "description": "Screen-reader label of a version row's menu. {runId} is the version's run id."
+  },
+  "documents.versions.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the delete dialog without deleting."
+  },
+  "documents.versions.cannotDeleteCurrent": {
+    "defaultMessage": "Cannot delete the current version",
+    "description": "Why the Delete version menu item is disabled on the newest version."
+  },
+  "documents.versions.changeType.added": {
+    "defaultMessage": "added",
+    "description": "Change type of a field that only the later version has. English shows the value as the API returns it; a translation may spell it out."
+  },
+  "documents.versions.changeType.changed": {
+    "defaultMessage": "changed",
+    "description": "Change type of a field whose value differs between the versions. English shows the value as the API returns it; a translation may spell it out."
+  },
+  "documents.versions.changeType.lengthChanged": {
+    "defaultMessage": "length_changed",
+    "description": "Change type of a list whose length differs between the versions. English shows the value as the API returns it; a translation may spell it out."
+  },
+  "documents.versions.changeType.removed": {
+    "defaultMessage": "removed",
+    "description": "Change type of a field that only the earlier version has. English shows the value as the API returns it; a translation may spell it out."
+  },
+  "documents.versions.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the compare dialog."
+  },
+  "documents.versions.column.actions": {
+    "defaultMessage": "Actions",
+    "description": "Column header of the version table: the row menu."
+  },
+  "documents.versions.column.configProfile": {
+    "defaultMessage": "Config Profile",
+    "description": "Column header of the version table: the configuration profile the version was processed with."
+  },
+  "documents.versions.column.pages": {
+    "defaultMessage": "Pages",
+    "description": "Column header of the version table: the number of pages."
+  },
+  "documents.versions.column.version": {
+    "defaultMessage": "Version",
+    "description": "Column header of the version table: which version the row is."
+  },
+  "documents.versions.compareAction": {
+    "defaultMessage": "compare versions",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when two versions cannot be compared."
+  },
+  "documents.versions.compareSelected": {
+    "defaultMessage": "Compare selected",
+    "description": "Button that compares the two versions selected in the table."
+  },
+  "documents.versions.compareTitle": {
+    "defaultMessage": "Compare versions",
+    "description": "Title of the dialog that compares two versions."
+  },
+  "documents.versions.comparing": {
+    "defaultMessage": "Comparing extraction results...",
+    "description": "Shown in the compare dialog while the two versions are compared."
+  },
+  "documents.versions.currentBadge": {
+    "defaultMessage": "Current",
+    "description": "Badge on the newest version, the one the document page shows."
+  },
+  "documents.versions.delete": {
+    "defaultMessage": "Delete",
+    "description": "Confirm button of the delete dialog: deletes the version."
+  },
+  "documents.versions.deleteConfirm": {
+    "defaultMessage": "Delete version <strong>{when}</strong>?",
+    "description": "Question in the delete dialog. {when} is the version's completion time as stored, or its run id."
+  },
+  "documents.versions.deleteFailed": {
+    "defaultMessage": "Failed to delete version",
+    "description": "Error shown when a version cannot be deleted."
+  },
+  "documents.versions.deleteTitle": {
+    "defaultMessage": "Delete version",
+    "description": "Title of the dialog that deletes a version."
+  },
+  "documents.versions.deleteVersion": {
+    "defaultMessage": "Delete version",
+    "description": "Menu item, for administrators, that deletes the version."
+  },
+  "documents.versions.deleteWarning": {
+    "defaultMessage": "This permanently deletes the pinned output object versions for this run. This cannot be undone.",
+    "description": "Warning in the delete dialog."
+  },
+  "documents.versions.description": {
+    "defaultMessage": "Each successful processing run of this document is retained as a version. Compare any two, or delete old versions to reclaim storage.",
+    "description": "Description under the Version History heading."
+  },
+  "documents.versions.diffColumn.change": {
+    "defaultMessage": "Change",
+    "description": "Column header of the compare table: the kind of change."
+  },
+  "documents.versions.diffColumn.earlier": {
+    "defaultMessage": "Earlier",
+    "description": "Column header of the compare table: the earlier version's value."
+  },
+  "documents.versions.diffColumn.field": {
+    "defaultMessage": "Field",
+    "description": "Column header of the compare table: the field that changed."
+  },
+  "documents.versions.diffColumn.later": {
+    "defaultMessage": "Later",
+    "description": "Column header of the compare table: the later version's value."
+  },
+  "documents.versions.diffStatus.changed": {
+    "defaultMessage": "Changed",
+    "description": "Status of a compared section whose extraction results differ between the two versions."
+  },
+  "documents.versions.diffStatus.identical": {
+    "defaultMessage": "Identical",
+    "description": "Status of a compared section whose extraction results are the same in both versions."
+  },
+  "documents.versions.diffStatus.onlyInA": {
+    "defaultMessage": "Only in earlier version",
+    "description": "Status of a compared section that only the earlier version has."
+  },
+  "documents.versions.diffStatus.onlyInB": {
+    "defaultMessage": "Only in later version",
+    "description": "Status of a compared section that only the later version has."
+  },
+  "documents.versions.earlierProfile": {
+    "defaultMessage": "Earlier ({config})",
+    "description": "Label of the earlier version in the compare dialog. {config} is its configuration profile, or the N/A text."
+  },
+  "documents.versions.empty.body": {
+    "defaultMessage": "A version is recorded each time this document completes processing.",
+    "description": "Text of the version table when the document has no version."
+  },
+  "documents.versions.empty.title": {
+    "defaultMessage": "No versions yet",
+    "description": "Heading of the version table when the document has no version."
+  },
+  "documents.versions.identical": {
+    "defaultMessage": "The extraction results are identical across these two versions.",
+    "description": "Shown in the compare dialog when the two versions have the same extraction results."
+  },
+  "documents.versions.laterProfile": {
+    "defaultMessage": "Later ({config})",
+    "description": "Label of the later version in the compare dialog. {config} is its configuration profile, or the N/A text."
+  },
+  "documents.versions.loadFailed": {
+    "defaultMessage": "Failed to load version history",
+    "description": "Error shown when the version list cannot be loaded."
+  },
+  "documents.versions.loading": {
+    "defaultMessage": "Loading version history...",
+    "description": "Shown in the version table while the version list loads."
+  },
+  "documents.versions.noFieldChanges": {
+    "defaultMessage": "No field-level changes.",
+    "description": "Shown in the compare dialog for a section with no changed field."
+  },
+  "documents.versions.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Shown when a version has no configuration profile recorded."
+  },
+  "documents.versions.refresh": {
+    "defaultMessage": "Refresh",
+    "description": "Button that reloads the version list."
+  },
+  "documents.versions.returnToCurrent": {
+    "defaultMessage": "Return to current version",
+    "description": "Button that returns the document page to the current version."
+  },
+  "documents.versions.shownReason": {
+    "defaultMessage": "This version is shown",
+    "description": "Why the View menu item is disabled: the page shows this version."
+  },
+  "documents.versions.title": {
+    "defaultMessage": "Version History",
+    "description": "Heading of the Version History panel on the document page."
+  },
+  "documents.versions.view": {
+    "defaultMessage": "View",
+    "description": "Menu item that shows the version on the document page."
+  },
+  "documents.versions.viewAction": {
+    "defaultMessage": "load this version",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when a version cannot be loaded for viewing."
+  },
+  "documents.versions.viewing": {
+    "defaultMessage": "Viewing",
+    "description": "Disabled menu item on the version the document page shows."
+  },
+  "documents.versions.viewingPrevious": {
+    "defaultMessage": "Viewing a previous version (read-only). Extraction results and page text shown below reflect this version's output.",
+    "description": "Notice shown while the document page shows a previous version."
+  },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
     "description": "Part of a Review Activity note: the bulk job that made the review event. {jobId} is the job id."

@@ -16,6 +16,7 @@ import {
   StatusIndicator,
   Table,
 } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { listDocumentVersions, getDocumentVersion, compareDocumentVersions, deleteDocumentVersion } from '../../graphql/generated';
@@ -89,22 +90,358 @@ export interface DocumentVersionDetail {
   Metering?: string | null;
 }
 
+const messages = defineMessages<{
+  title: NoMessageValues;
+  description: NoMessageValues;
+  refresh: NoMessageValues;
+  compareSelected: NoMessageValues;
+  loadFailed: NoMessageValues;
+  deleteFailed: NoMessageValues;
+  compareAction: NoMessageValues;
+  viewAction: NoMessageValues;
+  returnToCurrent: NoMessageValues;
+  viewingPrevious: NoMessageValues;
+  loading: NoMessageValues;
+  emptyTitle: NoMessageValues;
+  emptyBody: NoMessageValues;
+  columnVersion: NoMessageValues;
+  columnConfigProfile: NoMessageValues;
+  columnPages: NoMessageValues;
+  columnActions: NoMessageValues;
+  currentBadge: NoMessageValues;
+  notApplicable: NoMessageValues;
+  actionsAriaLabel: { readonly runId: string };
+  viewing: NoMessageValues;
+  view: NoMessageValues;
+  shownReason: NoMessageValues;
+  deleteVersion: NoMessageValues;
+  cannotDeleteCurrent: NoMessageValues;
+  compareTitle: NoMessageValues;
+  close: NoMessageValues;
+  comparing: NoMessageValues;
+  earlierProfile: { readonly config: string };
+  laterProfile: { readonly config: string };
+  identical: NoMessageValues;
+  noFieldChanges: NoMessageValues;
+  diffColumnField: NoMessageValues;
+  diffColumnChange: NoMessageValues;
+  diffColumnEarlier: NoMessageValues;
+  diffColumnLater: NoMessageValues;
+  deleteTitle: NoMessageValues;
+  cancel: NoMessageValues;
+  delete: NoMessageValues;
+  deleteWarning: NoMessageValues;
+  deleteConfirm: { readonly when: string | undefined; readonly strong: MessageTag };
+}>({
+  title: {
+    id: 'documents.versions.title',
+    defaultMessage: 'Version History',
+    description: 'Heading of the Version History panel on the document page.',
+  },
+  description: {
+    id: 'documents.versions.description',
+    defaultMessage:
+      'Each successful processing run of this document is retained as a version. Compare any two, or delete old versions to reclaim storage.',
+    description: 'Description under the Version History heading.',
+  },
+  refresh: {
+    id: 'documents.versions.refresh',
+    defaultMessage: 'Refresh',
+    description: 'Button that reloads the version list.',
+  },
+  compareSelected: {
+    id: 'documents.versions.compareSelected',
+    defaultMessage: 'Compare selected',
+    description: 'Button that compares the two versions selected in the table.',
+  },
+  loadFailed: {
+    id: 'documents.versions.loadFailed',
+    defaultMessage: 'Failed to load version history',
+    description: 'Error shown when the version list cannot be loaded.',
+  },
+  deleteFailed: {
+    id: 'documents.versions.deleteFailed',
+    defaultMessage: 'Failed to delete version',
+    description: 'Error shown when a version cannot be deleted.',
+  },
+  compareAction: {
+    id: 'documents.versions.compareAction',
+    defaultMessage: 'compare versions',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when two versions cannot be compared.',
+  },
+  viewAction: {
+    id: 'documents.versions.viewAction',
+    defaultMessage: 'load this version',
+    description:
+      'Action phrase completing an API error sentence ("Failed to …: <error>" / "You do not have permission to …") when a version cannot be loaded for viewing.',
+  },
+  returnToCurrent: {
+    id: 'documents.versions.returnToCurrent',
+    defaultMessage: 'Return to current version',
+    description: 'Button that returns the document page to the current version.',
+  },
+  viewingPrevious: {
+    id: 'documents.versions.viewingPrevious',
+    defaultMessage: "Viewing a previous version (read-only). Extraction results and page text shown below reflect this version's output.",
+    description: 'Notice shown while the document page shows a previous version.',
+  },
+  loading: {
+    id: 'documents.versions.loading',
+    defaultMessage: 'Loading version history...',
+    description: 'Shown in the version table while the version list loads.',
+  },
+  emptyTitle: {
+    id: 'documents.versions.empty.title',
+    defaultMessage: 'No versions yet',
+    description: 'Heading of the version table when the document has no version.',
+  },
+  emptyBody: {
+    id: 'documents.versions.empty.body',
+    defaultMessage: 'A version is recorded each time this document completes processing.',
+    description: 'Text of the version table when the document has no version.',
+  },
+  columnVersion: {
+    id: 'documents.versions.column.version',
+    defaultMessage: 'Version',
+    description: 'Column header of the version table: which version the row is.',
+  },
+  columnConfigProfile: {
+    id: 'documents.versions.column.configProfile',
+    defaultMessage: 'Config Profile',
+    description: 'Column header of the version table: the configuration profile the version was processed with.',
+  },
+  columnPages: {
+    id: 'documents.versions.column.pages',
+    defaultMessage: 'Pages',
+    description: 'Column header of the version table: the number of pages.',
+  },
+  columnActions: {
+    id: 'documents.versions.column.actions',
+    defaultMessage: 'Actions',
+    description: 'Column header of the version table: the row menu.',
+  },
+  currentBadge: {
+    id: 'documents.versions.currentBadge',
+    defaultMessage: 'Current',
+    description: 'Badge on the newest version, the one the document page shows.',
+  },
+  notApplicable: {
+    id: 'documents.versions.notApplicable',
+    defaultMessage: 'N/A',
+    description: 'Shown when a version has no configuration profile recorded.',
+  },
+  actionsAriaLabel: {
+    id: 'documents.versions.actionsAriaLabel',
+    defaultMessage: 'Actions for version {runId}',
+    description: "Screen-reader label of a version row's menu. {runId} is the version's run id.",
+  },
+  viewing: {
+    id: 'documents.versions.viewing',
+    defaultMessage: 'Viewing',
+    description: 'Disabled menu item on the version the document page shows.',
+  },
+  view: {
+    id: 'documents.versions.view',
+    defaultMessage: 'View',
+    description: 'Menu item that shows the version on the document page.',
+  },
+  shownReason: {
+    id: 'documents.versions.shownReason',
+    defaultMessage: 'This version is shown',
+    description: 'Why the View menu item is disabled: the page shows this version.',
+  },
+  deleteVersion: {
+    id: 'documents.versions.deleteVersion',
+    defaultMessage: 'Delete version',
+    description: 'Menu item, for administrators, that deletes the version.',
+  },
+  cannotDeleteCurrent: {
+    id: 'documents.versions.cannotDeleteCurrent',
+    defaultMessage: 'Cannot delete the current version',
+    description: 'Why the Delete version menu item is disabled on the newest version.',
+  },
+  compareTitle: {
+    id: 'documents.versions.compareTitle',
+    defaultMessage: 'Compare versions',
+    description: 'Title of the dialog that compares two versions.',
+  },
+  close: {
+    id: 'documents.versions.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the compare dialog.',
+  },
+  comparing: {
+    id: 'documents.versions.comparing',
+    defaultMessage: 'Comparing extraction results...',
+    description: 'Shown in the compare dialog while the two versions are compared.',
+  },
+  earlierProfile: {
+    id: 'documents.versions.earlierProfile',
+    defaultMessage: 'Earlier ({config})',
+    description: 'Label of the earlier version in the compare dialog. {config} is its configuration profile, or the N/A text.',
+  },
+  laterProfile: {
+    id: 'documents.versions.laterProfile',
+    defaultMessage: 'Later ({config})',
+    description: 'Label of the later version in the compare dialog. {config} is its configuration profile, or the N/A text.',
+  },
+  identical: {
+    id: 'documents.versions.identical',
+    defaultMessage: 'The extraction results are identical across these two versions.',
+    description: 'Shown in the compare dialog when the two versions have the same extraction results.',
+  },
+  noFieldChanges: {
+    id: 'documents.versions.noFieldChanges',
+    defaultMessage: 'No field-level changes.',
+    description: 'Shown in the compare dialog for a section with no changed field.',
+  },
+  diffColumnField: {
+    id: 'documents.versions.diffColumn.field',
+    defaultMessage: 'Field',
+    description: 'Column header of the compare table: the field that changed.',
+  },
+  diffColumnChange: {
+    id: 'documents.versions.diffColumn.change',
+    defaultMessage: 'Change',
+    description: 'Column header of the compare table: the kind of change.',
+  },
+  diffColumnEarlier: {
+    id: 'documents.versions.diffColumn.earlier',
+    defaultMessage: 'Earlier',
+    description: "Column header of the compare table: the earlier version's value.",
+  },
+  diffColumnLater: {
+    id: 'documents.versions.diffColumn.later',
+    defaultMessage: 'Later',
+    description: "Column header of the compare table: the later version's value.",
+  },
+  deleteTitle: {
+    id: 'documents.versions.deleteTitle',
+    defaultMessage: 'Delete version',
+    description: 'Title of the dialog that deletes a version.',
+  },
+  cancel: {
+    id: 'documents.versions.cancel',
+    defaultMessage: 'Cancel',
+    description: 'Button that closes the delete dialog without deleting.',
+  },
+  delete: {
+    id: 'documents.versions.delete',
+    defaultMessage: 'Delete',
+    description: 'Confirm button of the delete dialog: deletes the version.',
+  },
+  deleteWarning: {
+    id: 'documents.versions.deleteWarning',
+    defaultMessage: 'This permanently deletes the pinned output object versions for this run. This cannot be undone.',
+    description: 'Warning in the delete dialog.',
+  },
+  deleteConfirm: {
+    id: 'documents.versions.deleteConfirm',
+    defaultMessage: 'Delete version <strong>{when}</strong>?',
+    description: "Question in the delete dialog. {when} is the version's completion time as stored, or its run id.",
+  },
+});
+
+/** The section statuses the versions API returns for a compared section (document_versions_resolver). */
+type SectionStatusValue = 'changed' | 'only_in_a' | 'only_in_b' | 'identical';
+
+/** How each compared section's status reads, keyed by the value the API returns. */
+const sectionStatusMessages = defineMessages<Record<SectionStatusValue, NoMessageValues>>({
+  changed: {
+    id: 'documents.versions.diffStatus.changed',
+    defaultMessage: 'Changed',
+    description: 'Status of a compared section whose extraction results differ between the two versions.',
+  },
+  only_in_a: {
+    id: 'documents.versions.diffStatus.onlyInA',
+    defaultMessage: 'Only in earlier version',
+    description: 'Status of a compared section that only the earlier version has.',
+  },
+  only_in_b: {
+    id: 'documents.versions.diffStatus.onlyInB',
+    defaultMessage: 'Only in later version',
+    description: 'Status of a compared section that only the later version has.',
+  },
+  identical: {
+    id: 'documents.versions.diffStatus.identical',
+    defaultMessage: 'Identical',
+    description: 'Status of a compared section whose extraction results are the same in both versions.',
+  },
+});
+
+/** The change types the versions API returns for a compared field (document_versions_resolver). */
+type ChangeTypeValue = 'added' | 'removed' | 'length_changed' | 'changed';
+
+/**
+ * How each change type reads in the compare table, keyed by the value the API returns. The
+ * English IS that value, so the Change column reads as before; a translation may spell it out.
+ * A value missing here is shown as it is.
+ */
+const changeTypeMessages = defineMessages<Record<ChangeTypeValue, NoMessageValues>>({
+  added: {
+    id: 'documents.versions.changeType.added',
+    defaultMessage: 'added',
+    description:
+      'Change type of a field that only the later version has. English shows the value as the API returns it; a translation may spell it out.',
+  },
+  removed: {
+    id: 'documents.versions.changeType.removed',
+    defaultMessage: 'removed',
+    description:
+      'Change type of a field that only the earlier version has. English shows the value as the API returns it; a translation may spell it out.',
+  },
+  length_changed: {
+    id: 'documents.versions.changeType.lengthChanged',
+    defaultMessage: 'length_changed',
+    description:
+      'Change type of a list whose length differs between the versions. English shows the value as the API returns it; a translation may spell it out.',
+  },
+  changed: {
+    id: 'documents.versions.changeType.changed',
+    defaultMessage: 'changed',
+    description:
+      'Change type of a field whose value differs between the versions. English shows the value as the API returns it; a translation may spell it out.',
+  },
+});
+
+const isChangeTypeValue = (value: string): value is ChangeTypeValue => Object.hasOwn(changeTypeMessages, value);
+
+const strong = (chunks: React.ReactNode[]): React.JSX.Element => <strong>{chunks}</strong>;
+
 const formatValue = (v: unknown): string => {
   if (v === null || v === undefined) return '∅';
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
 };
 
+// A status missing from the switch reads as Identical, as it always has.
 const statusIndicator = (status: string): React.JSX.Element => {
   switch (status) {
     case 'changed':
-      return <StatusIndicator type="warning">Changed</StatusIndicator>;
+      return (
+        <StatusIndicator type="warning">
+          <FormattedMessage {...sectionStatusMessages.changed} />
+        </StatusIndicator>
+      );
     case 'only_in_a':
-      return <StatusIndicator type="info">Only in earlier version</StatusIndicator>;
+      return (
+        <StatusIndicator type="info">
+          <FormattedMessage {...sectionStatusMessages.only_in_a} />
+        </StatusIndicator>
+      );
     case 'only_in_b':
-      return <StatusIndicator type="info">Only in later version</StatusIndicator>;
+      return (
+        <StatusIndicator type="info">
+          <FormattedMessage {...sectionStatusMessages.only_in_b} />
+        </StatusIndicator>
+      );
     default:
-      return <StatusIndicator type="success">Identical</StatusIndicator>;
+      return (
+        <StatusIndicator type="success">
+          <FormattedMessage {...sectionStatusMessages.identical} />
+        </StatusIndicator>
+      );
   }
 };
 
@@ -114,6 +451,7 @@ const DocumentVersionsPanel = ({
   onViewVersion,
   completionTime = null,
 }: DocumentVersionsPanelProps): React.JSX.Element => {
+  const intl = useIntl();
   const { isAdmin } = useUserRole();
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [loading, setLoading] = useState(false);
@@ -138,11 +476,11 @@ const DocumentVersionsPanel = ({
       setVersions((result.data.listDocumentVersions ?? []) as DocumentVersion[]);
     } catch (err) {
       logger.error('Error loading document versions', err);
-      setError('Failed to load version history');
+      setError(intl.formatMessage(messages.loadFailed));
     } finally {
       setLoading(false);
     }
-  }, [objectKey]);
+  }, [objectKey, intl]);
 
   useEffect(() => {
     loadVersions();
@@ -165,7 +503,7 @@ const DocumentVersionsPanel = ({
       setCompareResult(typeof raw === 'string' ? JSON.parse(raw) : raw);
     } catch (err) {
       logger.error('Error comparing versions', err);
-      setError(describeApiError(err, 'compare versions'));
+      setError(describeApiError(err, intl.formatMessage(messages.compareAction)));
       setCompareModalVisible(false);
     } finally {
       setIsComparing(false);
@@ -188,7 +526,7 @@ const DocumentVersionsPanel = ({
       await loadVersions();
     } catch (err) {
       logger.error('Error deleting version', err);
-      setError('Failed to delete version');
+      setError(intl.formatMessage(messages.deleteFailed));
     } finally {
       setIsDeleting(false);
     }
@@ -217,7 +555,7 @@ const DocumentVersionsPanel = ({
       onViewVersion(version.RunId, detail);
     } catch (err) {
       logger.error('Error loading version for viewing', err);
-      setError(describeApiError(err, 'load this version'));
+      setError(describeApiError(err, intl.formatMessage(messages.viewAction)));
     } finally {
       setLoadingVersionId(null);
     }
@@ -229,19 +567,19 @@ const DocumentVersionsPanel = ({
         <Header
           variant="h2"
           counter={versions.length ? `(${versions.length})` : undefined}
-          description="Each successful processing run of this document is retained as a version. Compare any two, or delete old versions to reclaim storage."
+          description={intl.formatMessage(messages.description)}
           actions={
             <SpaceBetween direction="horizontal" size="xs">
               <Button iconName="refresh" onClick={loadVersions} loading={loading}>
-                Refresh
+                <FormattedMessage {...messages.refresh} />
               </Button>
               <Button variant="primary" disabled={selectedForCompare.length !== 2} onClick={handleCompare}>
-                Compare selected
+                <FormattedMessage {...messages.compareSelected} />
               </Button>
             </SpaceBetween>
           }
         >
-          Version History
+          <FormattedMessage {...messages.title} />
         </Header>
       }
     >
@@ -252,14 +590,21 @@ const DocumentVersionsPanel = ({
           </Alert>
         )}
         {viewingRunId && (
-          <Alert type="info" action={<Button onClick={() => onViewVersion?.(null, null)}>Return to current version</Button>}>
-            Viewing a previous version (read-only). Extraction results and page text shown below reflect this version&apos;s output.
+          <Alert
+            type="info"
+            action={
+              <Button onClick={() => onViewVersion?.(null, null)}>
+                <FormattedMessage {...messages.returnToCurrent} />
+              </Button>
+            }
+          >
+            <FormattedMessage {...messages.viewingPrevious} />
           </Alert>
         )}
         <Table
           variant="embedded"
           loading={loading}
-          loadingText="Loading version history..."
+          loadingText={intl.formatMessage(messages.loading)}
           selectionType="multi"
           isItemDisabled={() => false}
           selectedItems={selectedForCompare}
@@ -271,36 +616,42 @@ const DocumentVersionsPanel = ({
           trackBy="RunId"
           empty={
             <Box textAlign="center" color="inherit">
-              <b>No versions yet</b>
+              <b>
+                <FormattedMessage {...messages.emptyTitle} />
+              </b>
               <Box variant="p" color="inherit">
-                A version is recorded each time this document completes processing.
+                <FormattedMessage {...messages.emptyBody} />
               </Box>
             </Box>
           }
           columnDefinitions={[
             {
               id: 'version',
-              header: 'Version',
+              header: intl.formatMessage(messages.columnVersion),
               cell: (item: DocumentVersion) => (
                 <SpaceBetween direction="horizontal" size="xs">
                   <span>{item.CompletionTime || item.RunId}</span>
-                  {item.RunId === currentRunId && <Badge color="green">Current</Badge>}
+                  {item.RunId === currentRunId && (
+                    <Badge color="green">
+                      <FormattedMessage {...messages.currentBadge} />
+                    </Badge>
+                  )}
                 </SpaceBetween>
               ),
             },
             {
               id: 'configVersion',
-              header: 'Config Profile',
-              cell: (item: DocumentVersion) => item.ConfigVersion || 'N/A',
+              header: intl.formatMessage(messages.columnConfigProfile),
+              cell: (item: DocumentVersion) => item.ConfigVersion || intl.formatMessage(messages.notApplicable),
             },
             {
               id: 'pageCount',
-              header: 'Pages',
+              header: intl.formatMessage(messages.columnPages),
               cell: (item: DocumentVersion) => item.PageCount ?? '-',
             },
             {
               id: 'actions',
-              header: 'Actions',
+              header: intl.formatMessage(messages.columnActions),
               // One ⋮ menu per row: View (or Viewing, on the version shown) and, for an
               // Admin, Delete version.
               width: 100,
@@ -313,21 +664,21 @@ const DocumentVersionsPanel = ({
                     // table row/container overflow.
                     expandToViewport
                     loading={loadingVersionId === item.RunId}
-                    ariaLabel={`Actions for version ${item.RunId}`}
+                    ariaLabel={intl.formatMessage(messages.actionsAriaLabel, { runId: item.RunId })}
                     items={[
                       {
                         id: 'view',
-                        text: isViewing ? 'Viewing' : 'View',
+                        text: intl.formatMessage(isViewing ? messages.viewing : messages.view),
                         disabled: isViewing || !onViewVersion,
-                        disabledReason: isViewing ? 'This version is shown' : undefined,
+                        disabledReason: isViewing ? intl.formatMessage(messages.shownReason) : undefined,
                       },
                       ...(isAdmin
                         ? [
                             {
                               id: 'delete',
-                              text: 'Delete version',
+                              text: intl.formatMessage(messages.deleteVersion),
                               disabled: item.RunId === currentRunId,
-                              disabledReason: 'Cannot delete the current version',
+                              disabledReason: intl.formatMessage(messages.cannotDeleteCurrent),
                             },
                           ]
                         : []),
@@ -350,32 +701,48 @@ const DocumentVersionsPanel = ({
         visible={compareModalVisible}
         onDismiss={() => setCompareModalVisible(false)}
         size="large"
-        header="Compare versions"
+        header={intl.formatMessage(messages.compareTitle)}
         footer={
           <Box float="right">
             <Button variant="primary" onClick={() => setCompareModalVisible(false)}>
-              Close
+              <FormattedMessage {...messages.close} />
             </Button>
           </Box>
         }
       >
-        {isComparing && <StatusIndicator type="loading">Comparing extraction results...</StatusIndicator>}
+        {isComparing && (
+          <StatusIndicator type="loading">
+            <FormattedMessage {...messages.comparing} />
+          </StatusIndicator>
+        )}
         {!isComparing && compareResult && (
           <SpaceBetween size="m">
             <Box>
               <SpaceBetween direction="horizontal" size="l">
                 <div>
-                  <Box color="text-label">Earlier ({compareResult.configVersionA || 'N/A'})</Box>
+                  <Box color="text-label">
+                    <FormattedMessage
+                      {...messages.earlierProfile}
+                      values={{ config: compareResult.configVersionA || intl.formatMessage(messages.notApplicable) }}
+                    />
+                  </Box>
                   <div>{compareResult.completionTimeA}</div>
                 </div>
                 <div>
-                  <Box color="text-label">Later ({compareResult.configVersionB || 'N/A'})</Box>
+                  <Box color="text-label">
+                    <FormattedMessage
+                      {...messages.laterProfile}
+                      values={{ config: compareResult.configVersionB || intl.formatMessage(messages.notApplicable) }}
+                    />
+                  </Box>
                   <div>{compareResult.completionTimeB}</div>
                 </div>
               </SpaceBetween>
             </Box>
             {compareResult.identical ? (
-              <Alert type="success">The extraction results are identical across these two versions.</Alert>
+              <Alert type="success">
+                <FormattedMessage {...messages.identical} />
+              </Alert>
             ) : (
               compareResult.sections.map((section) => (
                 <ExpandableSection
@@ -385,15 +752,22 @@ const DocumentVersionsPanel = ({
                   defaultExpanded={section.status === 'changed'}
                 >
                   {section.changes.length === 0 ? (
-                    <Box color="text-status-inactive">No field-level changes.</Box>
+                    <Box color="text-status-inactive">
+                      <FormattedMessage {...messages.noFieldChanges} />
+                    </Box>
                   ) : (
                     <Table
                       variant="embedded"
                       columnDefinitions={[
-                        { id: 'path', header: 'Field', cell: (c: VersionChange) => c.path },
-                        { id: 'type', header: 'Change', cell: (c: VersionChange) => c.type },
-                        { id: 'a', header: 'Earlier', cell: (c: VersionChange) => formatValue(c.a) },
-                        { id: 'b', header: 'Later', cell: (c: VersionChange) => formatValue(c.b) },
+                        { id: 'path', header: intl.formatMessage(messages.diffColumnField), cell: (c: VersionChange) => c.path },
+                        {
+                          id: 'type',
+                          header: intl.formatMessage(messages.diffColumnChange),
+                          cell: (c: VersionChange) =>
+                            isChangeTypeValue(c.type) ? <FormattedMessage {...changeTypeMessages[c.type]} /> : c.type,
+                        },
+                        { id: 'a', header: intl.formatMessage(messages.diffColumnEarlier), cell: (c: VersionChange) => formatValue(c.a) },
+                        { id: 'b', header: intl.formatMessage(messages.diffColumnLater), cell: (c: VersionChange) => formatValue(c.b) },
                       ]}
                       items={section.changes}
                     />
@@ -409,24 +783,26 @@ const DocumentVersionsPanel = ({
       <Modal
         visible={deleteTarget !== null}
         onDismiss={() => setDeleteTarget(null)}
-        header="Delete version"
+        header={intl.formatMessage(messages.deleteTitle)}
         footer={
           <Box float="right">
             <SpaceBetween direction="horizontal" size="xs">
               <Button variant="link" onClick={() => setDeleteTarget(null)} disabled={isDeleting}>
-                Cancel
+                <FormattedMessage {...messages.cancel} />
               </Button>
               <Button variant="primary" onClick={handleDelete} loading={isDeleting}>
-                Delete
+                <FormattedMessage {...messages.delete} />
               </Button>
             </SpaceBetween>
           </Box>
         }
       >
         <SpaceBetween size="s">
-          <Alert type="warning">This permanently deletes the pinned output object versions for this run. This cannot be undone.</Alert>
+          <Alert type="warning">
+            <FormattedMessage {...messages.deleteWarning} />
+          </Alert>
           <p>
-            Delete version <strong>{deleteTarget?.CompletionTime || deleteTarget?.RunId}</strong>?
+            <FormattedMessage {...messages.deleteConfirm} values={{ when: deleteTarget?.CompletionTime || deleteTarget?.RunId, strong }} />
           </p>
         </SpaceBetween>
       </Modal>
