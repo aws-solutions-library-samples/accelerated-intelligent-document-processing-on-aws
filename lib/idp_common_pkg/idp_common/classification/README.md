@@ -136,6 +136,23 @@ is the leading overlap, and the pages after it continue that window's document. 
 fold carries no `candidates`, so a merged segment built entirely from one reported
 segment gets that segment's list back, and one assembled from several gets none.
 
+**No page the model was shown is dropped (#2037).** Nothing obliges a packet
+call's ranges to cover every page it was shown, and the commonest omission is the
+last page. After the merge, `_place_pages_no_segment_holds` joins each such page to
+the segment of the page before it, or, for a page before every covered page, to
+the segment after it; a run of several missing pages goes the same way as a whole.
+This covers the single-window return as well as the fold, and the splitting call at
+packet granularity as well as the combined call, since both go through
+`_packet_segments`. The joined pages are listed in the segment's `filled_page_ids`,
+and once sections exist `_record_filled_page_issues` records a
+`classification_page_assigned_to_neighbour` warning on each section that received
+one, naming the pages. A page carries its segment's class and confidence like any
+other page of it — the same reading `_single_section_from_segments` gives a page
+with no verdict of its own. A page whose every window **failed** is not placed: no
+call decided anything about it, and the failure is already in `document.errors`.
+Re-asking the model about the missing pages is the alternative; it was not chosen
+because it costs another call per occurrence and can return the same omission.
+
 A window the model refuses as too long (`is_input_token_overflow`), or as carrying
 too many images (`is_image_count_rejection`: the per-request image cap, and the
 tighter dimension cap Bedrock applies only to many-image requests; the Claude
@@ -186,6 +203,8 @@ class Segment:
     page_ids: List[str]
     doc_class: Optional[str] = None   # None until section classification fills it
     confidence: Optional[float] = None
+    candidates: List[Dict[str, Any]] = field(default_factory=list)
+    filled_page_ids: List[str] = field(default_factory=list)  # placed by the service, not the model
 ```
 
 `_sections_from_segments(document, segments, page_results=None)` is the only
@@ -848,9 +867,9 @@ a `ProcessingIssue` on the section holding that page.
 `packet_classify_document` does not call it and records none of these: it decides
 per *segment* rather than per page and never builds the `List[PageClassification]`
 this takes, so covering it is real work rather than an extra call. A page that
-falls inside no segment's range is appended to no section either, producing
-neither data nor a record; the range is now *logged* when it covers no page of
-the document, but the per-page issue is still follow-up work.
+falls inside no segment's range is not lost: it joins a neighbouring segment and
+its section records `classification_page_assigned_to_neighbour` (see
+[Windowing and merging](#windowing-and-merging)).
 
 **Why it exists.** Nothing in this service produced a `ProcessingIssue` before, and
 neither of the two places the reason was written reaches a user:

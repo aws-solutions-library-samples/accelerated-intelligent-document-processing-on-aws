@@ -5055,19 +5055,9 @@ class ClassificationService:
                     )
                     opens_document = False
 
-        uncovered = [pid for pid in sorted_page_ids if pid not in verdicts]
-        if uncovered:
-            # Not fatal: the pages that were classified still form sections, and
-            # a page with no segment simply gets none. Worth a line, because a
-            # model repeatedly skipping the tail of a window is a prompt problem
-            # rather than a data problem.
-            logger.warning(
-                "%d page(s) were covered by no window's segments and will not "
-                "appear in any section: %s",
-                len(uncovered),
-                uncovered[:20],
-            )
-
+        # A page no segment covers is left out here and placed afterwards by
+        # _place_pages_no_segment_holds, which also covers the single-window
+        # return above — the case that never reached this point at all.
         merged = self._fold_page_verdicts_to_segments(
             [verdicts[pid] for pid in sorted_page_ids if pid in verdicts]
         )
@@ -5379,6 +5369,11 @@ class ClassificationService:
         # model that refuses everything, down to single pages, costs a bounded
         # number of requests rather than one per node of the split tree.
         requested: Set[tuple[str, ...]] = set()
+        # Pages shown to a call that answered. Only these can be placed when the
+        # answer leaves them out: a page whose every window failed is already
+        # reported in ``errors``, and joining it to a neighbour would give it a
+        # class no call was asked about.
+        answered: Set[str] = set()
         split_budget = 2 * len(sorted_page_ids)
         split_calls = 0
         while pending:
@@ -5476,6 +5471,7 @@ class ClassificationService:
                 continue
 
             window_segments.append(segments)
+            answered.update(window_page_ids)
             metering = (
                 window_metering
                 if not metering
@@ -5486,7 +5482,146 @@ class ClassificationService:
             return [], metering, errors
 
         merged = self._merge_window_segments(window_segments, sorted_page_ids)
+        merged = self._place_pages_no_segment_holds(
+            merged, [pid for pid in sorted_page_ids if pid in answered]
+        )
         return merged, metering, errors
+
+    @staticmethod
+    def _place_pages_no_segment_holds(
+        segments: List[Segment], shown_page_ids: List[str]
+    ) -> List[Segment]:
+        """Join every page the model was shown but placed in no segment to a
+        neighbouring segment, so that no page is dropped from the document (#2037).
+
+        A packet call returns page ranges, and nothing obliges them to cover
+        every page the call was shown; the commonest omission is the last page.
+        Left out, such a page was in no section — no class, nothing extracted,
+        and only a log line to show for it.
+
+        **The rule: the segment of the page before it, else the segment of the
+        page after it.** A page that does not open a document continues the one
+        in progress, and that is also the reading that fits the case that
+        actually occurs — a trailing page the model's last range stops short of.
+        Only a page before every covered page has no predecessor, and it joins
+        the first covered page's segment. A run of several missing pages goes
+        the same way as a whole, because each one's predecessor is the page just
+        placed.
+
+        The joined pages are listed in each segment's ``filled_page_ids``, which
+        is what :meth:`_record_filled_page_issues` reads once sections exist.
+
+        Args:
+            segments: The merged segments, in the order sections will be built.
+            shown_page_ids: Every page shown to a call that answered, in page
+                order. A page outside it is not placed.
+
+        Returns:
+            ``segments`` itself when nothing is missing; otherwise new segments,
+            with each placed page inserted beside the neighbour it joined.
+        """
+        holder: Dict[str, int] = {}
+        for index, segment in enumerate(segments):
+            for page_id in segment.page_ids:
+                holder.setdefault(page_id, index)
+        missing = [pid for pid in shown_page_ids if pid not in holder]
+        if not missing or not holder:
+            return segments
+
+        page_lists = [list(segment.page_ids) for segment in segments]
+        filled: List[List[str]] = [[] for _ in segments]
+        leading: List[str] = []
+        previous: Optional[str] = None
+        for page_id in shown_page_ids:
+            if page_id in holder:
+                previous = page_id
+                continue
+            if previous is None:
+                leading.append(page_id)
+                continue
+            index = holder[previous]
+            pages = page_lists[index]
+            pages.insert(pages.index(previous) + 1, page_id)
+            filled[index].append(page_id)
+            holder[page_id] = index
+            previous = page_id
+        # A covered shown page exists whenever ``holder`` is non-empty, because a
+        # parsed segment only holds pages of the window it answered for.
+        first_covered = next(
+            (pid for pid in shown_page_ids if pid not in leading), None
+        )
+        if leading and first_covered is not None:
+            index = holder[first_covered]
+            pages = page_lists[index]
+            position = pages.index(first_covered)
+            pages[position:position] = leading
+            filled[index][:0] = leading
+
+        logger.warning(
+            "The model placed %d page(s) in no segment (%s); each was joined to "
+            "the segment of the page before it, or after it when no page precedes "
+            "it, and its section records a processing issue saying so",
+            len(missing),
+            missing[:20],
+        )
+        return [
+            Segment(
+                page_ids=page_lists[index],
+                doc_class=segment.doc_class,
+                confidence=segment.confidence,
+                candidates=list(segment.candidates),
+                filled_page_ids=list(segment.filled_page_ids) + filled[index],
+            )
+            for index, segment in enumerate(segments)
+        ]
+
+    @staticmethod
+    def _record_filled_page_issues(document: Document, segments: List[Segment]) -> None:
+        """Record, on each section, the pages the model placed in no segment.
+
+        Placement is visible here and nowhere else: the page carries its
+        neighbour's class like any other page of the section, so without this
+        record a section that grew a page the model never assigned reads exactly
+        like one the model reported whole. A warning, not an error — the page
+        has a class and was extracted with its section; what is not the model's
+        is which section it is in. One issue per section, listing the pages.
+        """
+        filled = {pid for segment in segments for pid in segment.filled_page_ids}
+        if not filled:
+            return
+        code = "classification_page_assigned_to_neighbour"
+        for section in document.sections or []:
+            pages = [str(pid) for pid in section.page_ids if str(pid) in filled]
+            if not pages:
+                continue
+            listed = ", ".join(pages)
+            issue = ProcessingIssue(
+                stage="classification",
+                severity="warning",
+                code=code,
+                message=(
+                    f"The classification model placed {len(pages)} page(s) "
+                    f"({listed}) in no document, so they were added to the "
+                    f"neighbouring document and given its class "
+                    f"'{section.classification}'. Check that they belong to it."
+                ),
+                root_cause=(
+                    f"the page ranges the model returned did not include pages {listed}"
+                ),
+                section_id=section.section_id,
+                details={"page_ids": pages},
+            )
+            # Replace only this code's earlier issue, as the other
+            # classification recorders do: other stages write onto the same
+            # section, and the DynamoDB writer replaces the whole section map.
+            section.processing_issues = [
+                pi
+                for pi in (section.processing_issues or [])
+                if not (
+                    getattr(pi, "stage", None) == "classification"
+                    and getattr(pi, "code", None) == code
+                )
+            ] + [issue]
 
     def packet_classify_document(
         self, document: Document, forced_class: Optional[str] = None
@@ -5585,6 +5720,7 @@ class ClassificationService:
             # One section builder for both granularities — see
             # _sections_from_segments.
             document = self._sections_from_segments(document, merged)
+            self._record_filled_page_issues(document, merged)
             document = self._update_document_status(document)
 
             logger.info(
@@ -6108,6 +6244,7 @@ class ClassificationService:
 
             document = self._sections_from_segments(document, segments)
             self._record_unclassified_page_issues(document, unlabeled_pages)
+            self._record_filled_page_issues(document, segments)
             document = self._update_document_status(document)
 
             logger.info(
