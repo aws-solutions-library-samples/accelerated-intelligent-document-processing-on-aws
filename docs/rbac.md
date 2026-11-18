@@ -402,7 +402,7 @@ truthiness, which a scope of `[""]` defeats.
 |---|---|
 | `createUser` | Records the `sub` Cognito assigns, and writes the pointer if the new user is scoped |
 | `updateUser` | Writes the pointer when a scope is **set**, deletes it when a scope is **removed** |
-| `deleteUser` | Deletes the pointer |
+| `deleteUser` | Deletes the pointer if it names this row, and deletes the Cognito account the row records the `sub` of |
 | The Cognito sync, on every Admin `listUsers` | Records the `sub` on each row it can match, and maintains that row's pointer |
 
 The sync matches a Cognito account to its row on the recorded `sub` first, then the

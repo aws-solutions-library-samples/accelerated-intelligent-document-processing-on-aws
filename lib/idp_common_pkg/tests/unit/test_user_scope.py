@@ -451,3 +451,57 @@ def test_a_write_failure_raises():
 
     with pytest.raises(RuntimeError, match="throttled"):
         _grant(Broken(), ["tenant.acme"], email="ann@example.com")
+
+
+class _ListUsersRecorder:
+    """A Cognito double that records each ``ListUsers`` filter and pages twice."""
+
+    def __init__(self, pages):
+        self.pages = list(pages)
+        self.calls = []
+
+    def list_users(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.pages.pop(0)
+
+
+@pytest.mark.unit
+class TestCognitoUsernameForRow:
+    def test_a_recorded_sub_is_looked_up_by_sub_not_address(self):
+        cognito = _ListUsersRecorder([{"Users": [{"Username": "Okta_00u1"}]}])
+        row = {"email": "a@example.com", "cognitoSub": "sub-1"}
+
+        assert us.cognito_username_for_row(cognito, "pool", row) == "Okta_00u1"
+        assert [c["Filter"] for c in cognito.calls] == ['sub = "sub-1"']
+
+    def test_a_recorded_sub_with_no_account_is_none(self):
+        cognito = _ListUsersRecorder([{"Users": []}])
+        row = {"email": "a@example.com", "cognitoSub": "sub-1"}
+
+        assert us.cognito_username_for_row(cognito, "pool", row) is None
+        assert len(cognito.calls) == 1
+
+    def test_no_sub_counts_every_page_of_address_matches(self):
+        cognito = _ListUsersRecorder(
+            [
+                {"Users": [{"Username": "a@example.com"}], "PaginationToken": "t"},
+                {"Users": [{"Username": "Okta_00u1"}]},
+            ]
+        )
+
+        with pytest.raises(ValueError, match="2 Cognito accounts"):
+            us.cognito_username_for_row(cognito, "pool", {"email": "a@example.com"})
+        assert cognito.calls[1]["PaginationToken"] == "t"
+
+    def test_quotes_in_the_value_are_escaped(self):
+        cognito = _ListUsersRecorder([{"Users": []}])
+
+        us.cognito_username_for_row(cognito, "pool", {"email": 'a"b\\c@example.com'})
+
+        assert cognito.calls[0]["Filter"] == 'email = "a\\"b\\\\c@example.com"'
+
+    def test_a_row_with_neither_key_looks_nothing_up(self):
+        cognito = _ListUsersRecorder([])
+
+        assert us.cognito_username_for_row(cognito, "pool", {}) is None
+        assert cognito.calls == []

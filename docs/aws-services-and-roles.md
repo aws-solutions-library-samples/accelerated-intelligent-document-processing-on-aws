@@ -290,7 +290,7 @@ The solution creates various IAM roles to run different components of the system
 
 * **User Sync Role** (`UserSyncFunction`, which consumes the UsersTable's DynamoDB stream and mirrors user rows into Cognito):
   * read access to the UsersTable stream, added by the SAM `DynamoDB` event source
-  * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool
+  * `cognito-idp:AdminCreateUser`, `AdminDeleteUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup` on the stack's user pool, and `ListUsers`, to find the account a removed user record belongs to by its `sub`
   * `kms:Decrypt` on the stack's customer-managed key, which encrypts the UsersTable and so its stream
 
 * **External IdP Group Mapping Role** (the Cognito pre-token trigger, deployed only when federation with group mapping is configured):

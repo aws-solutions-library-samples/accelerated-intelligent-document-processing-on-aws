@@ -340,7 +340,11 @@ What gives the second account access depends on the grant source:
   the Cognito user pool, or give that account a different address, and then open
   User Management, which binds the record to the remaining account. Under `Api` the
   entitlement system's next push for the address then applies to that account; under
-  `Manual` an Admin can review its scope there. An address that holds a record per
+  `Manual` an Admin can review its scope there. When the account to remove is the
+  one the record names, you can instead delete the user in User Management, which
+  deletes that account and its record and leaves the other account in place. That
+  account then gets a new record with no scope the next time User Management lists
+  users, so it needs its tenant granted again. An address that holds a record per
   account, which a period under `IdpClaim` can leave behind, is refused by
   `setUserTenant` until only one record for it remains.
 

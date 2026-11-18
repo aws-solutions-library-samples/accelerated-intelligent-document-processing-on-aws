@@ -539,7 +539,7 @@ class TestTheSubPointerWriter:
         index._record_cognito_sub(users_table, "u-9", _SUB, scoped=True)
         assert "Item" in self._pointer(users_table)
 
-        with patch.object(index, "sync_user_to_cognito"):
+        with patch.object(index, "_cognito_username_for_row", return_value=None):
             index.delete_user({"userId": "u-9"})
 
         assert "Item" not in self._pointer(users_table)
@@ -1424,3 +1424,148 @@ class TestSetUserTenant:
                 caller=caller,
             )
         assert "allowedConfigVersions" not in self._stored(users_table)
+
+
+class TestDeleteUserDeletesTheRecordsOwnAccount:
+    """``deleteUser`` deletes the Cognito account the record belongs to.
+
+    A federated account's username is ``<ProviderName>_<id>``, not its address, and
+    Cognito does not make ``email`` unique, so the address can name a different
+    account. These run against moto's Cognito, so which account is gone afterwards
+    is observed rather than inferred from the call made.
+    """
+
+    ADDRESS = "shared@example.com"
+
+    @pytest.fixture
+    def pool(self, users_table):
+        client = boto3.client("cognito-idp", region_name="us-east-1")
+        pool_id = client.create_user_pool(PoolName="users")["UserPool"]["Id"]
+        index = _load_index()
+        with (
+            patch.object(index, "cognito", client),
+            patch.object(index, "USER_POOL_ID", pool_id),
+        ):
+            yield index, client, pool_id
+
+    @staticmethod
+    def _account(client, pool_id, username, email):
+        user = client.admin_create_user(
+            UserPoolId=pool_id,
+            Username=username,
+            UserAttributes=[{"Name": "email", "Value": email}],
+            MessageAction="SUPPRESS",
+        )["User"]
+        return next(a["Value"] for a in user["Attributes"] if a["Name"] == "sub")
+
+    @staticmethod
+    def _usernames(client, pool_id):
+        return sorted(
+            u["Username"] for u in client.list_users(UserPoolId=pool_id)["Users"]
+        )
+
+    @staticmethod
+    def _row(users_table, user_id="u-1", **extra):
+        item = {
+            "PK": f"USER#{user_id}",
+            "SK": f"USER#{user_id}",
+            "userId": user_id,
+            "email": TestDeleteUserDeletesTheRecordsOwnAccount.ADDRESS,
+            "persona": "Viewer",
+            **extra,
+        }
+        users_table.put_item(Item=item)
+        return item
+
+    @staticmethod
+    def _get(users_table, key):
+        return users_table.get_item(Key={"PK": key, "SK": key}).get("Item")
+
+    def test_a_federated_record_deletes_the_federated_account_only(
+        self, pool, users_table
+    ):
+        index, client, pool_id = pool
+        self._account(client, pool_id, self.ADDRESS, self.ADDRESS)
+        federated_sub = self._account(client, pool_id, "Okta_00u1", self.ADDRESS)
+        self._row(
+            users_table,
+            cognitoSub=federated_sub,
+            allowedConfigVersions=["tenant-a"],
+        )
+        index._record_cognito_sub(users_table, "u-1", federated_sub, scoped=True)
+        assert self._get(users_table, f"SUB#{federated_sub}") is not None
+
+        assert index.delete_user({"userId": "u-1"}) is True
+
+        assert self._usernames(client, pool_id) == [self.ADDRESS]
+        assert self._get(users_table, "USER#u-1") is None
+        assert self._get(users_table, f"SUB#{federated_sub}") is None
+
+    def test_a_record_whose_account_is_gone_deletes_no_other_account(
+        self, pool, users_table
+    ):
+        index, client, pool_id = pool
+        self._account(client, pool_id, self.ADDRESS, self.ADDRESS)
+        self._row(users_table, cognitoSub="0f0e0d0c-aaaa-bbbb-cccc-000000000000")
+
+        assert index.delete_user({"userId": "u-1"}) is True
+
+        assert self._usernames(client, pool_id) == [self.ADDRESS]
+        assert self._get(users_table, "USER#u-1") is None
+
+    def test_a_record_with_no_sub_deletes_the_only_account_with_its_address(
+        self, pool, users_table
+    ):
+        index, client, pool_id = pool
+        self._account(client, pool_id, self.ADDRESS, self.ADDRESS)
+        self._account(client, pool_id, "other@example.com", "other@example.com")
+        self._row(users_table)
+
+        assert index.delete_user({"userId": "u-1"}) is True
+
+        assert self._usernames(client, pool_id) == ["other@example.com"]
+        assert self._get(users_table, "USER#u-1") is None
+
+    def test_a_record_with_no_sub_and_two_accounts_on_its_address_is_refused(
+        self, pool, users_table
+    ):
+        index, client, pool_id = pool
+        self._account(client, pool_id, self.ADDRESS, self.ADDRESS)
+        self._account(client, pool_id, "Okta_00u1", self.ADDRESS)
+        self._row(users_table)
+
+        with pytest.raises(ValueError, match="was not deleted"):
+            index.delete_user({"userId": "u-1"})
+
+        assert self._usernames(client, pool_id) == ["Okta_00u1", self.ADDRESS]
+        assert self._get(users_table, "USER#u-1") is not None
+
+    def test_a_pointer_another_record_holds_is_left_in_place(self, pool, users_table):
+        index, client, pool_id = pool
+        sub = self._account(client, pool_id, "Okta_00u1", self.ADDRESS)
+        self._row(users_table, cognitoSub=sub)
+        self._row(
+            users_table, user_id="u-2", cognitoSub=sub, allowedConfigVersions=["a"]
+        )
+        index._record_cognito_sub(users_table, "u-2", sub, scoped=True)
+
+        index.delete_user({"userId": "u-1"})
+
+        assert self._get(users_table, f"SUB#{sub}")["userId"] == "u-2"
+
+    def test_the_handler_reaches_the_same_path(self, pool, users_table):
+        index, client, pool_id = pool
+        self._account(client, pool_id, self.ADDRESS, self.ADDRESS)
+        federated_sub = self._account(client, pool_id, "Okta_00u1", self.ADDRESS)
+        self._row(users_table, cognitoSub=federated_sub)
+
+        index.handler(
+            {
+                "info": {"fieldName": "deleteUser"},
+                "arguments": {"userId": "u-1"},
+                "identity": {"claims": {"cognito:groups": ["Admin"]}},
+            },
+            None,
+        )
+
+        assert self._usernames(client, pool_id) == [self.ADDRESS]

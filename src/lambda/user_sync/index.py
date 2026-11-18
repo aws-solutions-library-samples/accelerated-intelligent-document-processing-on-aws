@@ -7,6 +7,8 @@ import os
 import json
 import logging
 import boto3
+from idp_common.config_scope import USERS_TABLE_SCOPE_KEY, USERS_TABLE_SUB_ATTRIBUTE
+from idp_common.user_scope import cognito_username_for_row
 from log_sanitizer import sanitize_event_for_logging
 
 logger = logging.getLogger()
@@ -125,23 +127,48 @@ def handle_user_created(record):
 
 
 def handle_user_deleted(record):
-    """Handle user deletion in DynamoDB."""
+    """Handle user deletion in DynamoDB.
+
+    Deletes the Cognito account the removed record belonged to, resolved the same
+    way User Management's ``deleteUser`` resolves it: the account with the ``sub``
+    the record names, or, for a record that names none, the only account with the
+    record's address. A record that matches several accounts deletes none.
+    """
     old_image = record.get("dynamodb", {}).get("OldImage", {})
-    
+
     if not is_user_record(old_image):
         return
-    
-    email = get_attribute_value(old_image, "email")
-    
-    logger.info(f"Deleting user from Cognito: {email}")
-    
+
+    user_id = get_attribute_value(old_image, "userId")
+    row = {
+        USERS_TABLE_SCOPE_KEY: get_attribute_value(old_image, USERS_TABLE_SCOPE_KEY),
+        USERS_TABLE_SUB_ATTRIBUTE: get_attribute_value(
+            old_image, USERS_TABLE_SUB_ATTRIBUTE
+        ),
+    }
+
     try:
-        cognito.admin_delete_user(UserPoolId=USER_POOL_ID, Username=email)
-        logger.info(f"User {email} deleted from Cognito")
-    except cognito.exceptions.UserNotFoundException:
-        logger.warning(f"User {email} not found in Cognito during deletion")
+        username = cognito_username_for_row(cognito, USER_POOL_ID, row)
+    except ValueError as e:
+        logger.error(f"Not deleting a Cognito account for user {user_id}: {e}")
+        return
     except Exception as e:
-        logger.error(f"Failed to delete user {email} from Cognito: {e}")
+        logger.error(f"Could not look up the Cognito account of user {user_id}: {e}")
+        return
+
+    if username is None:
+        logger.info(f"No Cognito account belongs to user {user_id}; nothing to delete")
+        return
+
+    logger.info(f"Deleting the Cognito account of user {user_id}")
+
+    try:
+        cognito.admin_delete_user(UserPoolId=USER_POOL_ID, Username=username)
+        logger.info(f"Deleted the Cognito account of user {user_id}")
+    except cognito.exceptions.UserNotFoundException:
+        logger.warning(f"The Cognito account of user {user_id} was already gone")
+    except Exception as e:
+        logger.error(f"Failed to delete the Cognito account of user {user_id}: {e}")
         # Don't raise exception for deletion failures
 
 

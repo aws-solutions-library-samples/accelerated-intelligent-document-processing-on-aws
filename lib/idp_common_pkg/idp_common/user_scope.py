@@ -468,3 +468,72 @@ def apply_tenant_grant(
         "allowedConfigVersions": scope,
         "tenant": tenant_id,
     }
+
+
+def _cognito_filter(attribute: str, value: str) -> str:
+    """A ``ListUsers`` exact-match filter, with the value's quotes escaped."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{attribute} = "{escaped}"'
+
+
+def _cognito_users_matching(
+    cognito: Any, user_pool_id: str, attribute: str, value: str
+) -> list:
+    """Every user in the pool whose ``attribute`` equals ``value``."""
+    kwargs: Dict[str, Any] = {
+        "UserPoolId": user_pool_id,
+        "Filter": _cognito_filter(attribute, value),
+    }
+    users: list = []
+    while True:
+        response = cognito.list_users(**kwargs)
+        users.extend(response.get("Users", []))
+        token = response.get("PaginationToken")
+        if not token:
+            return users
+        kwargs["PaginationToken"] = token
+
+
+def cognito_username_for_row(
+    cognito: Any, user_pool_id: str, row: Mapping[str, Any]
+) -> Optional[str]:
+    """The username of the Cognito account a user record belongs to, or None.
+
+    A record belongs to the account whose ``sub`` it records (``cognitoSub``). That
+    is the account's only stable identifier: a federated account's username is
+    ``<ProviderName>_<id>``, not its address, and Cognito does not make ``email``
+    unique, so the address can also name another account in the pool.
+
+    * A record that records a ``sub`` resolves to the account with that ``sub``, or
+      to None when that account is no longer in the pool. It never resolves by
+      address, so another account with the same address is never chosen.
+    * A record with no ``sub`` (an Admin-created account that User Management has not
+      yet matched to its row) resolves by address, and only when exactly one
+      account in the pool has that address.
+
+    Raises ``ValueError`` when the record cannot be matched to exactly one account,
+    so a caller refuses rather than acting on a guess. Cognito errors propagate.
+    """
+    recorded_sub = str(row.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
+    if recorded_sub:
+        attribute, value = SCOPE_SUB_CLAIM, recorded_sub
+    else:
+        attribute = SCOPE_KEY_CLAIM
+        value = str(row.get(USERS_TABLE_SCOPE_KEY) or "").strip()
+        if not value:
+            return None
+    matches = _cognito_users_matching(cognito, user_pool_id, attribute, value)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        if recorded_sub:
+            raise ValueError(
+                f"{len(matches)} Cognito accounts carry the {SCOPE_SUB_CLAIM} this "
+                "user record names, so the account it belongs to cannot be "
+                "determined."
+            )
+        raise ValueError(
+            f"{len(matches)} Cognito accounts have this user's email address and the "
+            "user record does not name which one it belongs to."
+        )
+    return matches[0]["Username"]

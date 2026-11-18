@@ -57,6 +57,7 @@ from idp_common.user_scope import (
     apply_tenant_grant,
     tenant_grant_source,
 )
+from idp_common.user_scope import cognito_username_for_row as _cognito_username_for_row
 from idp_common.user_scope import is_scoped as _is_scoped
 from idp_common.user_scope import record_cognito_sub as _record_cognito_sub
 from idp_common.utils.log_sanitizer import sanitize_event_for_logging
@@ -511,7 +512,14 @@ def update_user(args):
 
 
 def delete_user(args):
-    """Delete user from DynamoDB and sync to Cognito."""
+    """Delete a user's record, its ``sub`` pointer, and its own Cognito account.
+
+    The Cognito account is the one the record belongs to, resolved by
+    ``cognito_username_for_row``: the account with the ``sub`` the record names, or,
+    for a record that names none yet, the only account with the record's address. It
+    is resolved before anything is deleted, so a record that cannot be matched to
+    exactly one account is refused with nothing changed.
+    """
     user_id = args["userId"]
 
     logger.info(f"Deleting user {user_id}")
@@ -525,7 +533,15 @@ def delete_user(args):
         raise ValueError(f"User {user_id} not found")
 
     user_record = response["Item"]
-    email = user_record["email"]
+
+    try:
+        cognito_username = _cognito_username_for_row(cognito, USER_POOL_ID, user_record)
+    except ValueError as e:
+        logger.warning(f"Rejecting deletion of user {user_id}: {e}")
+        raise ValueError(
+            f"User {user_id} was not deleted: {e} Delete the account in the "
+            "Cognito user pool directly."
+        ) from e
 
     # Delete from DynamoDB
     table.delete_item(Key=_user_row_key(user_id))
@@ -534,23 +550,52 @@ def delete_user(args):
     # cannot be handed the deleted row's userId. A pointer left behind names a row
     # that no longer exists, which the lookup already treats as "not found" and
     # logs — so this is tidiness rather than a control, and it warns rather than
-    # failing a delete that has already happened.
+    # failing a delete that has already happened. Conditional on the pointer naming
+    # this row, so a pointer another row holds for the same sub is left in place.
     recorded_sub = str(user_record.get(USERS_TABLE_SUB_ATTRIBUTE) or "").strip()
     if recorded_sub:
         try:
-            table.delete_item(Key=_sub_pointer_key(recorded_sub))
+            table.delete_item(
+                Key=_sub_pointer_key(recorded_sub),
+                ConditionExpression="attribute_not_exists(PK) OR userId = :uid",
+                ExpressionAttributeValues={":uid": user_id},
+            )
+        except ClientError as e:
+            if (
+                e.response.get("Error", {}).get("Code")
+                != "ConditionalCheckFailedException"
+            ):
+                logger.warning(f"Could not delete the sub pointer for {user_id}: {e}")
+            else:
+                logger.info(
+                    f"The sub pointer recorded by {user_id} names another user "
+                    "record; leaving it"
+                )
         except Exception as e:  # noqa: BLE001
             logger.warning(f"Could not delete the sub pointer for {user_id}: {e}")
 
-    # Sync to Cognito
-    try:
-        sync_user_to_cognito(user_id, email, user_record["persona"], "delete")
-    except Exception as e:
-        logger.warning(f"Failed to sync user deletion to Cognito: {e}")
-        # Continue with deletion as DynamoDB is the source of truth
+    if cognito_username is None:
+        logger.warning(
+            f"No Cognito account belongs to user {user_id}; deleted its record only"
+        )
+    else:
+        try:
+            _delete_cognito_account(cognito_username)
+        except Exception as e:
+            logger.warning(f"Failed to delete the Cognito account of {user_id}: {e}")
+            # Continue with deletion as DynamoDB is the source of truth
 
     logger.info(f"User {user_id} deleted successfully")
     return True
+
+
+def _delete_cognito_account(cognito_username):
+    """Delete one Cognito account by its username."""
+    try:
+        cognito.admin_delete_user(UserPoolId=USER_POOL_ID, Username=cognito_username)
+        logger.info("Deleted the user's Cognito account")
+    except cognito.exceptions.UserNotFoundException:
+        logger.warning("The user's Cognito account was already gone")
 
 
 def _basic_profile_from_claims(caller):
@@ -1016,11 +1061,5 @@ def sync_user_to_cognito(user_id, email, persona, operation):
             )
         return caller_sub
 
-    elif operation == "delete":
-        # Delete user from Cognito
-        try:
-            cognito.admin_delete_user(UserPoolId=USER_POOL_ID, Username=email)
-            logger.info(f"User {email} deleted from Cognito")
-        except cognito.exceptions.UserNotFoundException:
-            logger.warning(f"User {email} not found in Cognito during deletion")
-    return ""
+    # A deletion is not addressed by email: see ``delete_user``.
+    raise ValueError(f"Unsupported Cognito sync operation: {operation}")

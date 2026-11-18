@@ -125,7 +125,13 @@ needs nothing more: they work every Production queue as soon as they sign in.
 #### Deleting a User
 
 Choose **Delete** in the user's row and confirm. The user is removed from both
-DynamoDB and Cognito.
+DynamoDB and Cognito. The Cognito account deleted is the one the user's record
+belongs to: the account with the `sub` the record names, which for a federated user
+is the federated account, not another account with the same email address. A record
+that names no `sub`, such as one written before records carried it, is matched by
+email address, and only when exactly one account in the user
+pool has it. If several do, the delete is refused and nothing is removed; delete the
+account in the Cognito user pool directly.
 
 #### User Synchronization
 

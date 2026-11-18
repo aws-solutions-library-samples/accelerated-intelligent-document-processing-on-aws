@@ -942,6 +942,10 @@ Without a `sub` (an email-only push) an address held by more than one row is ref
 pre-token trigger, `user_management`'s `setUserTenant` and the SDK's
 `set_user_tenant` all write through it. The row and pointer invariants it shares with
 `user_management` (`record_cognito_sub`, `is_scoped`) are defined there too.
+`cognito_username_for_row` resolves the Cognito account a row belongs to — by the
+`sub` it records, or, for a row recording none, by address only when exactly one
+account has it, raising `ValueError` otherwise — and is what `user_management`'s
+`deleteUser` and the user-sync stream's removal handler delete.
 
 ## Rollback-safe DynamoDB serialization
 

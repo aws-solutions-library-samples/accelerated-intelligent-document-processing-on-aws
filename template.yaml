@@ -16382,6 +16382,10 @@ Resources:
       Description: Lambda function to sync DynamoDB user changes to Cognito
       MemorySize: 256
       Timeout: 30
+      # For idp_common.user_scope: a removed user record's Cognito account is
+      # resolved by the same code User Management's deleteUser uses.
+      Layers:
+        - !Ref IDPCommonBaseLayer
       Environment:
         Variables:
           USER_POOL_ID: !Ref UserPool
@@ -16400,6 +16404,8 @@ Resources:
                 - cognito-idp:AdminDeleteUser
                 - cognito-idp:AdminAddUserToGroup
                 - cognito-idp:AdminRemoveUserFromGroup
+                # Finds the account a removed record belongs to by its sub.
+                - cognito-idp:ListUsers
               Resource: !GetAtt UserPool.Arn
             # UsersTable is encrypted with the stack's key, and Lambda reads its
             # stream as this role: without Decrypt the event source mapping is
