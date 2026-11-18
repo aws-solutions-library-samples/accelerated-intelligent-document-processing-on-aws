@@ -22,6 +22,7 @@ import { generateClient } from '../../api/client-shim';
 import { listDocumentVersions, getDocumentVersion, compareDocumentVersions, deleteDocumentVersion } from '../../graphql/generated';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { useFormatters, type Formatters } from '../../i18n/format';
 
 const logger = new ConsoleLogger('DocumentVersionsPanel');
 const client = generateClient();
@@ -339,7 +340,7 @@ const messages = defineMessages<{
   deleteConfirm: {
     id: 'documents.versions.deleteConfirm',
     defaultMessage: 'Delete version <strong>{when}</strong>?',
-    description: "Question in the delete dialog. {when} is the version's completion time as stored, or its run id.",
+    description: "Question in the delete dialog. {when} is the version's completion date and time, or its run id when it has none.",
   },
 });
 
@@ -415,6 +416,16 @@ const formatValue = (v: unknown): string => {
   return String(v);
 };
 
+/**
+ * A stored timestamp, a UTC ISO string, as a date and time in the UI locale and the browser's
+ * time zone, as the document list shows it. No value, or one `Date` cannot parse, is shown as
+ * stored, so an empty time stays empty. Display only.
+ */
+const formatStoredTime = (value: string | undefined, formatDateTime: Formatters['formatDateTime']): string | undefined => {
+  const date = new Date(value ?? '');
+  return Number.isNaN(date.getTime()) ? value : formatDateTime(date);
+};
+
 // A status missing from the switch reads as Identical, as it always has.
 const statusIndicator = (status: string): React.JSX.Element => {
   switch (status) {
@@ -452,6 +463,7 @@ const DocumentVersionsPanel = ({
   completionTime = null,
 }: DocumentVersionsPanelProps): React.JSX.Element => {
   const intl = useIntl();
+  const { formatDateTime } = useFormatters();
   const { isAdmin } = useUserRole();
   const [versions, setVersions] = useState<DocumentVersion[]>([]);
   const [loading, setLoading] = useState(false);
@@ -630,7 +642,7 @@ const DocumentVersionsPanel = ({
               header: intl.formatMessage(messages.columnVersion),
               cell: (item: DocumentVersion) => (
                 <SpaceBetween direction="horizontal" size="xs">
-                  <span>{item.CompletionTime || item.RunId}</span>
+                  <span>{formatStoredTime(item.CompletionTime, formatDateTime) || item.RunId}</span>
                   {item.RunId === currentRunId && (
                     <Badge color="green">
                       <FormattedMessage {...messages.currentBadge} />
@@ -726,7 +738,7 @@ const DocumentVersionsPanel = ({
                       values={{ config: compareResult.configVersionA || intl.formatMessage(messages.notApplicable) }}
                     />
                   </Box>
-                  <div>{compareResult.completionTimeA}</div>
+                  <div>{formatStoredTime(compareResult.completionTimeA, formatDateTime)}</div>
                 </div>
                 <div>
                   <Box color="text-label">
@@ -735,7 +747,7 @@ const DocumentVersionsPanel = ({
                       values={{ config: compareResult.configVersionB || intl.formatMessage(messages.notApplicable) }}
                     />
                   </Box>
-                  <div>{compareResult.completionTimeB}</div>
+                  <div>{formatStoredTime(compareResult.completionTimeB, formatDateTime)}</div>
                 </div>
               </SpaceBetween>
             </Box>
@@ -802,7 +814,10 @@ const DocumentVersionsPanel = ({
             <FormattedMessage {...messages.deleteWarning} />
           </Alert>
           <p>
-            <FormattedMessage {...messages.deleteConfirm} values={{ when: deleteTarget?.CompletionTime || deleteTarget?.RunId, strong }} />
+            <FormattedMessage
+              {...messages.deleteConfirm}
+              values={{ when: formatStoredTime(deleteTarget?.CompletionTime, formatDateTime) || deleteTarget?.RunId, strong }}
+            />
           </p>
         </SpaceBetween>
       </Modal>

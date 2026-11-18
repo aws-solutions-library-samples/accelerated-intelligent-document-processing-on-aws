@@ -7,9 +7,10 @@
  * today's English, where the change type is the value as the versions API returns it.
  */
 import React from 'react';
-import { act, screen } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { formatDateTime } from '../../../i18n/format';
 import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 
 // One value per mocked hook for every render. The panel calls generateClient() at import time,
@@ -125,5 +126,42 @@ describe('the Version History panel under en', () => {
     compareBothVersions('Compare selected');
     expect(await screen.findByText('Changed')).toBeInTheDocument();
     expect(screen.getByText('length_changed')).toBeInTheDocument();
+  });
+});
+
+describe('the version table time', () => {
+  /** A fixed instant, stored as the versions API returns it: the UTC ISO string. */
+  const COMPLETED = new Date(1_700_000_000_000).toISOString();
+  /** A version with a time and an older one without, newest first as the API lists them. */
+  const TIMED_VERSIONS = [
+    { RunId: 'run-timed', CompletionTime: COMPLETED, ConfigVersion: 'v2', PageCount: 6 },
+    { RunId: 'run-untimed', CompletionTime: '', ConfigVersion: 'v1', PageCount: 6 },
+  ];
+  /** What row `row` of one render shows in the Version column, without the Current badge. */
+  const versionShown = (container: HTMLElement, row: number) =>
+    // Column 1 holds the selection checkboxes; the cell's first span is the time or the run id.
+    createWrapper(container).findTable()?.findBodyCell(row, 2)?.find('span')?.getElement().textContent;
+
+  it('shows the stored time in the UI locale, and a version with no time as its run id', async () => {
+    state.graphql.mockImplementation(({ query }: { query: string }) =>
+      query.includes('listDocumentVersions')
+        ? Promise.resolve({ data: { listDocumentVersions: TIMED_VERSIONS } })
+        : routeGraphql({ query }),
+    );
+    const french = renderWithIntl(<DocumentVersionsPanel objectKey="doc.pdf" />, FR_CA).container;
+    const english = renderWithIntl(<DocumentVersionsPanel objectKey="doc.pdf" />).container;
+    // The helper is the oracle: the exact shape of each locale belongs to ICU. One comparison,
+    // so a panel that ignores the formatter shows every field it gets wrong. Awaited so the
+    // version lists and the French catalog settle inside the test.
+    await waitFor(() =>
+      expect({ french: versionShown(french, 1), english: versionShown(english, 1), empty: versionShown(english, 2) }).toEqual({
+        french: formatDateTime(new Date(COMPLETED), 'fr-CA'),
+        english: formatDateTime(new Date(COMPLETED), 'en'),
+        // An empty time falls back to the run id, shown as stored.
+        empty: 'run-untimed',
+      }),
+    );
+    // Not vacuous: the French text is not the English text.
+    expect(versionShown(french, 1)).not.toBe(versionShown(english, 1));
   });
 });

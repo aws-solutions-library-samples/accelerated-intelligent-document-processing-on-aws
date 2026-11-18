@@ -2141,7 +2141,7 @@
   },
   "documents.versions.deleteConfirm": {
     "defaultMessage": "Delete version <strong>{when}</strong>?",
-    "description": "Question in the delete dialog. {when} is the version's completion time as stored, or its run id."
+    "description": "Question in the delete dialog. {when} is the version's completion date and time, or its run id when it has none."
   },
   "documents.versions.deleteFailed": {
     "defaultMessage": "Failed to delete version",

@@ -344,10 +344,10 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    the configuration's hash).
 4. **Object literals keyed by enum-like names.** `LEAF_KEYS` excludes keys matching `[A-Z_-]+` and
    the plugin skips the whole value under an excluded key, so a map keyed `CLOSED`/`HALF_OPEN`/`OPEN`
-   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing
-   (`CircuitBreakerPanel.tsx`'s state labels, `TestSets.tsx`'s type badges). To re-measure: remove
-   that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against
-   the committed run, restore it.
+   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing (the
+   circuit-breaker panel's state labels, since converted, and `TestSets.tsx`'s type badges). To
+   re-measure: remove that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run
+   `npm run i18n:lint`, diff against the committed run, restore it.
 5. **Words that contain a slash.** The `WORDS` pattern for MIME types and slash paths
    (`[\w.+-]+/[\w.+/-]+`) also skips user-facing words with a slash: **109 findings in 19 files**
    when this entry was added (`N/A` 95, `Service/Api` 6, `YYYY/MM/DD` 5, `Class/Type` 2,
@@ -453,9 +453,8 @@ is a committed follow-up right after `fr-CA` ships; the rest is optional later);
 invitation and verification emails; Cognito service errors on the sign-in form that Amplify's
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
 headers and generated report headings; the relative-time literal "just now", the unit suffixes
-on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
-built in template strings (`${progressPct}%`) and the stored ISO timestamps the document page
-shows as submitted and completed times, until their screens convert; extension UIs built
+on durations and sizes (`s`, `m`, `KB`, `MB`) and the English `%` placement on integer percents
+built in template strings (`${progressPct}%`), until their screens convert; extension UIs built
 before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
 until they carry stable codes; and document data, always. The remaining PRs of the series (the
 screens area by area, review tooling, enabling `fr-CA`, Cognito

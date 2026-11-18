@@ -8,9 +8,10 @@
  * today's English, where the status is the stored value.
  */
 import React from 'react';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { formatDateTime } from '../../../i18n/format';
 import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 
 // One value per mocked hook for every render, as in DocumentPanel.layout.test.tsx.
@@ -116,5 +117,33 @@ describe('the Document Details help panel under a locale', () => {
     renderWithIntl(<DocumentDetailsToolsPanel />);
     expect(screen.getByRole('heading', { name: 'Document Details' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Web UI' })).toHaveAttribute('href', DOCS_WEB_UI);
+  });
+});
+
+describe('the Submitted field', () => {
+  /** A fixed instant, stored as the document mapping stores it: the UTC ISO string. */
+  const SUBMITTED = new Date(1_700_000_000_000).toISOString();
+  const renderSubmitted = (initialEventTime: string, options?: typeof FR_CA) =>
+    renderWithIntl(<DocumentAttributes item={{ ...ITEM, initialEventTime } as never} versions={[]} />, options).container;
+  /** The Submitted field's value in one render (the fixture has no French label for it). */
+  const submittedIn = (container: HTMLElement) =>
+    [...container.querySelectorAll('[class*="key-label"]')].find((e) => e.textContent === 'Submitted')?.nextElementSibling?.textContent;
+
+  it('shows the stored time in the UI locale, and no time as nothing', async () => {
+    const french = renderSubmitted(SUBMITTED, FR_CA);
+    const english = renderSubmitted(SUBMITTED);
+    const empty = renderSubmitted('');
+    // The helper is the oracle: the exact shape of each locale belongs to ICU. One comparison,
+    // so a field that ignores the formatter shows every value it gets wrong. Awaited so the
+    // French catalog settles inside the test.
+    await waitFor(() =>
+      expect({ french: submittedIn(french), english: submittedIn(english), empty: submittedIn(empty) }).toEqual({
+        french: formatDateTime(new Date(SUBMITTED), 'fr-CA'),
+        english: formatDateTime(new Date(SUBMITTED), 'en'),
+        empty: '',
+      }),
+    );
+    // Not vacuous: the French text is not the English text.
+    expect(submittedIn(french)).not.toBe(submittedIn(english));
   });
 });

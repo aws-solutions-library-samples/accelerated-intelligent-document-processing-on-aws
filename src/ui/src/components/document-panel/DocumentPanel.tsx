@@ -37,7 +37,7 @@ import { documentName } from '../review-queues/review-api';
 import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
-import { useFormatters } from '../../i18n/format';
+import { useFormatters, type Formatters } from '../../i18n/format';
 // Uncomment the line below to enable debugging
 
 interface MappedDocument {
@@ -354,17 +354,28 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
 );
 
 /**
+ * A stored timestamp, a UTC ISO string, as a date and time in the UI locale and the browser's
+ * time zone, as the document list shows it. No value, or one `Date` cannot parse, is shown as
+ * stored, so an empty time stays empty. Display only.
+ */
+const formatStoredTime = (value: string | undefined, formatDateTime: Formatters['formatDateTime']): string | undefined => {
+  const date = new Date(value ?? '');
+  return Number.isNaN(date.getTime()) ? value : formatDateTime(date);
+};
+
+/**
  * Document Details: four aligned columns, fewer on a narrow screen (`minColumnWidth`).
  */
 export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentAttributesProps): React.JSX.Element => {
   const intl = useIntl();
+  const { formatDateTime } = useFormatters();
   const skipAll = isHitlSkippedStatus(item.hitlStatus) ? lastSkipAllReason(item.hitlReviewHistory) : null;
   return (
     <ColumnLayout columns={4} minColumnWidth={160} variant="text-grid">
       <Field label={intl.formatMessage(fieldLabels.documentId)}>{item.objectKey}</Field>
       <Field label={intl.formatMessage(fieldLabels.status)}>{renderObjectStatus(item.objectStatus, intl)}</Field>
-      <Field label={intl.formatMessage(fieldLabels.submitted)}>{item.initialEventTime}</Field>
-      <Field label={intl.formatMessage(fieldLabels.completed)}>{item.completionTime}</Field>
+      <Field label={intl.formatMessage(fieldLabels.submitted)}>{formatStoredTime(item.initialEventTime, formatDateTime)}</Field>
+      <Field label={intl.formatMessage(fieldLabels.completed)}>{formatStoredTime(item.completionTime, formatDateTime)}</Field>
       <Field label={intl.formatMessage(fieldLabels.duration)}>{item.duration}</Field>
       <Field label={intl.formatMessage(fieldLabels.configProfile)}>
         {formatConfigVersionLink(item.configVersion, versions)}
