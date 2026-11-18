@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -3464,9 +3465,132 @@ def test_the_wrong_role_refuses_the_whole_run(
 
 
 @pytest.mark.unit
-def test_no_credentials_refuse_rather_than_skip(mod) -> None:
+def test_no_credentials_refuse_rather_than_skip(mod, tmp_path) -> None:
+    # HOME is pinned to an empty directory: without it the lookup would fall back
+    # to the developer's own ~/.aws and sign a real STS call.
     with pytest.raises(mod.Failure, match="no AWS credentials"):
-        mod.caller_role_name({})
+        mod.caller_role_name({"HOME": str(tmp_path)})
+
+
+# --- credentials the runner fleet links into $HOME/.aws -------------------------
+#
+# GitLab's runner fleet exports no AWS_* variables: its credential vendor writes
+# the session to files and symlinks that directory to $HOME/.aws before the job
+# script runs. The harness has no AWS SDK, so it must read them itself.
+
+_FILE = {
+    "AWS_ACCESS_KEY_ID": "ASIA" + "FILEKEY" * 2 + "EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "file-secret-" + "f" * 20,
+    "AWS_SESSION_TOKEN": "file-token-" + "g" * 30,
+}
+
+
+def _write_aws(home: Path, name: str, section: str, values: dict[str, str]) -> None:
+    (home / ".aws").mkdir(parents=True, exist_ok=True)
+    body = "".join(f"{k.lower()} = {v}\n" for k, v in values.items())
+    with (home / ".aws" / name).open("a") as handle:
+        handle.write(f"[{section}]\n{body}\n")
+
+
+def _capture_signed_requests(mod, monkeypatch, arn: str = "x") -> list:
+    seen: list = []
+
+    class Answer:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            return (
+                "<GetCallerIdentityResponse><Arn>arn:aws:sts::111122223333:"
+                f"assumed-role/{arn}/s</Arn>"
+            ).encode()
+
+    def opener(request, timeout=None):
+        seen.append(request)
+        return Answer()
+
+    monkeypatch.setattr(mod._NO_REDIRECT_OPENER, "open", opener)
+    return seen
+
+
+@pytest.mark.unit
+def test_the_runner_fleet_s_linked_credentials_file_is_read(
+    mod, monkeypatch, tmp_path
+) -> None:
+    _write_aws(tmp_path, "credentials", "default", _FILE)
+    seen = _capture_signed_requests(mod, monkeypatch, "idp-sdlc-GitLab")
+    assert mod.caller_role_name({"HOME": str(tmp_path)}) == "idp-sdlc-GitLab"
+    (request,) = seen
+    assert f"Credential={_FILE['AWS_ACCESS_KEY_ID']}/" in request.get_header(
+        "Authorization"
+    )
+    assert request.get_header("X-amz-security-token") == _FILE["AWS_SESSION_TOKEN"]
+
+
+@pytest.mark.unit
+def test_a_named_profile_is_read_from_the_config_file(mod, tmp_path) -> None:
+    _write_aws(tmp_path, "config", "default", _OLD)
+    _write_aws(tmp_path, "config", "profile ci", _FILE)
+    environ = {"HOME": str(tmp_path), "AWS_PROFILE": "ci"}
+    assert mod.job_credentials(environ) == _FILE
+
+
+@pytest.mark.unit
+def test_an_explicit_shared_credentials_file_is_honoured(mod, tmp_path) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    _write_aws(elsewhere, "credentials", "default", _FILE)
+    _write_aws(tmp_path, "credentials", "default", _OLD)
+    environ = {
+        "HOME": str(tmp_path),
+        "AWS_SHARED_CREDENTIALS_FILE": str(elsewhere / ".aws" / "credentials"),
+    }
+    assert mod.job_credentials(environ) == _FILE
+
+
+@pytest.mark.unit
+def test_environment_credentials_win_over_the_file(mod, tmp_path) -> None:
+    """GitHub's OIDC session is exported as variables and must still be the one
+    used, as it is by every AWS SDK."""
+    _write_aws(tmp_path, "credentials", "default", _FILE)
+    environ = {"HOME": str(tmp_path), **_OLD}
+    assert mod.job_credentials(environ) == _OLD
+
+
+@pytest.mark.unit
+def test_a_profile_without_static_keys_refuses(mod, tmp_path) -> None:
+    (tmp_path / ".aws").mkdir()
+    (tmp_path / ".aws" / "config").write_text(
+        "[default]\ncredential_process = /bin/false\n"
+    )
+    with pytest.raises(mod.Failure, match="no AWS credentials") as refused:
+        mod.caller_role_name({"HOME": str(tmp_path)})
+    # The refusal names what it saw so the job log diagnoses it, and no value.
+    assert "sections ['default']" in str(refused.value)
+    assert "/bin/false" not in str(refused.value)
+
+
+@pytest.mark.unit
+def test_a_file_session_is_switched_away_from_and_withheld(
+    mod, monkeypatch, tmp_path
+) -> None:
+    """The GitLab shape end to end: the first session is only in the file, the
+    switch puts the review role in the environment and points the SDK's file
+    lookups at /dev/null, and the file's secret still blocks a comment."""
+    _write_aws(tmp_path, "credentials", "default", _FILE)
+    calls = _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    environ = {"HOME": str(tmp_path)}
+    assert mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    assert calls == ["GetCallerIdentity", "AssumeRole"]
+    for key, value in _NEW.items():
+        assert environ[key] == value
+    assert environ["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+    assert environ["AWS_CONFIG_FILE"] == "/dev/null"
+    assert mod.job_credentials(environ) == _NEW
+    quoted = f"{_PLAIN}the job held {_FILE['AWS_SECRET_ACCESS_KEY']}"
+    assert "a credential or token" in mod.posting_refusals(quoted, environ=environ)
 
 
 @pytest.mark.unit
@@ -3507,3 +3631,176 @@ def test_an_older_target_reviewer_is_refused_with_a_message(
     assert found, "the check is not one plain `if ! grep ...; then` condition"
     assert re.search(r"^\s*exit 1\s*$", found.group("body"), re.M)
     assert found.start() < script.index("REVIEW=")
+
+
+# --- switching to the review role on GitLab ------------------------------------
+
+_OLD = {
+    "AWS_ACCESS_KEY_ID": "ASIA" + "OLDKEY" * 2 + "EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "old-secret-" + "s" * 20,
+    "AWS_SESSION_TOKEN": "old-token-" + "t" * 30,
+}
+_NEW = {
+    "AWS_ACCESS_KEY_ID": "ASIA" + "NEWKEY" * 2 + "EXAMPLE",
+    "AWS_SECRET_ACCESS_KEY": "new-secret-" + "n" * 20,
+    "AWS_SESSION_TOKEN": "new-token-" + "u" * 30,
+}
+_SOURCES = {
+    "AWS_PROFILE": "other",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://127.0.0.1:1/c",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI": "/c",
+    "AWS_WEB_IDENTITY_TOKEN_FILE": "/tmp/t",
+    "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/x",
+}
+_ROLE_ARN = "arn:aws:iam::111122223333:role/idp-sdlc-GitLabReview"
+
+
+def _scripted_sts(mod, monkeypatch, caller: str, assume_fails: bool = False):
+    """Answer GetCallerIdentity with ``caller`` until AssumeRole has run, and
+    record every action, so a test can see whether AssumeRole was called."""
+    calls: list[str] = []
+
+    def answer(body: str, environ) -> str:
+        action = body.split("&", 1)[0].removeprefix("Action=")
+        calls.append(action)
+        if action == "AssumeRole":
+            assert "RoleArn=" + urllib.parse.quote(_ROLE_ARN, safe="") in body
+            if assume_fails:
+                raise mod.Failure("STS AssumeRole failed (403): not authorized")
+            return (
+                f"<AccessKeyId>{_NEW['AWS_ACCESS_KEY_ID']}</AccessKeyId>"
+                f"<SecretAccessKey>{_NEW['AWS_SECRET_ACCESS_KEY']}</SecretAccessKey>"
+                f"<SessionToken>{_NEW['AWS_SESSION_TOKEN']}</SessionToken>"
+            )
+        role = (
+            "idp-sdlc-GitLabReview"
+            if environ.get("AWS_ACCESS_KEY_ID") == _NEW["AWS_ACCESS_KEY_ID"]
+            else caller
+        )
+        return f"<Arn>arn:aws:sts::111122223333:assumed-role/{role}/s</Arn>"
+
+    monkeypatch.setattr(mod, "_sts", answer)
+    monkeypatch.setattr(mod, "_RETIRED_CREDENTIALS", [])
+    return calls
+
+
+@pytest.mark.unit
+def test_a_different_identity_assumes_the_review_role(mod, monkeypatch) -> None:
+    calls = _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    environ = {**_OLD, **_SOURCES, "AWS_REGION": "us-east-1"}
+    assert mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    assert calls == ["GetCallerIdentity", "AssumeRole"]
+    for key, value in _NEW.items():
+        assert environ[key] == value
+    for key in _SOURCES:
+        assert key not in environ, key
+    assert environ["AWS_SHARED_CREDENTIALS_FILE"] == "/dev/null"
+    assert environ["AWS_CONFIG_FILE"] == "/dev/null"
+    assert environ["AWS_EC2_METADATA_DISABLED"] == "true"
+    mod.require_role("idp-sdlc-GitLabReview", environ)
+
+
+@pytest.mark.unit
+def test_the_review_role_already_held_is_not_assumed_again(mod, monkeypatch) -> None:
+    calls = _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLabReview")
+    environ = {**_OLD, "AWS_PROFILE": "kept"}
+    assert not mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    assert calls == ["GetCallerIdentity"]
+    assert environ == {**_OLD, "AWS_PROFILE": "kept"}
+
+
+@pytest.mark.unit
+def test_the_child_inherits_only_the_review_role_s_credentials(
+    mod, monkeypatch
+) -> None:
+    _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    for key, value in {**_OLD, **_SOURCES}.items():
+        monkeypatch.setenv(key, value)
+    assert mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN)
+    child = mod.child_env(mod.DEFAULT_MODEL)
+    for key, value in _NEW.items():
+        assert child[key] == value
+    values = set(child.values())
+    assert not values & set(_OLD.values()), "a first-role credential reached the child"
+    assert not set(child) & set(_SOURCES), "another credential source reached the child"
+
+
+@pytest.mark.unit
+def test_the_first_role_s_credentials_are_still_withheld_from_a_comment(
+    mod, monkeypatch
+) -> None:
+    _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab")
+    environ = dict(_OLD)
+    mod.assume_review_role("idp-sdlc-GitLabReview", _ROLE_ARN, environ)
+    quoted = f"{_PLAIN}the job held {_OLD['AWS_SECRET_ACCESS_KEY']}"
+    assert "a credential or token" in mod.posting_refusals(quoted, environ=environ)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("arn", [_ROLE_ARN, ""], ids=["assume-refused", "no-arn"])
+def test_a_failed_switch_refuses_the_run(
+    mod, monkeypatch, capsys, tmp_path, arn: str
+) -> None:
+    _scripted_sts(mod, monkeypatch, "idp-sdlc-GitLab", assume_fails=True)
+    for key, value in _OLD.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("REVIEW_ROLE_ARN_UNDER_TEST", arn)
+    read = []
+    monkeypatch.setattr(mod.Gitlab, "merge_request", lambda self, iid: read.append(iid))
+    code = mod.main(
+        [
+            "--mr",
+            "1",
+            "--project",
+            "p",
+            "--require-aws-role",
+            "idp-sdlc-GitLabReview",
+            "--assume-role-from",
+            "REVIEW_ROLE_ARN_UNDER_TEST",
+            "--artifact-dir",
+            str(tmp_path),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 1 and read == []
+    assert "FAILED:" in out
+    assert os.environ["AWS_ACCESS_KEY_ID"] == _OLD["AWS_ACCESS_KEY_ID"]
+
+
+@pytest.mark.unit
+def test_main_switches_before_it_checks_the_role(mod, monkeypatch, tmp_path) -> None:
+    order: list[str] = []
+    monkeypatch.setenv("GITLAB_REVIEW_TOKEN", "t")
+    monkeypatch.setenv("REVIEW_ROLE_ARN_UNDER_TEST", _ROLE_ARN)
+    monkeypatch.setattr(
+        mod, "assume_review_role", lambda *a, **k: order.append("assume") or True
+    )
+    monkeypatch.setattr(mod, "require_role", lambda *a, **k: order.append("check"))
+    monkeypatch.setattr(
+        mod.Gitlab,
+        "merge_request",
+        lambda self, iid: (_ for _ in ()).throw(mod.Skip("x")),
+    )
+    mod.main(
+        [
+            "--mr",
+            "1",
+            "--project",
+            "p",
+            "--require-aws-role",
+            "idp-sdlc-GitLabReview",
+            "--assume-role-from",
+            "REVIEW_ROLE_ARN_UNDER_TEST",
+            "--artifact-dir",
+            str(tmp_path),
+        ]
+    )
+    assert order == ["assume", "check"]
+
+
+@pytest.mark.unit
+def test_github_does_not_assume_a_role(gh_job: dict) -> None:
+    """GitHub's OIDC session already is the review role."""
+    script = "\n".join(str(step.get("run", "")) for step in gh_job["steps"])
+    assert "--assume-role-from" not in script

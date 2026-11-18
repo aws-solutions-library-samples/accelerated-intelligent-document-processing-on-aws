@@ -291,10 +291,12 @@ which returns what the deploy-time swap would have written for the Region:
 report is) uses `eu.anthropic.claude-sonnet-4-6` in an EU Region, and the SDK's
 local discovery falls back to `eu.amazon.nova-pro-v1:0` in an EU Region and
 `us.amazon.nova-2-lite-v1:0` in Canada when the system defaults name no model.
-⚠️ The models the shipped system defaults name are not translated on the SDK's
-local path, which never runs the deploy-time swap, so an EU or Canada caller of
-local discovery gets the `us.` ids in `base-discovery.yaml` unless it passes a
-model.
+The models `base-discovery.yaml` names for the SDK's local path (schema discovery
+with and without ground truth, and section detection under `auto_split`) are
+translated the same way through `regional_models.regional_shipped_model`, because
+that path never runs the deploy-time swap. A model passed by the caller is sent
+as given. `tests/unit/test_regional_shipped_models.py` fails if the YAML names a
+model for one of those sections that `regional_models` does not know.
 Every id passed to it must be in `regional_models.FALLBACK_MODEL_IDS`, and
 `src/lambda/update_configuration/test_eu_region.py` checks each against the swap
 tables. `tests/unit/test_geographic_fallbacks.py` reads every code fallback in the

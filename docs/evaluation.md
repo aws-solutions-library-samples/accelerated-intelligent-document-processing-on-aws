@@ -682,6 +682,15 @@ attempt of the Evaluation step that is cut off (a Lambda timeout or crash) are
 not reported: the workflow continues with the document as it was before that
 attempt, so if a retry then succeeds, only the retry's comparisons appear.
 
+**Cost of the Evaluation step's Lambda.** Like the OCR, classification,
+extraction, assessment and summarization steps, the Evaluation step adds its own
+Lambda invocation to the document's metering, as
+`Evaluation/lambda/requests` and `Evaluation/lambda/duration` (GB-seconds). It does
+so whether the document was evaluated, the evaluation reported errors, no baseline
+was found, or evaluation was switched off. An attempt that is cut off, or that
+raises an unexpected error, adds nothing. These keys are priced by the shipped
+`lambda/requests` and `lambda/duration` entries.
+
 **Benefits of Configuration-Based Control:**
 - Enable/disable evaluation without stack redeployment
 - Runtime control similar to summarization and assessment features

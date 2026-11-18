@@ -144,7 +144,7 @@ export const useTestSetItemEditModel = (testSetId: string, objectKey: string, se
     mayChangeClass,
     openSectionId: session.selectedSectionId,
     openData: session.sectionData,
-    onChanged: () => void reload(),
+    onChanged: () => reload(),
   });
 
   const buildFieldLink = useCallback(

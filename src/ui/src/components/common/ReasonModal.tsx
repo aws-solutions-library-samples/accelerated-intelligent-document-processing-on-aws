@@ -5,7 +5,7 @@
 // reason from a fixed list and an optional note. Used by Skip on a review-queue item
 // and by Skip All Reviews on a document.
 import React, { useEffect, useState } from 'react';
-import type { SelectProps } from '@cloudscape-design/components';
+import type { ModalProps, SelectProps } from '@cloudscape-design/components';
 import { Box, Button, FormField, Modal, Select, SpaceBetween, Textarea } from '@cloudscape-design/components';
 
 /** The review queues' note limit; the server refuses a longer note. */
@@ -19,6 +19,13 @@ interface ReasonModalProps {
   reasons: readonly string[];
   confirmLabel: string;
   loading?: boolean;
+  /** Confirm is disabled, showing this reason (e.g. while counting, or nothing to do). */
+  confirmDisabledReason?: string | null;
+  /** While true the dialog cannot be dismissed (a request is running). */
+  dismissDisabled?: boolean;
+  size?: ModalProps.Size;
+  /** Extra controls between the summary and the reason (e.g. a checkbox). */
+  extra?: React.ReactNode;
   onDismiss: () => void;
   onConfirm: (reason: string, note: string | undefined) => void;
 }
@@ -30,6 +37,10 @@ const ReasonModal = ({
   reasons,
   confirmLabel,
   loading = false,
+  confirmDisabledReason = null,
+  dismissDisabled = false,
+  size,
+  extra,
   onDismiss,
   onConfirm,
 }: ReasonModalProps): React.JSX.Element => {
@@ -49,6 +60,7 @@ const ReasonModal = ({
   const tooLong = note.length > MAX_NOTE_LENGTH;
 
   const submit = () => {
+    if (confirmDisabledReason) return;
     setSubmitted(true);
     if (!reason?.value || tooLong) return;
     onConfirm(reason.value, note.trim() || undefined);
@@ -57,15 +69,22 @@ const ReasonModal = ({
   return (
     <Modal
       visible={visible}
-      onDismiss={onDismiss}
+      onDismiss={dismissDisabled ? () => undefined : onDismiss}
       header={header}
+      size={size}
       footer={
         <Box float="right">
           <SpaceBetween direction="horizontal" size="xs">
-            <Button variant="link" onClick={onDismiss}>
+            <Button variant="link" onClick={onDismiss} disabled={dismissDisabled}>
               Cancel
             </Button>
-            <Button variant="primary" loading={loading} onClick={submit}>
+            <Button
+              variant="primary"
+              loading={loading}
+              onClick={submit}
+              disabled={!!confirmDisabledReason}
+              disabledReason={confirmDisabledReason ?? undefined}
+            >
               {confirmLabel}
             </Button>
           </SpaceBetween>
@@ -74,6 +93,7 @@ const ReasonModal = ({
     >
       <SpaceBetween size="m">
         {children}
+        {extra}
         <FormField label="Reason" errorText={submitted && !reason ? 'Choose a reason.' : undefined}>
           <Select
             selectedOption={reason}

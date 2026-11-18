@@ -97,6 +97,7 @@ EXPECTED = ["Dependency Audit (SCA)", "Static Checks (lint, types, scans)"]
 # offline gate is its own job for the same reason, so it is listed too.
 MUST_BE_REQUIRED = {
     "Static Checks (lint, types, scans)": "make lint-cicd",
+    "Scripts Coverage (gate suites)": "make coverage-all-cicd",
     "Unit Tests (idp_common)": "make test-cicd",
     "Package and Lambda Test Suites": "make test-packages-cicd",
     "UI Unit Tests": "npx vitest run",

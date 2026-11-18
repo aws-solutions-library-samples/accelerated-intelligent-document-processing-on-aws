@@ -57,6 +57,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import gate_premises
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -98,8 +99,12 @@ PATHS_EXPECTED_ABSENT: dict[str, str] = {
 }
 
 # Generated files: present after a build, absent in a fresh clone. Their presence
-# or absence says nothing, so neither direction is asserted.
-PATHS_BUILD_ARTIFACTS: dict[str, str] = {
+# or absence says nothing, so they are exempt from the "every named path exists"
+# check. What makes that safe is computed per member rather than asserted, by
+# ``test_build_artifact_exemptions_are_ignored_and_still_named``: an ignore rule
+# covers the path and git tracks nothing there, so a real file cannot land at it
+# unnoticed, and the document still names it, or the entry is stale.
+PATHS_EXEMPT_AS_BUILD_ARTIFACTS: dict[str, str] = {
     "src/ui/.checksum": "written by `make ui-lint`; gitignored, absent in a fresh clone",
 }
 
@@ -407,7 +412,7 @@ def test_documented_paths_exist() -> None:
     ``CONTRIBUTING.md`` was rewritten in the first place because it described
     directories (``patterns/pattern-1/`` and siblings) that had been removed.
     """
-    exempt = set(PATHS_EXPECTED_ABSENT) | set(PATHS_BUILD_ARTIFACTS)
+    exempt = set(PATHS_EXPECTED_ABSENT) | set(PATHS_EXEMPT_AS_BUILD_ARTIFACTS)
     missing: list[str] = []
     for candidate in sorted(_documented_paths()):
         if candidate in exempt or candidate.rstrip("/") in exempt:
@@ -416,6 +421,43 @@ def test_documented_paths_exist() -> None:
             missing.append(candidate)
     assert not missing, "CONTRIBUTING.md points at paths that do not exist:\n" + "\n".join(
         f"  - {m}" for m in missing
+    )
+
+
+@pytest.mark.unit
+def test_build_artifact_exemptions_are_ignored_and_still_named() -> None:
+    """Each build-artifact exemption is an ignored, untracked path the document names.
+
+    ``gate_premises.vcs_ignored_build_output`` is the premise, evaluated per member:
+    an ignore rule must cover the path (probed both as a directory and as the file
+    itself) and git must track nothing under it, so the
+    exemption cannot come to hide a file that ships. A member the document no longer
+    names is stale and fails too, rather than pre-exempting whatever is next written
+    at that path. The emptiness assertion is there because a loop over nothing passes.
+    """
+    assert PATHS_EXEMPT_AS_BUILD_ARTIFACTS, "no build-artifact exemptions to check"
+    documented = _documented_paths()
+    problems: list[str] = []
+    for path in sorted(PATHS_EXEMPT_AS_BUILD_ARTIFACTS):
+        holds, why = gate_premises.vcs_ignored_build_output(path)
+        if not holds:
+            problems.append(f"{path}: {why}")
+        # The predicate probes with a trailing slash because it is written for
+        # directories, so a directory-only rule (``.checksum/``) satisfies it while
+        # leaving the FILE unignored. Members here are files, so ask about the bare
+        # path as well.
+        bare = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "check-ignore", "-q", "--no-index", path],
+            check=False,
+        )
+        if bare.returncode != 0:
+            problems.append(f"{path}: no ignore rule covers the file itself")
+        if path not in documented:
+            problems.append(
+                f"{path}: no longer named by CONTRIBUTING.md, so the exemption is stale"
+            )
+    assert not problems, "build-artifact exemptions that no longer hold:\n" + "\n".join(
+        f"  - {m}" for m in problems
     )
 
 

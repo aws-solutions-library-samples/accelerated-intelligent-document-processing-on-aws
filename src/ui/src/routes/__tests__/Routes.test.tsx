@@ -13,6 +13,7 @@
 
 import { render, screen } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it, vi } from 'vitest';
 
 const authStatusRef = { current: 'authenticated' as string };
@@ -47,10 +48,16 @@ import Routes from '../Routes';
 
 const CREDS = { accessKeyId: 'AKIA' };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 const renderWith = (ctx: Record<string, unknown>, authStatus = 'authenticated') => {
   authStatusRef.current = authStatus;
   appContextRef.current = { retryCredentials: vi.fn(), ...ctx };
-  return render(<Routes />);
+  return render(<Routes />, { wrapper: English });
 };
 
 describe('Routes credential gating', () => {

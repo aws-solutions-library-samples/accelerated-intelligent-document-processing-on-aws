@@ -4980,6 +4980,26 @@ def terraform_deploy_role_template(
                         "Action": ["cloudcontrol:*"],
                         "Resource": "*",
                     },
+                    {
+                        # Cloud Control's AWS::IAM::ManagedPolicy delete handler
+                        # lists what a policy is attached to before deleting it,
+                        # which CloudFormation's own handling never needed. Read
+                        # only, and only on the policies the service role's
+                        # ManagedPoliciesWithinNamePrefix lets this role create.
+                        "Sid": "TerraformManagedPolicyEntities",
+                        "Effect": "Allow",
+                        "Action": ["iam:ListEntitiesForPolicy"],
+                        "Resource": [
+                            {
+                                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:"
+                                "policy/${ManagedStackNamePrefix}*"
+                            },
+                            {
+                                "Fn::Sub": "arn:${AWS::Partition}:iam::${AWS::AccountId}:"
+                                "policy/*/${ManagedStackNamePrefix}*"
+                            },
+                        ],
+                    },
                     *(
                         copy.deepcopy(list(TERRAFORM_MIGRATION_ROLE_ADDITIONS))
                         if terraform_migration
@@ -5512,7 +5532,53 @@ def _sweep_terraform_retained(stack_name, retained, deployer=None):
             deployer._empty_and_delete_bucket(bucket["physical_id"])
         except Exception as e:  # noqa: BLE001
             errors.append(f"S3 bucket {bucket['physical_id']}: {e}")
+    for role in retained_iam_roles(stack_name, retained):
+        try:
+            _delete_retained_role(role)
+        except Exception as e:  # noqa: BLE001
+            if "NoSuchEntity" not in str(e):
+                errors.append(f"IAM role {role}: {e}")
     return errors
+
+
+#: Retained-resource types the sweep deletes from ``other`` (the SDK puts every
+#: type it has no category for there).
+RETAINED_ROLE_TYPES = ("aws_iam_role", "AWS::IAM::Role")
+
+
+def retained_iam_roles(stack_name, retained):
+    """Names of the IAM roles this run retained, and only this run's: a role is
+    swept only when its name starts with ``<stack>-``, the prefix every role the
+    module generates carries (DOCUMENTKB's knowledge-base ingestion roles are
+    retained by design and were left behind)."""
+    out = []
+    for other in (retained or {}).get("other") or []:
+        name = str(other.get("physical_id") or "")
+        if other.get("type") in RETAINED_ROLE_TYPES and name.startswith(
+            f"{stack_name}-"
+        ):
+            out.append(name)
+    return out
+
+
+def _delete_retained_role(name):
+    iam = boto3.client("iam", config=_THROTTLE_RETRY_CONFIG)
+    for page in iam.get_paginator("list_attached_role_policies").paginate(
+        RoleName=name
+    ):
+        for policy in page["AttachedPolicies"]:
+            iam.detach_role_policy(RoleName=name, PolicyArn=policy["PolicyArn"])
+    for page in iam.get_paginator("list_role_policies").paginate(RoleName=name):
+        for policy in page["PolicyNames"]:
+            iam.delete_role_policy(RoleName=name, PolicyName=policy)
+    for page in iam.get_paginator("list_instance_profiles_for_role").paginate(
+        RoleName=name
+    ):
+        for profile in page["InstanceProfiles"]:
+            iam.remove_role_from_instance_profile(
+                InstanceProfileName=profile["InstanceProfileName"], RoleName=name
+            )
+    iam.delete_role(RoleName=name)
 
 
 def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 * 3600):
@@ -5581,7 +5647,10 @@ def cleanup_terraform_deployment(result, terraform, iam=True, delete_timeout=3 *
         for error in errors:
             print(f"[{stack_name}] ⚠️ retained resource not deleted: {error}")
             findings.append(f"retained resource not deleted: {error}")
+        swept_roles = set(retained_iam_roles(stack_name, retained))
         for other in retained.get("other") or []:
+            if str(other.get("physical_id") or "") in swept_roles:
+                continue
             # The categories the sweep cannot delete. Retained by design, but
             # this run created them and nothing else will remove them.
             findings.append(
@@ -7629,9 +7698,10 @@ def teardown_primary_stack(result, stack_name, terraform=None):
         print(
             f"[{stack_name}]     kept with it: {stack_name}-iam and "
             f"{stack_name}-PermissionsBoundary — the retained stack's roles carry "
-            "that boundary and its deletion needs that service role. Reaped by "
-            "cleanup_stale_idp_stacks / cleanup_stale_idp_policies once the "
-            "retention marker expires."
+            "that boundary and its deletion needs that service role. Once the "
+            "retention marker expires, cleanup_stale_idp_stacks reaps the stack, "
+            "and its -iam stack on a later run once the stack is gone; "
+            "cleanup_stale_idp_policies reaps the boundary."
         )
         return {"retained": True, "findings": []}
 
@@ -8441,7 +8511,41 @@ def cleanup_stale_ci_diagnostics():
 IDP_STACK_STALE_AGE_SECONDS = 3 * 3600  # 3h
 
 
-def cleanup_stale_idp_stacks(terraform_runs=None):
+def _main_stack_state(cf, name: str):
+    """``("gone", None)``, ``("exists", status)`` or ``("unknown", error)`` for
+    the stack called ``name``, asked with describe_stacks rather than read from a
+    listing: the reaper's own list_stacks filter omits DELETE_IN_PROGRESS (and
+    several wedged states), which are exactly the states in which deleting the
+    stack's -iam pre-stack strands it.
+
+    Only an answer :func:`_is_stack_gone` accepts counts as gone; any other
+    failure, a throttle or a denial included, establishes nothing, so the caller
+    keeps the service role.
+    """
+    try:
+        stacks = cf.describe_stacks(StackName=name).get("Stacks", [])
+    except Exception as e:  # noqa: BLE001
+        return ("gone", None) if _is_stack_gone(e) else ("unknown", str(e))
+    live = [st.get("StackStatus", "") for st in stacks]
+    live = [x for x in live if x != "DELETE_COMPLETE"]
+    return ("exists", live[0]) if live else ("gone", None)
+
+
+def _main_stack_converges(status: str) -> bool:
+    """Whether a main stack in ``status`` resolves without a person.
+
+    A *_IN_PROGRESS stack is still deploying or deleting. A *_COMPLETE one is
+    in the listing: inside the age gate, a later run's age gate deletes it; with
+    an age that could not be established, it is reported on its own line by the
+    age gate instead. Neither warrants a warning here. REVIEW_IN_PROGRESS (a change set nobody executes) and every
+    *_FAILED state stay where they are, so those are reported.
+    """
+    if status == "REVIEW_IN_PROGRESS" or status.endswith("_FAILED"):
+        return False
+    return status.endswith("_IN_PROGRESS") or status.endswith("_COMPLETE")
+
+
+def cleanup_stale_idp_stacks(terraform_runs=None, abandoned: list | None = None):
     """Reap OLD leftover idp- test stacks so their IAM roles don't leak (defense in depth).
 
     Terraform runs: ``terraform_runs`` is the set of runs whose Terraform state
@@ -8463,7 +8567,19 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
     of whether any individual run finished its own cleanup.
 
     Targets top-level idp- stacks (main deploy stacks, their `-iam` stacks, and
-    the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks).
+    the -apigw/-waf/-apigwpriv/-jobsapi probe stacks + their -iam stacks). A
+    `-iam` stack is deleted only once its main stack no longer exists, asked with
+    describe_stacks: the main stack deletes through the CFServiceRole the `-iam`
+    stack holds, and deleting both in one pass stranded the main stack
+    DELETE_FAILED with no role to retry through. Until then the `-iam` stack is
+    deferred to a later run. A main stack in any *_IN_PROGRESS state is
+    waited for quietly. One that waiting will not resolve (a terminal state, or
+    DELETE_FAILED before this run's retry), or whose existence could not be
+    established, is reported with a warning and a count, and appended to
+    ``abandoned`` for the run's summary; neither is a sweep finding, since every
+    stack was considered. Keeping the `-iam` stack also keeps the run's prefix
+    live for cleanup_stale_idp_roles/_policies, which is what spares the
+    CFServiceRole and boundary policy the retry deletes through.
     Age-gated (IDP_STACK_STALE_AGE_SECONDS) so a concurrent pipeline's in-flight
     run is never deleted. Never raises. Skips *-apigw-vpc (owned
     by cleanup_stale_apigw_test_vpcs), the persistent pipeline stack, and each
@@ -8560,6 +8676,10 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
             )
             for summary in page.get("StackSummaries", [])
         ]
+        listed_status = {
+            summary.get("StackName", ""): summary.get("StackStatus", "")
+            for summary in summaries
+        }
         # Terraform label stacks, by the marker in their description. Listed
         # first so a run's `-iam` pre-stack can be kept with its label.
         labels = {
@@ -8669,9 +8789,8 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
                     _drop_retention_marker(bucket, name)
             return []
 
-        # Delete non-iam stacks first (they reference their -iam CFServiceRole /
-        # boundary), then the -iam stacks — mirrors cleanup_stack ordering so a
-        # main stack isn't stranded when its service role is deleted first.
+        # Main and probe stacks are deleted here; each -iam stack only once its
+        # main stack is gone (see below).
         non_iam = [n for n in stale if not n.endswith("-iam")]
         iam_stacks = [n for n in stale if n.endswith("-iam")]
         # A Terraform label stack with no state behind it: sweep what its
@@ -8685,15 +8804,64 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
                 left = [f"resource directory not read: {e}"]
             if left:
                 left_behind.append(f"{name}: {len(left)} left ({'; '.join(left[:5])})")
-        for name in non_iam + iam_stacks:
+        issued = set()
+        for name in non_iam:
+            try:
+                print(f"[{name}] reaping stale idp- stack...")
+                cf.delete_stack(StackName=name)
+                issued.add(name)
+            except Exception as e:  # noqa: BLE001
+                print(f"[{name}] ⚠️ delete failed: {e}")
+        # A -iam stack holds the CFServiceRole its main stack deletes through.
+        # delete_stack only STARTS a delete, so deleting the -iam stack in the
+        # same pass removed the role while the main stack was still deleting;
+        # the main delete then failed part-way ("security token ... invalid")
+        # and every later night's retry failed too ("role ... cannot be
+        # assumed"), leaving it DELETE_FAILED for good. So a -iam stack is
+        # deleted only once its main stack no longer exists; until then the
+        # role stays and the -iam stack is reaped on a later run.
+        #
+        # Waiting converges for a main stack in any *_IN_PROGRESS state (still
+        # deleting, or a deploy still in flight). It does not for a terminal
+        # state: the role is still kept, so a retry can work, and the pair is
+        # printed as a warning with a count -- not returned as a sweep finding,
+        # since the sweep did consider every stack. A main stack that was
+        # DELETE_FAILED in this run's listing was just retried with its role
+        # kept, and gets its own line.
+        deferred_iam, stuck_mains, unestablished_mains = [], {}, {}
+        retried_mains = []
+        for name in iam_stacks:
+            main = name[: -len("-iam")]
+            state, detail = _main_stack_state(cf, main)
+            if state != "gone":
+                deferred_iam.append(name)
+                if state == "unknown":
+                    unestablished_mains[main] = detail
+                elif main in issued and listed_status.get(main) == "DELETE_FAILED":
+                    retried_mains.append(main)
+                elif _main_stack_converges(str(detail)):
+                    print(
+                        f"[{name}] deferred: its main stack {main} is "
+                        f"{detail}, and may need this stack's service role"
+                    )
+                else:
+                    stuck_mains[main] = detail  # waiting won't do it
+                continue
             try:
                 print(f"[{name}] reaping stale idp- stack...")
                 cf.delete_stack(StackName=name)
             except Exception as e:  # noqa: BLE001
                 print(f"[{name}] ⚠️ delete failed: {e}")
         print(
-            f"✅ Issued delete for {len(stale)} stale idp- stack(s) "
-            f"({len(non_iam)} main/probe + {len(iam_stacks)} -iam)"
+            f"✅ Issued delete for {len(stale) - len(deferred_iam)} stale idp- "
+            f"stack(s) ({len(non_iam)} main/probe + "
+            f"{len(iam_stacks) - len(deferred_iam)} -iam)"
+            + (
+                f"; {len(deferred_iam)} -iam stack(s) deferred until their main "
+                "stack is gone"
+                if deferred_iam
+                else ""
+            )
         )
 
         # Drop the markers whose stacks were just reaped. A marker left behind
@@ -8703,6 +8871,50 @@ def cleanup_stale_idp_stacks(terraform_runs=None):
         if bucket:
             for name in expired:
                 _drop_retention_marker(bucket, name)
+        # Reported, not returned: the sweep considered every stack, and ending
+        # every build red until a person fixes a wedged stack would make this
+        # row worth less as the report of a sweep that genuinely did not run.
+        for main, status in sorted(stuck_mains.items()):
+            print(
+                f"  ⚠️ {main}-iam kept: its main stack {main} is {status}, which "
+                "waiting will not resolve; its roles stay until that stack is "
+                "deleted (read its events)"
+            )
+        for main in sorted(retried_mains):
+            print(
+                f"  ⚠️ {main}-iam kept: its main stack {main} was DELETE_FAILED "
+                "and has been retried this run with its service role kept; if it "
+                "fails again its roles stay until it is deleted (read its events)"
+            )
+        for main, why in sorted(unestablished_mains.items()):
+            print(
+                f"  ⚠️ {main}-iam kept: could not establish whether {main} still "
+                f"exists ({why}); keeping the service role, re-checked next run"
+            )
+        if stuck_mains or retried_mains or unestablished_mains:
+            print(
+                f"  ({len(stuck_mains)} -iam stack(s) held by a wedged main stack, "
+                f"{len(retried_mains)} by a retried failed delete, "
+                f"{len(unestablished_mains)} by an unanswered existence check)"
+            )
+        # Not fatal, and a person still has to act: said again in the run's
+        # summary, since a wedged pair pins a run's roles against RolesPerAccount.
+        if abandoned is not None:
+            abandoned.extend(
+                f"{main}-iam kept: its main stack {main} is {status} "
+                "(delete it, then the -iam stack goes on a later run)"
+                for main, status in sorted(stuck_mains.items())
+            )
+            abandoned.extend(
+                f"{main}-iam kept: its main stack {main} was DELETE_FAILED and a "
+                "delete was retried this run; if this note recurs, the retry is "
+                "failing too (read its events)"
+                for main in sorted(retried_mains)
+            )
+            abandoned.extend(
+                f"{main}-iam kept: could not establish whether {main} exists ({why})"
+                for main, why in sorted(unestablished_mains.items())
+            )
         if left_behind:
             return _sweep_finding(
                 "deleted Terraform label stack(s) with no state left, and their "
@@ -9016,8 +9228,9 @@ def cleanup_stale_idp_policies():
     evidence for it.
 
     Convergent rather than immediate: the stack reaper above only *issues* its
-    deletes, so a run reaped this minute still has stacks and is skipped here
-    until the next run. Never raises.
+    deletes, and keeps a run's `-iam` stack until its main stack is gone, so a
+    run reaped this minute still has stacks and is skipped here for a further
+    run after that. Never raises.
 
     TWO enumerations — `_live_idp_run_prefixes` (ListStacks) and `list_policies`
     — and the first runs before the second because without the protected-prefix
@@ -11866,7 +12079,8 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
         analysis = generate_migration_failure_summary(
             summary, migration_failure_evidence(work_dir)
         )
-        summary += f"\n\n{analysis}"
+        # First: chat posts keep only the start of the summary.
+        summary = f"{analysis}\n\n{summary}"
     return success, summary
 
 
@@ -12201,7 +12415,10 @@ def main():
         terraform_runs_left = None
     elif terraform_runs_left is not None:
         terraform_runs_left |= migration_runs_left
-    stale_stack_findings = cleanup_stale_idp_stacks(terraform_runs=terraform_runs_left)
+    iam_stacks_kept: list[str] = []
+    stale_stack_findings = cleanup_stale_idp_stacks(
+        terraform_runs=terraform_runs_left, abandoned=iam_stacks_kept
+    )
     # Buckets last: a stack the reaper above just deleted frees its buckets for
     # reaping here (CloudFormation can't delete a non-empty bucket, so they'd
     # otherwise leak — thousands accumulated this way).
@@ -12662,6 +12879,13 @@ def main():
         # in the summary every reader gets, rather than only in the build log.
         consolidated += "\n\n⚠️ TERRAFORM DEPLOYMENTS NEEDING A MANUAL DESTROY\n" + (
             "\n".join(f"• {note}" for note in terraform_reaps_abandoned)
+        )
+    if iam_stacks_kept:
+        # Not fatal either: the stack sweep kept a -iam stack (and the run's
+        # roles in it) because its main stack is not gone. Each note says
+        # whether a person needs to act; only a wedged main stack does.
+        consolidated += "\n\n⚠️ IDP -IAM STACKS KEPT — MAIN STACK NOT GONE\n" + (
+            "\n".join(f"• {note}" for note in iam_stacks_kept)
         )
     print(f"\n{consolidated}\n")
 

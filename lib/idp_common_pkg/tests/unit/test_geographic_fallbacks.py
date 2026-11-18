@@ -13,10 +13,16 @@ profile.
 
 What is read, and what is not:
 
-- Every tracked ``.py`` file under ``lib/``, ``src/lambda/``, ``nested/*/src/`` and
-  ``patterns/*/src/``, except test modules: a path with a ``tests`` component, or
-  a file named ``test_*.py``, ``*_test.py`` or ``conftest.py``. A fixture naming a
-  ``us.`` id is input to a test, not a model the code calls.
+- Every tracked ``.py`` file under ``lib/``, ``src/lambda/``, ``nested/*/src/``,
+  ``patterns/*/src/`` and ``feature-platform/``, except test modules: a path with a
+  ``tests`` component, or a file named ``test_*.py``, ``*_test.py`` or
+  ``conftest.py``. A fixture naming a ``us.`` id is input to a test, not a model
+  the code calls. The vendored ``pii-anonymizer`` tree is read too and holds no
+  finding; it cannot be edited here, so a re-sync that brought one would be
+  answered in the hook that configures it.
+- A feature that cannot import ``idp_common`` keeps its own copy of the rows it
+  needs, and ``FEATURE_COPIES`` below holds each copy equal to
+  :data:`~idp_common.regional_models.REGIONAL_DEFAULT_MODELS`.
 - Under ``idp_common/agents/`` every model literal is refused, because there the
   configured model comes from configuration and every literal is a fallback.
 - Elsewhere a literal is refused in the four positions a fallback takes: a
@@ -35,8 +41,10 @@ expression or an ``if not m: m = ...`` assignment outside a ``return``;
 ``setdefault``/``pop``/``next`` defaults; dataclass and class-attribute defaults;
 a lambda body; a ``model_id=`` keyword argument; a ``us-gov.`` prefix; and
 run-time concatenation. None of those shapes holds a geographic literal in scope
-today except ``DEFAULT_CLASSIFICATION_MODEL`` in ``config/models.py``, which must
-equal the shipped classification default and is outside this change.
+today. ``DEFAULT_CLASSIFICATION_MODEL`` in ``config/models.py`` is a US id because
+it must equal the shipped classification default; the one place it is substituted
+at run time, a cleared call's model, goes through :func:`regional_default`
+(``tests/unit/config/test_classification_default_region.py``).
 """
 
 from __future__ import annotations
@@ -59,7 +67,7 @@ _GEOGRAPHIC_MODEL_LITERAL = re.compile(
     r"(?<![\w-])(us|eu|apac|ca|jp|au)\.[a-z]+\.[\w.:\[\]-]+"
 )
 
-_ROOTS = ("lib", "src/lambda", "nested", "patterns")
+_ROOTS = ("lib", "src/lambda", "nested", "patterns", "feature-platform")
 _AGENTS = "lib/idp_common_pkg/idp_common/agents/"
 _GET_NAMES = {"get", "getenv", "getattr"}
 
@@ -79,7 +87,7 @@ def _in_scope(path: str) -> bool:
     if not path.endswith(".py") or _is_test_module(path):
         return False
     parts = path.split("/")
-    if parts[0] == "lib" or parts[:2] == ["src", "lambda"]:
+    if parts[0] in ("lib", "feature-platform") or parts[:2] == ["src", "lambda"]:
         return True
     return parts[0] in ("nested", "patterns") and len(parts) > 2 and parts[2] == "src"
 
@@ -168,6 +176,8 @@ def test_the_scan_reads_every_root():
         assert any(m.startswith(root) for m in modules), root
     assert any(m.startswith("nested/") for m in modules)
     assert any(m.startswith("patterns/") for m in modules)
+    for path in FEATURE_COPIES:
+        assert path in modules, path
 
 
 @pytest.mark.unit
@@ -240,6 +250,8 @@ def test_every_geographic_prefix_is_read(prefix):
         ("lib/idp_sdk/idp_sdk/conftest.py", False),
         ("nested/api-resolvers/src/lambda/x/index.py", True),
         ("nested/api-resolvers/template_helpers.py", False),
+        ("feature-platform/pii-anonymizer/hook/handler.py", True),
+        ("feature-platform/pii-anonymizer/hook/tests/test_handler.py", False),
     ],
 )
 def test_only_test_modules_are_left_out(path, expected):
@@ -309,6 +321,71 @@ def test_the_registration_check_tells_the_two_apart(source, registered):
     assert (not _unregistered(_translation_calls("x.py", source))) == registered
 
 
+def _shipped_calls(path: str, source: str) -> list[tuple[str, ast.expr]]:
+    return [
+        (f"{path}:{node.lineno}", node.args[0])
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and _call_name(node) == "regional_shipped_model"
+        and node.args
+    ]
+
+
+def _refused_shipped(calls):
+    """A literal, or a constant outside the registry, passed to
+    ``regional_shipped_model``.
+
+    That function exists for a value read from the shipped defaults, which
+    ``tests/unit/test_regional_shipped_models.py`` holds to the registry by reading
+    the YAML. A model written in code belongs in :func:`regional_default`, where the
+    check above sees it; passed here it would escape both.
+    """
+    return [
+        (site, ast.unparse(arg))
+        for site, arg in calls
+        if isinstance(arg, ast.Constant)
+        or (
+            _resolve(arg) is not None
+            and _resolve(arg) not in regional_models.FALLBACK_MODEL_IDS
+        )
+    ]
+
+
+@pytest.mark.unit
+def test_no_code_model_is_passed_to_the_shipped_translation():
+    calls = [
+        call
+        for path in _modules()
+        for call in _shipped_calls(path, (_REPO / path).read_text(encoding="utf-8"))
+    ]
+    assert calls, "no regional_shipped_model call found; this test reads nothing"
+    assert not _refused_shipped(calls), _refused_shipped(calls)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "refused"),
+    [
+        ("regional_shipped_model(shipped_model_id, r)", False),
+        ("regional_shipped_model(SONNET_4_6_MODEL_ID, r)", False),
+        ("regional_shipped_model('us.amazon.nova-lite-v1:0', r)", True),
+        (f"regional_shipped_model('{regional_models.CHAT_MODEL_ID}', r)", True),
+    ],
+)
+def test_the_shipped_check_tells_them_apart(source, refused):
+    """Without this the check above could go vacuous and stay green."""
+    assert bool(_refused_shipped(_shipped_calls("x.py", source))) == refused
+
+
+@pytest.mark.unit
+def test_an_unregistered_constant_is_refused_by_the_shipped_check(monkeypatch):
+    monkeypatch.setattr(
+        regional_models, "UNREGISTERED_MODEL_ID", "us.amazon.nova-lite-v1:0", False
+    )
+    calls = _shipped_calls("x.py", "regional_shipped_model(UNREGISTERED_MODEL_ID, r)")
+    assert _refused_shipped(calls)
+
+
 @pytest.mark.unit
 def test_discovery_delegates_to_the_shared_translation():
     """A second copy of the table in ``regional_defaults`` would escape the
@@ -322,3 +399,52 @@ def test_discovery_delegates_to_the_shared_translation():
         regional_defaults.DEFAULT_EMBEDDING_MODEL_ID
         == regional_models.EMBEDDING_MODEL_ID
     )
+
+
+#: Feature handlers that cannot import ``idp_common`` -> (the constant holding the
+#: US model, the constant holding its Region rows). The data generator's API
+#: function is packaged from its own directory with no layer, and the PII hook
+#: deliberately carries no ``idp_common`` dependency (``hook/requirements.txt``).
+FEATURE_COPIES = {
+    "feature-platform/idp-data-generator/feature-api/handler.py": (
+        "_DEFAULT_SUGGEST_MODEL_ID",
+        "_REGIONAL_SUGGEST_MODEL_IDS",
+    ),
+    "feature-platform/pii-anonymizer/hook/handler.py": (
+        "_DEFAULT_MODEL_ID",
+        "_REGIONAL_DEFAULT_MODEL_IDS",
+    ),
+}
+
+
+def _module_constants(path: str) -> dict[str, object]:
+    tree = ast.parse((_REPO / path).read_text(encoding="utf-8"))
+    return {
+        target.id: ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and isinstance(node.value, (ast.Constant, ast.Dict))
+    }
+
+
+def _expected_rows(us_id: str) -> dict[str, str]:
+    return {
+        prefix: row[us_id]
+        for prefix, row in regional_models.REGIONAL_DEFAULT_MODELS.items()
+        if us_id in row
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("path", sorted(FEATURE_COPIES))
+def test_each_feature_copy_matches_the_shared_rows(path):
+    """A copy is only safe while it says what ``regional_models`` says, which
+    ``src/lambda/update_configuration/test_eu_region.py`` holds to the swap."""
+    default_name, rows_name = FEATURE_COPIES[path]
+    constants = _module_constants(path)
+    us_id = constants[default_name]
+    assert us_id in regional_models.FALLBACK_MODEL_IDS, us_id
+    assert constants[rows_name] == _expected_rows(us_id)
+    assert constants[rows_name], "a copy with no rows would translate nothing"

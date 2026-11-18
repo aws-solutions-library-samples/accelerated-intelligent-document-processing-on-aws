@@ -13,6 +13,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Architecture](./architecture.md) - Detailed component architecture and data flow
 - [Quick Start](./quick-start.md) - Cold-start configuration authoring for new deployments (chat widget + `idp-cli bootstrap`)
+- [IDP in Action](./idp-in-action.md) - An illustrated tour of the main features, with an overview video and feature walkthroughs
 - [Deployment](./deployment.md) - Build, publish, deploy, and test instructions
 - [AI-Guided Deployment Walkthrough](./idp-deployment-ai-guide.md) - A system prompt to paste into an AI assistant that walks you through choosing deployment parameters one question at a time
 - [After Subscribing on AWS Marketplace](./marketplace-subscription-next-steps.md) - What to do next in your own AWS account after a Marketplace subscription
@@ -84,6 +85,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 
 - [Post-Processing Lambda Hook](./post-processing-lambda-hook.md) - Custom downstream processing integration
 - [Lambda Hook Inference](./lambda-hook-inference.md) - Custom LLM integration via Lambda hooks
+- [Decision Models](./decision-models.md) - Classify sections with a decision model that returns a probability for every class
 - [Nova Fine-Tuning](./nova-finetuning.md) - Fine-tuning Amazon Nova models for IDP tasks
 - [Custom Model Fine-Tuning](./custom-model-finetuning.md) - Fine-tuning Nova models for document classification with the accelerator
 - [OpenAI Models](./openai-models.md) - GPT-6 Astra via the Converse API (CRIS-only `us.`/`global.` IDs, agentic extraction, all regions) **and** GPT-5.4 / GPT-5.5 / GPT-5.6 (Sol/Terra/Luna) via the bedrock-mantle Responses API: the two-path split, support matrices, limitations, regions, caching, long-context pricing
@@ -129,6 +131,9 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Dependency Mirroring](./dependency-mirroring.md) - Listing every Python and Node.js dependency for mirroring into an artifact repository
 - [API Gateway Hosting](./apigateway-hosting.md) - Serve the full Web UI from the existing API Gateway REST API (S3 proxy), within a VPC when combined with `ApiGatewayVisibility=PRIVATE` (alternative to CloudFront)
 - [GovCloud Deployment](./govcloud-deployment.md) - Deploy to GovCloud with the full Web UI (`--govcloud`) or headless (`--headless`)
+- [GovCloud Architecture](./govcloud-architecture.md) - Services removed vs. retained, limitations, and workarounds
+- [GovCloud Batch Jobs REST API](./govcloud-batch-api.md) - API reference, authentication, and bastion tunnel setup
+- [GovCloud Operations](./govcloud-operations.md) - Monitoring, troubleshooting, and best practices
 - [EU Region Model Support](./eu-region-model-support.md) - Model availability in EU regions
 - [Canada (Central) Region Model Support](./canada-region-model-support.md) - Model availability and default model changes in ca-central-1
 
@@ -147,13 +152,6 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Granular Assessment Retirement](./migration-granular-retirement.md) - What the retirement of granular assessment means for your configuration
 - [AppSync to REST API Migration](./migration-appsync-to-rest.md) - How the REST transport reproduces what the UI previously got from AWS AppSync
 - [Migration v0.4 to v0.5](./migration-v04-to-v05.md) - Upgrading from v0.4.x to v0.5.x (Unified Pattern)
-
-### GovCloud
-
-- [GovCloud Deployment Guide](./govcloud-deployment.md) - Deployment options (Web UI or headless), prerequisites, and deploy commands
-- [GovCloud Architecture](./govcloud-architecture.md) - Services removed vs. retained, limitations, and workarounds
-- [Batch Jobs REST API](./govcloud-batch-api.md) - API reference, authentication, and bastion tunnel setup
-- [GovCloud Operations](./govcloud-operations.md) - Monitoring, troubleshooting, and best practices
 
 ## Blogs, Customer Stories & Research
 

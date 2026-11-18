@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+from idp_common import regional_models
 from idp_common.agents.common import config as common_config
 from idp_common.agents.common.config import (
     get_environment_config,
@@ -207,10 +208,17 @@ def test_the_translated_ids_are_the_shipped_defaults():
 
 @pytest.mark.unit
 def test_default_agent_model_id_is_the_import_time_fallback():
-    """``DEFAULT_AGENT_MODEL_ID`` is what the other agent modules import."""
-    assert (
-        common_config.DEFAULT_AGENT_MODEL_ID == common_config._default_agent_model_id()
-    )
+    """``DEFAULT_AGENT_MODEL_ID`` is what the other agent modules import.
+
+    It is resolved for the Region in force at import, which the suite's fixtures
+    may have changed since (an ambient EU ``AWS_REGION`` at import, then a fixture
+    pinning ``us-east-1``), so it is compared with every family's answer rather
+    than with a fresh call.
+    """
+    assert common_config.DEFAULT_AGENT_MODEL_ID in {
+        regional_models.regional_default(regional_models.AGENT_MODEL_ID, region)
+        for region in ("us-east-1", "eu-west-1", "ca-central-1")
+    }
 
 
 @pytest.mark.unit

@@ -10,6 +10,7 @@
  */
 
 import React, { useState } from 'react';
+import { defineMessages, FormattedMessage, type MessageTag } from 'react-intl';
 import {
   Alert,
   Box,
@@ -32,6 +33,7 @@ import type { SelectProps } from '@cloudscape-design/components';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import useUserRole from '../../hooks/use-user-role';
+import useQuickStartAvailable from '../../hooks/use-quick-start-available';
 import { addTestSet, addTestSetFromUpload, createEmptyTestSet, listBucketFiles, validateTestFileName } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { DISCOVERY_PATH } from '../../routes/constants';
@@ -47,6 +49,25 @@ import {
 import type { CreateSource } from './testSetOptions';
 
 const client = generateClient();
+
+type LinkTag = { readonly link: MessageTag };
+
+const messages = defineMessages<{ noConfigurationWithQuickStart: LinkTag; noConfiguration: LinkTag }>({
+  noConfigurationWithQuickStart: {
+    id: 'testStudio.createTestSetWizard.noConfigurationWithQuickStart',
+    defaultMessage:
+      'No configuration yet? <link>Discovery</link> infers classes and fields from example documents, or open Quick Start from the side navigation to describe them in your own words.',
+    description:
+      'Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is offered Quick Start. <link> wraps a link to the Discovery page.',
+  },
+  noConfiguration: {
+    id: 'testStudio.createTestSetWizard.noConfiguration',
+    defaultMessage: 'No configuration yet? <link>Discovery</link> infers classes and fields from example documents.',
+    description:
+      'Hint under the configuration prerequisite of the create-test-set wizard, shown to a user who is not offered Quick Start. <link> wraps a link to the Discovery page.',
+  },
+});
+
 const logger = new ConsoleLogger('CreateTestSetWizard');
 
 type DocumentClassType = 'SINGLE_CLASS' | 'MULTI_CLASS' | 'PACKET_SPLITTING';
@@ -111,6 +132,7 @@ const CreateTestSetWizard = ({
   const isEmpty = source === 'empty';
   // Matching a pattern searches a whole bucket, so that source is Admin-only.
   const { isAdmin } = useUserRole();
+  const quickStartAvailable = useQuickStartAvailable();
 
   // Shared with the standalone deep-link modal so the two entry points cannot
   // drift. Gated on the branch: inactive it fetches no estimates or test sets.
@@ -334,8 +356,10 @@ const CreateTestSetWizard = ({
                 : 'These documents arrive without ground truth. Generating draft labels for them needs a configuration that says what to extract: the fields you care about, per document class.'}
           </Box>
           <Box fontSize="body-s">
-            No configuration yet? <Link href={`#${DISCOVERY_PATH}`}>Discovery</Link> infers classes and fields from example documents, or
-            use Quick Start from the welcome page to describe them in your own words.
+            <FormattedMessage
+              {...(quickStartAvailable ? messages.noConfigurationWithQuickStart : messages.noConfiguration)}
+              values={{ link: (chunks: React.ReactNode[]) => <Link href={`#${DISCOVERY_PATH}`}>{chunks}</Link> }}
+            />
           </Box>
         </SpaceBetween>
       </Alert>

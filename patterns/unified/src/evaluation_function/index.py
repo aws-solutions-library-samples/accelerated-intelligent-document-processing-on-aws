@@ -19,6 +19,7 @@ from typing import Dict, Any, Optional
 from idp_common import get_config, evaluation
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
+from idp_common.utils import calculate_lambda_metering, merge_metering_data
 
 # Environment variables
 BASELINE_BUCKET = os.environ.get("BASELINE_BUCKET")
@@ -96,6 +97,24 @@ def update_document_evaluation_status(
         f"Updating document via document service: {document.input_key} with status: {status.value}"
     )
     return _get_document_service().update_document(document)
+
+
+def add_lambda_metering(document: Document, context: Any, start_time: float) -> None:
+    """Record this invocation's Lambda requests and GB-seconds on ``document``.
+
+    The same ``<context>/lambda/requests`` and ``<context>/lambda/duration`` keys
+    the OCR, classification, extraction and assessment Lambdas record, under the ``Evaluation`` context the
+    evaluation's own model calls use. Best-effort, as in the other steps: a
+    metering failure is logged and never turns an evaluation outcome into an
+    error.
+    """
+    try:
+        lambda_metering = calculate_lambda_metering("Evaluation", context, start_time)
+        document.metering = merge_metering_data(
+            document.metering or {}, lambda_metering
+        )
+    except Exception as e:
+        logger.warning(f"Failed to add Lambda metering for evaluation: {str(e)}")
 
 
 def extract_document_from_event(event: Dict[str, Any]) -> Optional[Document]:
@@ -372,6 +391,7 @@ def handler(event, context):
                     f"Could not record EvaluationStatus=DISABLED for "
                     f"{actual_document.input_key}: {e}"
                 )
+            add_lambda_metering(actual_document, context, start_time)
             return {
                 "document": actual_document.serialize_document(
                     working_bucket, "evaluation"
@@ -395,6 +415,7 @@ def handler(event, context):
                 actual_document, EvaluationStatus.NO_BASELINE
             )
             logger.info("Evaluation skipped - no baseline data available")
+            add_lambda_metering(actual_document, context, start_time)
             return {
                 "document": actual_document.serialize_document(
                     working_bucket, "evaluation"
@@ -433,6 +454,7 @@ def handler(event, context):
             update_document_evaluation_status(
                 evaluated_document, EvaluationStatus.FAILED
             )
+            add_lambda_metering(evaluated_document, context, start_time)
             return {
                 "document": evaluated_document.serialize_document(
                     working_bucket, "evaluation"
@@ -479,6 +501,7 @@ def handler(event, context):
         logger.info(
             f"Evaluation process completed successfully in {time.time() - start_time:.2f} seconds"
         )
+        add_lambda_metering(evaluated_document, context, start_time)
 
         # Return document in state machine format
         return {

@@ -1284,8 +1284,12 @@ def test_the_merged_side_navigation_still_offers_the_upload_link_as_a_route() ->
     it a route of the app rather than a control the page handles."""
     text = (UI_SOURCE / NAVIGATION_SOURCE).read_text(encoding="utf-8")
     assert (
-        "{ type: 'link', text: 'Upload Documents', href: `#${UPLOAD_DOCUMENT_PATH}` }"
-        in text
+        "{ type: 'link', text: intl.formatMessage(messages.uploadDocuments), "
+        "href: `#${UPLOAD_DOCUMENT_PATH}` }"
+    ) in text
+    assert re.search(
+        r"uploadDocuments: \{\s*id: '[\w.]+',\s*defaultMessage: 'Upload Documents',",
+        text,
     )
 
 
@@ -1807,6 +1811,12 @@ _REVISIONS = "components/configuration-layout/ConfigRevisionHistoryPanel.tsx"
 _SLOTS = "components/edit-screen/test-set-editor-slots.tsx"
 _SUPERVISOR = "components/review-queues/SupervisorModals.tsx"
 _TABLE = "components/document-list/documents-table-config.tsx"
+#: The Document List's Review menu (Start Review, Release Review, bulk skip, send).
+_REVIEW_MENU = "components/review-bulk/review-menu-items.ts"
+_BULK_SKIP = "components/review-bulk/BulkSkipModal.tsx"
+_SEND_TO_REVIEW = "components/review-bulk/SendToReviewModal.tsx"
+#: Home › Jobs row actions, confirmed in a dialog (Cancel job, Delete job).
+_JOB_ACTIONS = "components/review-bulk/JobActionModals.tsx"
 #: The test-set item's edit model, whose Claim calls claimTestSetDocument
 #: (:data:`CLAIM_CALL_SITES`).
 _TEST_SET_MODEL = "components/edit-screen/test-set-item-edit-model.tsx"
@@ -1855,8 +1865,12 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
     ),
     "ClaimNextReviewItem": (Shipped(_QUEUE, "Next item"),),
+    "BulkSkipAllReviews": (
+        Shipped(_BULK_SKIP, "Skip All Reviews", inside_dialog=True),
+    ),
+    "CancelBulkReviewJob": (Shipped(_JOB_ACTIONS, "Cancel job", inside_dialog=True),),
     "ClaimReview": (
-        Shipped(_TABLE, "Start Review"),
+        Shipped(_REVIEW_MENU, "Start Review", role="menuitem"),
         Shipped(_DETAIL_ACTIONS, "Start Review"),
     ),
     "ClaimReviewItem": (
@@ -1959,6 +1973,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/custom-models/CustomModelsLayout.tsx", "Delete"),
         Shipped("components/custom-models/FinetuningJobDetail.tsx", "Delete"),
     ),
+    "DeleteBulkReviewJob": (Shipped(_JOB_ACTIONS, "Delete job", inside_dialog=True),),
     "DeleteInboxMessages": (
         Shipped(
             "components/inbox/DeleteInboxMessagesModal.tsx",
@@ -2051,7 +2066,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
     "PutTenant": (Shipped(_TENANTS, "Save tenant"),),
     "ReassignReviewItem": (Shipped(_ASSIGN, "Assign", inside_dialog=True),),
     "ReextractTestSetDocument": (Shipped(_SLOTS, "Re-extract", source="'Re-extract'"),),
-    "ReleaseReview": (Shipped(_TABLE, "Release Review"),),
+    "ReleaseReview": (Shipped(_REVIEW_MENU, "Release Review", role="menuitem"),),
     "ReleaseReviewItem": (Shipped(_FRAME, "Skip"),),
     "RemoveDocumentsFromTestSet": (
         Shipped(
@@ -2135,6 +2150,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         ),
         Shipped(_CONFIG, "Confirm Activate"),
     ),
+    "SendToReview": (Shipped(_SEND_TO_REVIEW, "Send to review", inside_dialog=True),),
     "SkipAllSectionsReview": (
         Shipped(_DETAIL_ACTIONS, "Skip All Reviews", inside_dialog=True),
     ),
@@ -2764,7 +2780,11 @@ def test_the_side_navigation_is_the_one_landmark_the_web_ui_names_so() -> None:
     the name the guard follows links in, and holds the one shared navigation there;
     no other text in the web UI is that name, so no other landmark can carry it."""
     labels = (UI_SOURCE / LAYOUT_LABELS_SOURCE).read_text(encoding="utf-8")
-    label = re.search(r"^\s*navigation: '([^']*)',$", labels, re.M)
+    # The name is the English of the `navigation` message, which the layouts read in
+    # the UI's language.
+    label = re.search(
+        r"^\s*navigation: \{[^}]*?^\s*defaultMessage: '([^']*)',$", labels, re.M
+    )
     assert label is not None, labels
     assert story_relay.plain(label.group(1)) in story_relay.SIDE_NAVIGATION_NAMES
     named = [
@@ -2790,6 +2810,10 @@ def test_the_side_navigation_is_the_one_landmark_the_web_ui_names_so() -> None:
         given = len(re.findall(r"\bappLayoutLabels\b", text))
         if not given:
             continue
+        # Read once, in the UI's language, by the layout's own hook call; every other
+        # mention passes them as they are.
+        assert text.count("const appLayoutLabels = useAppLayoutLabels();") == 1, path
+        given -= 1
         assert text.count("ariaLabels={appLayoutLabels}") == given, path
         # The shared navigation, optionally told which entry to highlight (the edit page).
         mounted = len(

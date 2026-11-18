@@ -4,8 +4,8 @@
 /* eslint-disable prettier/prettier */
 
 // The recursive form renderer (and its comparison-key helpers) of the edit page's
-// Visual Editor tab (SectionEditor). Pure presentational: no hooks, no S3/API
-// calls; everything it needs arrives via props.
+// Visual Editor tab (SectionEditor). Pure presentational: no S3/API calls;
+// everything it needs arrives via props, apart from the UI locale (`useFormatters`).
 
 import React, { memo } from 'react';
 import {
@@ -21,6 +21,7 @@ import { getFieldConfidenceInfo } from '../common/confidence-alerts-utils';
 import { valueSourceLabel } from '../common/labels';
 import FieldGeometryAffordance from '../common/FieldGeometryAffordance';
 import { hasAnyDrawableGeometry, summariseGeometryCoverage } from '../common/geometry-coverage';
+import { useFormatters } from '../../i18n/format';
 
 /** Stands in at every level below the root, which does not render the count. */
 const EMPTY_COVERAGE = { located: 0, total: 0 };
@@ -137,6 +138,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
     /** The value labels ({ value, changed }): prediction wording unless the values are ground truth. */
     valueLabel = PREDICTION_VALUE_LABEL,
   }) => {
+    const { formatFixed, formatPercent } = useFormatters();
     // Calculate path key for collapse state using displayPath
     const pathKey = [...displayPath, fieldKey].join('.');
     const isCollapsed = collapsedPaths.has(pathKey);
@@ -444,7 +446,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
     }
 
     // Create label with confidence score if available (legacy support)
-    const label = confidence !== undefined ? `${fieldKey} (${(confidence * 100).toFixed(1)}%)` : fieldKey;
+    const label = confidence !== undefined ? `${fieldKey} (${formatPercent(confidence, { fractionDigits: 1 })})` : fieldKey;
 
     // Handle field focus - pass geometry info if available
     // Reaching a field by keyboard has to do what clicking it does. The wrapper
@@ -651,10 +653,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
-                            (confidenceInfo.confidenceThreshold ?? 0) * 100
-                          ).toFixed(1)}%`
-                        : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
+                            confidenceInfo.confidenceThreshold ?? 0,
+                            { fractionDigits: 1 },
+                          )}`
+                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
@@ -664,7 +667,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${(evalScore * 100).toFixed(1)}%`}
+                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
                       {evalReason && ` - ${evalReason}`}
                     </ExtBox>
                   )}
@@ -672,7 +675,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
                       {evalMethod && `Method: ${evalMethod}`}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${evalWeight.toFixed(2)}`}
+                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -872,10 +875,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
-                            (confidenceInfo.confidenceThreshold ?? 0) * 100
-                          ).toFixed(1)}%`
-                        : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
+                            confidenceInfo.confidenceThreshold ?? 0,
+                            { fractionDigits: 1 },
+                          )}`
+                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
@@ -885,7 +889,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${(evalScore * 100).toFixed(1)}%`}
+                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
                       {evalReason && ` - ${evalReason}`}
                     </ExtBox>
                   )}
@@ -893,7 +897,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
                       {evalMethod && `Method: ${evalMethod}`}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${evalWeight.toFixed(2)}`}
+                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -1103,10 +1107,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
-                            (confidenceInfo.confidenceThreshold ?? 0) * 100
-                          ).toFixed(1)}%`
-                        : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
+                            confidenceInfo.confidenceThreshold ?? 0,
+                            { fractionDigits: 1 },
+                          )}`
+                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
@@ -1116,7 +1121,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${(evalScore * 100).toFixed(1)}%`}
+                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
                       {evalReason && ` - ${evalReason}`}
                     </ExtBox>
                   )}
@@ -1124,7 +1129,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
                       {evalMethod && `Method: ${evalMethod}`}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${evalWeight.toFixed(2)}`}
+                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -1368,7 +1373,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
               </SpaceBetween>
               {showComparison && groupEvalResult && (
                 <ExtBox fontSize="body-s" color={groupEvalResult.matched ? 'text-status-success' : 'text-status-warning'}>
-                  {`Group Score: ${(groupEvalResult.score * 100).toFixed(1)}%`}
+                  {`Group Score: ${formatPercent(groupEvalResult.score, { fractionDigits: 1 })}`}
                   {groupEvalResult.reason && ` - ${groupEvalResult.reason}`}
                 </ExtBox>
               )}
@@ -1565,10 +1570,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
-                            (confidenceInfo.confidenceThreshold ?? 0) * 100
-                          ).toFixed(1)}%`
-                        : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
+                            confidenceInfo.confidenceThreshold ?? 0,
+                            { fractionDigits: 1 },
+                          )}`
+                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (
@@ -1578,7 +1584,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   )}
                   {showComparison && evalScore !== undefined && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={hasMismatch ? 'text-status-warning' : 'text-status-success'}>
-                      {`Eval Score: ${(evalScore * 100).toFixed(1)}%`}
+                      {`Eval Score: ${formatPercent(evalScore, { fractionDigits: 1 })}`}
                       {evalReason && ` - ${evalReason}`}
                     </ExtBox>
                   )}
@@ -1586,7 +1592,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color="text-body-secondary">
                       {evalMethod && `Method: ${evalMethod}`}
                       {evalMethod && evalWeight !== undefined && ' · '}
-                      {evalWeight !== undefined && `Weight: ${evalWeight.toFixed(2)}`}
+                      {evalWeight !== undefined && `Weight: ${formatFixed(evalWeight, 2)}`}
                     </ExtBox>
                   )}
                 </ExtBox>
@@ -1812,7 +1818,7 @@ const FormFieldRenderer = memo<Record<string, any>>(
               </SpaceBetween>
               {showComparison && arrayEvalResult && (
                 <ExtBox fontSize="body-s" color={arrayEvalResult.matched ? 'text-status-success' : 'text-status-warning'}>
-                  {`List Score: ${(arrayEvalResult.score * 100).toFixed(1)}%`}
+                  {`List Score: ${formatPercent(arrayEvalResult.score, { fractionDigits: 1 })}`}
                   {arrayEvalResult.reason && ` - ${arrayEvalResult.reason}`}
                   {arrayEvalResult.evaluationMethod && (
                     <ExtBox fontSize="body-s" color="text-body-secondary">
@@ -1950,10 +1956,11 @@ const FormFieldRenderer = memo<Record<string, any>>(
                   {confidenceInfo.hasConfidenceInfo && !hasLocalEdit && (
                     <ExtBox fontSize="body-s" padding={{ top: 'xxxs' }} color={confidenceColor} style={confidenceStyle}>
                       {confidenceInfo.displayMode === 'with-threshold'
-                        ? `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}% / Threshold: ${(
-                            (confidenceInfo.confidenceThreshold ?? 0) * 100
-                          ).toFixed(1)}%`
-                        : `Confidence: ${((confidenceInfo.confidence ?? 0) * 100).toFixed(1)}%`}
+                        ? `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })} / Threshold: ${formatPercent(
+                            confidenceInfo.confidenceThreshold ?? 0,
+                            { fractionDigits: 1 },
+                          )}`
+                        : `Confidence: ${formatPercent(confidenceInfo.confidence ?? 0, { fractionDigits: 1 })}`}
                     </ExtBox>
                   )}
                   {confidenceInfo.hasConfidenceInfo && hasLocalEdit && (

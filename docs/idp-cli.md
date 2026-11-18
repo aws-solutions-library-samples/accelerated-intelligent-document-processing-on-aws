@@ -1064,6 +1064,18 @@ answers immediately: a document id that is not in the table is reported missing
 straight away rather than after a minute, so a typo or a document whose data
 retention has elapsed does not look like a slow query.
 
+**A document waiting for human review ends the monitor.**
+
+With review queues on (`hitl.enabled: true`), a document that raises a
+confidence alert ends its first processing run as `HITL_IN_PROGRESS` and waits
+for a reviewer. Nothing more happens to it until someone works it, so
+`--monitor` counts it under **Awaiting Review** rather than **Running**, and
+stops once no document is queued or running. The final summary says how many
+documents are awaiting review, lists them, and says where to work them: the
+web UI's review queues (**Home › Queues**, or **Review Studio › Review
+Management** for an Admin). Completing or rejecting a review continues the
+document; run `idp-cli status --batch-id <id>` afterwards to see the outcome.
+
 **Test Set Integration:**
 For test runs to appear properly in the Test Studio UI, use either:
 - `--test-set`: Process test set directly by ID (recommended for test sets)
@@ -1353,7 +1365,13 @@ Processing Time (WorkflowStartTime → CompletionTime):
 The command returns exit codes for scripting:
 - `0` - Document(s) completed successfully
 - `1` - Document(s) failed
-- `2` - Document(s) still processing, or the outcome could not be established
+- `2` - Document(s) still processing, waiting for human review, or the outcome could not be established
+
+`--wait` returns once no document is queued or running, so a batch that is only
+waiting on reviewers ends the wait. It exits `2` rather than `0` in that case,
+because "every document completed" is not yet true; a batch with a failure still
+exits `1`. `--format json` reports the count as `awaiting_review`, and the table
+output's final line reads `AWAITING REVIEW (<n> awaiting review)`.
 
 ⚠️ **`--wait`, the polled table form and `--format json` all derive their code from the
 same place.** A
@@ -1970,9 +1988,11 @@ Monitoring Batch: initial-run
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
  Status Summary
  ─────────────────────────────────────
- ✓ Completed      3     100%
- ⏸ Queued         0       0%
- ✗ Failed         0       0%
+ ✓ Completed         3     100%
+ ⟳ Running           0       0%
+ ⏸ Queued            0       0%
+ ✗ Failed            0       0%
+ ◐ Awaiting Review   0       0%
 ```
 
 ---
@@ -2647,7 +2667,7 @@ Validate a configuration file against system defaults and Pydantic models. Catch
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
   - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
   - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
-  - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it
+  - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it. `{DOCUMENT_IMAGE}` may appear at most once in the prompt the confidence pass sends — this prompt with comments removed, plus `extraction.geometry.task_prompt_bbox` when `extraction.geometry.mode` is `llm` or `llm_grounded` — because the pass refuses the document otherwise. An explicit empty prompt (`task_prompt: ""`, or one holding only a comment) is refused for the same reason. Both checks run in `integrated` mode too, where the separate pass still runs for some sections; leave the key out to use the system default
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
 - **Pre-0.9 classification layout** - Warns when the file still uses the flat

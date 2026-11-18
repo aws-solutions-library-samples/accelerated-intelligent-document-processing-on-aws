@@ -20,6 +20,7 @@
 
 import { render, screen } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const roleRef = { current: {} as Record<string, unknown> };
@@ -68,6 +69,12 @@ import AuthRoutes from '../AuthRoutes';
 
 const GROUPED = { isAnnotatorOnly: false, hasNoRole: false, sessionError: false };
 
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
+
 describe('AuthRoutes role gating', () => {
   beforeEach(() => {
     signOut.mockReset();
@@ -77,7 +84,7 @@ describe('AuthRoutes role gating', () => {
   it('explains the missing role instead of mounting the app', () => {
     roleRef.current = { ...GROUPED, hasNoRole: true };
 
-    render(<AuthRoutes redirectParam="" />);
+    render(<AuthRoutes redirectParam="" />, { wrapper: English });
 
     expect(screen.getByText(/has not been granted access yet/i)).toBeTruthy();
     // Actionable: names the roles, and does not tell the user to retry a request
@@ -91,7 +98,7 @@ describe('AuthRoutes role gating', () => {
   it('shows the transient-session message, not the no-role message, on a failed read', () => {
     roleRef.current = { ...GROUPED, sessionError: true };
 
-    render(<AuthRoutes redirectParam="" />);
+    render(<AuthRoutes redirectParam="" />, { wrapper: English });
 
     expect(screen.getByText(/Could not establish your session/i)).toBeTruthy();
     expect(screen.getByText(/usually temporary/i)).toBeTruthy();
@@ -99,7 +106,7 @@ describe('AuthRoutes role gating', () => {
   });
 
   it('mounts the app for a user who holds a role', () => {
-    render(<AuthRoutes redirectParam="" />);
+    render(<AuthRoutes redirectParam="" />, { wrapper: English });
 
     expect(screen.queryByText(/has not been granted access yet/i)).toBeNull();
     expect(screen.queryByText(/Could not establish your session/i)).toBeNull();

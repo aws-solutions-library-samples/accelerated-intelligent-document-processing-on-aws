@@ -250,17 +250,18 @@ def _claim_session_or_403(session_id: str, claims: dict) -> None:
         raise refusal
 
 
-def _enforce_groups_or_403(identity: dict) -> None:
+def _enforce_groups_or_403(identity: dict, method: str) -> None:
     """Apply the Agent Chat group gate BEFORE the SSE response is committed.
 
-    Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
+    ``method`` is the requested one, so the processor's rule for a Quick Start turn
+    applies here too. Delegates to the processor's own ``_enforce_agent_chat_groups`` so there is
     one policy and one predicate, and translates its ``PermissionError`` into a
     real HTTP 403 — which is only possible here, ahead of
     ``StreamingResponse``. Once the stream is open the status is fixed at 200 and
     a denial could only be rendered as an error frame in the body.
     """
     try:
-        agent_proc._enforce_agent_chat_groups({"identity": identity})
+        agent_proc._enforce_agent_chat_groups({"identity": identity, "method": method})
     except PermissionError as exc:
         logger.warning("Rejecting agent chat: %s", exc)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -401,7 +402,7 @@ async def chat_agent(request: Request, body: AgentChatRequest) -> StreamingRespo
     identity = _caller_identity(claims)
     # Group gate, applied here rather than only inside the processor: a 403 is
     # only reachable before StreamingResponse is returned.
-    _enforce_groups_or_403(identity)
+    _enforce_groups_or_403(identity, body.method or "chat")
     _claim_session_or_403(session_id, claims)
 
     q: "queue.Queue" = queue.Queue()

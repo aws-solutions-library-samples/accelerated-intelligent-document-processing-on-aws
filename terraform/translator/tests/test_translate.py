@@ -315,6 +315,25 @@ def test_queue_policy_becomes_one_resource_per_queue(schema):
     assert 'resource "aws_sqs_queue_policy" "p_queues_1"' in out
 
 
+def test_an_sqs_event_source_keeps_its_concurrency_cap(schema):
+    t = {
+        "Resources": {
+            "M": {
+                "Type": "AWS::Lambda::EventSourceMapping",
+                "Properties": {
+                    "EventSourceArn": "arn",
+                    "FunctionName": "fn",
+                    "BatchSize": 1,
+                    "ScalingConfig": {"MaximumConcurrency": 2},
+                },
+            }
+        }
+    }
+    out = render(t, schema)["main.tf"]
+    block = re.search(r"scaling_config \{\s*maximum_concurrency\s*=\s*2\s*\}", out)
+    assert block, out
+
+
 def test_survey_mode_collects_every_failure(schema):
     t = {
         "Resources": {

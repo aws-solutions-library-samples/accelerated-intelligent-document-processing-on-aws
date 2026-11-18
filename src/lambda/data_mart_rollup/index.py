@@ -265,7 +265,7 @@ def handler(event: Dict[str, Any], _context: Any) -> Dict[str, Any]:
     # that the migration's own tasks are actively repopulating; without
     # this gate the two would race, each probe the empty post-purge
     # partition, each INSERT, and duplicate every affected row's
-    # ``sum_cost`` / ``n_docs`` / ``sum_pages``. State-machine task modes
+    # ``sum_cost`` / ``n_docs`` / ``sum_pages`` / ``n_runs``. State-machine task modes
     # (``backfill``, ``backfill_daily_range``, ``purge_rollup_prefixes``,
     # etc.) bypass the gate — they ARE the migration.
     if mode in ("hourly", "daily", "reconcile") and _migration_in_progress():
@@ -935,7 +935,7 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
 
     Rollup dimensions: ``(hour_ts, config_version, service_api, unit)``.
     Cost-only columns: sum_value, sum_cost. Document-level metrics
-    (n_docs, sum_pages) live in a separate table ``metering_docs_hourly``
+    (n_docs, sum_pages, n_runs) live in a separate table ``metering_docs_hourly``
     because pages and unique-doc counts fan out across (service_api, unit)
     — including them here would produce a 6× overcount for a doc with 6
     service rows.
@@ -1009,8 +1009,8 @@ def _rollup_metering_hourly(target_date: str, target_hour: str) -> Dict[str, Any
 
 
 def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str, Any]:
-    """Write ``metering_docs_hourly`` (doc-grain volume + pages) for the
-    given hour if not already written.
+    """Write ``metering_docs_hourly`` (doc-grain volume + pages + runs) for
+    the given hour if not already written.
 
     Grain: ``(hour_ts, config_version)`` — one row per config_version per
     hour, NOT per service_api. ``number_of_pages`` is a document-level
@@ -1020,6 +1020,27 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
 
     SQL: outer aggregate over a doc-grain subquery that MAX()-collapses
     the per-doc fan-out first.
+
+    ``n_runs`` counts document RUNS in the cell, where one run is one
+    ``(document_id, timestamp)`` pair in raw ``metering``: a document
+    processed once contributes ``n_docs = 1, n_runs = 1``, and the same
+    document reprocessed later in the hour contributes ``n_docs = 1,
+    n_runs = 2``. It is computed per document in the inner subquery and
+    SUM()-ed in the outer one.
+
+    ⚠️ Do NOT simplify that to a cell-level ``COUNT(DISTINCT
+    m."timestamp")`` in the outer aggregate. A batch upload stamps several
+    documents at the same instant, so a cell-level distinct count collapses
+    those into one and loses a run for every pair of documents that share a
+    timestamp — measured as 89 runs short of the true total across one real
+    stack's table. The distinct count has to be taken per
+    ``(cell, document_id)`` and then summed, which is what the inner
+    ``GROUP BY`` already provides.
+
+    Unlike ``n_docs``, ``n_runs`` is additive: a run belongs to exactly one
+    cell, so ``SUM(n_runs)`` over any set of rows is the exact run count for
+    that set. ``SUM(n_docs)`` is an upper bound on distinct documents,
+    because a document occupying several cells is counted once in each.
     """
     if _partition_already_written(
         table="metering_docs_hourly", date=target_date, hour=target_hour
@@ -1041,8 +1062,11 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
     # different file (different page count), MAX picks the LARGER value — a
     # slight over-count but bounded to that doc, not systematic.
     # MIN/AVG/ANY_VALUE have equally-defensible semantics; MAX chosen so the
-    # count is not silently rounded down. Outer aggregate: COUNT(*) of docs,
-    # SUM of the MAX-per-doc pages.
+    # count is not silently rounded down. The same subquery counts each doc's
+    # distinct timestamps as its run count — per (cell, document_id), never at
+    # cell level, since a batch upload shares one timestamp across documents.
+    # Outer aggregate: COUNT(*) of docs, SUM of the MAX-per-doc pages, SUM of
+    # the per-doc run counts.
     # Pass target_date so the CTE partition-prunes doc_sections scans
     # to ±1 day — prevents HIVE_S3_THROTTLING on the migration.
     doc_class_cte = _build_doc_class_cte(target_date=target_date)
@@ -1055,6 +1079,7 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
             document_class,
             COUNT(*) AS n_docs,
             SUM(max_pages) AS sum_pages,
+            SUM(runs) AS n_runs,
             '{target_date}' AS date,
             '{target_hour}' AS hour
         FROM (
@@ -1063,7 +1088,8 @@ def _rollup_metering_docs_hourly(target_date: str, target_hour: str) -> Dict[str
                 m.config_version,
                 COALESCE(m.document_class, dc.document_class, 'unknown') AS document_class,
                 m.document_id,
-                MAX(m.number_of_pages) AS max_pages
+                MAX(m.number_of_pages) AS max_pages,
+                COUNT(DISTINCT m."timestamp") AS runs
             FROM "{DATABASE}"."metering" m
             LEFT JOIN doc_class dc ON m.document_id = dc.document_id
             WHERE m.date = '{target_date}' AND m.hour = '{target_hour}'
@@ -1513,7 +1539,7 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
             errors.append(f"metering_daily: {type(e).__name__}: {e}")
             result["metering_daily"] = {"error": str(e), "skipped": False}
 
-    # --- metering_docs_daily (doc-grain volume/pages) ---
+    # --- metering_docs_daily (doc-grain volume/pages/runs) ---
     if docs_daily_exists:
         logger.info(
             f"metering_docs_daily partition date={target_date} already exists — "
@@ -1525,6 +1551,29 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
         # multiple hours is counted once per hour (a "doc-hour"), same
         # for its pages. For strict cross-day unique-doc counts, query
         # raw metering with COUNT(DISTINCT document_id). See §2 in the doc.
+        # ``n_runs`` does NOT fan out that way: a run is one
+        # (document_id, timestamp) pair and so falls in exactly one hour,
+        # which makes it exact over however many days it spans.
+        #
+        # ⚠️ It is NOT a bare SUM, and that is the point. Rows written before
+        # the column existed carry no value for it, and Athena's SUM ignores
+        # NULLs — so a day whose hourly cells are only PARTLY recorded would
+        # return a perfectly ordinary number that is low by whatever the
+        # unrecorded hours held. A wholly-unrecorded day reads NULL and is
+        # obviously unknown; a half-recorded one would not be.
+        #
+        # A routine migration does not produce such a day: ``_plan_migration_
+        # chunks`` truncates the window's low end to top-of-day precisely so
+        # every day in range gets 24 hours of coverage. The mixed day arrives
+        # by other routes — a chunk that fails partway and leaves the rest of
+        # its day unreplayed, an operator backfilling a narrowed hour range by
+        # hand, or ``Days`` being raised later so an older day is re-aggregated
+        # from hours of which only some were replayed under the current version.
+        #
+        # So the gap is propagated: a group yields its SUM only when every
+        # hourly cell in it carries a value, and NULL otherwise. Both kinds of
+        # missing data then look the same to a reader, which is the only honest
+        # answer available — see MigrationVersion in template.yaml.
         # Grain widened with ``document_class`` — reads the (already widened)
         # metering_docs_hourly rollup, so no CTE needed here.
         # nosec B608 — target_date is derived from datetime, not user input.
@@ -1536,6 +1585,8 @@ def _run_daily(anchor: Optional[datetime] = None) -> Dict[str, Any]:
                 document_class,
                 SUM(n_docs) AS n_docs,
                 SUM(sum_pages) AS sum_pages,
+                IF(COUNT(n_runs) = COUNT(*), SUM(n_runs), CAST(NULL AS bigint))
+                    AS n_runs,
                 '{target_date}' AS date
             FROM "{DATABASE}"."metering_docs_hourly"
             WHERE date = '{target_date}'
@@ -2632,7 +2683,7 @@ def _migration_in_progress() -> bool:
     scheduled cron) differs from the migration chunks' nonce-bearing
     tokens, so Athena's 24 h dedup cannot help. Both probe the empty
     post-purge partition, both see missing parquet, both INSERT — the
-    result is duplicated ``sum_cost`` / ``n_docs`` / ``sum_pages`` for
+    result is duplicated ``sum_cost`` / ``n_docs`` / ``sum_pages`` / ``n_runs`` for
     every overlapping hour, propagated into the daily rollups, with no
     detection surface.
 
@@ -2964,7 +3015,7 @@ def _require_hourly_matches_raw_metering(
     outage could leave one populated and the other empty for the same
     hour. Checking only ``metering_hourly`` would let an incomplete
     ``metering_docs_daily`` land and become idempotently locked, silently
-    under-counting ``n_docs``/``sum_pages`` for that day forever.
+    under-counting ``n_docs``/``sum_pages``/``n_runs`` for that day forever.
 
     Round-15 review fix: callers can pass ``tables_to_guard`` to restrict
     the check to only the sub-hourlies whose corresponding daily

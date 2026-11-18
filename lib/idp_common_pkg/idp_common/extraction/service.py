@@ -215,6 +215,14 @@ class ExtractionResult(BaseModel):
 
 _ESCALATION_FAILED_PREFIX = "escalation call failed: "
 
+ESCALATION_METERING_CONTEXT = "ExtractionEscalation"
+"""Metering context of every validation-escalation model call, in both extraction
+modes, so a cost report shows escalation on one row. Simple mode used
+``Extraction-Escalation`` before this constant existed, so reporting rows stored
+by earlier releases carry that spelling. A reader that has to group escalation
+must accept both; the shipped readers match the ``Extraction`` prefix instead.
+"""
+
 
 def _escalation_failure_reason(exc: BaseException) -> str:
     """One bounded line for ``escalation_decision`` when the escalation call raised.
@@ -727,7 +735,10 @@ class ExtractionService:
                         "page_start": shard.start,
                         "page_end": shard.end,
                         "total_pages": num_pages,
-                        # Raw (un-rendered) shard text + images, kept so an
+                        # Raw (un-rendered) shard text + images. The text is also what the
+                        # shard's parse_table parses (default_shard_runner passes it as
+                        # table_source_text), so changing it changes the tool's input.
+                        # The images and text are kept so an
                         # in-shard assessment pass (integrated-assessment feature)
                         # can reuse AssessmentService.assess_results over the SAME
                         # pages without re-reading S3. Always page images here (not
@@ -798,16 +809,16 @@ class ExtractionService:
 
     # Scope note for SHARDED agents ONLY (passed via `scope_note=` below). The
     # block itself is written for an agent holding the whole section, and two of
-    # its sentences read wrong from inside a shard:
+    # its sentences read differently from inside a shard:
     #
-    #  * "extract ONLY text between markers for your pages" — a shard's text is
-    #    ALREADY only its pages, and every shard after the first is prefixed with
-    #    a `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
+    #  * "extract ONLY your pages' values" — a shard's text is ALREADY only its
+    #    pages, and every shard after the first is prefixed with a
+    #    `--- DOCUMENT HEADER (page 1, for context only) ---` block that sits
     #    OUTSIDE the `--- PAGE N ---` markers on purpose (`_build_shard_payloads`)
-    #    because it carries the table's column-header row. An agent obeying that
-    #    sentence literally drops the header, the deterministic parse then fails
-    #    on text that starts mid-table, and the agent falls back to emitting rows
-    #    itself — a COMPLETENESS risk, not only a cost one.
+    #    because it carries the table's column-header row. parse_table parses
+    #    the shard's text as built, header block included (`default_shard_runner`
+    #    hands it to the tool), so the note says so rather than leaving the agent
+    #    to wonder whether that block is in scope.
     #  * the table/row totals are section-wide (`_preflight_table_parse` parses
     #    the whole section), while `TABLE_PARSING_PROMPT_ADDENDUM` in the system
     #    prompt tells the agent to verify row_count against the document and
@@ -818,12 +829,10 @@ class ExtractionService:
     #    it with the totals unaided.
     _SHARD_SCOPE_NOTE = (
         "YOUR SCOPE (sharded run — this overrides the marker rule above): the "
-        "text you were given ALREADY contains only your assigned pages, so pass "
-        "ALL of it to parse_table, including any leading "
-        "'--- DOCUMENT HEADER (page 1, for context only) ---' block. That header "
-        "carries the table's column headers and deliberately sits outside the "
-        "'--- PAGE N ---' markers; dropping it makes parse_table fail on text "
-        "that starts mid-table.\n"
+        "text you were given ALREADY contains only your assigned pages, and "
+        "parse_table parses exactly that text, including any leading "
+        "'--- DOCUMENT HEADER (page 1, for context only) ---' block that "
+        "carries the table's column headers. Call it with no table_text.\n"
         "The table and row totals above are for the WHOLE section, not for your "
         "pages: parse_table on your pages will legitimately return fewer rows, "
         "and that is complete for your scope."
@@ -867,10 +876,14 @@ class ExtractionService:
 
         ``scope_note`` is an optional paragraph inserted directly after the
         page-marker rule, so it can qualify it. The sharded call sites pass
-        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for what the block gets
-        wrong when read from inside a shard); the single-agent path passes
-        nothing, which keeps its instruction byte-identical to the text the
-        advanced-extraction study measured.
+        :attr:`_SHARD_SCOPE_NOTE` (see the comment there for how the block reads
+        from inside a shard); the single-agent path passes
+        nothing. The block's wording is pinned by a unit test
+        (``test_block_is_byte_identical_to_the_pinned_text``), so a change to the
+        instruction every table-parsing agent reads is deliberate. It is not the
+        text the advanced-extraction study measured: that run told the agent to
+        pass its pages' text to ``parse_table``, and the tool now parses the
+        section text itself.
         """
         if (preflight_parse_result or {}).get("status") != "success":
             return custom_instruction
@@ -881,6 +894,16 @@ class ExtractionService:
         columns = preflight_parse_result.get("columns", [])
         table_count = preflight_parse_result.get("table_count", 0)
         scope_paragraph = f"{scope_note}\n\n" if scope_note else ""
+        # Only when several tables were found, so a single-table section's
+        # instruction is unchanged. map_table_to_schema maps every table parsed,
+        # and the agent can no longer scope that by passing a slice of the text.
+        choose_tables = (
+            "   Several tables were found: its result lists each one (index, "
+            "columns, row_count). If only some belong in the array field, pass "
+            "table_indices to name them.\n"
+            if table_count > 1
+            else ""
+        )
 
         guidance = (
             f"\n\n**PRE-PARSED TABLE DATA AVAILABLE**:\n"
@@ -888,14 +911,16 @@ class ExtractionService:
             f"Table columns: {columns}\n\n"
             f"PAGE MARKERS: The document text contains '--- PAGE N ---' "
             f"markers between pages. When you are assigned a page range, "
-            f"extract ONLY text between markers for your pages before "
-            f"calling parse_table.\n\n"
-            # Empty unless a caller passes scope_note, so the single-agent
-            # path's text is unchanged (pinned byte-for-byte by a unit test).
+            f"extract ONLY your pages' values.\n\n"
+            # Empty unless a caller passes scope_note, so the single-agent path
+            # gets the block unqualified; the wording is pinned byte-for-byte by
+            # a unit test.
             f"{scope_paragraph}"
             f"EFFICIENT EXTRACTION WORKFLOW:\n"
             f"1. Extract scalar fields from your pages' text\n"
-            f"2. Call parse_table with your pages' text\n"
+            f"2. Call parse_table with no table_text: it parses the document "
+            f"text you were given itself\n"
+            f"{choose_tables}"
             f"3. Call map_table_to_schema with column_mapping + static_fields\n"
             f"   (merged rows are auto-split — no manual handling needed)\n"
             f"4. Call finalize_table_extraction with table_array_field + "
@@ -3037,8 +3062,11 @@ class ExtractionService:
 This document contains a large table with {row_count}+ rows detected by OCR analysis.
 You MUST use the parse_table tool for complete and accurate extraction:
 
-1. IMMEDIATELY call parse_table with the full document text or table section
+1. IMMEDIATELY call parse_table with NO table_text: it already holds the document
+   text and parses every page of it. Do not copy the document into the call.
 2. DO NOT attempt manual row-by-row LLM extraction for large tables
+   (if the section holds several tables, pass table_indices to map only the ones
+   the schema field is for)
 3. Verify parse_table returned ALL expected rows (check row_count in response)
 4. If parse_table returns fewer rows than expected, investigate warnings and ensure all
    table fragments are parsed (tables may be split across pages)
@@ -3062,8 +3090,9 @@ This is not optional - use the tool immediately for any tabular data.
 This document contains tabular data with {row_count}+ rows detected.
 You MUST use the parse_table tool for accurate and complete extraction:
 
-1. Call parse_table with the document text containing the table
+1. Call parse_table with NO table_text: it already holds the document text
 2. The tool handles OCR artifacts (empty lines, page breaks) automatically
+   (if several tables are found, pass table_indices to map only the right ones)
 3. Verify the row_count matches your expectation
 4. Review any warnings about table fragmentation
 5. Map the parsed columns to the required schema fields
@@ -5995,7 +6024,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 top_k=self.config.extraction.top_k,
                 top_p=self.config.extraction.top_p,
                 max_tokens=None,
-                context="Extraction-Escalation",
+                context=ESCALATION_METERING_CONTEXT,
                 model_lambda_hook_arn=self.config.extraction.model_lambda_hook_arn,
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
@@ -6298,10 +6327,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=None,  # validated against the full schema below
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
                 metering = esc_response.get("metering", {}) or {}
                 metering.pop("_table_parsing_stats", None)
@@ -6324,10 +6356,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     # Attachment is decided on the content; this pool is for view_image.
                     attach_page_images=False,
                     config=self.config,
-                    context="ExtractionEscalation",
+                    context=ESCALATION_METERING_CONTEXT,
                     strands_throttle_retries=False,
                     custom_instruction=instruction,
                     schema_validator=self._build_schema_validator(),
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
                 metering = esc_response.get("metering", {}) or {}
                 metering.pop("_table_parsing_stats", None)
@@ -6884,6 +6919,9 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     custom_instruction=custom_instruction,
                     schema_validator=schema_validator,
                     emit_field_assessment=self._integrated_assessment_enabled(),
+                    # parse_table parses this section text itself rather than
+                    # a copy the model retypes (see create_parse_table_tool).
+                    table_source_text=self._document_text,
                 )
 
             extracted_fields = structured_data.model_dump(mode="json")

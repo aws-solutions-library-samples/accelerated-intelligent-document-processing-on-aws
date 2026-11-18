@@ -153,6 +153,7 @@ Environment
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime
 import hashlib
 import hmac
@@ -166,7 +167,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1489,7 +1490,7 @@ def _job_credential_values(environ: Mapping[str, str] | None = None) -> list[str
         environ[key]
         for key in POSTING_CREDENTIAL_ENV_KEYS
         if environ.get(key, "").strip()
-    ]
+    ] + _RETIRED_CREDENTIALS
 
 
 def posting_refusals(
@@ -1850,27 +1851,124 @@ def sigv4_headers(
     }
 
 
-def caller_role_name(environ: Mapping[str, str] | None = None) -> str:
-    """The IAM role name behind this job's AWS credentials, from STS.
+#: The session's three environment names. Each one's option name in the shared
+#: files is the same name lowercased (``aws_access_key_id`` and so on).
+_CREDENTIAL_FILE_KEYS = (
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+)
 
-    Reads the credentials from the environment, which is where both CI platforms
-    put them for this job. A caller that is not an assumed role (an IAM user, the
-    account root) returns its ARN's resource part instead, which no role name
-    equals.
+
+def _file_credentials(environ: Mapping[str, str]) -> dict[str, str]:
+    """Static keys for the active profile from the shared credentials files.
+
+    GitLab's runner fleet does not export the job's session as environment
+    variables: its credential vendor writes the files and symlinks the directory
+    to ``$HOME/.aws`` before the script runs. An AWS SDK finds them there, but
+    this harness has no SDK, so it reads them the way the SDK would: the profile
+    named by ``AWS_PROFILE`` (else ``AWS_DEFAULT_PROFILE``, else ``default``),
+    from ``AWS_SHARED_CREDENTIALS_FILE`` (else ``~/.aws/credentials``) and then
+    ``AWS_CONFIG_FILE`` (else ``~/.aws/config``, where a named profile's section
+    is ``[profile <name>]``). Only static keys are read; a ``credential_process``
+    or ``role_arn`` profile yields nothing, which refuses rather than guesses.
     """
-    environ = os.environ if environ is None else environ
-    access_key = environ.get("AWS_ACCESS_KEY_ID", "")
-    secret_key = environ.get("AWS_SECRET_ACCESS_KEY", "")
+    profile = (
+        environ.get("AWS_PROFILE") or environ.get("AWS_DEFAULT_PROFILE") or "default"
+    )
+    home = environ.get("HOME") or os.path.expanduser("~")
+    candidates = (
+        (
+            environ.get("AWS_SHARED_CREDENTIALS_FILE")
+            or os.path.join(home, ".aws", "credentials"),
+            profile,
+        ),
+        (
+            environ.get("AWS_CONFIG_FILE") or os.path.join(home, ".aws", "config"),
+            profile if profile == "default" else f"profile {profile}",
+        ),
+    )
+    for path, section in candidates:
+        parser = configparser.RawConfigParser()
+        try:
+            parser.read(path, encoding="utf-8")
+        except (OSError, configparser.Error):
+            continue
+        if not parser.has_section(section):
+            continue
+        found = {
+            key: parser.get(section, key.lower()).strip()
+            for key in _CREDENTIAL_FILE_KEYS
+            if parser.has_option(section, key.lower())
+            and parser.get(section, key.lower()).strip()
+        }
+        if found.get("AWS_ACCESS_KEY_ID") and found.get("AWS_SECRET_ACCESS_KEY"):
+            return found
+    return {}
+
+
+def _credential_files_seen(environ: Mapping[str, str]) -> str:
+    """Which shared AWS files exist and their section names, never a value.
+
+    Printed with the refusal so a vendor that writes an unexpected profile is
+    diagnosable from the job log alone.
+    """
+    home = environ.get("HOME") or os.path.expanduser("~")
+    profile = (
+        environ.get("AWS_PROFILE") or environ.get("AWS_DEFAULT_PROFILE") or "default"
+    )
+    parts = [f"profile {profile!r}"]
+    for path in (
+        environ.get("AWS_SHARED_CREDENTIALS_FILE")
+        or os.path.join(home, ".aws", "credentials"),
+        environ.get("AWS_CONFIG_FILE") or os.path.join(home, ".aws", "config"),
+    ):
+        parser = configparser.RawConfigParser()
+        try:
+            read = parser.read(path, encoding="utf-8")
+        except (OSError, configparser.Error):
+            read = []
+        parts.append(
+            f"{path}: sections {parser.sections()}" if read else f"{path}: absent"
+        )
+    return "; ".join(parts)
+
+
+def job_credentials(environ: Mapping[str, str]) -> dict[str, str]:
+    """The job's AWS session: the environment's keys, else the shared files'.
+
+    Environment variables win, as they do in every AWS SDK, so GitHub's OIDC
+    session (exported by ``configure-aws-credentials``) is read exactly as before.
+    """
+    from_env = {
+        key: environ[key] for key in _CREDENTIAL_FILE_KEYS if environ.get(key, "")
+    }
+    if from_env.get("AWS_ACCESS_KEY_ID") and from_env.get("AWS_SECRET_ACCESS_KEY"):
+        return from_env
+    return _file_credentials(environ)
+
+
+def _sts(action_body: str, environ: Mapping[str, str]) -> str:
+    """POST one STS query with the environment's credentials; the XML answer.
+
+    Signed with :func:`sigv4_headers` because the job image has no AWS SDK and
+    the harness runs as ``python3 -I`` from a staged copy, so nothing installed
+    beside it could be imported anyway.
+    """
+    credentials = job_credentials(environ)
+    access_key = credentials.get("AWS_ACCESS_KEY_ID", "")
+    secret_key = credentials.get("AWS_SECRET_ACCESS_KEY", "")
     if not access_key or not secret_key:
         raise Failure(
-            "no AWS credentials in the environment, so the role this job holds "
-            "cannot be confirmed and the review does not run"
+            "no AWS credentials in the environment or the shared credentials "
+            "file, so the role this job holds cannot be confirmed and the review "
+            f"does not run ({_credential_files_seen(environ)})"
         )
     region = (
         environ.get("AWS_REGION") or environ.get("AWS_DEFAULT_REGION") or ("us-east-1")
     )
     host = f"sts.{region}.amazonaws.com"
-    body = "Action=GetCallerIdentity&Version=2011-06-15"
+    body = f"{action_body}&Version=2011-06-15"
     amz_date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     request = urllib.request.Request(
         f"https://{host}/",
@@ -1882,21 +1980,130 @@ def caller_role_name(environ: Mapping[str, str] | None = None) -> str:
             body,
             access_key,
             secret_key,
-            environ.get("AWS_SESSION_TOKEN", ""),
+            credentials.get("AWS_SESSION_TOKEN", ""),
             amz_date,
         ),
     )
+    action = action_body.split("&", 1)[0].removeprefix("Action=")
     try:
         with _NO_REDIRECT_OPENER.open(request, timeout=30) as response:
-            answer = response.read().decode(errors="replace")
+            return response.read().decode(errors="replace")
+    except urllib.error.HTTPError as error:
+        detail = re.search(
+            r"<Message>([^<]+)</Message>", error.read().decode(errors="replace")
+        )
+        raise Failure(
+            f"STS {action} failed ({error.code}): "
+            f"{detail.group(1) if detail else error.reason}"
+        ) from error
     except (urllib.error.URLError, OSError) as error:
-        raise Failure(f"STS GetCallerIdentity failed: {error}") from error
+        raise Failure(f"STS {action} failed: {error}") from error
+
+
+def caller_role_name(environ: Mapping[str, str] | None = None) -> str:
+    """The IAM role name behind this job's AWS credentials, from STS.
+
+    Reads the credentials through :func:`job_credentials`: the environment on
+    GitHub, the shared credentials files the runner fleet links into ``$HOME/.aws``
+    on GitLab. A caller that is not an assumed role (an IAM user, the
+    account root) returns its ARN's resource part instead, which no role name
+    equals.
+    """
+    environ = os.environ if environ is None else environ
+    answer = _sts("Action=GetCallerIdentity", environ)
     match = re.search(r"<Arn>([^<]+)</Arn>", answer)
     if not match:
         raise Failure("STS GetCallerIdentity answered without an Arn")
     resource = match.group(1).split(":", 5)[-1]
     kind, _, rest = resource.partition("/")
     return rest.split("/", 1)[0] if kind == "assumed-role" else resource
+
+
+#: Every other way an AWS SDK in the child could find a credential, removed or
+#: neutralised when the job switches to the review role, so the session the CLI
+#: uses is the review role's and nothing else: a named profile, the shared files
+#: (pointed at ``/dev/null`` rather than unset, since unset means ``~/.aws``),
+#: container credentials, web identity, and instance metadata.
+CREDENTIAL_SOURCE_KEYS = (
+    "AWS_PROFILE",
+    "AWS_DEFAULT_PROFILE",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN",
+    "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_ROLE_ARN",
+    "AWS_ROLE_SESSION_NAME",
+    "AWS_CREDENTIAL_EXPIRATION",
+)
+NEUTRALISED_CREDENTIAL_SETTINGS = {
+    "AWS_SHARED_CREDENTIALS_FILE": "/dev/null",
+    "AWS_CONFIG_FILE": "/dev/null",
+    "AWS_EC2_METADATA_DISABLED": "true",
+}
+
+#: Credential values the job held before it switched role. They are no longer in
+#: the environment, so :func:`_job_credential_values` reads them from here: a
+#: review quoting the job's first credential is still withheld.
+_RETIRED_CREDENTIALS: list[str] = []
+
+
+def assume_review_role(
+    expected: str, role_arn: str, environ: MutableMapping[str, str] | None = None
+) -> bool:
+    """Switch the process to the review role, unless it already holds it.
+
+    On GitLab the runner fleet vends the project-level target role, the
+    integration-test role, because a project variable outranks the job's own
+    ``AWS_CREDS_TARGET_ROLE``. So the job assumes the review role itself, with the
+    credentials it was given, which ``GitLabReviewRole``'s trust policy allows for
+    ``GitLabRole``. On GitHub the OIDC session already is the review role and this
+    returns ``False`` without calling AssumeRole.
+
+    After a switch the environment carries only the review role's three values;
+    every other credential source is removed (:data:`CREDENTIAL_SOURCE_KEYS`), so
+    the child process cannot reach the first role.
+    """
+    environ = os.environ if environ is None else environ
+    if caller_role_name(environ) == expected:
+        return False
+    if not role_arn:
+        raise Failure(
+            f"this job does not hold the review role {expected!r} and no role ARN "
+            f"was given to assume it; set the masked CI variable named by "
+            f"--assume-role-from"
+        )
+    answer = _sts(
+        "Action=AssumeRole&"
+        + urllib.parse.urlencode(
+            {
+                "RoleArn": role_arn,
+                "RoleSessionName": f"ai-mr-review-{os.getpid()}",
+                "DurationSeconds": "3600",
+            }
+        ),
+        environ,
+    )
+    issued: dict[str, str] = {}
+    for name in ("AccessKeyId", "SecretAccessKey", "SessionToken"):
+        found = re.search(rf"<{name}>([^<]+)</{name}>", answer)
+        if not found:
+            raise Failure("STS AssumeRole answered without a complete credential")
+        issued[name] = found.group(1)
+    # The first session may have come from the shared files rather than the
+    # environment (GitLab's runner fleet), so retire whatever was actually used.
+    _RETIRED_CREDENTIALS.extend(job_credentials(environ).values())
+    _RETIRED_CREDENTIALS.extend(
+        environ[key] for key in _CREDENTIAL_FILE_KEYS if environ.get(key)
+    )
+    for key in CREDENTIAL_SOURCE_KEYS:
+        environ.pop(key, None)
+    environ.update(NEUTRALISED_CREDENTIAL_SETTINGS)
+    environ["AWS_ACCESS_KEY_ID"] = issued["AccessKeyId"]
+    environ["AWS_SECRET_ACCESS_KEY"] = issued["SecretAccessKey"]
+    environ["AWS_SESSION_TOKEN"] = issued["SessionToken"]
+    print(f"Assumed the review role {expected!r} from the job's own credentials.")
+    return True
 
 
 def require_role(expected: str, environ: Mapping[str, str] | None = None) -> None:
@@ -1911,9 +2118,8 @@ def require_role(expected: str, environ: Mapping[str, str] | None = None) -> Non
     if actual != expected:
         raise Failure(
             f"this job holds the AWS role {actual!r}, not the review role "
-            f"{expected!r}, so the review does not run. On GitLab, check that the "
-            f"job's role variable is set and not overridden by a project variable "
-            f"of the same name (scripts/sdlc/docs/CI_TEST_COVERAGE.md)."
+            f"{expected!r}, so the review does not run "
+            f"(scripts/sdlc/docs/CI_TEST_COVERAGE.md)."
         )
     print(f"AWS role confirmed: {actual}")
 
@@ -1927,9 +2133,11 @@ SCOPING THE AWS CREDENTIAL
   The review needs bedrock:InvokeModel and nothing else, and on both platforms
   the job holds a role granting only that:
 
-  GitLab  idp-sdlc-GitLabReview, created by scripts/sdlc/cfn/credential-vendor.yml
-          and vended by the runner fleet like the integration-test role, gated on
-          the same GitLab:Group/GitLab:Project session tags.
+  GitLab  idp-sdlc-GitLabReview, created by scripts/sdlc/cfn/credential-vendor.yml.
+          The runner fleet vends the project's integration-test role to every job,
+          so the job assumes the review role from that session itself
+          (--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN), and the child process
+          inherits only the review role's credentials.
   GitHub  idp-sdlc-GitHubReview, created by
           scripts/sdlc/cfn/github-oidc-review-role.yml and assumed through OIDC.
 
@@ -2041,6 +2249,14 @@ SCOPING THE AWS CREDENTIAL
         default="",
         help="refuse to review unless STS says the job's AWS credentials are this "
         "role name. Both CI jobs pass their review role",
+    )
+    parser.add_argument(
+        "--assume-role-from",
+        default="",
+        metavar="VARIABLE",
+        help="the environment variable holding the review role's ARN. If the job "
+        "does not already hold --require-aws-role, it assumes that ARN with its own "
+        "credentials first. The GitLab job passes AI_REVIEW_GITLAB_ROLE_ARN",
     )
     parser.add_argument(
         "--no-api",
@@ -2182,6 +2398,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise Skip("no project: pass --project or run inside GitLab CI")
             forge = Gitlab(args.api_url, args.project, token)
 
+        if args.require_aws_role and args.assume_role_from:
+            assume_review_role(
+                args.require_aws_role, os.environ.get(args.assume_role_from, "")
+            )
         if args.require_aws_role:
             require_role(args.require_aws_role)
 

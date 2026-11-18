@@ -242,7 +242,11 @@ the model's field default**. The YAML wins on a normal load, so nothing shows un
 a field is *cleared* — and then that one call falls back to the code's opinion
 instead of the value the rest of the profile is running. A cleared model field used
 to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model the
-profile did not use.
+profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
+translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
+`idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
+the deploy-time swap gives the call's stored siblings. A model key absent from the
+data, rather than cleared, still takes the field default, the US id.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in
@@ -478,14 +482,20 @@ Configuration is stored in DynamoDB with two record types:
 
 The same Default/Custom pattern is used for auxiliary records:
 - **`DefaultPricing` / `CustomPricing`** (`PricingConfig`) — service pricing for
-  cost estimation, read through `get_merged_pricing`. ⚠️ Despite the method's
-  name, Custom **replaces** Default's `pricing` list wholesale rather than merging
-  row by row: `deep_update` merges dicts and assigns lists, and the whole table is
-  one list. The Pricing page saves the full table, so a stack that has saved it
-  keeps its saved rates and gets no price for a model added in a later release
-  until the record is deleted (`delete_custom_pricing`, the page's **Restore
-  default (All)**). `test_a_partial_custom_list_replaces_the_default_list_wholesale`
-  pins this.
+  cost estimation, read through `get_merged_pricing`. Custom is laid over
+  Default **per model and per unit** (`merge_utils.overlay_pricing_rows`): a
+  Custom unit replaces the Default unit of the same name on the entry of the same
+  name, a unit or entry Default lacks is added, and a Default entry or unit Custom
+  does not mention is kept. A name repeated in Custom is applied in order, so the
+  last occurrence wins for each unit it names. The Pricing page saves
+  the full table, so a stack that has saved it gets prices for models a later
+  release adds, keeps its saved rate for every unit the table held (including ones
+  it never edited), and cannot delete a Default row: Custom records no deletions.
+  Only the reader merges; the stored records keep their shape, so an earlier
+  release reading the same Custom record replaces Default's list with it as it
+  always did. `delete_custom_pricing` (the page's **Restore default (All)**)
+  returns to Default. `tests/unit/config/test_pricing_row_merge.py` pins this
+  against the shipped `config_library/pricing.yaml`.
 - **`DefaultModelConfigLimits` / `CustomModelConfigLimits`**
   (`ModelConfigLimitsConfig`) — the ordered, first-match-wins list of per-model
   token limits, seeded from `config_library/model_config_limits.yaml`. Because

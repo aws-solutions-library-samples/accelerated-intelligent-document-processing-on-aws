@@ -129,8 +129,11 @@ stages:
   - uv pip install -c "$LOCK_CONSTRAINTS" 'ruff==0.15.13'
   # Needed by publish.py for test imports
   - uv pip install -c "$LOCK_CONSTRAINTS" typer rich boto3
+  # `agents` for bedrock-agentcore: scripts/sdlc/tests/test_sandbox_network_probe.py
+  # pins the code-interpreter SDK's default, as GitHub's install ([all]) already
+  # provides.
   - uv pip install -c "$LOCK_CONSTRAINTS"
-                   -e "lib/idp_common_pkg[test,evaluation]"
+                   -e "lib/idp_common_pkg[test,evaluation,agents]"
                    -e "lib/idp_sdk[test]"
                    -e "lib/idp_cli_pkg[test]"
                    -e "lib/idp_feature_sdk[test]"
@@ -388,13 +391,15 @@ unit_tests:
       junit: lib/idp_common_pkg/test-reports/test-results.xml
     expire_in: 1 week
 
-# The package / Lambda suites not covered by idp_common_pkg (idp_cli, idp_sdk,
-# idp_feature_sdk, feature-platform, capacity, circuit-breaker, chat,
-# config_library, and the repo's own gate suites under scripts/).
+# The package / Lambda suites that neither idp_common_pkg's test-cicd nor
+# coverage-all-cicd runs (Terraform, the Lambda and resolver handlers, the samples,
+# benchmarks, the state machine, config_library). The suites a coverage tree measures
+# (idp_cli, idp_sdk, idp_feature_sdk, main-stack-extensions, the gate suites under
+# scripts/) run once, under coverage, in unit_tests.
 #
-# Many separate pytest invocations, of which the nine measured above 20s in CI run
-# `-n auto` — see PYTEST_XDIST in the Makefile for the selection rule and why it is
-# not applied to all of them.
+# Many separate pytest invocations; those measured above 20s in CI run `-n auto` —
+# see PYTEST_XDIST in the Makefile for the selection rule and why it is not applied
+# to all of them.
 package_tests:
   <<: *fast_check_job
   tags:
@@ -419,9 +424,15 @@ package_tests:
 
   before_script:
     - *python_setup
+    # ⚠️ The three toolchains below (Node with basedpyright, pinned cfn-lint, the UI's
+    # npm dependencies) were added for `scripts/tests` and `lib/idp_sdk`. Those suites
+    # no longer run in this job: `test-packages-cicd` leaves out every suite a coverage
+    # tree measures, and `unit_tests` runs them under `coverage-all-cicd` with the same
+    # three toolchains. They are kept here until it is measured that no remaining suite
+    # in this job needs them; the reasons below describe the suites they were added for.
     # ⚠️ Node and basedpyright ARE needed here, which is not obvious from the
     # script below and cost this job a red run when they were left out.
-    # `scripts/tests` is one of the suites `test-packages-cicd` runs, and
+    # `scripts/tests` is one of the suites `coverage-all-cicd` runs, and
     # `test_pyright_config.py` RUNS basedpyright — a live 0.5s probe confirming
     # that pyrightconfig.json's five `extraPaths` really resolve the first-party
     # packages, rather than trusting that the config looks right. That is the whole
@@ -1038,6 +1049,14 @@ integration_tests:
       )
       if migration_run:
           status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+      # And the CloudFormation nightly: a schedule that is none of the above, so
+      # every scheduled post in the channel names the run it is.
+      cloudformation_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and not (probe_run or region_run or terraform_run or migration_run)
+      )
+      if cloudformation_run:
+          status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
       # Flat, all-string values: a Workflow Builder Text variable takes nothing else.
       json.dump({
@@ -1268,10 +1287,11 @@ dep_audit:
 #                        job prints SKIPPED and exits 0.
 #   AI_REVIEW_GITLAB_ROLE_ARN
 #                        the ARN of idp-sdlc-GitLabReview (the GitLabReviewRole
-#                        output of the credential-vendor stack), MASKED. The job
-#                        passes it to the runner fleet's credential vendor as
-#                        AWS_CREDS_TARGET_ROLE, so this job holds a Bedrock-only
-#                        role rather than the integration-test one.
+#                        output of the credential-vendor stack), MASKED. The
+#                        runner fleet vends the project's integration-test role
+#                        to this job like any other, so the script assumes this
+#                        ARN from that session before anything else and hands the
+#                        model only the review role's credentials.
 ai_mr_review:
   stage: fast_checks
   interruptible: true
@@ -1311,14 +1331,20 @@ ai_mr_review:
     # develop, which a shallow clone does not have.
     GIT_DEPTH: 0
     # The Bedrock-only review role, idp-sdlc-GitLabReview in
-    # scripts/sdlc/cfn/credential-vendor.yml, which the runner fleet vends for
-    # this job in place of the integration-test role. Its ARN embeds an account
-    # id, which scripts/check_account_ids.py refuses in this public tree, so it
-    # lives in the masked project variable AI_REVIEW_GITLAB_ROLE_ARN. The script
-    # asks STS which role it holds and refuses to review on any other, so an
-    # unset variable, or a project-level AWS_CREDS_TARGET_ROLE that overrides
-    # this job-level one, fails the job instead of reviewing on the wider role.
-    AWS_CREDS_TARGET_ROLE: $AI_REVIEW_GITLAB_ROLE_ARN
+    # scripts/sdlc/cfn/credential-vendor.yml. A job-level AWS_CREDS_TARGET_ROLE
+    # cannot select it: the project-level variable of that name outranks a job
+    # variable, so the runner fleet vends the integration-test role here as
+    # everywhere. The script therefore assumes the review role itself
+    # (--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN; the ARN embeds an account id,
+    # which scripts/check_account_ids.py refuses in this public tree, so it is a
+    # masked project variable), replaces the job's credentials in its own
+    # environment, and then asks STS which role it holds and refuses to review on
+    # any other.
+    #
+    # ⚠️ The fleet exports NO AWS_* variables: its vendor writes the job's session
+    # to files and symlinks them to $HOME/.aws in pre_build_script. The script has
+    # no AWS SDK, so job_credentials() in ai_mr_review.py reads those files itself;
+    # an env-only reader fails every run with "no AWS credentials".
     REVIEW_ROLE_NAME: "idp-sdlc-GitLabReview"
     REVIEW_HARNESS_DIR: "/tmp/review-harness"
     REVIEW_HARNESS: "scripts/sdlc/ai_mr_review.py scripts/ux_runner/__init__.py scripts/ux_runner/redact.py scripts/hooks/check_commit_text.py"
@@ -1391,7 +1417,7 @@ ai_mr_review:
         echo "   it cannot review this MR. Reviews resume once the target carries it."
         exit 1
       fi
-      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME"
+      REVIEW="python3 -I $REVIEW_HARNESS_DIR/scripts/sdlc/ai_mr_review.py --checkout $CI_PROJECT_DIR --require-aws-role $REVIEW_ROLE_NAME --assume-role-from AI_REVIEW_GITLAB_ROLE_ARN"
       if [ -n "$CI_MERGE_REQUEST_IID" ]; then
         $REVIEW --mr "$CI_MERGE_REQUEST_IID"
       else
@@ -2098,10 +2124,11 @@ nightly_notification:
 
           # Same label as the post in integration_tests: the weekly variant-probe
           # schedule shares the channel, and its result must not read as the nightly's.
-          if (
+          probe_run = (
               os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
               and os.environ.get("IDP_RUN_PROBES", "").strip().lower() == "true"
-          ):
+          )
+          if probe_run:
               status = "🔬 WEEKLY VARIANT PROBES · " + status
           # And a weekly region run names its region, read exactly as the post in
           # integration_tests reads it.
@@ -2128,6 +2155,14 @@ nightly_notification:
           )
           if migration_run:
               status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+          # And the CloudFormation nightly, read exactly as the post in
+          # integration_tests reads it.
+          cloudformation_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and not (probe_run or region_run or terraform_run or migration_run)
+          )
+          if cloudformation_run:
+              status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
 
           # Same flat, all-string contract as the post in integration_tests: these
           # four keys are declared on the Slack Workflow Builder trigger as Text, and
@@ -2214,9 +2249,9 @@ ai_ux_test_stories_nightly:
     - size:large
   # ceil(nightly flows / k), where k = floor((deadline_minutes - setup_minutes
   # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
-  # gate: 13 p0 flows at 3 a shard. The CI-jobs test recomputes it from the
-  # catalogue.
-  parallel: 5
+  # gate. The CI-jobs test recomputes both from the catalogue and fails when a
+  # p0 flow no longer fits.
+  parallel: 6
   rules: &ux_story_nightly_rules
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
       when: never

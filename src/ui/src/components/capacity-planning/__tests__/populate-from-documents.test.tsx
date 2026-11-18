@@ -11,7 +11,8 @@
  * the full record of the most recent completed documents.
  */
 
-import { render, screen, waitFor } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
+import { renderWithIntl } from '../../../test-utils/renderWithIntl';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -80,7 +81,7 @@ beforeEach(() => {
 describe('Populate tokens from Documents', () => {
   it('fetches the full record of completed documents and offers them', async () => {
     const value = contextWith({});
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
 
     await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
 
@@ -92,7 +93,7 @@ describe('Populate tokens from Documents', () => {
   it('requests full records a few at a time, not all at once', async () => {
     const rows = Array.from({ length: DETAIL_FETCH_CHUNK_SIZE + 2 }, (_, i) => ({ ...LIST_ROW, ObjectKey: `docs/d${i}.pdf` }));
     const value = contextWith({ documents: rows, getDocumentDetailsFromIds: vi.fn().mockResolvedValue([]) });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
 
     await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
 
@@ -104,7 +105,7 @@ describe('Populate tokens from Documents', () => {
   it('reads quietly and says how many documents it could not read', async () => {
     const rows = [LIST_ROW, { ...LIST_ROW, ObjectKey: 'docs/unreadable.pdf' }];
     const value = contextWith({ documents: rows, getDocumentDetailsFromIds: vi.fn().mockResolvedValue([FULL_RECORD]) });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
 
     await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
 
@@ -118,7 +119,7 @@ describe('Populate tokens from Documents', () => {
     // The first press reads only one of the two; the second must ask for the other again.
     const fetchMock = vi.fn(async (keys: string[]) => keys.filter((key) => key !== 'docs/unreadable.pdf').map(() => FULL_RECORD));
     contextWith({ documents: rows, getDocumentDetailsFromIds: fetchMock });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
     const button = screen.getByRole('button', { name: /Populate tokens from Documents/ });
 
     await userEvent.click(button);
@@ -135,7 +136,7 @@ describe('Populate tokens from Documents', () => {
       release = resolve;
     });
     const value = contextWith({ getDocumentDetailsFromIds: vi.fn().mockReturnValue(pending) });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
     const button = screen.getByRole('button', { name: /Populate tokens from Documents/ });
 
     await userEvent.click(button);
@@ -150,7 +151,7 @@ describe('Populate tokens from Documents', () => {
   it('says when it read only the most recent documents', async () => {
     const rows = Array.from({ length: MAX_DOCUMENTS_TO_DETAIL + 1 }, (_, i) => ({ ...LIST_ROW, ObjectKey: `docs/d${i}.pdf` }));
     contextWith({ documents: rows, getDocumentDetailsFromIds: vi.fn(async (keys: string[]) => keys.map(() => FULL_RECORD)) });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
 
     await userEvent.click(screen.getByRole('button', { name: /Populate tokens from Documents/ }));
 
@@ -164,7 +165,7 @@ describe('Populate tokens from Documents', () => {
     // Read fine, but carry no metering: the same documents must not fill the cap again.
     const fetchMock = vi.fn(async (keys: string[]) => keys.map((key) => ({ ...LIST_ROW, ObjectKey: key })));
     contextWith({ documents: rows, getDocumentDetailsFromIds: fetchMock });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
     const button = screen.getByRole('button', { name: /Populate tokens from Documents/ });
 
     await userEvent.click(button);
@@ -180,7 +181,7 @@ describe('Populate tokens from Documents', () => {
 
   it('starts the document list load when no page has asked for it', () => {
     const value = contextWith({ documents: [], hasListBeenLoaded: false });
-    render(<CapacityPlanningLayout />);
+    renderWithIntl(<CapacityPlanningLayout />);
 
     expect(value.setIsDocumentsListLoading).toHaveBeenCalledWith(true);
   });

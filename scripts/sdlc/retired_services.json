@@ -260,18 +260,6 @@
       "linePattern": "Corrected controls credited to deleted machinery",
       "bucket": "b",
       "justification": "A revision-history row recording what the v3.0 review changed, not a description of the architecture. The row does say the machinery is deleted and that the AppSync API layer was removed, but those statements sit in different SENTENCES of the same table row from the mention that is flagged, and the gate deliberately confines a marker to one sentence -- a removal note elsewhere in a 3,000-character row must not exempt the whole row. So this is an allowlist entry rather than a marker: the reason it reads correctly is the row's purpose, which no phrase pattern can establish."
-    },
-    {
-      "path": "security/threat-modeling/feature-threats/rbac-authentication.md",
-      "linePattern": "AppSync validated every operation's input arguments",
-      "bucket": "b",
-      "justification": "AUTH.T12's Description, explaining what the input-validation gap was a gap RELATIVE TO. Pastness is carried entirely by the verb -- 'validated', then 'The REST dispatcher that replaced it' -- and a marker for a bare past-tense verb would exempt most of the corpus, so this cannot be a marker. The sentence is correct and load-bearing: without it the threat reads as though nothing ever validated these arguments."
-    },
-    {
-      "path": "security/threat-modeling/feature-threats/rbac-authentication.md",
-      "linePattern": "restoring AppSync's input gate for all operations at once",
-      "bucket": "b",
-      "justification": "AUTH.T12's Mitigations, naming what the dispatcher's validator restores. Same shape as the Description above: the possessive plus 'restoring' is what makes it past, and no safe phrase pattern captures that. It is the sentence that tells a reader the control is a replacement for a gate that used to exist rather than a new invention."
     }
   ]
 }

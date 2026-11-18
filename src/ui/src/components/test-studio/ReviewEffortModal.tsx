@@ -33,6 +33,8 @@ import { CartesianGrid, Line, LineChart, ReferenceLine, ResponsiveContainer, Too
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { generateClient } from '../../api/client-shim';
 import { estimateReviewEffort } from '../../graphql/generated';
+import { formatFixed, formatPercent, useFormatters } from '../../i18n/format';
+import type { Locale } from '../../i18n/locales';
 
 const client = generateClient();
 const logger = new ConsoleLogger('ReviewEffortModal');
@@ -108,10 +110,10 @@ export const REVIEW_DOCUMENTS_LABEL = "Review the set's documents";
 
 const DEFAULT_TARGET = 99;
 
-const formatEffort = (minutes: number): string => {
+const formatEffort = (minutes: number, locale: Locale): string => {
   if (!Number.isFinite(minutes) || minutes <= 0) return '—';
   if (minutes < 60) return `≈${Math.round(minutes)} min`;
-  return `≈${(minutes / 60).toFixed(minutes < 600 ? 1 : 0)} hrs`;
+  return `≈${formatFixed(minutes / 60, locale, minutes < 600 ? 1 : 0)} hrs`;
 };
 
 /**
@@ -126,8 +128,8 @@ const effortForAll = (e: ReviewEffortEstimate): number =>
     ? e.effortMinutesPerDoc * e.totalDocs
     : (e.effortMinutes / Math.max(e.docsToReview + e.auditSampleSize, 1)) * e.totalDocs;
 
-const pct = (fraction?: number | null): string =>
-  fraction === null || fraction === undefined || !Number.isFinite(fraction) ? '—' : `${(fraction * 100).toFixed(1)}%`;
+const pct = (fraction: number | null | undefined, locale: Locale): string =>
+  fraction === null || fraction === undefined || !Number.isFinite(fraction) ? '—' : formatPercent(fraction, locale, { fractionDigits: 1 });
 
 /** Per-estimateConfidence copy for how much the number should be trusted. */
 const CONFIDENCE_COPY: Record<string, { type: 'info' | 'warning' | 'success'; header: string; body: string }> = {
@@ -154,6 +156,7 @@ const CONFIDENCE_COPY: Record<string, { type: 'info' | 'warning' | 'success'; he
 };
 
 const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onContinue, onReviewDocuments }: Props): React.JSX.Element => {
+  const { locale } = useFormatters();
   const [strategy, setStrategy] = useState<ReviewStrategy>('worst-first');
   const [target, setTarget] = useState(DEFAULT_TARGET);
   const [estimate, setEstimate] = useState<ReviewEffortEstimate | null>(null);
@@ -358,7 +361,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                 <Alert type="warning" header="Confidence does not identify the errors on this set">
                   Confidence ranks correctness no better than chance
                   {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
-                    ? ` (AUROC ${estimate.calibration.auroc.toFixed(2)}, where 0.5 is a coin flip)`
+                    ? ` (AUROC ${formatFixed(estimate.calibration.auroc, locale, 2)}, where 0.5 is a coin flip)`
                     : ''}
                   , so reviewing the documents with the most confidence alerts would find no more errors than reviewing at random. Review
                   everything, or change the confidence model for this configuration profile and re-score.
@@ -382,14 +385,14 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                       value: 'everything',
                       label: 'Review everything',
                       description: estimate
-                        ? `All ${estimate.totalDocs} documents get human eyes (${formatEffort(effortForAll(estimate))}). Highest confidence in the result; most effort.`
+                        ? `All ${estimate.totalDocs} documents get human eyes (${formatEffort(effortForAll(estimate), locale)}). Highest confidence in the result; most effort.`
                         : 'Every document gets human eyes. Highest confidence in the result; most effort.',
                     },
                     {
                       value: 'accept-drafts',
                       label: 'Accept machine labels as-is',
                       description: estimate
-                        ? `No human review. Leaves an estimated ${pct(estimate.baselineError)} of fields wrong, unreviewed. Fastest; lowest trust.`
+                        ? `No human review. Leaves an estimated ${pct(estimate.baselineError, locale)} of fields wrong, unreviewed. Fastest; lowest trust.`
                         : 'No human review — use the draft labels directly. Fastest; lowest trust.',
                     },
                   ]}
@@ -410,14 +413,14 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                   <div>
                     <Box variant="awsui-key-label">Est. effort</Box>
                     <Box fontSize="heading-l">
-                      {formatEffort(strategy === 'everything' ? effortForAll(estimate) : estimate.effortMinutes)}
+                      {formatEffort(strategy === 'everything' ? effortForAll(estimate) : estimate.effortMinutes, locale)}
                     </Box>
                   </div>
                   <div>
                     <Box variant="awsui-key-label">Est. accuracy after</Box>
-                    <Box fontSize="heading-l">{pct(1 - (strategy === 'everything' ? 0 : estimate.residualError))}</Box>
+                    <Box fontSize="heading-l">{pct(1 - (strategy === 'everything' ? 0 : estimate.residualError), locale)}</Box>
                     <Box fontSize="body-s" color="text-body-secondary">
-                      from {pct(1 - estimate.baselineError)} now
+                      from {pct(1 - estimate.baselineError, locale)} now
                     </Box>
                   </div>
                   <div>
@@ -437,7 +440,7 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                       label="Target label accuracy"
                       description={
                         estimate.impliedCutoff !== null && estimate.impliedCutoff !== undefined
-                          ? `Implied confidence cutoff ≈${estimate.impliedCutoff.toFixed(2)} — documents below this get reviewed.`
+                          ? `Implied confidence cutoff ≈${formatFixed(estimate.impliedCutoff, locale, 2)} — documents below this get reviewed.`
                           : 'Documents with the most confidence alerts are reviewed first, until the target is met.'
                       }
                     >
@@ -493,10 +496,10 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                       <Box fontSize="body-s" color="text-body-secondary" padding={{ bottom: 's' }}>
                         {estimate.calibration.totalObservations} observation(s) across {estimate.calibration.binCoverage} of 10 bins
                         {estimate.calibration.ece !== null && estimate.calibration.ece !== undefined
-                          ? ` · ECE ${estimate.calibration.ece.toFixed(3)}`
+                          ? ` · ECE ${formatFixed(estimate.calibration.ece, locale, 3)}`
                           : ''}
                         {estimate.calibration.auroc !== null && estimate.calibration.auroc !== undefined
-                          ? ` · AUROC ${estimate.calibration.auroc.toFixed(3)}`
+                          ? ` · AUROC ${formatFixed(estimate.calibration.auroc, locale, 3)}`
                           : ''}
                         {sampleWasPartial
                           ? ` · sampled ${sampleExtent} documents`
@@ -512,18 +515,18 @@ const ReviewEffortModal = ({ visible, testSetId, configVersion, onDismiss, onCon
                           {
                             id: 'bin',
                             header: 'Confidence',
-                            cell: (b: ReliabilityBin) => `${b.binStart.toFixed(1)}–${b.binEnd.toFixed(1)}`,
+                            cell: (b: ReliabilityBin) => `${formatFixed(b.binStart, locale, 1)}–${formatFixed(b.binEnd, locale, 1)}`,
                           },
                           { id: 'n', header: 'Observations', cell: (b: ReliabilityBin) => b.observations },
                           {
                             id: 'observed',
                             header: 'Observed accuracy',
-                            cell: (b: ReliabilityBin) => pct(b.observedAccuracy),
+                            cell: (b: ReliabilityBin) => pct(b.observedAccuracy, locale),
                           },
                           {
                             id: 'blended',
                             header: 'Used in estimate',
-                            cell: (b: ReliabilityBin) => pct(b.blendedAccuracy),
+                            cell: (b: ReliabilityBin) => pct(b.blendedAccuracy, locale),
                           },
                         ]}
                       />

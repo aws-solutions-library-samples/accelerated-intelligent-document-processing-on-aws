@@ -57,7 +57,7 @@ created when you enable the Bedrock circuit breaker); two CloudWatch dashboards;
 X-Ray tracing on the document-processing Lambda functions and both state machines, which
 `EnableXRayTracing` turns off in one place if you do not want it; Step Functions retry and catch
 blocks with dead-letter queues behind every SQS consumer; a customer-managed KMS key
-encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 33 TLS-only
+encrypting the DynamoDB tables, S3 buckets, SNS topics and log groups; 35 TLS-only
 resource policies on buckets and queues; S3 versioning and DynamoDB point-in-time recovery;
 Cognito authentication with a REST API authorizer; concurrency admission control; and
 per-invocation token and cost metering written to a queryable ledger.
@@ -218,7 +218,7 @@ Protection verdict, before any execution starts; it is `DISABLED` by default, an
 its detection is signature, YARA and ML based with no behavioural analysis. See
 [malware-scanning.md](./malware-scanning.md).
 
-**Data protection in transit.** 33 resource policies deny requests where
+**Data protection in transit.** 35 resource policies deny requests where
 `aws:SecureTransport` is false, and there is no exception: in `template.yaml`, all
 thirteen S3 bucket policies and all seventeen SQS queue policies carry the deny, plus one
 further queue policy in `patterns/unified/template.yaml` and two in the optional
@@ -260,7 +260,7 @@ token until the app has loaded. Those routes serve static files only; see
 Authorization on the `/op` route is not uniform, and the difference matters when you
 classify your data. `scripts/api_rbac_expectations.yaml` is the declared source of truth
 for it and `make api-test-static` fails if the code and that file drift apart. It covers
-174 operations. 164 of them require Cognito group membership and 2
+180 operations. 170 of them require Cognito group membership and 2
 (`updateDiscoveryJobStatus`, `updateAgentJobStatus`) are reachable only by IAM
 principals, rejecting every Cognito caller. 27 of those accept any assigned group
 rather than a named subset — they are declared `ANY_GROUP`, which the build resolves into
@@ -349,7 +349,7 @@ runtime role surface against privilege-escalation regressions.
 
 Resource scoping is a separate question from boundaries, and it is the weaker of the two
 here. Counting across the eleven templates that make up the solution and its optional
-extensions, 129 IAM policy statements are written against `Resource: "*"` — 54 in
+extensions, 131 IAM policy statements are written against `Resource: "*"` — 54 in
 `template.yaml`, 39 in `patterns/unified/template.yaml`, 8 in
 `nested/multi-doc-discovery/template.yaml`, and the remainder in the other nested stacks,
 `iam-roles/` and `feature-platform/`. A large share of them are unavoidable, because the

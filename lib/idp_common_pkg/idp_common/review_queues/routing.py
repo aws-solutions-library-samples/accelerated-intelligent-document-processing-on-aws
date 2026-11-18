@@ -28,7 +28,7 @@ from .finalize import apply_corrections
 from .models import ReviewDecision, ReviewItemRecord
 from .queue_defs import DEFAULT_QUEUE_ID, QueueDefinition, QueueDefStore
 from .reasons import MAX_REASONS, build_reasons
-from .statuses import LIVE_ITEM_STATES, QueueItemState
+from .statuses import LIVE_ITEM_STATES, MACHINE_RESULT_DISPOSITIONS, QueueItemState
 
 logger = logging.getLogger(__name__)
 
@@ -200,8 +200,9 @@ def route_for_review(
             drafts = store.list_drafts(doc_key, item.cycle_id)
             apply_corrections(document, drafts, s3, out_bucket)
             outcome = "complete"
-        elif item.disposition == "removed":
-            # Removed from review by an Admin: completes with the machine results.
+        elif item.disposition in MACHINE_RESULT_DISPOSITIONS:
+            # Removed from review by an Admin, or skipped (Skip All Reviews):
+            # completes with the machine results.
             outcome = "complete"
         else:
             outcome = "rejected"

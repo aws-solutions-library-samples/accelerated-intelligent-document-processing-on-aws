@@ -257,6 +257,13 @@ roles:
       - {kind: delete, bucket: OutputBucket, key: /*,
          unused: "S3CrudPolicy grants it; no delete call on this function's code path.
            Inferred from source, not measured."}
+    invoke:
+      - {resource: "arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:GENAIIDP-*",
+         uses: "Advanced extraction runs its model calls and its confidence pass here:
+           LambdaHook inference, and decision-model confidence through
+           idp_common/decision_model/invoker.py, whose endpoint function names must
+           start with GENAIIDP- (FUNCTION_NAME_PREFIX). The ARN is chosen by
+           configuration, not by a tool."}
   MultiDocDiscoveryAnalyzeFunction:
     template: nested/multi-doc-discovery/template.yaml
     object_access:
@@ -433,8 +440,12 @@ entries:
     note: >-
       Pinned as the single conversational agent of its mode, with the caller's own
       memory. Its reads are configuration profiles and the schema catalog, so the
-      combination rule does not apply.
-    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction, AgentProcessorFunction]
+      combination rule does not apply. It runs only from the Quick Start panel:
+      Document Analytics does not list it, and submitAgentQuery and the analytics
+      processor refuse it, so AgentProcessorFunction is not a role it runs under.
+      On a stack deployed with EnableQuickStartWidget=false, both chat routes refuse
+      it too.
+    roles: [AgentChatProcessorFunction, ChatStreamProcessorFunction]
     reads: [configuration_profiles]
     inputs: [user_prompt, conversation_history, configuration]
     outputs: [ui_rendered, configuration_write, generation_queue]
@@ -501,9 +512,14 @@ entries:
       - lib/idp_common_pkg/idp_common/discovery/classes_discovery.py::ClassesDiscovery.discovery_classes_with_document_and_ground_truth
       - lib/idp_common_pkg/idp_common/discovery/rules_discovery.py::RulesDiscovery.discovery_rules_from_document
     note: >-
-      Single-document class and rule discovery: one model call per document, no
-      tools. Declared because the derivation reads only tool-holding constructions,
-      and the result is saved into a profile and shown in the UI.
+      Single-document class and rule discovery. Class discovery is one model call per
+      document with no tools. Agentic rule discovery calls structured_output, so it
+      runs the extraction agent's tools over the one document it was given; with
+      extraction.agentic.table_parsing on in the copied config that includes
+      parse_table, built without the section text, so the model passes the table
+      Markdown it read from that same document. Declared because the derivation
+      reads only tool-holding constructions, and the result is saved into a profile
+      and shown in the UI.
     reads: [this_document]
     inputs: [document_content]
     outputs: [configuration_write, ui_rendered]
@@ -523,6 +539,11 @@ entries:
     surfaces:
       - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::Agent
       - construct:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::structured_output_async::BedrockModel
+      # parse_table is built as tool(parse_table), not @tool, because its description
+      # depends on whether it holds the section text; the census derives that
+      # call as this construct: surface. (@tool(description=...) would derive both
+      # a tool: and a construct: surface for the one tool.)
+      - construct:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool::tool
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.apply_json_patches
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_tool
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::create_dynamic_extraction_tool_and_patch_tool.extraction_with_confidence_tool
@@ -539,7 +560,6 @@ entries:
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::view_existing_extraction
       - tool:lib/idp_common_pkg/idp_common/extraction/agentic_idp.py::write_buffer_date
       - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_map_table_to_schema_tool.map_table_to_schema
-      - tool:lib/idp_common_pkg/idp_common/extraction/tools/table_parser.py::create_parse_table_tool.parse_table
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::create_todo_list
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::update_todo
       - tool:lib/idp_common_pkg/idp_common/utils/strands_agent_tools/todo_list.py::view_todo_list

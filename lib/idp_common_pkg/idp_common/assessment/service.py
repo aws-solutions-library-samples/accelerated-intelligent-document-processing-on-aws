@@ -368,7 +368,7 @@ class AssessmentService:
             )
             return {
                 "confidence": 0.5,
-                "confidence_reason": f"LLM returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
+                "confidence_reason": f"The confidence pass returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
                 "confidence_threshold": threshold,
             }
 
@@ -428,7 +428,7 @@ class AssessmentService:
             )
             return {
                 "confidence": 0.5,
-                "confidence_reason": f"LLM returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
+                "confidence_reason": f"The confidence pass returned unexpected type {type(assessment_dict)} instead of dictionary. Using default confidence.",
                 "confidence_threshold": default_threshold,
             }
 
@@ -699,14 +699,18 @@ class AssessmentService:
         Returns:
             List of content items with text and image content properly ordered
         """
-        # Split the prompt at the DOCUMENT_IMAGE placeholder
-        parts = prompt_template.split("{DOCUMENT_IMAGE}")
+        from idp_common.extraction.prompt_assembly import (
+            DOCUMENT_IMAGE_PLACEHOLDER,
+            document_image_placeholder_error,
+        )
 
-        if len(parts) != 2:
-            raise ValueError(
-                f"Invalid DOCUMENT_IMAGE placeholder usage: found {len(parts) - 1} occurrences, "
-                f"but exactly 1 is required. The DOCUMENT_IMAGE placeholder must appear exactly once in the template."
-            )
+        # The rule validate_config applies to the same prompt.
+        placeholder_error = document_image_placeholder_error(prompt_template)
+        if placeholder_error:
+            raise ValueError(placeholder_error)
+
+        # Split the prompt at the DOCUMENT_IMAGE placeholder
+        parts = prompt_template.split(DOCUMENT_IMAGE_PLACEHOLDER)
 
         # Process the parts before and after the image placeholder
         before_image = self._prepare_prompt_from_template(
@@ -1038,9 +1042,12 @@ class AssessmentService:
         ``process_document_section`` (the standalone Assessment step) and the
         agentic in-shard assessment path. Given a class label, the extracted
         values, and the page text/images/OCR-confidence for the scope being
-        assessed, it builds the assessment prompt, invokes Bedrock, parses the
-        response, and enhances every field with its confidence threshold and
-        alerts — returning the result in memory.
+        assessed, it scores every field and enhances it with its confidence
+        threshold and alerts, returning the result in memory. With
+        ``extraction.confidence.method: llm`` it builds the assessment prompt,
+        invokes Bedrock and parses the response; with ``decision_model`` it asks
+        a decision model one yes/no question per value (``ocr_text_confidence``
+        is not used, and a ``model_id_override`` is refused).
 
         Geometry grounding is NOT applied here; the caller grounds against the
         page-data scope it owns (see ``AssessmentCoreResult``).
@@ -1067,6 +1074,24 @@ class AssessmentService:
 
         # Get confidence configuration (v0.6: extraction.confidence.*)
         confidence_cfg = self.config.extraction.confidence
+        if confidence_cfg.method == "decision_model":
+            if model_id_override:
+                # The escalation ladder's override names a Bedrock model, which this
+                # path does not call. Refused rather than ignored, so an escalation
+                # cannot look as though it ran. Not reached in practice: this path
+                # scores every value or raises, so nothing is left to escalate.
+                raise ValueError(
+                    "extraction.confidence.method is 'decision_model', which cannot "
+                    f"run the Bedrock model override {model_id_override!r}"
+                )
+            # ocr_text_confidence is not sent: the decision model reads the page
+            # image by default, and adding text to its state measured worse.
+            return self._assess_with_decision_model(
+                class_label=class_label,
+                extraction_results=extraction_results,
+                document_text=document_text,
+                page_images=page_images,
+            )
         model_id = model_id_override or confidence_cfg.model
         temperature = confidence_cfg.temperature
         top_k = confidence_cfg.top_k
@@ -1260,6 +1285,61 @@ class AssessmentService:
                     }
                 parsing_succeeded = False
 
+        return self._finalize_assessment(
+            assessment_data,
+            class_schema,
+            metering=metering,
+            parsing_succeeded=parsing_succeeded,
+            total_duration=total_duration,
+            truncated=truncated,
+        )
+
+    def _assess_with_decision_model(
+        self,
+        *,
+        class_label: str,
+        extraction_results: Dict[str, Any],
+        document_text: str,
+        page_images: List[Any],
+    ) -> AssessmentCoreResult:
+        """``extraction.confidence.method: decision_model``: one yes/no per value."""
+        from idp_common.assessment.decision_model_confidence import (
+            DecisionModelConfidenceScorer,
+        )
+
+        class_schema = self._get_class_schema(class_label)
+        if not class_schema:
+            raise ValueError(f"No schema found for document class: {class_label}")
+        scorer = DecisionModelConfidenceScorer(
+            self.config.extraction.confidence, region=self.region
+        )
+        assessment_data, metering, duration = scorer.score(
+            extraction_results, class_schema, document_text, page_images
+        )
+        return self._finalize_assessment(
+            assessment_data,
+            class_schema,
+            metering=metering,
+            parsing_succeeded=True,
+            total_duration=duration,
+            truncated=False,
+        )
+
+    def _finalize_assessment(
+        self,
+        assessment_data: Dict[str, Any],
+        class_schema: Dict[str, Any],
+        *,
+        metering: Optional[Dict[str, Any]],
+        parsing_succeeded: bool,
+        total_duration: float,
+        truncated: bool,
+    ) -> AssessmentCoreResult:
+        """Thresholds, alerts and the result, for a parsed assessment.
+
+        Shared by the LLM confidence call and the decision-model one, so both
+        produce exactly the same ``explainability_info`` shape and alerts.
+        """
         # Convert any model-provided bbox into geometry — only in the LLM-box
         # geometry modes ('llm', 'llm_grounded'). In 'ocr_only' (default) and 'off'
         # we intentionally ignore model boxes (geometry comes solely from OCR
@@ -1379,7 +1459,7 @@ class AssessmentService:
                     )
                     enhanced_assessment_data[attr_name] = {
                         "confidence": 0.5,
-                        "confidence_reason": f"LLM returned list format for non-list attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
+                        "confidence_reason": f"The confidence pass returned list format for non-list attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
                         "confidence_threshold": attr_threshold,
                     }
             else:
@@ -1390,7 +1470,7 @@ class AssessmentService:
                 )
                 enhanced_assessment_data[attr_name] = {
                     "confidence": 0.5,
-                    "confidence_reason": f"LLM returned unexpected type {type(attr_assessment)} for attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
+                    "confidence_reason": f"The confidence pass returned unexpected type {type(attr_assessment)} for attribute '{attr_name}'. Using default confidence (0.5) and threshold ({attr_threshold}).",
                     "confidence_threshold": attr_threshold,
                 }
 

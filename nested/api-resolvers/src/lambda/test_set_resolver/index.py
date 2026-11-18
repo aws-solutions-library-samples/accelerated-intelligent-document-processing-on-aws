@@ -66,6 +66,7 @@ from idp_common.review_queues.testset_docs import (  # type: ignore
     validate_time_limit,
 )
 from idp_common.review_queues.testset_labels import (  # type: ignore
+    EXTRACTED_AS_CLASS_KEY,
     MAX_SECTION_LABEL_BYTES,
     DraftMove,
     LabelEditor,
@@ -2134,7 +2135,13 @@ def _documents_needing_labels(test_set_id):
 
 
 def generate_draft_labels(
-    args, event=None, *, forced_sections=None, section_id=None, section_expected=None
+    args,
+    event=None,
+    *,
+    forced_sections=None,
+    section_id=None,
+    section_expected=None,
+    reextract=False,
 ):
     """Start a labeling job: run the active config over a test set's documents.
 
@@ -2274,6 +2281,11 @@ def generate_draft_labels(
         "createdAt": now,
         "startedBy": started_by,
     }
+    if reextract:
+        # The harvest deletes the draft of each section it writes back: a re-extract
+        # supersedes the edits saved over the fields it replaces (D34). A Generate
+        # draft labels run keeps drafts.
+        job_item["reextract"] = True
     if document_class:
         # The harvest writes the run's result only if the run applied this class
         # (_write_draft_labels_for_doc): Bedrock Data Automation mode does not.
@@ -2427,6 +2439,7 @@ def reextract_test_set_document(args, event=None):
             }
         },
         event,
+        reextract=True,
     )
     logger.info(
         f"Re-extracting {object_key} in {test_set_id} as "
@@ -2518,6 +2531,7 @@ def _reextract_one_section(
         forced_sections=encoded,
         section_id=section_id,
         section_expected={"class": document_class, "pages": target_pages},
+        reextract=True,
     )
     logger.info(
         f"Re-extracting section {section_id} of {object_key} in {test_set_id} as "
@@ -2646,6 +2660,15 @@ def update_test_set_document_sections(args, event=None):
     That means rewriting every section file rather than renaming a few. Writes happen
     before deletes, so an interrupted call leaves an extra stale section — visible,
     and recoverable by re-saving — rather than a missing one.
+
+    ## The class the fields were extracted under
+
+    A class change leaves the fields extracted under the previous class, so the
+    section records that class as :data:`EXTRACTED_AS_CLASS_KEY` (see
+    :func:`_restamp_extracted_as`) and the editor can say so after a reload (#1816).
+    It is part of the section's content, so it follows the fields through the
+    renumbering exactly as they do; it is returned per section so the editor knows
+    it for sections it has not opened.
     """
     input_data = args.get("input", args)
     test_set_id = input_data["testSetId"]
@@ -2713,6 +2736,8 @@ def update_test_set_document_sections(args, event=None):
 
     prefix = f"{test_set_id}/baseline/{object_key}/sections/"
     written_keys = set()
+    # Each written section's EXTRACTED_AS_CLASS_KEY, in ``ordered`` order.
+    extracted_as = []
     for position, section in enumerate(ordered, start=1):
         source_id = str(section.get("sectionId") or "")
         _old_key, content = existing.get(source_id, (None, None))
@@ -2738,6 +2763,7 @@ def update_test_set_document_sections(args, event=None):
 
         document_class = section.get("documentClass")
         if document_class:
+            _restamp_extracted_as(content, document_class)
             doc_class = dict(content.get("document_class") or {})
             doc_class["type"] = document_class
             content["document_class"] = doc_class
@@ -2750,6 +2776,7 @@ def update_test_set_document_sections(args, event=None):
             ContentType="application/json",
         )
         written_keys.add(key)
+        extracted_as.append(content.get(EXTRACTED_AS_CLASS_KEY))
 
     # After the writes, never before: an interruption should leave a stale extra
     # section rather than a hole.
@@ -2766,6 +2793,7 @@ def update_test_set_document_sections(args, event=None):
             to_id=str(position),
             page_indices=[int(i) for i in section["pageIndices"]],
             document_class=section.get("documentClass") or None,
+            extracted_as=extracted_as[position - 1],
         )
         for position, section in enumerate(ordered, start=1)
         if str(section.get("sectionId") or "") in existing
@@ -2794,10 +2822,44 @@ def update_test_set_document_sections(args, event=None):
                 "documentClass": section.get("documentClass"),
                 # As written, so the client's board reflects what is now on disk.
                 "pageIndices": [int(i) for i in section["pageIndices"]],
+                "extractedAsClass": extracted_as[position - 1],
             }
             for position, section in enumerate(ordered, start=1)
         ],
     }
+
+
+def _restamp_extracted_as(content, new_class):
+    """Record on a kept section the class its fields were extracted under (#1816).
+
+    That is the class already recorded, if an earlier regroup recorded one — the
+    fields have not been re-extracted since, so a second change (Invoice, then W2,
+    then Payslip) still names Invoice — and otherwise the section's class before this
+    save. Removed when the new class is that class: the fields match it again. A
+    section with no class before has nothing to name. Only a re-extract's write-back
+    replaces the fields, and it writes the run's output, which carries no such key;
+    see :func:`_set_baseline_document_class` for the section a re-extract does not
+    write back.
+    """
+    recorded = content.get(EXTRACTED_AS_CLASS_KEY)
+    if not isinstance(recorded, str) or not recorded:
+        doc_class = content.get("document_class")
+        recorded = doc_class.get("type") if isinstance(doc_class, dict) else None
+    if isinstance(recorded, str) and recorded and recorded != new_class:
+        content[EXTRACTED_AS_CLASS_KEY] = recorded
+    else:
+        content.pop(EXTRACTED_AS_CLASS_KEY, None)
+
+
+def _clear_draft_extracted_as(test_set_id, object_key, section_id):
+    """Drop EXTRACTED_AS_CLASS_KEY from a section's draft. Best-effort: the label
+    is already written, and a draft that keeps it only shows a note it should not."""
+    try:
+        _labels().clear_draft_extracted_as(test_set_id, object_key, section_id)
+    except Exception as e:  # noqa: BLE001 — see docstring
+        logger.warning(
+            f"Could not update the draft of {test_set_id}/{object_key}#{section_id}: {e}"
+        )
 
 
 def _label_job_to_write(test_set_id, object_key):
@@ -2906,7 +2968,11 @@ def _set_baseline_document_class(
     A baseline with no ``labelSource`` is authored ground truth and is never
     demoted: nothing predicted it, so there is nothing to correct and overwriting it
     would replace authoritative data with a machine guess. The class correction
-    still lands, but the label keeps its provenance and the harvest skips it.
+    still lands, but the label keeps its provenance and the harvest skips it. That
+    makes this write the re-extract's last word on such a section, so it also drops
+    :data:`EXTRACTED_AS_CLASS_KEY`: no write-back will. A draft or reviewed section
+    keeps it until the write-back replaces its fields, so a run that never finishes
+    still says they reflect the previous class.
     """
     prefix = f"{test_set_id}/baseline/{object_key}/sections/"
     demoted = 0
@@ -2925,6 +2991,10 @@ def _set_baseline_document_class(
         if result.get("labelSource") == LABEL_SOURCE_HUMAN:
             result["labelSource"] = LABEL_SOURCE_DRAFT
             demoted += 1
+        elif result.get("labelSource") != LABEL_SOURCE_DRAFT:
+            result.pop(EXTRACTED_AS_CLASS_KEY, None)
+            section_id = key[len(prefix) :].split("/")[0]
+            _clear_draft_extracted_as(test_set_id, object_key, section_id)
         s3_client.put_object(
             Bucket=test_set_bucket,
             Key=key,
@@ -4327,6 +4397,7 @@ def _harvest_label_job(job, deadline=None):
                 only_section_id=job.get("sectionId") or None,
                 only_section_expected=_section_expected(job),
                 forced_class=job.get("forcedClass") or None,
+                discard_drafts=bool(job.get("reextract")),
             )
             # Keep the queue's summary of this document current as its draft lands.
             _refresh_summary(test_set_id, file_name)
@@ -4589,6 +4660,7 @@ def _write_draft_labels_for_doc(
     only_section_id=None,
     only_section_expected=None,
     forced_class=None,
+    discard_drafts=False,
 ):
     """Write one document's sections into the test-set baseline as draft labels.
 
@@ -4613,6 +4685,10 @@ def _write_draft_labels_for_doc(
     that did not apply the class (Bedrock Data Automation mode, again) would
     otherwise replace the class the reviewer just corrected with the one they
     corrected it from.
+
+    ``discard_drafts`` is set for a re-extract: each section written back loses its
+    draft, whose edits were made over the fields just replaced. Otherwise (a Generate
+    draft labels run) the draft is kept and only loses its EXTRACTED_AS_CLASS_KEY.
     """
     if only_section_id is not None:
         sections = [
@@ -4722,6 +4798,15 @@ def _write_draft_labels_for_doc(
         )
         written_section_ids.add(section_id)
         wrote = True
+        if discard_drafts:
+            # Not best-effort: a draft left in place is what the editor opens and
+            # what Process Changes applies, so a failure here fails the document.
+            _labels().delete_draft(test_set_id, file_name, section_id)
+        else:
+            # The run's output carries no EXTRACTED_AS_CLASS_KEY, so the label above
+            # has none; the section's draft, which the editor opens instead, must not
+            # keep one.
+            _clear_draft_extracted_as(test_set_id, file_name, section_id)
 
     if wrote and only_section_id is None:
         _prune_superseded_draft_sections(

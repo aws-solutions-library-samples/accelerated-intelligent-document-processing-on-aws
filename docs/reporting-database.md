@@ -185,7 +185,8 @@ Aggregate columns on `metering_hourly` / `metering_daily` (cost per
 service/unit): `sum_value, sum_cost`.
 
 Aggregate columns on `metering_docs_hourly` / `metering_docs_daily`
-(doc-grain volume/pages): `n_docs, sum_pages`. `number_of_pages` is
+(doc-grain volume/pages/runs): `n_docs, sum_pages, n_runs`.
+`number_of_pages` is
 stamped identically on every metering row per document, so aggregating
 it at the (service_api, unit) grain of `metering_hourly` would fan the
 page count out by the number of rows a doc touches; the `metering_docs_*`
@@ -198,6 +199,21 @@ subquery to collapse the fan-out.
 processed across two hours counts twice). For strict cross-day
 unique-doc counts, query raw `metering` with
 `COUNT(DISTINCT document_id)`.
+
+`n_runs` counts document **runs** — one run is one
+`(document_id, timestamp)` pair in raw `metering`, so reprocessing a
+document raises `n_runs` without raising `n_docs`. Unlike `n_docs` it is
+additive: a run falls in exactly one hour, so `SUM(n_runs)` is exact at
+either grain and over any range it fully covers.
+
+⚠️ **`n_runs` is NULL for partitions older than the data-mart migration
+window**, and `SUM` skips NULLs — so a query reaching past that boundary
+returns a number covering only part of the range, with nothing marking it
+short. Select `COUNT(*)` and `COUNT("n_runs")` alongside any `SUM("n_runs")`
+and treat them differing as "partially recorded". The column carries the
+same warning as its Glue comment, so it is visible from the catalog too. See
+[`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
+measurements behind both claims.
 
 See [`docs/reporting-sql-layer.md`](reporting-sql-layer.md) for the
 consumer tier picker (`<2h → raw`, `2-24h → hourly`, `>24h → daily`),

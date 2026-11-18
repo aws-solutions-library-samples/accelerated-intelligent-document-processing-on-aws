@@ -25,6 +25,7 @@ import { getMalwareScanView } from '../common/malware-scan';
 import type { MalwareScanFields } from '../common/malware-scan';
 import FlowDiagram from './FlowDiagram';
 import StepDetails from './StepDetails';
+import { useFormatters } from '../../i18n/format';
 
 import './StepFunctionFlowViewer.css';
 
@@ -159,6 +160,7 @@ const StepFunctionFlowViewer = ({
   mergedConfig = null,
   malwareScan = null,
 }: StepFunctionFlowViewerProps): React.JSX.Element => {
+  const { formatDateTime, formatTime } = useFormatters();
   const [selectedStep, setSelectedStep] = useState<Step | null>(null);
   const [data, setData] = useState<ExecutionData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -469,7 +471,7 @@ const StepFunctionFlowViewer = ({
               </Button>
               {lastRefreshTime && (
                 <Box variant="small" color="text-body-secondary">
-                  Last updated: {lastRefreshTime.toLocaleTimeString()}
+                  Last updated: {formatTime(lastRefreshTime)}
                 </Box>
               )}
             </SpaceBetween>
@@ -495,12 +497,12 @@ const StepFunctionFlowViewer = ({
               </Box>
               <Box>
                 <Box variant="awsui-key-label">Started</Box>
-                <Box>{execution.startDate ? new Date(execution.startDate).toLocaleString() : 'N/A'}</Box>
+                <Box>{execution.startDate ? formatDateTime(new Date(execution.startDate)) : 'N/A'}</Box>
               </Box>
               {execution.stopDate && (
                 <Box>
                   <Box variant="awsui-key-label">Completed</Box>
-                  <Box>{new Date(execution.stopDate).toLocaleString()}</Box>
+                  <Box>{formatDateTime(new Date(execution.stopDate))}</Box>
                 </Box>
               )}
             </SpaceBetween>

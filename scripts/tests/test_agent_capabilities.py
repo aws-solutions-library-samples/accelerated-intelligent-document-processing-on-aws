@@ -438,7 +438,7 @@ def symbol_exists(ref: str) -> bool:
 
 @functools.lru_cache(maxsize=None)
 def _ci_covered_dirs() -> Set[str]:
-    return set(ci_coverage._covered_dirs())
+    return set(ci_coverage.ci_run_dirs())
 
 
 def _run_by_ci(rel: str) -> bool:

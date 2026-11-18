@@ -8,6 +8,7 @@ Requires the real strands package so the service binds `structured_output`
 Run with: pytest -m agentic tests/unit/extraction/agentic_idp/
 """
 
+from contextlib import ExitStack
 from typing import Any
 from unittest.mock import patch
 
@@ -351,3 +352,59 @@ def test_a_reextraction_that_returned_keeps_its_metering_when_a_later_step_raise
     assert meta["escalation_kept"] is False
     assert meta["escalation_decision"].startswith("escalation call failed: ")
     assert metering == billed
+
+
+@pytest.mark.parametrize("scope", ["field-subset", "full-section"])
+def test_both_escalation_scopes_meter_under_the_shared_context(scope):
+    """Both Advanced-mode re-extractions name the escalation metering context.
+
+    The fakes elsewhere in this file return their own metering, so they cannot
+    see which context the service passed. This reads the argument itself. The
+    literal is the one Simple mode's escalation is held to in
+    ``test_escalation_metering.py``: one name for both modes keeps escalation on
+    one cost-report row.
+    """
+    svc = _service()
+    bad = {"invoice_id": "INV-9", "status": "pending", "notes": "keep me"}
+    contexts: list[str] = []
+
+    def fake_so(*args, **kwargs):
+        contexts.append(kwargs["context"])
+        if scope == "field-subset":
+            return StatusOnlyModel(status="void"), {"metering": {}}
+        return FullModel(invoice_id="INV-9", status="void", notes="keep me"), {
+            "metering": {}
+        }
+
+    with ExitStack() as stack:
+        stack.enter_context(
+            patch(
+                "idp_common.extraction.service.create_pydantic_model_from_json_schema",
+                return_value=StatusOnlyModel,
+            )
+        )
+        stack.enter_context(
+            patch("idp_common.extraction.service.structured_output", fake_so)
+        )
+        if scope == "full-section":
+            # No usable subset schema: the service falls back to the whole section.
+            stack.enter_context(
+                patch(
+                    "idp_common.extraction.service.build_subset_schema",
+                    lambda schema, _fields: schema,
+                )
+            )
+        _fields, _data, meta, _metering, _ok = svc._validate_and_maybe_escalate(
+            extracted_fields=dict(bad),
+            structured_data=FullModel(**bad),
+            data_model=FullModel,
+            model_id="us.amazon.nova-pro-v1:0",
+            message_prompt="(p)",
+            agentic_images=[],
+            custom_instruction=None,
+            section_info=_FakeSection(),
+            parsing_succeeded=True,
+        )
+
+    assert meta["escalation_scope"] == scope
+    assert contexts == ["ExtractionEscalation"]

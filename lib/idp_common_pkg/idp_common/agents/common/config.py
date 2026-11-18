@@ -9,20 +9,9 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from idp_common.regional_models import AGENT_MODEL_ID, regional_default
+from idp_common.regional_models import AGENT_MODEL_ID, regional_default, stack_region
 
 logger = logging.getLogger(__name__)
-
-
-def stack_region() -> str:
-    """The Region an agent's fallback model has to be callable from.
-
-    ``AWS_REGION`` is set in every Lambda. ``AWS_DEFAULT_REGION`` is what a local
-    SDK or CLI session usually carries instead. With neither set the answer is
-    empty, and :func:`~idp_common.regional_models.regional_default` then returns
-    the US model, as it does for any Region the deploy-time swap leaves alone.
-    """
-    return os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
 
 
 def _default_agent_model_id() -> str:

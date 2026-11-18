@@ -374,7 +374,7 @@ Parameters:
     Type: String
     Default: 'true'
     AllowedValues: [ 'true', 'false' ]
-    Description: Show the floating Quick Start chat widget in the web UI for prompt-based config bootstrap
+    Description: Offer Quick Start (prompt-based configuration bootstrap) in the web UI. When false, the UI hides it and the chat routes refuse it; idp-cli bootstrap is unaffected
 
   # Optional Knowledge Base Configuration
   DocumentKnowledgeBase:
@@ -3629,6 +3629,7 @@ Resources:
         
         # SQS Queue Names (for IAM policies)
         DocumentQueueName: !GetAtt DocumentQueue.QueueName
+        MaxConcurrentWorkflows: !Ref MaxConcurrentWorkflows
         DiscoveryQueueName: !GetAtt DiscoveryQueue.QueueName
         TestFileCopyQueueName: !GetAtt TestFileCopyQueue.QueueName
         TestSetFileCopyQueueName: !GetAtt TestSetFileCopyQueue.QueueName
@@ -3650,6 +3651,7 @@ Resources:
         DataRetentionInDays: !Ref DataRetentionInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
+        EnableQuickStartWidget: !Ref EnableQuickStartWidget
         
         # Conditional parameters
         HasGuardrailConfig: !If [HasGuardrailConfig, "true", "false"]
@@ -5981,8 +5983,14 @@ Resources:
           - Name: date
             Type: string
 
-  # Doc-grain hourly rollup — n_docs + sum_pages at (hour, config_version)
-  # grain. Kept in a separate table from metering_hourly because pages and
+  # Doc-grain hourly rollup — n_docs + sum_pages + n_runs at (hour,
+  # config_version) grain. ``n_docs`` counts DOCUMENTS in the cell and
+  # ``n_runs`` counts RUNS — one run is one (document_id, timestamp) pair in
+  # raw metering, so reprocessing a document raises n_runs without raising
+  # n_docs. n_runs is additive across any set of rows (a run belongs to
+  # exactly one cell); SUM(n_docs) is an upper bound on distinct documents,
+  # because a document occupying several cells is counted once in each.
+  # Kept in a separate table from metering_hourly because pages and
   # doc counts fan out across (service_api, unit) — SUM(number_of_pages)
   # grouped by service_api overcounts by the number of metering rows per
   # doc (a 10-page doc with 6 service rows would report 60 pages).
@@ -5994,7 +6002,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering_docs_hourly"
-        Description: "Hourly doc-grain rollup — n_docs + sum_pages per (hour, config_version). See docs/reporting-sql-layer.md §2."
+        Description: "Hourly doc-grain rollup — n_docs + sum_pages + n_runs per (hour, config_version). See docs/reporting-sql-layer.md §2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -6040,6 +6048,17 @@ Resources:
               Type: bigint
             - Name: sum_pages
               Type: bigint
+            - Name: n_runs
+              # Readable from the catalog itself (SHOW CREATE TABLE, GetTable,
+              # the console) so the boundary travels with the column rather
+              # than only with the docs. ⚠️ It does NOT reach the analytics
+              # agent: that prompt carries its own hand-written table
+              # descriptions and never reads Glue metadata, so the same
+              # warning is repeated in schema_provider.py on purpose. Glue
+              # caps a column Comment at 255 characters; the stack fails to
+              # deploy above it (test_glue_column_comment_length.py).
+              Comment: "Document runs, one per (document_id, timestamp) in metering. NULL - not recorded, never zero - for partitions older than the migration window (Days, default 30). SUM() skips NULLs: pair it with COUNT(*) and COUNT(n_runs) to check full coverage."
+              Type: bigint
           Compressed: true
         PartitionKeys:
           - Name: date
@@ -6047,11 +6066,13 @@ Resources:
           - Name: hour
             Type: string
 
-  # Doc-grain daily rollup — n_docs + sum_pages at (day, config_version).
-  # SUM from metering_docs_hourly, so a document reprocessed across N hours
-  # is counted N times (each hour it appeared in — a "doc-hours" count).
-  # For strict cross-day unique-doc counts, query raw metering with
-  # COUNT(DISTINCT document_id).
+  # Doc-grain daily rollup — n_docs + sum_pages + n_runs at (day,
+  # config_version). SUM from metering_docs_hourly, so a document
+  # reprocessed across N hours is counted N times in n_docs (each hour it
+  # appeared in — a "doc-hours" count). For strict cross-day unique-doc
+  # counts, query raw metering with COUNT(DISTINCT document_id).
+  # n_runs does NOT fan out that way — a run falls in one hour only, so
+  # SUM(n_runs) stays exact however many days it spans.
   MeteringDocsDailyTable:
     Type: AWS::Glue::Table
     Properties:
@@ -6059,7 +6080,7 @@ Resources:
       DatabaseName: !Ref ReportingDatabase
       TableInput:
         Name: "metering_docs_daily"
-        Description: "Daily doc-grain rollup — n_docs + sum_pages per (day, config_version). See docs/reporting-sql-layer.md §2."
+        Description: "Daily doc-grain rollup — n_docs + sum_pages + n_runs per (day, config_version). See docs/reporting-sql-layer.md §2."
         TableType: "EXTERNAL_TABLE"
         Parameters:
           classification: "parquet"
@@ -6100,6 +6121,17 @@ Resources:
             - Name: n_docs
               Type: bigint
             - Name: sum_pages
+              Type: bigint
+            - Name: n_runs
+              # Readable from the catalog itself (SHOW CREATE TABLE, GetTable,
+              # the console) so the boundary travels with the column rather
+              # than only with the docs. ⚠️ It does NOT reach the analytics
+              # agent: that prompt carries its own hand-written table
+              # descriptions and never reads Glue metadata, so the same
+              # warning is repeated in schema_provider.py on purpose. Glue
+              # caps a column Comment at 255 characters; the stack fails to
+              # deploy above it (test_glue_column_comment_length.py).
+              Comment: "Document runs, one per (document_id, timestamp) in metering. NULL - not recorded, never zero - for partitions older than the migration window (Days, default 30). SUM() skips NULLs: pair it with COUNT(*) and COUNT(n_runs) to check full coverage."
               Type: bigint
           Compressed: true
         PartitionKeys:
@@ -6897,10 +6929,16 @@ Resources:
       # into a customer's SSM Parameter Store and drives future migration
       # decisions.
       #
-      # Current schema state at v1: rollup tables grouped by
-      # (config_version, document_class, service_api, unit). See
+      # Current schema state at v2: rollup tables grouped by
+      # (config_version, document_class, service_api, unit), and the two
+      # metering_docs_* tables carry ``n_runs`` alongside n_docs/sum_pages.
+      # v1 → v2 is that column: rows written under v1 have no n_runs value,
+      # so SUM(n_runs) over them reads NULL and silently understates. The
+      # bump repopulates the migration window (``Days`` below) at the new
+      # schema. Partitions OLDER than that window keep n_runs = NULL — read
+      # a NULL as "not recorded", not as zero runs. See
       # docs/reporting-sql-layer.md §Track A for the design rationale.
-      MigrationVersion: "v1"
+      MigrationVersion: "v2"
       # How many days back to repopulate. Constrained to [1, 90] by
       # ``_plan_migration_chunks``; typical retention is 30 days.
       Days: 30
@@ -7875,7 +7913,8 @@ Resources:
           KeyType: RANGE
       GlobalSecondaryIndexes:
         # TypeDateIndex replaces both the old listDocuments scan and the HITLPendingReviewIndex.
-        # Pending reviews use: ItemType='document' + time range + FilterExpression: HITLPendingReview='true'
+        # Pending reviews use: ItemType='document' + time range + a FilterExpression on
+        # HITLTriggered / HITLStatus / HITLCompleted (HITLPendingReview is not projected).
         - IndexName: TypeDateIndex
           KeySchema:
             - AttributeName: ItemType
@@ -12511,6 +12550,7 @@ Resources:
         Variables:
           TENANT_ISOLATION_MODE: !Ref TenantIsolationMode
           TENANT_GRANT_SOURCE: !Ref TenantGrantSource
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           LOG_LEVEL: !Ref LogLevel
           CONFIGURATION_TABLE_NAME: !Ref ConfigurationTable
           TRACKING_TABLE_NAME: !Ref TrackingTable
@@ -12869,6 +12909,7 @@ Resources:
           AWS_LWA_INVOKE_MODE: response_stream
           PORT: "8080"
           LOG_LEVEL: !Ref LogLevel
+          QUICK_START_ENABLED: !Ref EnableQuickStartWidget
           # Pin idp_common.metrics.put_metric to the stack namespace so
           # Bedrock throttle/latency/token emits from
           # idp_common.bedrock.client._put_metric match the
@@ -13533,10 +13574,15 @@ Resources:
           # explicit entry is what stops a different model's number being used.
           #
           # ⚠️ A code added here must resolve in EVERY Region the stack is deployed
-          # to, and the blast radius is not one row: get_simple_quotas fetches every
-          # entry in both maps with get_service_quota and re-raises any
-          # non-throttling error, so one code that does not exist in the stack's
-          # Region fails the whole Capacity Planning response for every model. The
+          # to. get_simple_quotas reads only the models the selected profile's
+          # steps call, and a code Service Quotas will not return there drops that
+          # model's steps from the quota table with a "Quota not read" warning
+          # naming the model and code — so a dead code costs a profile using that
+          # model its quota analysis rather than failing every profile (#2024).
+          # A model AWS publishes no quota for maps to null, which reports the
+          # same warning without a lookup. Opus 4.1 is that case: neither of its
+          # former codes (L-BD85BFCD, L-7EC72A47) nor any Opus 4.1 quota is listed
+          # by list-service-quotas in us-west-2 or us-east-1 (2026-11-15). The
           # two Sonnet 5.5 codes were therefore checked in more than the one Region
           # they were read from — both resolve, at 6,000,000, in us-east-1,
           # us-west-2, eu-west-1, eu-central-1, eu-west-2, ap-southeast-2 and
@@ -13561,8 +13607,8 @@ Resources:
           # model. ⚠️ So when reading Capacity Planning output: the RPM figure for
           # EITHER Sonnet is derived from a tokens-per-minute quota and is
           # approximate for both. The TPM figures are exact.
-          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-BD85BFCD","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
-          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":"L-7EC72A47","us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
+          BEDROCK_MODEL_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-7C42E72A","us.amazon.nova-pro-v1:0":"L-C0326783","us.amazon.nova-2-lite-v1:0":"L-C6F5908D","global.amazon.nova-2-lite-v1:0":"L-C6F5908D","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","us.anthropic.claude-opus-4-1-20250805-v1:0":null,"us.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-58BE175A","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-F4DDD3EB","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-7007E9C9"}'
+          BEDROCK_MODEL_RPM_QUOTA_CODES: '{"us.anthropic.claude-sonnet-5":"L-D4FBCF4E","global.anthropic.claude-sonnet-5":"L-DD84E5CA","us.anthropic.claude-sonnet-5-5":"L-94A31E46","eu.anthropic.claude-sonnet-5-5":"L-94A31E46","global.anthropic.claude-sonnet-5-5":"L-31AB82D0","us.amazon.nova-lite-v1:0":"L-89F8391A","us.amazon.nova-pro-v1:0":"L-ED46B8C5","us.amazon.nova-2-lite-v1:0":"L-F06F1187","global.amazon.nova-2-lite-v1:0":"L-F06F1187","us.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","us.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","us.anthropic.claude-opus-4-1-20250805-v1:0":null,"us.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42","global.anthropic.claude-haiku-4-5-20251001-v1:0":"L-CCA5DF70","global.anthropic.claude-sonnet-4-5-20250929-v1:0":"L-4A6BFAB1","global.anthropic.claude-opus-4-5-20251101-v1:0":"L-27989F42"}'
       Policies:
         - Statement:
             - Effect: Allow
@@ -17108,9 +17154,9 @@ Resources:
       MemorySize: 512
       Timeout: 60
       Tags:
-        # Data plane — per-doc pipeline callback. Fires once per doc that
-        # needs review, resuming the paused Step Function via task-token
-        # callback. See docs/reporting-sql-layer.md §10.3.
+        # Data plane — per-doc review completion. Fires once per finished
+        # legacy review, resubmitting the document to the DocumentQueue for its
+        # downstream run. See docs/reporting-sql-layer.md §10.3.
         idp:plane: data
       Layers:
         - !Ref IDPCommonBaseLayer

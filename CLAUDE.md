@@ -14,8 +14,8 @@ Short, normative project rules live in [`.claude/rules/`](.claude/rules/README.m
 Lambda and library code, web UI, infrastructure, API authorization, SDK/CLI/MCP,
 agents, Quick Start, configuration and models, testing, lint and gates,
 documentation, security and published text, and the Feature Platform. Path-scoped
-files load when you work on matching files. The rules summarize this file and the skill files, and link to
-them for procedures and detail.
+files load when you work on matching files. The rules summarize this file and the
+skill files, and link to them for procedures and detail.
 
 ## Build & Development Commands
 
@@ -483,12 +483,14 @@ approves nothing and blocks nothing.
 Three things about the GitHub arm are not guessable from the GitLab one:
 
 - **The credential mechanism is different, not merely configured differently.**
-  GitLab's job holds the Bedrock-only `idp-sdlc-GitLabReview` in the CI account,
-  vended by the central runner-fleet role `gitlab-runners-prod` (named in full in
-  that template) and gated on the `GitLab:Group`/`GitLab:Project` session tags the
-  fleet sets — defined in `scripts/sdlc/cfn/credential-vendor.yml`, and named by the
-  job from the `AI_REVIEW_GITLAB_ROLE_ARN` project variable. Both jobs check the
-  role through STS with `--require-aws-role` and refuse to review on any other.
+  GitLab's job starts, like every job, on the integration-test role the central
+  runner-fleet role `gitlab-runners-prod` (named in full in that template) vends,
+  gated on the `GitLab:Group`/`GitLab:Project` session tags the fleet sets. The
+  script then assumes the Bedrock-only `idp-sdlc-GitLabReview` from that session
+  (the ARN is in the `AI_REVIEW_GITLAB_ROLE_ARN` project variable; both roles are in
+  `scripts/sdlc/cfn/credential-vendor.yml`) and hands the model only the new
+  session. Both jobs check the role through STS with `--require-aws-role` and refuse
+  to review on any other.
   GitHub has no equivalent shared role,
   so it uses real web-identity federation: an OIDC provider for
   `token.actions.githubusercontent.com` plus a **Bedrock-only** role, in
@@ -585,7 +587,11 @@ invisible in a job log, where a one-ninth run and a complete run read the same.
 Both CIs now run `make coverage-all-cicd` first, which measures the other trees
 concurrently, and then reach the ratchet through `make check-coverage-debt-cicd`,
 which passes `--require-all-trees`: a tree with no report is **refused by name** and
-the run reaches no verdict. The required list is derived from
+the run reaches no verdict. On GitHub's 4-CPU runners the `scripts` tree is measured
+in its own `scripts_coverage` job instead, with every CPU, and ratcheted there with
+`--require-tree scripts`; `unit_tests` passes `--measured-elsewhere scripts`, and a
+static test in `test_coverage_debt.py` asserts the two jobs between them require every
+tree. The required list is derived from
 `check_coverage_debt.TREES` **inside the script**, so neither Makefile nor CI config
 holds a second copy of the registry's names and a tree added to it is required
 without an edit anywhere else. Issue #1256.
@@ -608,8 +614,9 @@ concurrent trees each asking for it request four times the machine, which on a 4
 runner is a slow-down dressed up as parallelism. The job costs its slowest tree rather
 than the sum, and which tree that is moves; re-measure rather than quoting a figure.
 
-⚠️ **`--only <one tree>` hands that tree every CPU, so it measures a configuration
-nothing runs.** `--jobs` is clamped by the number of trees selected, so one tree
+⚠️ **`--only <one tree>` hands that tree every CPU, so locally it measures a
+configuration CI does not run** (GitHub's `scripts_coverage` job is the one exception, where
+`scripts` does get every CPU). `--jobs` is clamped by the number of trees selected, so one tree
 collapses it to 1 and the worker share for one job is the whole machine. Pass
 `--workers N` to ask for the share CI would give that tree — without it, reproducing a
 CI figure means narrowing what `cpu_count()` sees with `taskset`, which is easy to
@@ -693,13 +700,13 @@ every draft pull request with no review having run.
 
 Three things about what it reads. GitHub can require job-level contexts only, never
 individual steps, so how the jobs are arranged decides the mapping:
-eleven of the thirteen shared gates live in `developer-tests.yml` (five parallel jobs)
+eleven of the thirteen shared gates live in `developer-tests.yml` (six parallel jobs)
 and the other two in
 `security-checks.yml` (two), so the thirteen shared gates produce
-seven requireable contexts in total. ⚠️ That means **requiring only the lint context is weaker
+eight requireable contexts in total. ⚠️ That means **requiring only the lint context is weaker
 than it looks** — the test suites and the Terraform gate are their own contexts now, so all
-seven have to be required; `test_check_branch_protection.py`'s `MUST_BE_REQUIRED` names all
-seven so that
+eight have to be required; `test_check_branch_protection.py`'s `MUST_BE_REQUIRED` names all
+eight so that
 regression fails rather than passing quietly. It reads classic branch protection **and** rulesets,
 because a branch can be governed entirely by a ruleset while the classic endpoint
 reports nothing. And it separates "not protected" from "cannot see": the classic
@@ -1002,9 +1009,9 @@ The extraction service supports an optional **agentic extraction mode** with int
 **Configuration**:
 ```yaml
 extraction:
+  mode: advanced   # selects the agentic path; agentic.enabled is derived from it
   model: "us.anthropic.claude-sonnet-5"
   agentic:
-    enabled: true
     table_parsing:
       enabled: true  # Enable deterministic table parser tool
       max_empty_line_gap: 3  # Tolerate up to 3 empty lines in tables (0-10)
@@ -1012,6 +1019,11 @@ extraction:
       min_confidence_threshold: 95.0  # OCR confidence target (Textract only)
       min_parse_success_rate: 0.90  # Quality threshold for parsed results
 ```
+
+`extraction.mode` is authoritative: whenever it is set it overwrites
+`agentic.enabled`, so setting only `agentic.enabled: true` in a config that also
+carries `mode: simple` (as every preset does through the system defaults) silently
+runs the traditional path.
 
 **Tuning**:
 - **High-quality OCR**: `max_empty_line_gap: 2`

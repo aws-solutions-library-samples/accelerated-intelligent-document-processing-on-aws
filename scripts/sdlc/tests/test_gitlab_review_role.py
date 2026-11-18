@@ -73,24 +73,31 @@ def test_the_grant_is_the_github_review_role_s_grant(review_role: dict) -> None:
 
 
 @pytest.mark.unit
-def test_only_the_runner_fleet_with_both_project_tags_can_assume_it(
+def test_it_trusts_the_runner_fleet_and_this_stack_s_gitlab_role_only(
     vendor: dict, review_role: dict
 ) -> None:
+    """Two statements: the runner fleet gated on both project tags, and the
+    stack's own GitLabRole, from whose session the review job assumes it."""
     gitlab_trust = vendor["Resources"]["GitLabRole"]["Properties"][
         "AssumeRolePolicyDocument"
     ]["Statement"]
     fleet = gitlab_trust[0]["Principal"]["AWS"]
     statements = review_role["AssumeRolePolicyDocument"]["Statement"]
-    assert len(statements) == 1, statements
-    (statement,) = statements
-    assert statement["Effect"] == "Allow"
-    assert statement["Principal"] == {"AWS": fleet}
-    assert sorted(statement["Action"]) == ["sts:AssumeRole", "sts:TagSession"]
-    assert statement["Condition"] == {
+    assert len(statements) == 2, statements
+    runner, own = statements
+    assert runner["Effect"] == "Allow"
+    assert runner["Principal"] == {"AWS": fleet}
+    assert sorted(runner["Action"]) == ["sts:AssumeRole", "sts:TagSession"]
+    assert runner["Condition"] == {
         "StringEquals": {
             "aws:PrincipalTag/GitLab:Group": {"!Ref": "GitLabGroupName"},
             "aws:PrincipalTag/GitLab:Project": {"!Ref": "GitLabProjectName"},
         }
+    }
+    assert own == {
+        "Effect": "Allow",
+        "Principal": {"AWS": {"!GetAtt": "GitLabRole.Arn"}},
+        "Action": ["sts:AssumeRole", "sts:TagSession"],
     }
 
 
@@ -105,7 +112,11 @@ def test_the_job_requires_the_name_the_template_renders(
     jobs = yaml.safe_load((REPO_ROOT / ".gitlab-ci.yml").read_text(encoding="utf-8"))
     variables = jobs["ai_mr_review"]["variables"]
     assert variables["REVIEW_ROLE_NAME"] == rendered == "idp-sdlc-GitLabReview"
-    assert variables["AWS_CREDS_TARGET_ROLE"] == "$AI_REVIEW_GITLAB_ROLE_ARN"
+    # A job-level AWS_CREDS_TARGET_ROLE is outranked by the project variable of
+    # that name, so the job does not set one; the script assumes the role.
+    assert "AWS_CREDS_TARGET_ROLE" not in variables
+    script = "\n".join(jobs["ai_mr_review"]["script"])
+    assert "--assume-role-from AI_REVIEW_GITLAB_ROLE_ARN" in script
     assert "GitLabReviewRoleArn" in vendor["Outputs"]
 
 
@@ -117,7 +128,6 @@ def test_the_review_job_is_the_only_job_naming_the_review_role() -> None:
     naming = sorted(
         name
         for name, job in jobs.items()
-        if isinstance(job, dict)
-        and "AI_REVIEW_GITLAB_ROLE_ARN" in str(job.get("variables", ""))
+        if isinstance(job, dict) and "AI_REVIEW_GITLAB_ROLE_ARN" in str(job)
     )
     assert naming == ["ai_mr_review"]

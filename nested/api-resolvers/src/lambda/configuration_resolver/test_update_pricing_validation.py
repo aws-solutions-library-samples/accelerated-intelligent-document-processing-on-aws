@@ -55,6 +55,17 @@ def test_an_invalid_price_is_refused_and_nothing_is_saved():
     manager.save_custom_pricing.assert_not_called()
 
 
+def test_a_null_price_is_refused_and_nothing_is_saved():
+    """A null used to be read as ``"0.0"`` and saved as free."""
+    manager = MagicMock()
+    result = index.handle_update_pricing(manager, json.dumps(_table(None)))
+    assert result["success"] is False
+    assert result["error"]["type"] == "ValidationError"
+    messages = " ".join(e["message"] for e in result["error"]["validationErrors"])
+    assert "bedrock/m/inputTokens: None" in messages
+    manager.save_custom_pricing.assert_not_called()
+
+
 def test_a_valid_price_is_saved():
     manager = MagicMock()
     manager.save_custom_pricing.return_value = True

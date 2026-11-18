@@ -30,7 +30,11 @@ pytestmark = pytest.mark.unit
 
 _PRIMARY = "us.amazon.nova-2-lite-v1:0"
 _ESCALATION = "us.anthropic.claude-sonnet-4-6"
-_CONTEXT = "Extraction-Escalation"
+# Written out rather than imported from the service, so renaming the context
+# there fails here. Advanced-mode escalation meters under the same literal
+# (test_agentic_failure_metering, test_field_subset_escalation): one context for
+# both modes is what keeps escalation on one row of a cost report.
+_CONTEXT = "ExtractionEscalation"
 _KEY = f"{_CONTEXT}/bedrock/{metering_model_id(_ESCALATION)}"
 _PRIOR = {f"Extraction/bedrock/{_PRIMARY}": {"inputTokens": 50, "outputTokens": 9}}
 

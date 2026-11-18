@@ -29,6 +29,7 @@ import { getInboxPreferences as getInboxPreferencesQuery, listInboxMessages as l
 import type { InboxMessage, InboxMessageType, ListInboxMessagesQuery } from '../../graphql/generated/operation-types';
 import useInbox from '../../hooks/use-inbox';
 import { describeApiError } from '../../hooks/utils/graphql-error';
+import { useFormatters } from '../../i18n/format';
 import { paginationLabels } from '../common/labels';
 import useLocalStorage from '../common/local-storage';
 import { TableEmptyState, TableHeader, TableNoMatchState, getFilterCounterText } from '../common/table';
@@ -62,6 +63,14 @@ const SEVERITY_OPTIONS: SelectProps.Option[] = [
 interface TablePreferences {
   pageSize: number;
 }
+
+/**
+ * Starting column widths (px), chosen so the table and its selection column fit a
+ * standard page (about 850 px) without scrolling: Received 143, Title a fixed 340
+ * (not its content's width), Type 120, Severity 110, and Action at least 80, filling
+ * the rest.
+ */
+export const INBOX_COLUMN_WIDTHS = { createdAt: 143, title: 340, type: 120, severity: 110, actions: 80 } as const;
 const DEFAULT_PREFERENCES: TablePreferences = { pageSize: 20 };
 
 const markRead = (m: InboxMessage, read: boolean, readAt: string | null): InboxMessage => ({ ...m, read, readAt: read ? readAt : null });
@@ -69,6 +78,7 @@ const markRead = (m: InboxMessage, read: boolean, readAt: string | null): InboxM
 const InboxMessagesTable = (): React.JSX.Element => {
   // 1. Hooks
   const { unreadCount, changeToken, beginUnreadSync, markMessages, markAllRead, deleteMessages, clearRead } = useInbox();
+  const { locale } = useFormatters();
   const [items, setItems] = useState<InboxMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -288,22 +298,25 @@ const InboxMessagesTable = (): React.JSX.Element => {
 
   // 5. Render
   const noSelectionReason = 'Select one or more messages';
-  // Received | Title | Type | Severity | Action, sized to fit without horizontal
-  // scrolling: the title takes the remaining width and truncates. Plain text in every
-  // cell (no status icons or badges); an unread message's title is bold, a read
-  // title is normal weight.
+  // Received | Title | Type | Severity | Action, sized to fit the page without
+  // horizontal scrolling or resizing. Every column but the last has a width: a
+  // resizable table reads a column with none from its content, so a long title would
+  // widen the table. The title truncates (full title on hover), and Action, the last
+  // column, takes whatever width is left. Plain text in every cell (no status icons
+  // or badges); an unread message's title is bold, a read title is normal weight.
   const columnDefinitions: TableProps.ColumnDefinition<InboxMessage>[] = [
     {
       id: 'createdAt',
       header: 'Received',
-      width: 130,
-      cell: (m) => <span title={formatDateTime(m.createdAt)}>{formatRelativeTime(m.createdAt)}</span>,
+      width: INBOX_COLUMN_WIDTHS.createdAt,
+      cell: (m) => <span title={formatDateTime(m.createdAt, locale)}>{formatRelativeTime(m.createdAt, locale)}</span>,
       sortingField: 'createdAt',
     },
     {
       id: 'title',
       header: 'Title',
-      minWidth: 260,
+      width: INBOX_COLUMN_WIDTHS.title,
+      minWidth: 160,
       cell: (m) => (
         <Button variant="inline-link" onClick={() => setOpenMessage(m)}>
           <TruncatedText bold={!m.read}>{m.title}</TruncatedText>
@@ -314,7 +327,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
     {
       id: 'type',
       header: 'Type',
-      width: 110,
+      width: INBOX_COLUMN_WIDTHS.type,
       cell: (m) => <span title={typeLabel(m.type)}>{messageCategory(m.type, typeLabel(m.type))}</span>,
       sortingField: 'type',
       sortingComparator: (a, b) => messageCategory(a.type, typeLabel(a.type)).localeCompare(messageCategory(b.type, typeLabel(b.type))),
@@ -322,7 +335,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
     {
       id: 'severity',
       header: 'Severity',
-      width: 110,
+      width: INBOX_COLUMN_WIDTHS.severity,
       cell: (m) => severityLabel(m.severity),
       sortingField: 'severity',
       sortingComparator: (a, b) => severityRank(a.severity) - severityRank(b.severity),
@@ -330,7 +343,7 @@ const InboxMessagesTable = (): React.JSX.Element => {
     {
       id: 'actions',
       header: 'Action',
-      width: 80,
+      minWidth: INBOX_COLUMN_WIDTHS.actions,
       cell: (m) => (
         <ButtonDropdown
           variant="inline-icon"

@@ -16,6 +16,11 @@
  * - **A unit added that the defaults lack.**
  * - **A default unit that is no longer in the table.** Deleting a row is a
  *   customisation too, and restoring brings the row back.
+ *
+ * The table on the page is the effective one: the backend lays the saved table
+ * over the defaults per model and unit. So after a reload it holds every default
+ * unit, and the deletion case can only be an unsaved edit — a deleted default row
+ * comes back once the table is saved and read again.
  */
 
 import { parsePrice } from './price-format';

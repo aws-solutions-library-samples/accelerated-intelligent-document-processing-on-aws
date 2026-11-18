@@ -9,16 +9,15 @@
 import { describe, expect, it } from 'vitest';
 import type { SideNavigationProps } from '@cloudscape-design/components';
 
-import { MY_QUEUES_PATH, MY_TASKS_PATH } from '../../routes/constants';
-import { HOME_SECTION, buildHomeNavSection } from './review-queues-nav-items';
+import { JOBS_PATH, MY_QUEUES_PATH, MY_TASKS_PATH } from '../../routes/constants';
+import { buildHomeNavSection } from './review-queues-nav-items';
 
 const inbox: SideNavigationProps.Link = { type: 'link', text: 'Inbox', href: '#/inbox' };
 
 describe('buildHomeNavSection', () => {
   it('lists Inbox, Tasks and Queues for an Annotator', () => {
     const section = buildHomeNavSection(inbox, { showWork: true, taskCount: 0 });
-    expect(section.text).toBe(HOME_SECTION);
-    expect(HOME_SECTION).toBe('Home');
+    expect(section.text).toBe('Home');
     const links = section.items as SideNavigationProps.Link[];
     expect(links.map((l) => l.text)).toEqual(['Inbox', 'Tasks', 'Queues']);
     expect(links.map((l) => l.href)).toEqual(['#/inbox', `#${MY_TASKS_PATH}`, `#${MY_QUEUES_PATH}`]);
@@ -33,5 +32,13 @@ describe('buildHomeNavSection', () => {
     const links = buildHomeNavSection(inbox, { showWork: true, taskCount: 3 }).items as SideNavigationProps.Link[];
     expect(links[1].info).toBeTruthy();
     expect(links[2].info).toBeUndefined();
+  });
+
+  it('adds Jobs last for Admins and Reviewers', () => {
+    const reviewer = buildHomeNavSection(inbox, { showWork: true, taskCount: 0, showJobs: true }).items as SideNavigationProps.Link[];
+    expect(reviewer.map((l) => l.text)).toEqual(['Inbox', 'Tasks', 'Queues', 'Jobs']);
+    expect(reviewer[3].href).toBe(`#${JOBS_PATH}`);
+    const admin = buildHomeNavSection(inbox, { showWork: false, taskCount: 0, showJobs: true }).items as SideNavigationProps.Link[];
+    expect(admin.map((l) => l.text)).toEqual(['Inbox', 'Jobs']);
   });
 });

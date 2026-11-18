@@ -19,6 +19,68 @@
 
 import React from 'react';
 import { Alert, Box, Button, SpaceBetween, Spinner } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+
+const messages = defineMessages<{
+  loading: NoMessageValues;
+  errorHeader: NoMessageValues;
+  retry: NoMessageValues;
+  reloadPage: NoMessageValues;
+  errorBody: NoMessageValues;
+  infoIconAriaLabel: NoMessageValues;
+  noRoleHeader: NoMessageValues;
+  signOut: NoMessageValues;
+  noRoleBody: NoMessageValues;
+}>({
+  loading: {
+    id: 'routes.session.loading',
+    defaultMessage: 'Establishing your session…',
+    description: 'Text under the spinner shown after sign-in while the app waits for the AWS credentials of the session.',
+  },
+  errorHeader: {
+    id: 'routes.session.errorHeader',
+    defaultMessage: 'Could not establish your session',
+    description: 'Header of the error notice shown when the app could not obtain AWS credentials after a valid sign-in.',
+  },
+  retry: {
+    id: 'routes.session.retry',
+    defaultMessage: 'Retry',
+    description: 'Button of the session error notice that requests the credentials again.',
+  },
+  reloadPage: {
+    id: 'routes.session.reloadPage',
+    defaultMessage: 'Reload the page',
+    description: 'Button of the session error notice and of the no-role notice that reloads the browser page.',
+  },
+  errorBody: {
+    id: 'routes.session.errorBody',
+    defaultMessage:
+      'You are signed in, but the app could not obtain AWS credentials for your session. This is usually temporary — retrying or reloading normally resolves it. If it persists, sign out and sign in again.',
+    description: 'Body of the error notice shown when the app could not obtain AWS credentials after a valid sign-in.',
+  },
+  infoIconAriaLabel: {
+    id: 'routes.session.infoIconAriaLabel',
+    defaultMessage: 'Info',
+    description: 'Screen-reader label of the status icon of the no-role notice.',
+  },
+  noRoleHeader: {
+    id: 'routes.session.noRoleHeader',
+    defaultMessage: 'Your account has not been granted access yet',
+    description: 'Header of the notice shown to a signed-in user whose account is in no Cognito group, so no page can be shown.',
+  },
+  signOut: {
+    id: 'routes.session.signOut',
+    defaultMessage: 'Sign out',
+    description: 'Button of the no-role notice that signs the user out.',
+  },
+  noRoleBody: {
+    id: 'routes.session.noRoleBody',
+    defaultMessage:
+      'Your sign-in worked, but your account has not been given a role yet, so there is nothing for you to view. Ask an administrator to grant you one — Admin, Author, Reviewer, Annotator or Viewer. If your organization signs you in through its own identity provider, the role comes from your group membership there rather than from this application. Reload this page once it has been granted.',
+    description:
+      'Body of the notice shown to a signed-in user whose account is in no Cognito group. Admin, Author, Reviewer, Annotator and Viewer are the names of the application roles.',
+  },
+});
 
 /** Signed in, credentials still arriving. Brief, and better than a blank page. */
 export const SessionLoading = (): React.JSX.Element => (
@@ -26,7 +88,7 @@ export const SessionLoading = (): React.JSX.Element => (
     <SpaceBetween size="s" alignItems="center">
       <Spinner size="large" />
       <Box variant="p" color="text-body-secondary">
-        Establishing your session…
+        <FormattedMessage {...messages.loading} />
       </Box>
     </SpaceBetween>
   </Box>
@@ -38,23 +100,31 @@ export const SessionLoading = (): React.JSX.Element => (
  * Always offers a way out. The failure this replaces was recoverable by a reload
  * the whole time — the user just had no way to know that.
  */
-export const SessionError = ({ onRetry }: { onRetry?: () => void }): React.JSX.Element => (
-  <Box padding="xxl">
-    <Alert
-      type="error"
-      header="Could not establish your session"
-      action={
-        <SpaceBetween direction="horizontal" size="xs">
-          {onRetry && <Button onClick={onRetry}>Retry</Button>}
-          <Button onClick={() => window.location.reload()}>Reload the page</Button>
-        </SpaceBetween>
-      }
-    >
-      You are signed in, but the app could not obtain AWS credentials for your session. This is usually temporary — retrying or reloading
-      normally resolves it. If it persists, sign out and sign in again.
-    </Alert>
-  </Box>
-);
+export const SessionError = ({ onRetry }: { onRetry?: () => void }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Box padding="xxl">
+      <Alert
+        type="error"
+        header={intl.formatMessage(messages.errorHeader)}
+        action={
+          <SpaceBetween direction="horizontal" size="xs">
+            {onRetry && (
+              <Button onClick={onRetry}>
+                <FormattedMessage {...messages.retry} />
+              </Button>
+            )}
+            <Button onClick={() => window.location.reload()}>
+              <FormattedMessage {...messages.reloadPage} />
+            </Button>
+          </SpaceBetween>
+        }
+      >
+        <FormattedMessage {...messages.errorBody} />
+      </Alert>
+    </Box>
+  );
+};
 
 /**
  * Signed in, but the account belongs to no application role.
@@ -78,22 +148,29 @@ export const SessionError = ({ onRetry }: { onRetry?: () => void }): React.JSX.E
  * group assigned by hand there is removed again at the next fresh sign-in. Naming
  * "an administrator" covers both, and the second sentence says where to look.
  */
-export const NoRoleAssigned = ({ onSignOut }: { onSignOut?: () => void }): React.JSX.Element => (
-  <Box padding="xxl">
-    <Alert
-      type="info"
-      statusIconAriaLabel="Info"
-      header="Your account has not been granted access yet"
-      action={
-        <SpaceBetween direction="horizontal" size="xs">
-          {onSignOut && <Button onClick={onSignOut}>Sign out</Button>}
-          <Button onClick={() => window.location.reload()}>Reload the page</Button>
-        </SpaceBetween>
-      }
-    >
-      Your sign-in worked, but your account has not been given a role yet, so there is nothing for you to view. Ask an administrator to
-      grant you one — Admin, Author, Reviewer, Annotator or Viewer. If your organization signs you in through its own identity provider, the
-      role comes from your group membership there rather than from this application. Reload this page once it has been granted.
-    </Alert>
-  </Box>
-);
+export const NoRoleAssigned = ({ onSignOut }: { onSignOut?: () => void }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Box padding="xxl">
+      <Alert
+        type="info"
+        statusIconAriaLabel={intl.formatMessage(messages.infoIconAriaLabel)}
+        header={intl.formatMessage(messages.noRoleHeader)}
+        action={
+          <SpaceBetween direction="horizontal" size="xs">
+            {onSignOut && (
+              <Button onClick={onSignOut}>
+                <FormattedMessage {...messages.signOut} />
+              </Button>
+            )}
+            <Button onClick={() => window.location.reload()}>
+              <FormattedMessage {...messages.reloadPage} />
+            </Button>
+          </SpaceBetween>
+        }
+      >
+        <FormattedMessage {...messages.noRoleBody} />
+      </Alert>
+    </Box>
+  );
+};

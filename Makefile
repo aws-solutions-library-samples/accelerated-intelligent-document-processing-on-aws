@@ -156,6 +156,10 @@ setup: lock-constraints ## Install all packages into current Python environment 
 	echo "" && \
 	echo -e "$(GREEN)✅ Setup complete! idp_common, idp-cli, idp_sdk, idp_mcp_connector, idp_feature_sdk, and test dependencies are now installed.$(NC)" && \
 	echo -e "$(YELLOW)   Tip: Use 'make setup-venv' instead to install into an isolated virtual environment.$(NC)"
+	@# The Node side (src/ui, docs-site, basedpyright) when Node is available; a
+	@# visible warning otherwise. Deploy-only users need no Node, so this never fails
+	@# the target. `make setup-node` is the strict form.
+	@scripts/setup_node.sh auto
 
 setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
@@ -197,7 +201,10 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
 	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
-	@echo -e "$(YELLOW)   'basedpyright' is separate again: npm install -g basedpyright$(NC)"
+	@scripts/setup_node.sh auto
+
+setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 22.12+; fails on any error)
+	@scripts/setup_node.sh required
 
 ##@ Code Quality
 lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
@@ -392,13 +399,17 @@ coverage-all: ## Measure EVERY tree the registry names and print each one's figu
 #            worker count CI gives it. The job therefore costs its slowest tree
 #            rather than the sum, and which tree that is moves; measure rather than
 #            reading a figure here.
-#   --skip   leaves out the one tree an earlier CI step already measured. The ratchet
-#            step below still requires it BY NAME, so dropping the wrong tree here
-#            turns the gate red rather than quietly narrowing it.
+#   --skip   by default leaves out the one tree an earlier CI step already measured
+#            (idp_common). The ratchet step below still requires it BY NAME, so
+#            dropping the wrong tree here turns the gate red rather than quietly
+#            narrowing it. GitHub's unit_tests also skips `scripts`, which its
+#            scripts_coverage job measures and ratchets instead; the ratchet there passes
+#            --measured-elsewhere scripts, and test_coverage_debt.py's cross-job
+#            closure test asserts the other job requires it.
 COVERAGE_CICD_JOBS ?= 4
 COVERAGE_CICD_SKIP ?= --skip idp_common
 coverage-all-cicd: ## Produce a coverage report for every tree except those an earlier step measured, trees run concurrently
-	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
+	@python3 scripts/coverage_all.py --jobs $(COVERAGE_CICD_JOBS) --fail-on-empty $(COVERAGE_CICD_SKIP) $(COVERAGE_ARGS)
 
 coverage-summary: ## Print the recorded per-tree figures, without measuring anything
 	@python3 scripts/check_coverage_debt.py --summary
@@ -407,8 +418,11 @@ coverage-summary: ## Print the recorded per-tree figures, without measuring anyt
 # report that `make test-cicd -C lib/idp_common_pkg` writes, and the lint targets
 # never build one. Wired there it would find no report and refuse (exit 2), red-lining
 # every lint run for a condition the lint targets themselves cause.
-# Both CI configurations invoke it immediately after the test step instead. They pass no
-# arguments and need none: with no usable report the gate refuses rather than reporting
+# Both CI configurations invoke it immediately after the test step instead. GitLab
+# passes no arguments; GitHub, which splits the coverage trees across two jobs, passes
+# --measured-elsewhere in one and reaches this bare target with --require-tree in the
+# other (see test_every_tree_is_measured_and_ratcheted_by_some_github_job). Neither
+# needs more than that: with no usable report the gate refuses rather than reporting
 # success, for every caller (#1190). CHECK_COVERAGE_DEBT_ARGS is how a caller that knows
 # which tree it just measured adds `--require-tree=<name>` and gets a failure that names
 # the tree instead of one that says only that nothing was checked.
@@ -904,20 +918,15 @@ typecheck-pr: ## Fast local type check of only the files changed vs TARGET_BRANC
 #     make test-packages-cicd PYTEST_XDIST="-n 4"
 #     make test-cicd -C lib/idp_common_pkg PYTEST_PARALLEL="-n 4"
 #
-# Measured in GitLab CI (size:2xlarge arm64), the two suites that dominate the
-# target:
-#
-#     scripts/tests      3858 tests, serial  640s   ->  83s parallel (7.7x)
-#     lib/idp_sdk        2663 tests, serial  441s
-#
-# These suites shell out to ruff, basedpyright, cfn-lint and git, so they are
-# near-perfectly parallel and the win is close to the core count.
+# The two suites that once dominated this target, `scripts/tests` and `lib/idp_sdk`,
+# no longer run in it: `coverage-all-cicd` is their one CI run, and its worker share
+# comes from `coverage_all.worker_share`, never from this variable.
 #
 # ⚠️ Applied PER-SUITE rather than to every invocation, because xdist is not free:
 # spinning up N workers costs a second or two before the first test runs, which is
 # longer than most of these invocations take — a majority finish in under a second.
-# The rule is **above 20s measured in CI**, which selects the nine that carry
-# $(PYTEST_XDIST) today. Re-derive it by TIMING, not by counting tests: the test
+# The rule is **above 20s measured in CI**; grep the recipe for $(PYTEST_XDIST) to
+# see which invocations carry it today. Re-derive it by TIMING, not by counting tests: the test
 # count is a poor proxy here, `benchmarks/tests` runs 454 tests in 5s while
 # `src/lambda/complete_section_review` takes 7x longer for 115.
 #
@@ -940,29 +949,29 @@ test-integration-all: ## Run every integration-marked suite across all roots (re
 test-list: ## List the discovered test roots (run vs quarantined) without running them
 	$(PYTHON) scripts/run_all_tests.py --list
 
-test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp_common_pkg test-cicd (all green headless, no AWS)
-	@echo "Running idp_cli_pkg tests..."
-	cd lib/idp_cli_pkg && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running idp_sdk tests (not integration)..."
-	cd lib/idp_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -m "not integration" -q -p no:cacheprovider
-	@echo "Running idp_feature_sdk tests..."
-	cd lib/idp_feature_sdk && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
-	@echo "Running feature platform tests..."
-	cd feature-platform/main-stack-extensions && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
+test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_common_pkg test-cicd nor coverage-all-cicd runs (all green headless, no AWS)
+	@# The suites a coverage tree measures are NOT run here: `make coverage-all-cicd`
+	@# runs each of them, under coverage, in both CIs, and running them a second time
+	@# without coverage cost about 20 minutes of every pull request's longest job for
+	@# no added check. Those are the `scripts` gate suites, idp_sdk, idp_cli,
+	@# idp_feature_sdk, main-stack-extensions, seller-entitlement-service and the
+	@# pii-anonymizer hook and feature API -- every non-fan-out tree in
+	@# scripts/check_coverage_debt.py TREES. scripts/tests/test_src_lambda_tests_in_ci.py
+	@# credits those trees as run, so a suite dropped from here that no tree measures
+	@# fails there. The Lambda and resolver directories a fan-out tree measures are
+	@# still listed below: their runs are seconds each, and several are scoped
+	@# differently from the fan-out's invocation. `make test` runs every root locally.
 	@echo "Running Terraform translator and bridge tests..."
 	cd terraform/translator && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd terraform/bridge && $(PYTEST_HERMETIC) -q -p no:cacheprovider tests
 	cd feature-platform/feature-template/feature-api && $(PYTEST_HERMETIC) -q -p no:cacheprovider
-	@echo "Running pii-anonymizer tests (feature API RBAC + hook re-entrancy/halt + UI deployer)..."
-	@# These three ran in NO CI gate until #974. `make test` picked them up via
+	@echo "Running pii-anonymizer UI deployer tests..."
+	@# These three ran in NO CI gate until #974. The feature API and hook suites are
+	@# now measured by their coverage trees (see the note at the top of this recipe). `make test` picked them up via
 	@# scripts/run_all_tests.py, but nothing on a PR did — which is how an
 	@# order-dependent failure in the feature API sat unnoticed long enough to be
 	@# written into the docs as a standing failure. All offline (moto), ~2.5s total.
-	cd feature-platform/pii-anonymizer/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	cd feature-platform/pii-anonymizer/hook && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/pii-anonymizer/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
-	@echo "Running seller entitlement service tests (incl. template-security + payload fuzz)..."
-	cd feature-platform/seller-entitlement-service && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	@echo "Running capacity planning Lambda tests..."
 	cd src/lambda/calculate_capacity && $(PYTEST_HERMETIC) $(PYTEST_XDIST) -q -p no:cacheprovider
 	@echo "Running circuit breaker + queue processor + workflow tracker Lambda tests (slot ownership, counter reconcile + negative repair, decrement floor/idempotency #915 #916, config pin, idempotent start #904)..."
@@ -1058,6 +1067,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	@echo "Running the Inbox and review-queue resolver dispatcher suites..."
 	cd nested/api-resolvers/src/lambda/notifications_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	cd nested/api-resolvers/src/lambda/review_queues_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_resolver && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	cd nested/api-resolvers/src/lambda/bulk_review_worker && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@echo "Running Chat-with-Document Lambda tests..."
 	$(PYTEST_HERMETIC) -q -p no:cacheprovider \
 	    src/lambda/chat_with_document_processor/tests \
@@ -1134,14 +1145,6 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites NOT covered by idp
 	$(PYTEST_HERMETIC) patterns/unified/tests -q -p no:cacheprovider
 	@echo "Validating config library files..."
 	$(PYTEST_HERMETIC) config_library/test_config_library.py -q -p no:cacheprovider
-	@echo "Running SDLC harness tests (incl. IAM trust-policy partition guards)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/sdlc/tests -q -p no:cacheprovider
-	@echo "Running repo-script tests (Python ARN-partition gate)..."
-	$(PYTEST_HERMETIC) $(PYTEST_XDIST) scripts/tests -q -p no:cacheprovider
-	@echo "Running SRT gate tests (CI-visibility split + suppression baseline hygiene)..."
-	$(PYTEST_HERMETIC) scripts/srt/tests -q -p no:cacheprovider
-	@echo "Running dependency-audit gate tests (OSV allowlist + .ash.yaml hygiene)..."
-	$(PYTEST_HERMETIC) scripts/security/tests -q -p no:cacheprovider
 	@echo -e "$(GREEN)✅ All package/Lambda CI suites passed!$(NC)"
 
 test-cli: ## Run only IDP CLI tests
@@ -1454,6 +1457,45 @@ ifndef TERRAFORM_MODULE_URL
 	$(error TERRAFORM_MODULE_URL is not set: the module zip `idp-cli publish --terraform` prints)
 endif
 	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_migration_test.py $(_TFMIG_ARGS)
+
+# In-place upgrade of a Terraform deployment between two releases of the module:
+# deploys FROM_MODULE_URL as STACK_NAME, seeds it (documents, users, a config edit,
+# a baseline and a test set), runs `idp-cli deploy --terraform` again against
+# TO_MODULE_URL, and verifies that every bucket, table, user pool and key kept its
+# physical identity, that the data in them is unchanged, that both users still sign
+# in with their old passwords, and that a new document still processes. It never
+# passes --terraform-allow-replace-stateful, so a plan the deploy guard refuses
+# fails the run. The Terraform counterpart of stacktest-upgrade. Budget about two
+# and a half hours. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>;
+# RESUME=1 continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# .claude/skills/release-validation.md (tier K).
+#   make stacktest-terraform-upgrade STACK_NAME=tfup1 ADMIN_EMAIL=you@example.com \
+#       FROM_MODULE_URL=https://.../idp-terraform-<old>.zip \
+#       TO_MODULE_URL=https://.../idp-terraform-<new>.zip
+_TFUP_ARGS = --stack-name $(STACK_NAME) --admin-email $(ADMIN_EMAIL) \
+	--from-module-url $(FROM_MODULE_URL) --to-module-url $(TO_MODULE_URL) \
+	$(if $(REGION),--region $(REGION),) \
+	$(if $(WORK_DIR),--work-dir $(WORK_DIR),) \
+	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
+	$(if $(PARAMETERS),--parameters $(PARAMETERS),) \
+	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
+	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
+
+stacktest-terraform-upgrade: ## Upgrade a live Terraform deployment from one release's module to another in place, verify nothing was lost, tear it down (STACK_NAME= ADMIN_EMAIL= FROM_MODULE_URL= TO_MODULE_URL=)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-terraform-upgrade STACK_NAME=<stack> ADMIN_EMAIL=<email> FROM_MODULE_URL=<zip url> TO_MODULE_URL=<zip url>)
+endif
+ifndef ADMIN_EMAIL
+	$(error ADMIN_EMAIL is not set: the first deploy sends it a temporary password)
+endif
+ifndef FROM_MODULE_URL
+	$(error FROM_MODULE_URL is not set: the module zip of the release to upgrade FROM)
+endif
+ifndef TO_MODULE_URL
+	$(error TO_MODULE_URL is not set: the module zip to upgrade TO, which `idp-cli publish --terraform` prints)
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/terraform_upgrade_test.py $(_TFUP_ARGS)
 
 ##@ UI Development
 

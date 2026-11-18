@@ -139,6 +139,18 @@ describe('InboxPage', () => {
     localStorage.clear();
   });
 
+  it('starts every column but Action at a set width, so a long title cannot widen the table', async () => {
+    renderPage();
+    await loaded();
+    const widths = table()
+      .findColumnHeaders()
+      .map((h) => h.getElement().closest('th')!.style.width);
+    // Received 143 (10% wider than 130), Title a fixed 340, Type 120, Severity 110.
+    // Action, the last column, has only a minimum and fills what is left on a real
+    // page (jsdom has no container width, so it stays at that minimum here).
+    expect(widths.slice(-5)).toEqual(['143px', '340px', '120px', '110px', '80px']);
+  });
+
   it('shows the loading state while messages load', async () => {
     graphqlMock.mockImplementation((args: { query: string }) =>
       args.query.includes('listInboxMessages(') ? new Promise(() => undefined) : routeGraphql([])(args),

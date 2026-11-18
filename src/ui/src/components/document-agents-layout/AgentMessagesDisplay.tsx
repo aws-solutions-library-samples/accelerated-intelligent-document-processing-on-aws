@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { Container, Header, Box, Spinner, SpaceBetween, Button, Modal } from '@cloudscape-design/components';
+import { useFormatters } from '../../i18n/format';
 
 interface AgentMessage {
   role: string;
@@ -24,6 +25,7 @@ interface AgentMessagesDisplayProps {
 }
 
 const AgentMessagesDisplay = ({ agentMessages = null, isProcessing = false }: AgentMessagesDisplayProps): React.JSX.Element | null => {
+  const { formatTime } = useFormatters();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [sqlModalVisible, setSqlModalVisible] = useState(false);
@@ -236,12 +238,16 @@ this month" question scans a few hundred rows instead of millions.
   \`hour_ts\`).
 - **\`metering_docs_hourly\`** / **\`metering_docs_daily\`** — doc-grain
   volume per \`(hour|day, config_version)\`. Columns: \`n_docs\`,
-  \`sum_pages\`. Do NOT query these for cost or by \`service_api\` —
-  those columns aren't on these tables. ⚠️ **\`n_docs\` on
-  \`metering_docs_daily\` is a doc-HOURS count** (\`SUM\` of hourly
-  \`n_docs\`), so a doc appearing in 3 hours of a day is counted 3
-  times. For strict cross-day unique-doc counts, query raw \`metering\`
-  with \`COUNT(DISTINCT document_id)\`.
+  \`sum_pages\`, \`n_runs\`. Do NOT query these for cost or by
+  \`service_api\` — those columns aren't on these tables. ⚠️
+  **\`n_docs\` on \`metering_docs_daily\` is a doc-HOURS count**
+  (\`SUM\` of hourly \`n_docs\`), so a doc appearing in 3 hours of a
+  day is counted 3 times. For strict cross-day unique-doc counts, query
+  raw \`metering\` with \`COUNT(DISTINCT document_id)\`. \`n_runs\`
+  counts document RUNS — one run is one
+  \`(document_id, timestamp)\` pair, so reprocessing raises \`n_runs\`
+  and not \`n_docs\` — and it has no such caveat: \`SUM(n_runs)\` is
+  exact at either grain.
 - **\`control_plane_hourly\`** / **\`data_plane_lambda_hourly\`** —
   Lambda compute cost per hour, split by control plane (dashboards,
   agents, resolvers) vs data plane (OCR/Extraction/etc. pipeline).
@@ -742,7 +748,7 @@ JOIN metering m ON ds."document_id" = m."document_id"
     if (!timestamp) return '';
     try {
       const date = new Date(timestamp);
-      return date.toLocaleTimeString();
+      return formatTime(date);
     } catch (error) {
       return timestamp;
     }

@@ -66,9 +66,28 @@ _TRACKING_TABLE = os.environ.get("BOOTSTRAP_TRACKING_TABLE", "")
 _HOST_TRACKING_TABLE = os.environ.get("HOST_TRACKING_TABLE", "")
 _CONFIG_TABLE = os.environ.get("CONFIGURATION_TABLE_NAME", "")
 _FEATURE_VERSION = os.environ.get("FEATURE_VERSION", "")
-_SUGGEST_MODEL_ID = os.environ.get(
-    "SUGGEST_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
-)
+#: The suggestion model when ``SUGGEST_MODEL_ID`` is unset or empty: Claude Haiku
+#: 4.5. ``template.yaml`` always sets it from the ``GeneratorModelId`` parameter, so
+#: in a deployed stack this runs only when that parameter is left empty; the
+#: parameter's own default is a ``us.`` model and is not translated here. A ``us.``
+#: profile cannot be invoked from an EU Region, so the Region family's own profile
+#: is used there. This function cannot import ``idp_common``, so the row is
+#: a copy of ``idp_common.regional_models``' for the same id, held equal to it by
+#: ``lib/idp_common_pkg/tests/unit/test_geographic_fallbacks.py``. Canada keeps the
+#: ``us.`` profile, which is callable there.
+_DEFAULT_SUGGEST_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+_REGIONAL_SUGGEST_MODEL_IDS = {"eu-": "eu.anthropic.claude-haiku-4-5-20251001-v1:0"}
+
+
+def _regional_suggest_model_id() -> str:
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or ""
+    for prefix, model_id in _REGIONAL_SUGGEST_MODEL_IDS.items():
+        if region.startswith(prefix):
+            return model_id
+    return _DEFAULT_SUGGEST_MODEL_ID
+
+
+_SUGGEST_MODEL_ID = os.environ.get("SUGGEST_MODEL_ID") or _regional_suggest_model_id()
 
 _sqs = boto3.client("sqs")
 _dynamodb = boto3.resource("dynamodb")

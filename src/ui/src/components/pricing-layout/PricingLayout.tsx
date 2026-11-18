@@ -33,6 +33,7 @@ const messages = defineMessages<{
   invalidPriceItem: { readonly apiName: string; readonly unitName: string; readonly price: string };
   invalidPricesHeader: NoMessageValues;
   cannotSaveInvalidPrices: { readonly count: number };
+  defaultUnitsAlwaysApply: NoMessageValues;
 }>({
   invalidPrice: {
     id: 'pricing.layout.invalidPrice',
@@ -56,6 +57,13 @@ const messages = defineMessages<{
     defaultMessage:
       'Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.',
     description: 'Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many.',
+  },
+  defaultUnitsAlwaysApply: {
+    id: 'pricing.layout.defaultUnitsAlwaysApply',
+    defaultMessage:
+      'Your saved prices are applied over the default prices. A default unit you delete comes back at its default price after you save and reload. To make a default unit cost nothing, set its price to 0.',
+    description:
+      'Note above the pricing tables on the Pricing page: deleting a default unit does not persist, because saved prices are merged over the defaults per unit.',
   },
 });
 
@@ -852,6 +860,7 @@ const PricingLayout = (): React.JSX.Element => {
           <Box padding="s">
             {viewMode === 'form' && (
               <SpaceBetween size="l">
+                {isAdmin && <Box color="text-body-secondary">{intl.formatMessage(messages.defaultUnitsAlwaysApply)}</Box>}
                 {services.length === 0 ? (
                   <Alert type="info" header="No pricing data configured">
                     <SpaceBetween size="s">
