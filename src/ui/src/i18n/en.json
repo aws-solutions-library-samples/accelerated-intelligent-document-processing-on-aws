@@ -503,6 +503,62 @@
     "defaultMessage": "{count, plural, =0 {Delete Document} one {Delete Document} other {Delete Documents}}",
     "description": "Title of the dialog that deletes documents. {count} is the number of documents selected."
   },
+  "documents.fileViewer.cannotDisplay": {
+    "defaultMessage": "Unable to display document.",
+    "description": "Shown in the source view when the document cannot be shown."
+  },
+  "documents.fileViewer.frameTitle": {
+    "defaultMessage": "Document Viewer",
+    "description": "Accessible title of the frame that shows the document in the source view."
+  },
+  "documents.fileViewer.image.cannotDisplay": {
+    "defaultMessage": "Unable to display this image.",
+    "description": "Shown when an image document cannot be displayed."
+  },
+  "documents.fileViewer.image.download": {
+    "defaultMessage": "Download Image",
+    "description": "Link that downloads an image document that cannot be displayed; an icon comes before it."
+  },
+  "documents.fileViewer.image.title": {
+    "defaultMessage": "Image Document",
+    "description": "Heading shown when an image document cannot be displayed; an icon comes before it."
+  },
+  "documents.fileViewer.loadFailed": {
+    "defaultMessage": "Failed to load document. Please try again.",
+    "description": "Shown in the source view when the document could not be loaded."
+  },
+  "documents.fileViewer.loading": {
+    "defaultMessage": "Loading document...",
+    "description": "Shown while the source view loads the document."
+  },
+  "documents.fileViewer.office.cannotDisplay": {
+    "defaultMessage": "This {app} document cannot be displayed directly in the browser.",
+    "description": "Says why an Office document is offered as a download. {app} is Excel or Word."
+  },
+  "documents.fileViewer.office.download": {
+    "defaultMessage": "Download {app} File",
+    "description": "Link that downloads an Office document; an icon comes before it. {app} is Excel or Word."
+  },
+  "documents.fileViewer.office.opensIn": {
+    "defaultMessage": "The file will open in your default {app} application.",
+    "description": "Note under the download link of an Office document. {app} is Excel or Word."
+  },
+  "documents.fileViewer.office.title": {
+    "defaultMessage": "{app} Document",
+    "description": "Heading for an Office document, which the browser cannot display. {app} is Excel or Word."
+  },
+  "documents.fileViewer.openPdf": {
+    "defaultMessage": "Open PDF in a new tab",
+    "description": "Link under a PDF document, for browsers that do not show PDFs themselves."
+  },
+  "documents.fileViewer.pdfFrameTitle": {
+    "defaultMessage": "PDF Viewer",
+    "description": "Accessible title of the frame that shows a PDF document in the source view."
+  },
+  "documents.fileViewer.previewAlt": {
+    "defaultMessage": "Document preview",
+    "description": "Alternative text of an image document in the source view."
+  },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
     "description": "Tooltip of the Add to test set button when no selected document can be added."
@@ -678,6 +734,270 @@
   "documents.malwareScan.threat.labelNamed": {
     "defaultMessage": "Threat found: {threat}",
     "description": "Malware-scan verdict of a quarantined document; {threat} is the threat name the scanner reported."
+  },
+  "documents.pageImage.alt": {
+    "defaultMessage": "Page {page}",
+    "description": "Alternative text of the page image. {page} is the page number."
+  },
+  "documents.pageImage.loadFailed": {
+    "defaultMessage": "The page images for this document could not be loaded.",
+    "description": "Shown in the page image viewer when the page images could not be loaded."
+  },
+  "documents.pageImage.loading": {
+    "defaultMessage": "Loading page images...",
+    "description": "Shown while the page image viewer loads the page images."
+  },
+  "documents.pageImage.next": {
+    "defaultMessage": "Next page",
+    "description": "Screen-reader label of the page image viewer's arrow to the next page."
+  },
+  "documents.pageImage.noImage": {
+    "defaultMessage": "No image is available for this page.",
+    "description": "Shown in the page image viewer for a page that has no image."
+  },
+  "documents.pageImage.none": {
+    "defaultMessage": "No page images available",
+    "description": "Shown in the page image viewer when there are no pages to show."
+  },
+  "documents.pageImage.pan": {
+    "defaultMessage": "Pan:",
+    "description": "Label before the arrows that move the zoomed page image."
+  },
+  "documents.pageImage.panDown": {
+    "defaultMessage": "Pan Down",
+    "description": "Tooltip of the control that moves the zoomed page image down."
+  },
+  "documents.pageImage.panLeft": {
+    "defaultMessage": "Pan Left",
+    "description": "Tooltip of the control that moves the zoomed page image left."
+  },
+  "documents.pageImage.panRight": {
+    "defaultMessage": "Pan Right",
+    "description": "Tooltip of the control that moves the zoomed page image right."
+  },
+  "documents.pageImage.panUp": {
+    "defaultMessage": "Pan Up",
+    "description": "Tooltip of the control that moves the zoomed page image up."
+  },
+  "documents.pageImage.position": {
+    "defaultMessage": "Page {page, number} of {total, number}",
+    "description": "The page image viewer's position: which page is shown, out of how many."
+  },
+  "documents.pageImage.previous": {
+    "defaultMessage": "Previous page",
+    "description": "Screen-reader label of the page image viewer's arrow to the previous page."
+  },
+  "documents.pageImage.reset": {
+    "defaultMessage": "Reset View",
+    "description": "Tooltip of the control that resets zoom, pan and rotation of the page image."
+  },
+  "documents.pageImage.rotate": {
+    "defaultMessage": "Rotate:",
+    "description": "Label before the rotation controls of the page image viewer."
+  },
+  "documents.pageImage.rotateLeft": {
+    "defaultMessage": "Rotate Left 90°",
+    "description": "Tooltip of the control that turns the page image a quarter turn anticlockwise."
+  },
+  "documents.pageImage.rotateLeftAriaLabel": {
+    "defaultMessage": "Rotate left 90 degrees",
+    "description": "Screen-reader label of the control that turns the page image a quarter turn anticlockwise."
+  },
+  "documents.pageImage.rotateRight": {
+    "defaultMessage": "Rotate Right 90°",
+    "description": "Tooltip of the control that turns the page image a quarter turn clockwise."
+  },
+  "documents.pageImage.rotateRightAriaLabel": {
+    "defaultMessage": "Rotate right 90 degrees",
+    "description": "Screen-reader label of the control that turns the page image a quarter turn clockwise."
+  },
+  "documents.pageImage.zoom": {
+    "defaultMessage": "Zoom:",
+    "description": "Label before the zoom controls of the page image viewer."
+  },
+  "documents.pageImage.zoomIn": {
+    "defaultMessage": "Zoom In",
+    "description": "Tooltip of the page image viewer control that zooms in."
+  },
+  "documents.pageImage.zoomOut": {
+    "defaultMessage": "Zoom Out",
+    "description": "Tooltip of the page image viewer control that zooms out."
+  },
+  "documents.pageText.below": {
+    "defaultMessage": "below",
+    "description": "Badge for confidence scores below the lower threshold; it follows the badges ≥ 90 and ≥ 70."
+  },
+  "documents.pageText.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Footer button that closes the page text dialog while the text has unsaved changes."
+  },
+  "documents.pageText.close": {
+    "defaultMessage": "Close",
+    "description": "Footer button that closes the page text dialog."
+  },
+  "documents.pageText.confidenceLegend": {
+    "defaultMessage": "Confidence color:",
+    "description": "Label before the badges that explain the colors of the confidence scores."
+  },
+  "documents.pageText.editTitle": {
+    "defaultMessage": "Edit Page {page} Text",
+    "description": "Title of the dialog that edits a page's text. {page} is the page number."
+  },
+  "documents.pageText.emptyLine": {
+    "defaultMessage": "(empty)",
+    "description": "Shown in place of an OCR text line that has no text."
+  },
+  "documents.pageText.errorHeader": {
+    "defaultMessage": "Error",
+    "description": "Heading of the error alert in the page text dialog."
+  },
+  "documents.pageText.hint.confidence": {
+    "defaultMessage": "The number on the right is the OCR confidence score for the line.",
+    "description": "Second sentence of the hint under OCR Text Lines, when the lines have confidence scores."
+  },
+  "documents.pageText.hint.highlight": {
+    "defaultMessage": "Click a row to highlight its bounding box on the image.",
+    "description": "First sentence of the hint under OCR Text Lines, when the lines have positions on the page image."
+  },
+  "documents.pageText.hint.noBoundingBoxes": {
+    "defaultMessage": "Bounding boxes are not available for this page.",
+    "description": "First sentence of the hint under OCR Text Lines, when the lines have no positions on the page image."
+  },
+  "documents.pageText.hint.noConfidence": {
+    "defaultMessage": "Confidence scores are not available for this page.",
+    "description": "Second sentence of the hint under OCR Text Lines, when the lines have no confidence scores."
+  },
+  "documents.pageText.hint.signatures": {
+    "defaultMessage": "Detected signature regions are listed at the end — a low confidence there means a faint or ambiguous mark rather than a clear signature.",
+    "description": "Last sentence of the hint under OCR Text Lines, when the OCR detected signature regions."
+  },
+  "documents.pageText.loadFailed": {
+    "defaultMessage": "Failed to load page content: {error}",
+    "description": "Error in the page text dialog when the page's text could not be loaded. {error} is the error's own text."
+  },
+  "documents.pageText.loading": {
+    "defaultMessage": "Loading page content...",
+    "description": "Shown while the page text dialog loads the page's text."
+  },
+  "documents.pageText.markdownNote": {
+    "defaultMessage": "Confidence scores and bounding boxes are not available in the markdown view — switch to OCR Lines for those.",
+    "description": "Note in the markdown view. OCR Lines is the view switcher's option."
+  },
+  "documents.pageText.navBlockedUnfinished": {
+    "defaultMessage": "Reprocess or restore this page first",
+    "description": "Why Previous Page and Next Page are unavailable: the page's text was saved but not reprocessed."
+  },
+  "documents.pageText.navBlockedUnsaved": {
+    "defaultMessage": "Save or discard your changes first",
+    "description": "Why Previous Page and Next Page are unavailable: the text has unsaved changes."
+  },
+  "documents.pageText.nextPage": {
+    "defaultMessage": "Next Page",
+    "description": "Footer button of the page text dialog that shows the next page."
+  },
+  "documents.pageText.noGeometry": {
+    "defaultMessage": "This OCR backend did not provide bounding-box geometry for this page, so lines cannot be highlighted on the image.",
+    "description": "Notice above the OCR text lines when the OCR gave no positions for them."
+  },
+  "documents.pageText.noLines": {
+    "defaultMessage": "No OCR text lines available for this page.",
+    "description": "Shown in place of the OCR text lines when the page has none."
+  },
+  "documents.pageText.ocrTextLines": {
+    "defaultMessage": "OCR Text Lines",
+    "description": "Label above the list of the page's OCR text lines."
+  },
+  "documents.pageText.previousPage": {
+    "defaultMessage": "Previous Page",
+    "description": "Footer button of the page text dialog that shows the previous page."
+  },
+  "documents.pageText.rawEditable": {
+    "defaultMessage": "Raw markdown (editable)",
+    "description": "Label above the markdown source when it can be edited."
+  },
+  "documents.pageText.rawReadOnly": {
+    "defaultMessage": "Raw markdown (read-only)",
+    "description": "Label above the markdown source when it cannot be edited."
+  },
+  "documents.pageText.renderedReadOnly": {
+    "defaultMessage": "Rendered markdown (read-only)",
+    "description": "Label above the markdown shown as formatted text."
+  },
+  "documents.pageText.restore": {
+    "defaultMessage": "Restore original text",
+    "description": "Button that uploads the page's text as the dialog opened it; nothing is reprocessed."
+  },
+  "documents.pageText.restoreFailed": {
+    "defaultMessage": "Could not restore the original text: {error}",
+    "description": "Shown when Restore original text fails. {error} is the error's own text."
+  },
+  "documents.pageText.restored": {
+    "defaultMessage": "Page {page}'s original text is restored. Nothing was reprocessed.",
+    "description": "Confirmation after Restore original text. {page} is the page number."
+  },
+  "documents.pageText.retry": {
+    "defaultMessage": "Retry reprocess",
+    "description": "Button that reprocesses the document again after a failed reprocess, without uploading the text again."
+  },
+  "documents.pageText.save": {
+    "defaultMessage": "Save",
+    "description": "Footer button that saves the edited page text, when the screen names no other label."
+  },
+  "documents.pageText.saveFailed": {
+    "defaultMessage": "Could not save page {page}'s text: {error}. Nothing was changed.",
+    "description": "Error when the page's edited text could not be uploaded. {page} is the page number; {error} is the error's own text."
+  },
+  "documents.pageText.signatureRegion": {
+    "defaultMessage": "[SIGNATURE] region {index, number}",
+    "description": "One detected signature region. [SIGNATURE] is the marker the page text uses for it; {index} counts from 1."
+  },
+  "documents.pageText.signatures": {
+    "defaultMessage": "Signature detections ({count, number})",
+    "description": "Heading of the signature regions the OCR detected on the page. {count} is how many."
+  },
+  "documents.pageText.unfinished": {
+    "defaultMessage": "The page text was saved, but the document was not reprocessed: {message}",
+    "description": "Error after a save whose reprocess failed. {message} is the error's own text."
+  },
+  "documents.pageText.unsaved.body": {
+    "defaultMessage": "You have unsaved changes. Are you sure you want to close without saving?",
+    "description": "Question in the unsaved-changes dialog."
+  },
+  "documents.pageText.unsaved.continue": {
+    "defaultMessage": "Continue Editing",
+    "description": "Button of the unsaved-changes dialog that goes back to the editor."
+  },
+  "documents.pageText.unsaved.discard": {
+    "defaultMessage": "Discard Changes",
+    "description": "Button of the unsaved-changes dialog that closes without saving."
+  },
+  "documents.pageText.unsaved.title": {
+    "defaultMessage": "Unsaved Changes",
+    "description": "Title of the dialog shown when the page text dialog is closed with unsaved changes."
+  },
+  "documents.pageText.view.markdown": {
+    "defaultMessage": "Markdown",
+    "description": "Option of the page text dialog's view switcher: the page's text as markdown."
+  },
+  "documents.pageText.view.ocrLines": {
+    "defaultMessage": "OCR Lines",
+    "description": "Option of the page text dialog's view switcher: the page's OCR text lines."
+  },
+  "documents.pageText.view.raw": {
+    "defaultMessage": "Raw",
+    "description": "Option of the markdown view: the markdown source, read-only."
+  },
+  "documents.pageText.view.rawEditable": {
+    "defaultMessage": "Raw (editable)",
+    "description": "Option of the markdown view: the markdown source, which can be edited."
+  },
+  "documents.pageText.view.rendered": {
+    "defaultMessage": "Rendered",
+    "description": "Option of the markdown view: the markdown as formatted text."
+  },
+  "documents.pageText.viewTitle": {
+    "defaultMessage": "View Page {page} Text",
+    "description": "Title of the dialog that shows a page's text, read-only. {page} is the page number."
   },
   "documents.pageThumbnails.failed": {
     "defaultMessage": "Page thumbnails could not be loaded.",
