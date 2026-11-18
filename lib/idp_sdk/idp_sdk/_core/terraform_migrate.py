@@ -1257,6 +1257,11 @@ def build_plan(
         for i in instances
         if i.type == "aws_iam_role_policy_attachment"
         and i.attributes.get("role") in gateway_roles
+    } | {
+        str(arn)
+        for i in instances
+        if i.type == "aws_iam_role" and i.attributes.get("name") in gateway_roles
+        for arn in i.attributes.get("managed_policy_arns") or ()
     }
 
     for inst in instances:

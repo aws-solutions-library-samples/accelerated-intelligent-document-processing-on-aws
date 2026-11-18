@@ -504,11 +504,19 @@ class TestTypeClassification:
             {"id": "api-gateway-account", "cloudwatch_role_arn": role_arn},
             module_path="module.apiresolverstack",
         )
+        managed_arn = "arn:aws:iam::123456789012:policy/oldidp-apigw-managed"
         add_resource(
             state,
             "aws_iam_role",
             "apigw_cloudwatch",
-            {"name": "oldidp-apigw-cloudwatch", "arn": role_arn},
+            {
+                "name": "oldidp-apigw-cloudwatch",
+                "arn": role_arn,
+                "managed_policy_arns": [managed_arn],
+            },
+        )
+        add_resource(
+            state, "aws_iam_policy", "apigw_managed", {"name": "m", "arn": managed_arn}
         )
         add_resource(
             state,
@@ -556,6 +564,7 @@ class TestTypeClassification:
             "aws_iam_role_policy_attachment.apigw_cloudwatch",
             "aws_iam_role_policy.apigw_cloudwatch",
             "aws_iam_policy.apigw_logs",
+            "aws_iam_policy.apigw_managed",
             "aws_iam_role_policy_attachment.apigw_logs",
         ]
         for address in kept:
