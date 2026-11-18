@@ -4,11 +4,15 @@
 """An HTTP 500 on a packet classification call is retried, end to end (#2036).
 
 Drives the real ``ClassificationService`` (combined call, packet granularity) and
-the real ``BedrockClient`` behind it, with only the ``bedrock-runtime`` client
-replaced by a botocore ``Stubber``. The ``"500"`` code with no error type is what
-botocore builds for a reply that names no error, and before #2036 the client's
-retry ladder matched it against names alone and failed the call, the window and
-the document on the first attempt.
+the real ``BedrockClient`` behind it, with only the ``bedrock-runtime`` client's
+replies stubbed. The ``"500"`` code with no error type is what botocore builds for a
+reply that names no error, and before #2036 the client's retry ladder matched it
+against names alone and failed the call, the window and the document on the first
+attempt.
+
+A botocore ``Stubber`` rather than moto: moto does not implement ``bedrock-runtime``.
+It wraps the client ``BedrockClient`` builds itself, from the region and placeholder
+credentials the suite's ``conftest.py`` sets, so the test creates no client of its own.
 """
 
 from __future__ import annotations
@@ -18,9 +22,7 @@ from collections import Counter
 from typing import Any, Dict, List
 from unittest.mock import patch
 
-import boto3
 import pytest
-from botocore.config import Config
 from botocore.stub import Stubber
 
 from idp_common.bedrock import client as bedrock_client_module
@@ -90,65 +92,63 @@ def _converse_reply(text: str) -> Dict[str, Any]:
 
 
 @pytest.mark.unit
-def test_a_500_on_the_packet_call_is_retried_and_the_document_classified(
-    monkeypatch,
-):
-    runtime = boto3.client(
-        "bedrock-runtime",
-        region_name="us-west-2",
-        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        config=Config(retries={"total_max_attempts": 1, "mode": "standard"}),
-    )
-    calls: List[str] = []
-    runtime.meta.events.register(
-        "before-parameter-build.bedrock-runtime.Converse",
-        lambda **_kwargs: calls.append("converse"),
-    )
-    # The service reaches Bedrock through the module's default client.
-    default = bedrock_client_module.default_client
-    monkeypatch.setattr(default, "_client", runtime)
-    metrics: Counter = Counter()
-    monkeypatch.setattr(
-        default, "_put_metric", lambda name, *a, **k: metrics.update([name])
-    )
-    backoffs: List[int] = []
-    monkeypatch.setattr(
-        BedrockClient,
-        "_backoff_within_invocation",
-        lambda self, retry_count: backoffs.append(retry_count) or 0.0,
-    )
+class TestAServerErrorOnThePacketCall:
+    def setup_method(self):
+        self.calls: List[str] = []
+        self.backoffs: List[int] = []
+        self.metrics: Counter = Counter()
 
-    with Stubber(runtime) as stubber:
-        stubber.add_client_error(
-            "converse",
-            service_error_code="500",
-            service_message="Internal Server Error",
-            http_status_code=500,
+    def _stub_bedrock(self, monkeypatch) -> Stubber:
+        """Stub the replies of the client the service reaches Bedrock through."""
+        default = bedrock_client_module.default_client
+        # A fresh client, built by BedrockClient and restored after the test.
+        monkeypatch.setattr(default, "_client", None)
+        runtime = default.client
+        runtime.meta.events.register(
+            "before-parameter-build.bedrock-runtime.Converse",
+            lambda **_kwargs: self.calls.append("converse"),
         )
-        stubber.add_response(
-            "converse", _converse_reply(json.dumps({"segments": SEGMENTS}))
+        monkeypatch.setattr(
+            default, "_put_metric", lambda name, *a, **k: self.metrics.update([name])
         )
-        with patch("idp_common.s3.get_text_content", return_value="page text"):
-            result = _service().packet_classify_document(_document())
-        stubber.assert_no_pending_responses()
+        monkeypatch.setattr(
+            BedrockClient,
+            "_backoff_within_invocation",
+            lambda _self, retry_count: self.backoffs.append(retry_count) or 0.0,
+        )
+        return Stubber(runtime)
 
-    assert result.errors == []
-    assert [(s.page_ids, s.classification) for s in result.sections] == [
-        (["1", "2"], "invoice"),
-        (["3", "4"], "receipt"),
-    ]
-    assert len(calls) == 2, "the 500 and one retry"
-    assert backoffs == [0], "the retry was made by the client's ladder, after a backoff"
-    # The 500 returned no usage; the reply that succeeded is counted once.
-    assert result.metering == {
-        METERING_KEY: {
-            "inputTokens": 100,
-            "outputTokens": 20,
-            "totalTokens": 120,
-            "requests": 1,
+    def test_a_500_is_retried_and_the_document_classified(self, monkeypatch):
+        with self._stub_bedrock(monkeypatch) as stubber:
+            stubber.add_client_error(
+                "converse",
+                service_error_code="500",
+                service_message="Internal Server Error",
+                http_status_code=500,
+            )
+            stubber.add_response(
+                "converse", _converse_reply(json.dumps({"segments": SEGMENTS}))
+            )
+            with patch("idp_common.s3.get_text_content", return_value="page text"):
+                result = _service().packet_classify_document(_document())
+            stubber.assert_no_pending_responses()
+
+        assert result.errors == []
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        assert len(self.calls) == 2, "the 500 and one retry"
+        assert self.backoffs == [0], "the client's ladder retried, after a backoff"
+        # The 500 returned no usage; the reply that succeeded is counted once.
+        assert result.metering == {
+            METERING_KEY: {
+                "inputTokens": 100,
+                "outputTokens": 20,
+                "totalTokens": 120,
+                "requests": 1,
+            }
         }
-    }
-    assert metrics["BedrockThrottles"] == 1
-    assert metrics["BedrockRetrySuccess"] == 1
-    assert metrics["BedrockNonRetryableErrors"] == 0
+        assert self.metrics["BedrockThrottles"] == 1
+        assert self.metrics["BedrockRetrySuccess"] == 1
+        assert self.metrics["BedrockNonRetryableErrors"] == 0

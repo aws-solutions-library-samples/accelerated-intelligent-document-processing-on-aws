@@ -21,6 +21,7 @@ import ast
 import io
 import itertools
 import json
+import logging
 import sys
 from collections import Counter
 from collections.abc import Callable
@@ -612,29 +613,44 @@ def _succeeded(ladder: str, outcome: object) -> bool:
 
 
 #: Replies both ladders retry: (the reply, the code botocore gives it, how many times
-#: it counts toward ``BedrockServiceUnavailable``, the circuit breaker's default
-#: trigger). The bare statuses are the #2036 case. ``InternalFailure`` is a named code
-#: in neither list, retried for its 500 status alone. The two Bedrock names are the
-#: controls the ladders already retried.
+#: it counts toward ``BedrockServiceUnavailable`` -- the circuit breaker's default
+#: trigger -- and toward ``BedrockThrottling``, and what the retry log line calls
+#: it). The bare statuses are the #2036 case. ``InternalFailure`` is a named code in
+#: neither list, retried for its 500 status alone. The two Bedrock names are the
+#: controls the ladders already retried. A throttle carrying a 503 is counted and
+#: logged by its name, not its status.
 _RETRIED_REPLIES = {
-    "bare 500": (_bare_status_reply(500), "500", 0),
-    "bare 502": (_bare_status_reply(502), "502", 0),
-    "bare 503": (_bare_status_reply(503), "503", 1),
-    "bare 504": (_bare_status_reply(504), "504", 0),
+    "bare 500": (_bare_status_reply(500), "500", 0, 0, "server error (HTTP 500)"),
+    "bare 502": (_bare_status_reply(502), "502", 0, 0, "server error (HTTP 502)"),
+    "bare 503": (_bare_status_reply(503), "503", 1, 0, "server error (HTTP 503)"),
+    "bare 504": (_bare_status_reply(504), "504", 0, 0, "server error (HTTP 504)"),
     "InternalFailure (500)": (
         _named_error_reply(500, "InternalFailure"),
         "InternalFailure",
         0,
+        0,
+        "server error (HTTP 500)",
     ),
     "InternalServerException (500)": (
         _named_error_reply(500, "InternalServerException"),
         "InternalServerException",
         0,
+        0,
+        "server error (HTTP 500)",
     ),
     "ServiceUnavailableException (503)": (
         _named_error_reply(503, "ServiceUnavailableException"),
         "ServiceUnavailableException",
         1,
+        0,
+        "server error (HTTP 503)",
+    ),
+    "ThrottlingException (503)": (
+        _named_error_reply(503, "ThrottlingException"),
+        "ThrottlingException",
+        0,
+        1,
+        "throttling",
     ),
 }
 
@@ -643,9 +659,10 @@ _RETRIED_REPLIES = {
 @pytest.mark.parametrize("ladder", sorted(_OK_REPLY))
 @pytest.mark.parametrize("reply", sorted(_RETRIED_REPLIES))
 def test_an_http_server_error_is_retried_with_backoff_and_recovers(
-    ladder, reply, monkeypatch
+    ladder, reply, monkeypatch, caplog
 ):
-    first, code, service_unavailable = _RETRIED_REPLIES[reply]
+    first, code, service_unavailable, throttling, kind = _RETRIED_REPLIES[reply]
+    caplog.set_level(logging.WARNING, logger=client_mod.logger.name)
     run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
 
     assert run.codes == [code], "the reply did not produce the error under test"
@@ -657,8 +674,9 @@ def test_an_http_server_error_is_retried_with_backoff_and_recovers(
     assert run.metrics[non_retryable] == 0
     assert run.metrics[failed] == 0
     assert run.metrics["BedrockServiceUnavailable"] == service_unavailable
-    assert run.metrics["BedrockThrottling"] == 0
+    assert run.metrics["BedrockThrottling"] == throttling
     assert run.metrics["BedrockQuotaLimit"] == 0
+    assert f"Bedrock {kind} occurred (attempt 1/4)" in caplog.text
 
 
 #: Replies neither ladder retries: a request error, the same as a bare status, and a

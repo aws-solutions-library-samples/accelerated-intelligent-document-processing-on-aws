@@ -148,6 +148,22 @@ logger = logging.getLogger(__name__)
 
 # Default retry settings
 DEFAULT_MAX_RETRIES = 7
+
+#: Retryable codes counted as ``BedrockThrottling`` (the circuit breaker's throttling
+#: trigger) and logged as throttling, on both retry ladders.
+_THROTTLING_CODES = (
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "RequestLimitExceeded",
+)
+
+
+def _retry_kind(error_code: str, server_error_status: Optional[int]) -> str:
+    """What a retry log line calls the error: a 5xx is a server error, unless its
+    code says throttling (#2036)."""
+    if server_error_status is not None and error_code not in _THROTTLING_CODES:
+        return f"server error (HTTP {server_error_status})"
+    return "throttling"
 DEFAULT_INITIAL_BACKOFF = 2  # seconds
 DEFAULT_MAX_BACKOFF = 300  # 5 minutes
 
@@ -2225,21 +2241,17 @@ class BedrockClient:
                 # that feeds BedrockServiceOutageAlarm (the circuit breaker
                 # trigger). For per-path counts use BedrockThrottles
                 # (generation, above) or BedrockEmbeddingThrottles (embedding).
-                # A 503 is "service unavailable" whatever its code; a 500, 502 or
-                # 504 has no category, like InternalServerException.
-                if (
-                    error_code == "ServiceUnavailableException"
-                    or server_error_status == 503
-                ):
+                # The code decides first. A 503 whose code names no category
+                # counts as service unavailable; a 500, 502 or 504 has no
+                # category, like InternalServerException (#2036).
+                if error_code == "ServiceUnavailableException":
                     self._put_metric("BedrockServiceUnavailable", 1)
-                elif error_code in (
-                    "ThrottlingException",
-                    "TooManyRequestsException",
-                    "RequestLimitExceeded",
-                ):
+                elif error_code in _THROTTLING_CODES:
                     self._put_metric("BedrockThrottling", 1)
                 elif error_code == "ServiceQuotaExceededException":
                     self._put_metric("BedrockQuotaLimit", 1)
+                elif server_error_status == 503:
+                    self._put_metric("BedrockServiceUnavailable", 1)
 
                 # Check if we've reached max retries
                 if retry_count >= max_retries:
@@ -2265,7 +2277,8 @@ class BedrockClient:
                     raise
 
                 logger.warning(
-                    f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
+                    f"Bedrock {_retry_kind(error_code, server_error_status)} occurred "
+                    f"(attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
                     f"Backing off for {backoff:.2f}s"
                 )
@@ -2722,19 +2735,14 @@ class BedrockClient:
                 # that feeds BedrockServiceOutageAlarm (the circuit breaker
                 # trigger). For per-path counts use BedrockEmbeddingThrottles
                 # (embedding, above) or BedrockThrottles (generation).
-                if (
-                    error_code == "ServiceUnavailableException"
-                    or server_error_status == 503
-                ):
+                if error_code == "ServiceUnavailableException":
                     self._put_metric("BedrockServiceUnavailable", 1)
-                elif error_code in (
-                    "ThrottlingException",
-                    "TooManyRequestsException",
-                    "RequestLimitExceeded",
-                ):
+                elif error_code in _THROTTLING_CODES:
                     self._put_metric("BedrockThrottling", 1)
                 elif error_code == "ServiceQuotaExceededException":
                     self._put_metric("BedrockQuotaLimit", 1)
+                elif server_error_status == 503:
+                    self._put_metric("BedrockServiceUnavailable", 1)
 
                 # Check if we've reached max retries
                 if retry_count >= max_retries:
@@ -2763,7 +2771,8 @@ class BedrockClient:
                     raise
 
                 logger.warning(
-                    f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
+                    f"Bedrock {_retry_kind(error_code, server_error_status)} occurred "
+                    f"(attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
                     f"Backing off for {backoff:.2f}s"
                 )

@@ -526,9 +526,28 @@ def _raised_from(error: BaseException, types: tuple[type[BaseException], ...]) -
     return any(isinstance(node, types) for node in _cause_chain(error))
 
 
+#: The ``bedrock-runtime`` operations these decorators wrap. A 5xx is retried only
+#: from one of them: ``http_server_error_status`` is a Bedrock rule, and another
+#: service can answer a request that will fail again with a 5xx (Lambda answers
+#: several such errors with a 502).
+_BEDROCK_MODEL_OPERATIONS = frozenset(
+    {"Converse", "ConverseStream", "InvokeModel", "InvokeModelWithResponseStream"}
+)
+
+
+def _is_bedrock_server_error(error: BaseException) -> bool:
+    """Whether ``error`` is a Bedrock model call's ``ClientError`` for an HTTP 500,
+    502, 503 or 504 reply, whatever its code (#2036)."""
+    return (
+        isinstance(error, botocore.exceptions.ClientError)
+        and getattr(error, "operation_name", None) in _BEDROCK_MODEL_OPERATIONS
+        and http_server_error_status(error.response) is not None
+    )
+
+
 def _raised_from_server_error(error: BaseException) -> bool:
     """Whether ``error``, or an exception it was explicitly raised ``from``, is a
-    ``ClientError`` for an HTTP 500, 502, 503 or 504 reply.
+    Bedrock server error (:func:`_is_bedrock_server_error`).
 
     Strands delivers a Bedrock ``ClientError`` raw from the first model call and
     wrapped in ``EventLoopException`` from later cycles (see
@@ -536,11 +555,7 @@ def _raised_from_server_error(error: BaseException) -> bool:
     matches nothing in the substring vocabulary, so without this the wrapped form
     failed on its first attempt (#2036).
     """
-    return any(
-        isinstance(node, botocore.exceptions.ClientError)
-        and http_server_error_status(node.response) is not None
-        for node in _cause_chain(error)
-    )
+    return any(_is_bedrock_server_error(node) for node in _cause_chain(error))
 
 
 def _cause_chain(error: BaseException) -> Iterator[BaseException]:
@@ -570,7 +585,13 @@ def async_exponential_backoff_retry[T, **P](
     ``max_total_delay`` **stops** the ladder and re-raises, because every further
     attempt would carry no delay at all; the deadline only **shortens** sleeps and
     keeps trying, because there is no burst to suppress that close to the wall and
-    an attempt may still succeed. See :func:`_backoff_or_none`."""
+    an attempt may still succeed. See :func:`_backoff_or_none`.
+
+    An HTTP 500, 502, 503 or 504 from a Bedrock model call is part of the default
+    code vocabulary: a caller that passes its own ``retryable_errors`` gets exactly
+    those codes and no 5xx rule (#2036)."""
+    # A narrowed vocabulary turns the 5xx rule off with it.
+    retries_server_errors = retryable_errors is None
     # Use defaults if not provided
     if retryable_errors is None:
         retryable_errors = DEFAULT_RETRYABLE_ERRORS
@@ -636,11 +657,12 @@ def async_exponential_backoff_retry[T, **P](
                         not in e.response.get("Error", {}).get("Message", "")
                     ):
                         raise
-                    # Any HTTP 500/502/503/504 is retried whatever its code,
-                    # as on the Converse ladder in bedrock/client.py (#2036).
+                    # Any HTTP 500/502/503/504 from Bedrock is retried whatever
+                    # its code, as on the Converse ladder in bedrock/client.py
+                    # (#2036), unless the caller narrowed the vocabulary.
                     is_retryable_code = (
                         error_code is not None and error_code.lower() in retryable_lower
-                    ) or http_server_error_status(e.response) is not None
+                    ) or (retries_server_errors and _is_bedrock_server_error(e))
                     if not is_retryable_code or attempt == max_retries - 1:
                         raise
 
@@ -681,9 +703,9 @@ def async_exponential_backoff_retry[T, **P](
                     # A retryable exception type (Strands' ModelThrottledException,
                     # botocore's transport failures) or an HTTP 5xx ClientError,
                     # raw or raised ``from`` one.
-                    is_retryable_type = _raised_from(
-                        e, retryable_exception_types
-                    ) or _raised_from_server_error(e)
+                    is_retryable_type = _raised_from(e, retryable_exception_types) or (
+                        retries_server_errors and _raised_from_server_error(e)
+                    )
 
                     # Also check if exception name or message contains retryable error patterns
                     exception_name = type(e).__name__
@@ -870,7 +892,7 @@ def exponential_backoff_retry[T, **P](
                     is_retryable_code = (
                         error_code is not None
                         and error_code.lower() in _DEFAULT_RETRYABLE_ERRORS_LOWER
-                    ) or http_server_error_status(e.response) is not None
+                    ) or _is_bedrock_server_error(e)
                     if not is_retryable_code or attempt == max_retries - 1:
                         raise
 

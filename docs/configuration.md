@@ -815,7 +815,7 @@ The solution implements sophisticated concurrency control and throttling managem
 - **Circuit Breaker**: Temporary halt on repeated failures
 - **Rate Limiting**: Configurable request rate controls
 
-An HTTP 500, 502, 503 or 504 from Bedrock is retried whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
+Calls through the `idp_common` Bedrock client (Converse and embeddings) and agentic extraction's model calls retry an HTTP 500, 502, 503 or 504 whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. The Z3 rule translator keeps its own retry list and does not. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
 
 The solution tracks metrics for throttling events and successful retries, viewable in the CloudWatch dashboard.
 
