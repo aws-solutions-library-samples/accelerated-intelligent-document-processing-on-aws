@@ -103,9 +103,11 @@ def attach_failure_metering(
     gains only this attribute. An empty ``metering`` attaches nothing.
 
     Calling it twice on one exception replaces the earlier value rather than adding
-    to it, because the one producer (agentic ``structured_output_async``) records
-    the agent's cumulative usage, and summing two cumulative readings would count
-    the earlier calls twice.
+    to it. Agentic ``structured_output_async`` records the agent's cumulative usage,
+    and summing two cumulative readings would count the earlier calls twice. The
+    packet classification window loop in ``classification.service`` attaches each
+    call's usage and then the window's, so it merges what it has read with
+    :func:`failure_metering` before attaching again.
 
     Returns ``error`` so a caller can write ``raise attach_failure_metering(e, m)``.
     """

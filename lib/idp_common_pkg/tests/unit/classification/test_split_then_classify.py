@@ -1383,7 +1383,7 @@ class TestAnUnparseableSplittingReplyIsRetried:
             if stage == ClassificationService.STAGE_SPLITTING
         ]
         assert len(splitting) == 2, "one re-prompt"
-        assert "could not be parsed as JSON" in splitting[1][-1]["text"]
+        assert "Reply with only the JSON object" in splitting[1][-1]["text"]
         assert [(s.page_ids, s.classification) for s in result.sections] == [
             (["1", "2"], "invoice")
         ]

@@ -737,7 +737,8 @@ packet costs that window's boundaries rather than the whole document's.
 
 A reply that is not JSON gets one re-prompt asking for the JSON only. If the second
 reply is not JSON either, the window fails with an error saying the model's reply
-could not be parsed. Both calls are metered. See the
+could not be parsed. A reply cut off at `max_tokens` is not re-prompted; the window
+fails with an error saying it was cut off. Every call is metered. See the
 [classification module README](../lib/idp_common_pkg/idp_common/classification/README.md#windowing-and-merging)
 for the details.
 

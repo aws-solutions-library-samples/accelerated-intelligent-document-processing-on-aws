@@ -34,9 +34,7 @@ import json
 from typing import Any, Dict, List, Optional
 from unittest.mock import patch
 
-import boto3
 import pytest
-from botocore.config import Config
 from botocore.stub import Stubber
 
 from idp_common.bedrock import client as bedrock_client_module
@@ -1825,13 +1823,34 @@ class TestPacketGranularityHonoursClassValidation:
 
 #: A normal-length answer that is not JSON: what the model sent in #2035.
 _PROSE = "The packet holds an invoice on pages 1-2 and a receipt on pages 3-4."
-_JSON_ONLY_RE_PROMPT = "could not be parsed as JSON"
+_JSON_ONLY_RE_PROMPT = "Reply with only the JSON object"
 
 
-def _reply_text(text: str, input_tokens: int) -> Dict[str, Any]:
+def _reply_text(
+    text: str, input_tokens: int, stop_reason: str = "end_turn"
+) -> Dict[str, Any]:
     return {
-        "response": {"output": {"message": {"content": [{"text": text}]}}},
+        "response": {
+            "output": {"message": {"content": [{"text": text}]}},
+            "stopReason": stop_reason,
+        },
         "metering": {"Classification/bedrock/nova": {"inputTokens": input_tokens}},
+    }
+
+
+_STUBBED_MODEL = "us.amazon.nova-2-lite-v1:0"
+
+
+def _converse_reply(text: str, input_tokens: int) -> Dict[str, Any]:
+    return {
+        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": input_tokens,
+            "outputTokens": 20,
+            "totalTokens": input_tokens + 20,
+        },
+        "metrics": {"latencyMs": 1},
     }
 
 
@@ -1885,6 +1904,8 @@ class TestAReplyThatIsNotJsonIsRetriedOnce:
         assert _JSON_ONLY_RE_PROMPT not in first_text
         assert calls[1][:-1] == calls[0], "the re-prompt repeats the request"
         assert _JSON_ONLY_RE_PROMPT in calls[1][-1]["text"]
+        # Single-turn: the failed reply is not in the request, so it is not cited.
+        assert "previous reply" not in calls[1][-1]["text"]
         # Both calls were billed, so both are counted, each once.
         assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
 
@@ -1909,6 +1930,57 @@ class TestAReplyThatIsNotJsonIsRetriedOnce:
         assert "Document doc-1" in failure
         assert "could not be parsed as JSON" in failure
         assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+
+    def test_the_re_prompt_goes_through_the_real_client(self, monkeypatch):
+        """End to end: the real service and the real ``BedrockClient``, with only
+        the ``bedrock-runtime`` client's replies stubbed. A botocore ``Stubber``
+        rather than moto, which does not implement ``bedrock-runtime``; it wraps
+        the client ``BedrockClient`` builds itself, from the region and placeholder
+        credentials the suite's ``conftest.py`` sets."""
+        default = bedrock_client_module.default_client
+        # A fresh client, built by BedrockClient and restored after the test.
+        monkeypatch.setattr(default, "_client", None)
+        runtime = default.client
+        requests: List[Dict[str, Any]] = []
+        runtime.meta.events.register(
+            "before-parameter-build.bedrock-runtime.Converse",
+            lambda params, **_kwargs: requests.append(params),
+        )
+        monkeypatch.setattr(default, "_put_metric", lambda *a, **k: None)
+        backoffs: List[int] = []
+        monkeypatch.setattr(
+            BedrockClient,
+            "_backoff_within_invocation",
+            lambda _self, retry_count: backoffs.append(retry_count) or 0.0,
+        )
+
+        with Stubber(runtime) as stubber:
+            stubber.add_response("converse", _converse_reply(_PROSE, 300))
+            stubber.add_response("converse", _converse_reply(self.TWO_SEGMENTS, 700))
+            with patch("idp_common.s3.get_text_content", return_value="page text"):
+                result = _service(modality={"images": False}).packet_classify_document(
+                    _document(4, with_images=False)
+                )
+            stubber.assert_no_pending_responses()
+
+        assert result.errors == []
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2"], "invoice"),
+            (["3", "4"], "receipt"),
+        ]
+        assert len(requests) == 2, "the first reply and one re-prompt"
+        re_prompt = requests[1]["messages"][-1]["content"][-1]["text"]
+        assert _JSON_ONLY_RE_PROMPT in re_prompt
+        assert backoffs == [], "a service re-prompt, not a client-level retry"
+        # Both replies were billed, so both are counted, each once.
+        assert result.metering == {
+            f"Classification/bedrock/{_STUBBED_MODEL}": {
+                "inputTokens": 1000,
+                "outputTokens": 40,
+                "totalTokens": 1040,
+                "requests": 2,
+            }
+        }
 
     def test_a_valid_first_reply_makes_one_call(self):
         result, calls = self._classify([_reply_text(self.TWO_SEGMENTS, 700)])
@@ -1938,82 +2010,82 @@ class TestAReplyThatIsNotJsonIsRetriedOnce:
             (["1", "2", "3", "4"], "unclassified")
         ]
         assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
-        assert "keeping the previous answer" in caplog.text
-
-
-def _converse_reply(text: str, input_tokens: int) -> Dict[str, Any]:
-    return {
-        "output": {"message": {"role": "assistant", "content": [{"text": text}]}},
-        "stopReason": "end_turn",
-        "usage": {
-            "inputTokens": input_tokens,
-            "outputTokens": 20,
-            "totalTokens": input_tokens + 20,
-        },
-        "metrics": {"latencyMs": 1},
-    }
-
-
-@pytest.mark.unit
-def test_a_reply_that_is_not_json_is_re_prompted_through_the_real_client(
-    monkeypatch,
-):
-    """#2035 end to end: the real service and the real ``BedrockClient``, with only
-    the ``bedrock-runtime`` client replaced by a botocore ``Stubber``."""
-    model = "us.amazon.nova-2-lite-v1:0"
-    runtime = boto3.client(
-        "bedrock-runtime",
-        region_name="us-west-2",
-        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        config=Config(retries={"total_max_attempts": 1, "mode": "standard"}),
-    )
-    requests: List[Dict[str, Any]] = []
-    runtime.meta.events.register(
-        "before-parameter-build.bedrock-runtime.Converse",
-        lambda params, **_kwargs: requests.append(params),
-    )
-    # The service reaches Bedrock through the module's default client.
-    default = bedrock_client_module.default_client
-    monkeypatch.setattr(default, "_client", runtime)
-    monkeypatch.setattr(default, "_put_metric", lambda *a, **k: None)
-    backoffs: List[int] = []
-    monkeypatch.setattr(
-        BedrockClient,
-        "_backoff_within_invocation",
-        lambda self, retry_count: backoffs.append(retry_count) or 0.0,
-    )
-    segments = [
-        {"ordinal_start_page": 1, "ordinal_end_page": 2, "type": "invoice"},
-        {"ordinal_start_page": 3, "ordinal_end_page": 4, "type": "receipt"},
-    ]
-
-    with Stubber(runtime) as stubber:
-        stubber.add_response("converse", _converse_reply(_PROSE, 300))
-        stubber.add_response(
-            "converse", _converse_reply(json.dumps({"segments": segments}), 700)
+        assert (
+            "the reply to the validation re-prompt could not be parsed as JSON"
+            in caplog.text
         )
-        with patch("idp_common.s3.get_text_content", return_value="page text"):
-            result = _service(modality={"images": False}).packet_classify_document(
-                _document(4, with_images=False)
-            )
-        stubber.assert_no_pending_responses()
+        assert "after 2 request(s); kept the previous answer" in caplog.text
+        assert "still returned invalid class(es)" not in caplog.text
 
-    assert result.errors == []
-    assert [(s.page_ids, s.classification) for s in result.sections] == [
-        (["1", "2"], "invoice"),
-        (["3", "4"], "receipt"),
-    ]
-    assert len(requests) == 2, "the first reply and one re-prompt"
-    re_prompt = requests[1]["messages"][-1]["content"][-1]["text"]
-    assert _JSON_ONLY_RE_PROMPT in re_prompt
-    assert backoffs == [], "a service re-prompt, not a client-level retry"
-    # Both replies were billed, so both are counted, each once.
-    assert result.metering == {
-        f"Classification/bedrock/{model}": {
-            "inputTokens": 1000,
-            "outputTokens": 40,
-            "totalTokens": 1040,
-            "requests": 2,
-        }
+    #: Replies that arrive, are billed, and cannot be used: an empty content
+    #: array, no segments, and segments that each cover no page of the document.
+    UNUSABLE_REPLIES = {
+        "empty content": {
+            "response": {"output": {"message": {"content": []}}},
+            "metering": {"Classification/bedrock/nova": {"inputTokens": 300}},
+        },
+        "no segments": _reply_text(json.dumps({"segments": []}), 300),
+        "every segment unusable": _reply_text(
+            json.dumps(
+                {
+                    "segments": [
+                        {
+                            "ordinal_start_page": 7,
+                            "ordinal_end_page": 8,
+                            "type": "invoice",
+                        }
+                    ]
+                }
+            ),
+            300,
+        ),
     }
+
+    @pytest.mark.parametrize("reply", sorted(UNUSABLE_REPLIES))
+    def test_an_unusable_reply_fails_the_window_and_is_metered(self, reply):
+        result, calls = self._classify([self.UNUSABLE_REPLIES[reply]])
+
+        assert len(calls) == 1
+        assert result.status == Status.FAILED
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 300
+
+    def test_an_unusable_reply_to_a_class_re_prompt_keeps_the_first_answer(
+        self, caplog
+    ):
+        bad_class = json.dumps(
+            {
+                "segments": [
+                    {"ordinal_start_page": 1, "ordinal_end_page": 4, "type": "po"}
+                ]
+            }
+        )
+        result, calls = self._classify(
+            [
+                _reply_text(bad_class, 300),
+                _reply_text(json.dumps({"segments": []}), 700),
+            ]
+        )
+
+        assert len(calls) == 2
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "unclassified")
+        ]
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 1000
+        assert "the reply to the validation re-prompt was unusable" in caplog.text
+
+    def test_a_reply_cut_off_at_max_tokens_is_not_re_prompted(self):
+        """A re-prompt would have the same max_tokens and be cut off again."""
+        truncated = '{"segments": [{"ordinal_start_page": 1, "ordinal_end'
+        result, calls = self._classify(
+            [
+                _reply_text(truncated, 300, stop_reason="max_tokens"),
+                _reply_text(self.TWO_SEGMENTS, 700),
+            ]
+        )
+
+        assert len(calls) == 1
+        assert result.status == Status.FAILED
+        failure = next(e for e in result.errors if "produced no segments" in e)
+        assert "Document doc-1" in failure
+        assert "cut off at max_tokens" in failure
+        assert result.metering["Classification/bedrock/nova"]["inputTokens"] == 300
