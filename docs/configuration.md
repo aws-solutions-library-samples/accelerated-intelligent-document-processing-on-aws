@@ -815,6 +815,8 @@ The solution implements sophisticated concurrency control and throttling managem
 - **Circuit Breaker**: Temporary halt on repeated failures
 - **Rate Limiting**: Configurable request rate controls
 
+Calls through the `idp_common` Bedrock client (Converse and embeddings) and agentic extraction's model calls retry an HTTP 500, 502, 503 or 504 whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. The Z3 rule translator keeps its own retry list and does not. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
+
 The solution tracks metrics for throttling events and successful retries, viewable in the CloudWatch dashboard.
 
 ### Step Functions Retry Configuration
@@ -830,7 +832,8 @@ re-raise a transient cause under when it arrives as an ordinary Python exception
 botocore read or connect timeout, a dropped connection, a Strands wrapper around
 one). Whether a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
-code first (a `ValidationException` is deterministic whatever its message says),
+code first (a `ValidationException` is deterministic whatever its message says,
+and a bare HTTP 500, 502, 503 or 504 in place of a code is transient),
 and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
 hide a transient root and a swallowed transient error cannot lend its transience
 to an unrelated failure raised after it.
