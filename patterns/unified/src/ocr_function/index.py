@@ -17,6 +17,11 @@ from idp_common import get_config, metrics, ocr
 from idp_common.docs_service import create_document_service
 from idp_common.models import Document, Page, Status
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import (
+    TransientError,
+    is_transient_error,
+    raise_if_transient,
+)
 
 patch_all()
 
@@ -182,7 +187,25 @@ def discover_existing_ocr_pages(output_bucket, input_key):
     return completed_pages
 
 @xray_recorder.capture('ocr_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
-def handler(event, context): 
+def handler(event, context):
+    """OCR one document. See ``_handle``.
+
+    Transient causes are re-raised as ``TransientError``, the name OCRStep's
+    retrier lists beside the modeled throttling codes, so a read timeout, a bare
+    HTTP 5xx or a dropped connection from Textract, Bedrock or S3 is retried the
+    way a modeled ``ThrottlingException`` already was. That covers an exception
+    raised in the handler itself and one the OCR service recorded on a page
+    instead of raising (``OcrService.failure_causes``). Hard errors keep their
+    own name and are not retried.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="ocr")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda handler for OCR processing.
     """
@@ -293,9 +316,25 @@ def handler(event, context):
         has_throttling, throttling_error = check_document_for_throttling_errors(document)
         if has_throttling:
             logger.error(f"Throttling error detected in OCR errors: {throttling_error}")
-            logger.error("Raising ThrottlingException to trigger Step Functions retry (NOT marking document as FAILED)")
             # Emit CloudWatch metric for OCR throttling visibility
             metrics.put_metric('OCRThrottles', 1)
+        # The service records a failed page's exception as text in
+        # document.errors and keeps the exception itself on failure_causes. Text
+        # cannot tell a read timeout or a bare HTTP 5xx from a deterministic
+        # failure, so the exception decides: a transient one is raised as
+        # TransientError and the document is left in OCR status for the retry.
+        transient_cause = next(
+            (c for c in getattr(service, "failure_causes", ()) if is_transient_error(c)),
+            None,
+        )
+        if transient_cause is not None:
+            logger.error(
+                f"Transient OCR failure ({type(transient_cause).__name__}); raising "
+                "TransientError to trigger Step Functions retry (NOT marking document as FAILED)"
+            )
+            raise TransientError(transient_cause, where="ocr") from transient_cause
+        if has_throttling:
+            logger.error("Raising ThrottlingException to trigger Step Functions retry (NOT marking document as FAILED)")
             raise ThrottlingException(
                 f"Throttling detected during OCR processing: {throttling_error}"
             )
