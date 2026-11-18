@@ -216,6 +216,8 @@ terraform {
   }
 
   # Recommended for any deployment you keep. Replace with your own backend.
+  # use_lockfile needs Terraform or OpenTofu 1.10 or later; on 1.7 to 1.9,
+  # replace it with dynamodb_table = "<lock table>".
   # backend "s3" {
   #   bucket       = "<state bucket>"
   #   key          = "idp/terraform.tfstate"
@@ -254,8 +256,12 @@ terraform apply idp.tfplan
 ```
 
 The module's version constraints on the providers apply in addition to yours, so the
-constraints above only need to be compatible with them. The module's outputs keep the
-CloudFormation output names (`module.idp.ApplicationWebURL`,
+constraints above only need to be compatible with them. The S3 backend's
+`use_lockfile` setting is newer than the module's Terraform floor: it needs Terraform
+or OpenTofu 1.10 or later, and an older release refuses the backend block. On 1.7 to
+1.9, lock the state with a DynamoDB table (`dynamodb_table`) instead.
+
+The module's outputs keep the CloudFormation output names (`module.idp.ApplicationWebURL`,
 `module.idp.S3InputBucketName`, `module.idp.StateMachineArn`, and so on); its
 `outputs.tf` lists them all.
 
@@ -268,6 +274,58 @@ A first apply of the full stack takes roughly half an hour. Terraform does not r
 back a failed apply the way CloudFormation rolls back a failed stack: what was created
 stays in state. Fix the cause and run `terraform apply` again, or run
 `terraform destroy`.
+
+#### Using the module beside your own resources
+
+Three things behave differently from an ordinary module when the `module "idp"` block
+shares a root configuration with your own resources.
+
+**Inputs that a template condition reads must be known at plan time.** The
+templates' conditions become `count` and `for_each` expressions, and Terraform must
+know those when it plans. An input such as `reporting_bucket_name` decides whether the
+module creates a bucket of its own, so setting it to an attribute that is not known
+until apply (`reporting_bucket_name = aws_s3_bucket.analytics.id`, for a bucket
+created in the same apply) leaves the condition unknown, and `terraform plan` fails
+with `Invalid count argument` or `Invalid for_each argument`. The same holds for an
+input a nested module's conditions read: `vpc_id` decides inside the pattern stack
+whether its VPC-only resources exist, so with `deploy_in_vpc = "true"` it must also be
+known at plan time, and a VPC created in the same apply cannot supply it.
+`lambda_subnet_ids` and `lambda_security_group_id` decide nothing and can come from
+resources created in the same apply. Create anything whose identifier feeds such an
+input in an earlier apply, or, for a value you choose yourself such as a bucket name,
+pass it to the module as a literal.
+
+The translator declares a variable with the suffix `__cond` for every input a
+condition reads, in each module of the tree, so this lists them (a nested module's
+variable can be named differently from the root input that feeds it):
+
+```bash
+grep -rho 'variable "[a-z0-9_]*__cond"' --include=variables.tf .terraform/modules/idp | sort -u
+```
+
+Those `__cond` variables are how the module passes known values to its nested
+modules, and setting one yourself is not a dependable way around the rule: it is read
+only by the conditions of the module that declares it, and the input still reaches
+the nested modules with its unknown value, so a condition there stays unknown.
+
+**Do not put `depends_on` on the `module "idp"` block.** The module reads the
+Region, partition and account from data sources, and several conditions compare them
+(whether the partition is GovCloud, for example), so those conditions also decide
+`count`. Terraform defers every data source inside a module that has `depends_on`
+until apply whenever what it depends on has changes to make, which on a first apply is
+always, so those conditions are unknown at plan time and the plan fails the same way.
+Pass the outputs or attributes of the resources the module needs as its inputs
+instead, within the rule above; Terraform orders the work by those references. A resource of yours that
+must wait for the deployment can still carry `depends_on = [module.idp]` itself.
+
+**The module's provider constraints apply to the whole root configuration.**
+Terraform installs one version of each provider for a root configuration, chosen to
+satisfy every constraint in it, so the `aws` and `awscc` constraints in the module's
+`versions.tf` bind every resource in your root, not only the module's. A root that
+pins `aws` to a major version outside the module's range cannot run `terraform init`
+with the module. Deploy the module from a root configuration of its own in that case,
+and read its outputs from your other configurations with a `terraform_remote_state`
+data source.
 
 ### With `idp-cli deploy --terraform`
 
