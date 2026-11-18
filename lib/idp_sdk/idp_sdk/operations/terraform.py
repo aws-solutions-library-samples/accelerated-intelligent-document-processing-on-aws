@@ -801,6 +801,13 @@ class GenaiIdpTerraformMigration:
         ``fix-config`` backup whose published revision is such a deploy revision,
         and with ``apply`` restores the earlier one as a new revision (history is
         never rewritten, so the preset stays inspectable).
+
+        ``fix-config`` writes no backup when the old table carries no revision
+        counters (nothing to change), and the first apply refuses a table that
+        still carries them, so a missing backup means there was nothing to back
+        up. Then every profile in the configuration table is checked against its
+        revision history instead: a profile with a revision recording what it held
+        before the migration existed then, by construction.
         """
         from idp_sdk._core import terraform_migrate as tm
 
@@ -809,12 +816,6 @@ class GenaiIdpTerraformMigration:
         backups = sorted(
             self._migration_dir(directory).glob("configuration-table-backup-*.json")
         )
-        if not backups:
-            raise IDPConfigurationError(
-                "no configuration-table backup in the migration directory; run "
-                "`fix-config --apply` before the adoption"
-            )
-        profiles = tm.backed_up_profiles(json.loads(backups[-1].read_text()))
         name = self._client._require_stack(None)
         self._client.config._configure_config_env(name)
         from idp_common.config.configuration_manager import ConfigurationManager
@@ -831,8 +832,46 @@ class GenaiIdpTerraformMigration:
         notes: List[str] = []
         findings: List[str] = []
         restore: List[Tuple[str, int]] = []
+        if backups:
+            profiles = tm.backed_up_profiles(json.loads(backups[-1].read_text()))
+        else:
+            profiles = sorted(
+                v["versionName"]
+                for v in manager.list_config_versions(raise_errors=True)
+            )
+            notes.append(
+                "no fix-config backup in the migration directory (fix-config had "
+                "nothing to change, or it ran with another --terraform-dir), so "
+                "every profile in the configuration table was checked against its "
+                "revision history"
+            )
         for profile in profiles:
-            decision = tm.restore_decision(manager.list_revisions(profile))
+            revisions = manager.list_revisions(profile)
+            decision = tm.restore_decision(revisions)
+            if decision.outcome == tm.NO_PRE_HISTORY and not backups:
+                lowest = min(int(r["revision"]) for r in revisions)
+                if lowest > 1:
+                    # A profile the new deployment created starts at revision 1.
+                    # A higher first number means a number was spent before it: an
+                    # old revision counter left on the row, or a pre-migration
+                    # backfill that failed after taking its number (or retention
+                    # pruned the early ones). Old content may have been replaced.
+                    findings.append(
+                        f"{profile}: its earliest revision is {lowest}, not 1, and "
+                        "none records what it held before the migration, so its "
+                        "old content may have been replaced and there is no "
+                        "revision to restore and no fix-config backup in the "
+                        "migration directory. Find the backup (if fix-config ran "
+                        "elsewhere) or the old deployment's table backup, and "
+                        f"compare it with Config#{profile}"
+                    )
+                else:
+                    notes.append(
+                        f"{profile}: no revision records what it held before the "
+                        "migration, and its history starts at revision 1, as for "
+                        "a profile the new deployment created; nothing to restore"
+                    )
+                continue
             if decision.outcome == tm.NO_PRE_HISTORY:
                 findings.append(
                     f"{profile}: the new deployment recorded revisions for this "

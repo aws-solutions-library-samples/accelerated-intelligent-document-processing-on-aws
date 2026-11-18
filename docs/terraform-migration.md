@@ -410,6 +410,15 @@ that has revisions but no pre-migration one (the first deploy could not record i
 a finding naming the `fix-config` backup file, which is then the only copy of the old
 content. Without `--apply` it lists what it would restore.
 
+When the old configuration table had no revision counters, `fix-config` has nothing
+to change and writes no backup. `restore-config` then checks every profile in the
+configuration table against its revision history instead. A profile with no
+pre-migration revision whose history starts at revision 1, as for a profile the new
+deployment created, is listed as having nothing to restore. One whose history starts
+later is a finding, because a revision number was used before it and the old content
+may have been replaced; if `fix-config` ran with another `--terraform-dir`, its backup
+is there.
+
 In the measured run the `default` profile was the one replaced, and a configuration
 edit made on the old deployment was missing from the new one until this phase ran.
 

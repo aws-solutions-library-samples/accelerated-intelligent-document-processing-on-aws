@@ -2744,9 +2744,15 @@ class FakeConfigManager:
 
     revisions_by_profile: dict = {}
     restored: list = []
+    profiles_in_table: list = []
 
     def __init__(self, region=None):
         self.revisions = type("R", (), {"enabled": True})()
+
+    def list_config_versions(self, raise_errors=False):
+        if not raise_errors:  # a failed read would look like an empty table
+            return []
+        return [{"versionName": p} for p in FakeConfigManager.profiles_in_table]
 
     def list_revisions(self, profile):
         return FakeConfigManager.revisions_by_profile.get(profile, [])
@@ -2762,6 +2768,9 @@ class TestRestoreConfigOperation:
         from idp_sdk.operations.config import ConfigOperation
 
         FakeConfigManager.revisions_by_profile, FakeConfigManager.restored = {}, []
+        # The table holds a profile the backup does not: with a backup, only the
+        # backed-up profiles are considered.
+        FakeConfigManager.profiles_in_table = ["bda", "default", "extra"]
         monkeypatch.setattr(
             configuration_manager, "ConfigurationManager", FakeConfigManager
         )
@@ -2797,6 +2806,73 @@ class TestRestoreConfigOperation:
         assert not [n for n in result.notes if "nothing to restore" in n]
         # The other profile's restore is independent of that finding.
         assert FakeConfigManager.restored == [("bda", 1)]
+
+    def test_with_a_backup_only_its_profiles_are_considered(self):
+        FakeConfigManager.revisions_by_profile = {
+            "extra": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+        }
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert FakeConfigManager.restored == []
+        assert not [n for n in result.notes if "extra" in n]
+
+    def test_without_a_backup_the_tables_profiles_are_checked(self):
+        """fix-config writes no backup when the old table has no revision
+        counters, so restore-config reads the profiles from the table."""
+        self.backup.unlink()
+        FakeConfigManager.revisions_by_profile = {
+            "default": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+            # Created by the new deployment: revisions, none of before.
+            "extra": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "stack-deployment"),
+            ],
+            "bda": [],
+        }
+        FakeConfigManager.profiles_in_table = ["bda", "default", "extra"]
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert (result.ok, result.applied, result.findings) == (True, True, [])
+        assert FakeConfigManager.restored == [("default", 1)]
+        assert result.changes and "revision 1 of default" in result.changes[0]
+        assert any(
+            "every profile in the configuration table" in n for n in result.notes
+        )
+        extra = next(n for n in result.notes if n.startswith("extra:"))
+        assert "nothing to restore" in extra and "starts at revision 1" in extra
+        assert any(n.startswith("bda:") for n in result.notes)
+
+    def test_without_a_backup_a_history_not_starting_at_one_is_a_finding(self):
+        """A number was spent before the earliest revision (an old counter left
+        on the row, or a backfill that failed after taking its number), so old
+        content may have been replaced."""
+        self.backup.unlink()
+        FakeConfigManager.profiles_in_table = ["default", "extra"]
+        FakeConfigManager.revisions_by_profile = {
+            "default": [_rev(4, "stack-deployment", published=True)],
+            "extra": [_rev(1, "stack-deployment", published=True)],
+        }
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert result.ok is False and FakeConfigManager.restored == []
+        assert len(result.findings) == 1
+        assert result.findings[0].startswith("default: its earliest revision is 4")
+        assert any(n.startswith("extra:") for n in result.notes)
+
+    def test_without_a_backup_a_dry_run_restores_nothing(self):
+        self.backup.unlink()
+        FakeConfigManager.revisions_by_profile = {
+            "default": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+        }
+        result = migration().restore_config(str(self.dir), apply=False)
+        assert result.applied is False and FakeConfigManager.restored == []
+        assert result.changes and "default" in result.changes[0]
 
     def test_a_user_edit_after_the_first_deploy_is_reported_and_left_alone(self):
         FakeConfigManager.revisions_by_profile = {
