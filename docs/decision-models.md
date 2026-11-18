@@ -154,8 +154,13 @@ A configuration that selects a decision model uses only the decision model:
 - **A refusal fails its section.** The model refuses a request over its context
   window or with more images than it reads, and the error says so with the token
   counts. It never shortens the input to fit.
-- **A call that does not complete fails its section** after bounded retries for
-  throttling.
+- **A request that never ran retries the classification step.** Throttling or a
+  capacity refusal that outlasts the client's bounded retries, or a connection that
+  never opened, fails the step with a transient error, which the state machine
+  retries.
+- **Any other call that does not complete fails its section.** That includes a
+  read timeout and a dropped connection, because the invocation may still be
+  running and billing.
 - **Nothing falls back to the LLM on an error.** `low_confidence: llm` applies only
   to answers below `min_confidence`.
 

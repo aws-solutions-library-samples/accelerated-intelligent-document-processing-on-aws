@@ -33,9 +33,10 @@ _UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 
 # Every task whose Lambda handler re-raises TransientError: the in-process
 # extraction task, the assessment task, all THREE shard-runtime tasks (plan,
-# shard, merge share one handler, so all three must list the name), and the three
-# rule-validation tasks (#1101).
+# shard, merge share one handler, so all three must list the name), the three
+# rule-validation tasks (#1101), and classification (#2034).
 TASKS = (
+    "ClassificationStep",
     "ExtractionStep",
     "AssessmentStep",
     "ExtractionPlanStep",
@@ -52,6 +53,7 @@ TASKS = (
 # re-raise is a document failure without the ASL entry.
 HANDLER_SOURCES = (
     # each wraps its WHOLE handler, so loads before the main call count too
+    "classification_function/index.py",
     "extraction_function/index.py",
     "extraction_function/sfn_runtime_handler.py",
     "assessment_function/index.py",
@@ -279,13 +281,6 @@ TRANSIENT_CONVERSION_EXEMPT = {
         "not the other and wants measuring per backend before it lands. Handler "
         "raises rather than swallowing, so a throttle is visible and diagnosed and "
         "what is lost is the retry. Deferred in #1142."
-    ),
-    "ClassificationStep": (
-        "One model call per page on the page-level path and one per document on the "
-        "holistic one, so a throttle here costs a whole classification pass rather "
-        "than one section and the retry is worth more than on the per-section states. "
-        "Handler raises. Deferred in #1142 because the Retry entry and the handler's "
-        "raise_if_transient have to land together."
     ),
     "SummarizationStep": (
         "A single model call over the whole document at the end of the pipeline, so a "
@@ -545,6 +540,29 @@ def test_no_exemption_is_dead(bedrock_capable_states, states):
     ]
     assert not now_converting, (
         f"these now convert, so delete their exemption entries: {now_converting}"
+    )
+
+
+def test_the_registry_entry_describes_only_the_states_still_exempt():
+    """``gate_exemptions.json`` summarises this constant's members in prose, and
+    nothing tied the two: ClassificationStep converted (#2034) and left the dict,
+    while the entry kept naming it and its reason. Every member must be named there,
+    and no state that now converts."""
+    registry = json.loads(
+        (ASL_PATH.parents[3] / "scripts/tests/gate_exemptions.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    entry = registry["exemptions"][
+        "patterns/unified/tests/test_workflow_transient_retry.py"
+        "::TRANSIENT_CONVERSION_EXEMPT"
+    ]
+    prose = f"{entry['turnsOff']} {entry['reason']}"
+    missing = [name for name in TRANSIENT_CONVERSION_EXEMPT if name not in prose]
+    assert not missing, f"the registry entry does not describe {missing}"
+    converting = [name for name in TASKS if re.search(rf"\b{name}\b", prose)]
+    assert not converting, (
+        f"the registry entry still describes {converting}, which now convert"
     )
 
 
