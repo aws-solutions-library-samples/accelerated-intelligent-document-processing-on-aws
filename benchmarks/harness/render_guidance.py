@@ -58,7 +58,10 @@ left out.
 
 `usage` is optional: each run's Bedrock and Textract usage per document. The renderer
 prices it with config_library/pricing.yaml and adds a "Cost per 1,000 documents"
-column to every table. `cost_basis` says which runs to price: by default only the
+column to every table, plus the results file's `long_context` surcharge, which prices
+the Claude Haiku 5.5 requests over 100,000 prompt tokens at the long-context rate the
+price list's single rate per unit cannot hold (price_usage; the collector sizes the
+requests). `cost_basis` says which runs to price: by default only the
 coldest run of each value, because repeat runs read the prompt cache the first run
 wrote. When every plotted point has a cost, the plot puts cost on the x-axis, and when
 the plotted metric is an accuracy, it draws the marginal cost of error from the
@@ -68,11 +71,25 @@ writes) uses that cell instead of the whole pipeline's cost, everywhere a cost i
 shown: the chart's x-axis, the tables' cost column, the cost per error prevented and
 the cheapest value.
 
+On a DocSplit packet, section accuracy (and label and boundary accuracy) is a share of
+the packet's sections, so the cost per error prevented is per section: the results
+file's `sections_per_doc` (`pages_per_doc` for page accuracy) says how many a packet
+holds, and the price is divided by it.
+
+An ablation with an `econ` gets its economics under the answer (render_econ): one
+sentence on what `econ.line` costs and buys against `econ.against`, and a table of
+every other value against `against`, each priced per error it avoids.
+
+An ablation with a `feature` (the heading of a section another generator writes on its
+page, outside the FAQ markers: render_splitting_approaches.py for SC-13) keeps its
+question in the FAQ, so links to it still land, with one line linking to that section
+in place of its entry (render_feature).
+
 Usage:
     python3 benchmarks/harness/render_guidance.py           # rewrite the pages
     python3 benchmarks/harness/render_guidance.py --check   # exit 1 if a page is stale
     python3 benchmarks/harness/render_guidance.py --preview EX-02 \
-        --results sample.json --out /tmp/plots              # draw one ablation's plots
+        --results sample.json --out /tmp/plots    # one ablation's plots and FAQ entry
 """
 
 from __future__ import annotations
@@ -218,10 +235,13 @@ def interim_overlay(reg: dict[str, Any], results_dir: Path) -> dict[str, Any]:
         if isinstance(entry, dict):
             # The question and a deprecation are the registry's own: a retitled
             # question keeps its new heading, and links to it, while its results
-            # are interim. So is the cost a page shows, which is how it reads the
-            # results rather than what was measured.
+            # are interim. So are the cost a page shows and its economics, which are
+            # how it reads the results rather than what was measured; but economics
+            # the interim entry carries name its own values, so they stand.
             keep = {
-                k: ab[k] for k in ("question", "deprecated", "cost_metric") if k in ab
+                k: ab[k]
+                for k in ("question", "deprecated", "cost_metric", "econ")
+                if k in ab and not (k == "econ" and "econ" in entry)
             }
             ablations[i] = {**entry, "on_preset": True, **keep}
     return reg
@@ -405,9 +425,19 @@ def unit_price(name: str, unit: str) -> float | None:
     return None
 
 
+def long_context_surcharges(results: dict[str, Any] | None) -> dict[str, list[float]]:
+    """Each `dataset|value`'s long-context surcharge per document, per run, in the
+    order of its `usage` runs (the results file's `long_context`)."""
+    return {
+        key: [float(v) for v in entry.get("surcharge") or []]
+        for key, entry in ((results or {}).get("long_context") or {}).items()
+    }
+
+
 def price_usage(
     usage: dict[str, list[dict[str, float]]],
     basis: dict[str, dict[str, Any]],
+    surcharge: dict[str, list[float]] | None = None,
 ) -> tuple[dict[str, dict[str, float]], dict[str, set[str]], set[str]]:
     """Cost per 1,000 documents for each `dataset|value`, and its unpriced usage.
 
@@ -415,14 +445,26 @@ def price_usage(
     whose runs could share a prompt cache is priced from its coldest run alone, with
     no standard error, and is named in the returned set so the page can footnote it.
     Usage with no price counts as $0 and is returned so the page can say so.
+
+    `surcharge` is what long-context pricing adds per document, per run in the order of
+    the usage runs: pricing.yaml has one rate per unit, and Claude Haiku 5.5 bills a
+    request over 100,000 prompt tokens at five times it. The collector sizes the
+    requests from per-document metering (collect_guidance_results.py) and writes it as
+    the results file's `long_context`, so the cost priced here matches the documents'
+    own costs and the classification cost, which include it too.
     """
     costs: dict[str, dict[str, float]] = {}
     unpriced: dict[str, set[str]] = {}
     cold: set[str] = set()
     for key, runs in usage.items():
         per_run = []
-        for run in runs:
-            total = 0.0
+        added = (surcharge or {}).get(key) or []
+        if added and len(added) != len(runs):
+            raise SystemExit(
+                f"{key}: {len(added)} long-context surcharges for {len(runs)} runs"
+            )
+        for i, run in enumerate(runs):
+            total = added[i] if added else 0.0
             for name, amount in run.items():
                 service_id, _, unit = name.rpartition("|")
                 price = unit_price(service_id, unit)
@@ -808,14 +850,55 @@ BOLD_FIGURE = (
 )
 
 
+#: Packet metrics that are a share of the packet's sections, and of its pages. A
+#: DocSplit packet holds several of each, so one error of them is one section or one
+#: page, not one packet.
+SECTION_METRICS = frozenset({"section_accuracy", "label_accuracy", "boundary_accuracy"})
+PAGE_METRICS = frozenset({"page_accuracy"})
+#: The results-file key that counts each of those per document.
+PER_DOC_COUNTS = {"section": "sections_per_doc", "page": "pages_per_doc"}
+#: Metrics whose errors the economics line can count (1 - metric is a share of them).
+ECON_METRICS = ERROR_RATE_METRICS | SECTION_METRICS
+
+
+def error_unit(kind: str, metric: str) -> str:
+    """What one error of `metric` is on a dataset of `kind`: a section or a page of a
+    DocSplit packet, for the accuracies that are shares of those; otherwise one
+    document's (or packet's) worth of wrong field weight (marginal-cost-of-error.md)."""
+    if kind.startswith("packet"):
+        if metric in SECTION_METRICS:
+            return "section"
+        if metric in PAGE_METRICS:
+            return "page"
+    return per_unit(kind).removesuffix("s")
+
+
+def units_per_doc(results: dict[str, Any], unit: str, ds_key: str) -> float | None:
+    """How many `unit`s one document of the dataset holds: 1 for a whole document,
+    else the results file's mean count (`sections_per_doc`); None when it has none."""
+    key = PER_DOC_COUNTS.get(unit)
+    if not key:
+        return 1.0
+    count = (results.get(key) or {}).get(ds_key)
+    return float(count) if count else None
+
+
+def price_text(price: float) -> str:
+    """A price per error, rounded the way money() rounds, with "under $0.01"."""
+    return "under $0.01" if price < 0.005 else money(price)
+
+
 def mcoe_cells(
     points: list[tuple[str, dict[str, float], dict[str, float]]],
+    units: float = 1.0,
 ) -> tuple[str, dict[str, str]]:
     """The cheapest value, and each value's "Cost per error prevented" cell against it.
 
     A price only where both the accuracy gain and the extra cost beat clear_gap;
     "same cost" where the gain does and the cost does not; "no measurable gain" where
-    the gain does not; and "—" for the cheapest value and anything no dearer.
+    the gain does not; and "—" for the cheapest value and anything no dearer. A gain
+    in a share of a packet's sections is worth `units` sections a packet
+    (units_per_doc), so the price is per section.
     """
     ref, rx, ry = min(points, key=lambda p: (p[1]["mean"], p[2]["mean"]))
     out: dict[str, str] = {}
@@ -829,9 +912,271 @@ def mcoe_cells(
         elif extra <= clear_gap(x, rx):
             out[value] = "same cost"
         else:
-            price = extra / 1000 / gain
-            out[value] = "under $0.01" if price < 0.005 else money(price)
+            out[value] = price_text(extra / 1000 / (gain * units))
     return ref, out
+
+
+#: What one error of a packet metric is to a reader who has to find and fix it.
+FIX_WORDS = {
+    "section_accuracy": "a misfiled or mis-split document",
+    "label_accuracy": "a misfiled document",
+    "boundary_accuracy": "a mis-split document",
+    "page_accuracy": "a misfiled page",
+}
+#: Names that keep their capital in mid-sentence: vendors, products, acronyms.
+PROPER = re.compile(r"(?:Amazon|Claude|OpenAI|xAI|Textract|Strands|[A-Z]{2})")
+NO_DIFFERENCE = "no measurable difference"
+
+
+def mid_sentence(text: str) -> str:
+    """A value's name inside a sentence: "holistic", but "Claude Haiku 5.5"."""
+    return text if PROPER.match(text) else lower_first(text)
+
+
+def econ_names(ab: dict[str, Any], a: str, b: str) -> tuple[str, str]:
+    """How the economics line names two values: the registry's `econ.names`, else
+    each value without its note in parentheses and without the parts the two share
+    ("Holistic · Claude Haiku 5.5" against "Holistic · Claude Sonnet 5.5" reads
+    "Claude Haiku 5.5" and "Claude Sonnet 5.5")."""
+    given: dict[str, str] = (ab.get("econ") or {}).get("names") or {}
+
+    def parts(value: str) -> list[str]:
+        name = re.sub(r"\s*\([^()]*\)$", "", VALUE_NAMES.get(value, value))
+        return name.split(" · ")
+
+    pa, pb = parts(a), parts(b)
+    shared = set(pa) & set(pb)
+    if len(shared) < min(len(pa), len(pb)):
+        pa = [p for p in pa if p not in shared]
+        pb = [p for p in pb if p not in shared]
+    return given.get(a) or ", ".join(pa), given.get(b) or ", ".join(pb)
+
+
+def econ_delta(
+    cells: dict[str, Cell], ds_key: str, a: str, b: str, metric: str, cost: str
+) -> dict[str, float] | None:
+    """Value `b` against value `a`: the extra cost per 1,000 documents and the gain
+    in `metric`, and the sign of each where it beats clear_gap (0 where it does not).
+    None unless all four cells have a mean."""
+    found = [cells.get(f"{ds_key}|{v}|{m}") for m in (cost, metric) for v in (a, b)]
+    if not all(isinstance(c, dict) for c in found):
+        return None
+    ca, cb, ya, yb = (c for c in found if isinstance(c, dict))
+    extra = cb["mean"] - ca["mean"]
+    gain = yb["mean"] - ya["mean"]
+    return {
+        "extra": extra,
+        "gain": gain,
+        "cost_sign": math.copysign(1, extra) if abs(extra) > clear_gap(cb, ca) else 0,
+        "gain_sign": math.copysign(1, gain) if abs(gain) > clear_gap(yb, ya) else 0,
+    }
+
+
+class Econ:
+    """What the economics of an ablation count, for one dataset.
+
+    `unit` is one error (a section, a document), `units` how many a document holds,
+    `docs` what a cost is counted per, `metric` the accuracy, and `paid_for` what
+    the cost covers (" of classification", or "" for the whole pipeline).
+    """
+
+    def __init__(
+        self, unit: str, units: float, docs: str, metric: str, paid_for: str
+    ) -> None:
+        self.unit, self.units, self.docs = unit, units, docs
+        self.metric, self.paid_for = metric, paid_for
+        self.whole = unit in ("document", "packet")
+
+    def count(self, delta: dict[str, float]) -> int:
+        """Errors avoided (or added) per 1,000 documents."""
+        return round(abs(delta["gain"]) * self.units * 1000)
+
+    def price(self, delta: dict[str, float]) -> str:
+        """The cost difference per error avoided (or added)."""
+        return price_text(
+            abs(delta["extra"]) / (abs(delta["gain"]) * self.units * 1000)
+        )
+
+    def errors(self, n: int) -> str:
+        return f"{n:,} {self.unit}{'' if n == 1 else 's'}"
+
+
+def econ_sentence(
+    to: str, frm: str, delta: dict[str, float], e: Econ, lead: str = ""
+) -> str:
+    """The economics of `to` against `frm`: one sentence, and a second naming the
+    cost of an error at which `to` pays for itself, when there is a price. `lead`
+    opens the sentence ("On DocSplit packets, ")."""
+    n = e.count(delta)
+    noun = f"{e.unit}{'' if n == 1 else 's'}"
+    dollars, price = money(abs(delta["extra"])), e.price(delta) if n else ""
+    fix = (
+        f"a wrong {e.unit}" if e.whole else f"finding and fixing {FIX_WORDS[e.metric]}"
+    )
+    a = lead + mid_sentence(to) if lead else to[:1].upper() + to[1:]
+    b = mid_sentence(frm)
+    swap, per = f"{a} instead of {b}", f"per 1,000 {e.docs}"
+    spend = f"{dollars}{e.paid_for} {per}"
+    cost, gain = delta["cost_sign"], delta["gain_sign"]
+    if gain > 0 and cost > 0:
+        each = f"per {e.unit} it gets right" if e.whole else f"per {e.unit} it saves"
+        return (
+            f"{swap} adds {spend} and gets {n:,} more {noun} right, so it costs "
+            f"{price} {each}. Choose it when {fix} costs you more than {price}."
+        )
+    if gain < 0 and cost < 0:
+        return (
+            f"{swap} saves {spend} but gets {n:,} fewer {noun} right, so it saves "
+            f"{price} per extra wrong {e.unit}. Choose it when {fix} costs you less "
+            f"than {price}."
+        )
+    if gain > 0 and cost < 0:
+        return f"{swap} saves {spend} and gets {n:,} more {noun} right."
+    if gain > 0:
+        return (
+            f"{swap} gets {n:,} more {noun} right {per}, at no measurable extra cost."
+        )
+    if gain < 0 and cost > 0:
+        return f"{swap} adds {spend} and gets {n:,} fewer {noun} right."
+    if gain < 0:
+        return f"{swap} gets {n:,} fewer {noun} right {per}, at no measurable saving."
+    if cost > 0:
+        return (
+            f"{a} scored no measurably better than {b}, so the extra {spend} buys "
+            "nothing measurable."
+        )
+    if cost < 0:
+        return f"{swap} saves {spend} at no measurable loss."
+    return f"{a} and {b} show {NO_DIFFERENCE} in cost or accuracy."
+
+
+def econ_row(delta: dict[str, float], e: Econ) -> list[str]:
+    """A row of the economics table: the extra cost and the extra errors avoided per
+    1,000 documents, and what each costs (or the saving per extra error)."""
+    extra, cost, gain = delta["extra"], delta["cost_sign"], delta["gain_sign"]
+    n = e.count(delta)
+    price = e.price(delta) if n else ""
+    if gain > 0 and cost > 0:
+        price_cell = price
+    elif gain < 0 and cost < 0:
+        price_cell = f"saves {price} per extra wrong {e.unit}"
+    elif gain > 0:
+        price_cell = "more right, for less" if cost < 0 else "more right, same cost"
+    elif not gain and cost > 0:
+        price_cell = "no measurable gain"
+    elif not gain and cost < 0:
+        price_cell = "cheaper, no measurable loss"
+    else:
+        price_cell = EMPTY
+    return [
+        f"{'+' if extra > 0 else '−'}{money(abs(extra))}" if cost else NO_DIFFERENCE,
+        f"{'+' if gain > 0 else '−'}{n:,}" if gain else NO_DIFFERENCE,
+        price_cell,
+    ]
+
+
+def render_econ(
+    ab: dict[str, Any],
+    reg: dict[str, Any],
+    results: dict[str, Any],
+    cells: dict[str, Cell],
+) -> list[str]:
+    """The economics under an answer: a sentence on the registry's `econ.line` value
+    (or values) against `econ.against`, then a table of every other measured value
+    against `against`.
+
+    Each compares the cost a page shows (the `cost_metric`, else the whole pipeline's)
+    with the plotted accuracy, counted as errors per 1,000 documents: (1 − accuracy)
+    times the errors a document can hold, one for a document's fields, and the
+    results file's `sections_per_doc` for a packet's section accuracy. A cost or gain
+    within clear_gap is no measurable difference. The dataset is `econ.dataset`, else
+    the first one that measured `against`. Empty, with a warning, when the results
+    lack what it needs.
+    """
+    spec = ab.get("econ") or {}
+    if not spec:
+        return []
+    datasets: dict[str, Any] = reg["datasets"]
+    metrics: dict[str, Any] = reg["metrics"]
+    against = str(spec["against"])
+    lines = spec.get("line") or []
+    lines = [lines] if isinstance(lines, str) else list(lines)
+
+    def warn(text: str) -> list[str]:
+        print(f"warning: {ab['id']}: econ: {text}", file=sys.stderr)
+        return []
+
+    if against not in ab["values"]:
+        return warn(f"{against!r} is not one of its values")
+    wanted = ab.get("plot") or []
+    wanted = [wanted] if isinstance(wanted, str) else list(wanted)
+    found = None
+    for ds_key in [spec["dataset"]] if spec.get("dataset") else ab["datasets"]:
+        kind = datasets[ds_key]["kind"]
+        cols = [m for m in ab["metrics"] if kind in metrics[m]["kinds"]]
+        metric = next((m for m in wanted if m in cols), cols[0] if cols else "")
+        cost = cost_column(ab, kind, metrics)
+        if all(
+            isinstance(cells.get(f"{ds_key}|{against}|{m}"), dict)
+            for m in (metric, cost)
+        ):
+            found = (ds_key, kind, metric, cost)
+            break
+    if found is None:
+        return warn(f"no measured {against!r}")
+    ds_key, kind, metric, cost = found
+    if metric not in ECON_METRICS:
+        return warn(f"{metric} is not an accuracy it can count errors in")
+    unit = error_unit(kind, metric)
+    units = units_per_doc(results, unit, ds_key)
+    if units is None:
+        return warn(f"no {PER_DOC_COUNTS[unit]} for {ds_key}; re-collect it")
+    docs = per_unit(kind)
+    words = cost_words(cost, metrics)
+    paid_for = "" if cost == COST else f" of {lower_first(words.removesuffix(' cost'))}"
+    e = Econ(unit, units, docs, metric, paid_for)
+    others = {
+        v: d
+        for v in ab["values"]
+        if v != against
+        and (d := econ_delta(cells, ds_key, against, v, metric, cost)) is not None
+    }
+    out: list[str] = []
+    said = []
+    where = "" if len(ab["datasets"]) == 1 else f"On {chart_name(ds_key, datasets)}, "
+    for value in lines:
+        if value not in others:
+            warn(f"no measured {value!r} to compare")
+            continue
+        frm, to = econ_names(ab, against, value)
+        # Only the first sentence names the dataset.
+        said.append(econ_sentence(to, frm, others[value], e, "" if said else where))
+    if said:
+        out += ["**The economics:** " + " ".join(said), ""]
+    if not others:
+        return out
+    each = "it gets right" if e.whole else "it saves"
+    out += [
+        f"| Instead of {short_label(against, ab).replace(' (baseline setup)', '').replace(' (default)', '')} | "
+        f"Extra {lower_first(words)} per 1,000 {docs} | "
+        f"Extra {unit}s right per 1,000 {docs} | "
+        f"[Cost per {unit} {each}]({MCOE_PAGE}) |",
+        "|---|---|---|---|",
+    ]
+    for value, delta in others.items():
+        out.append(
+            f"| {short_label(value, ab)} | " + " | ".join(econ_row(delta, e)) + " |"
+        )
+    sizes = sample_sizes(results.get("sample") or {}, [ds_key], ab["values"])
+    n = f", N = {n_short(sizes[ds_key], docs)}" if ds_key in sizes else ""
+    out += [
+        "",
+        f"*{chart_name(ds_key, datasets)}{n}. A difference within twice the combined "
+        "standard error is no measurable difference. "
+        f"{price_caveat(str(results.get('region') or ''))}*",
+        "",
+    ]
+    return out
 
 
 def failures_line(
@@ -1619,7 +1964,11 @@ def render_ablation(
     models = (results or {}).get("models") or {}
     sample = (results or {}).get("sample") or {}
     region = str((results or {}).get("region") or "")
-    costs, unpriced, cold = price_usage(usage, (results or {}).get("cost_basis") or {})
+    costs, unpriced, cold = price_usage(
+        usage,
+        (results or {}).get("cost_basis") or {},
+        long_context_surcharges(results),
+    )
     for key, names in unpriced.items():
         for name in sorted(names):
             print(
@@ -1837,9 +2186,25 @@ def render_ablation(
                         baseline_specs[m] = spec
                 scatter.append((ds_key, pts, baselines))
                 if table_mcoe and any(table_mcoe in ys for _, _, ys in pts):
-                    mcoe[ds_key] = mcoe_cells(
-                        [(v, x, ys[table_mcoe]) for v, x, ys in pts if table_mcoe in ys]
+                    n_units = units_per_doc(
+                        results or {}, error_unit(kind, table_mcoe), ds_key
                     )
+                    if n_units is None:
+                        print(
+                            f"warning: {ab['id']} {ds_key}: no "
+                            f"{PER_DOC_COUNTS[error_unit(kind, table_mcoe)]} in its "
+                            "results file, so no cost per error prevented; re-collect it",
+                            file=sys.stderr,
+                        )
+                    else:
+                        mcoe[ds_key] = mcoe_cells(
+                            [
+                                (v, x, ys[table_mcoe])
+                                for v, x, ys in pts
+                                if table_mcoe in ys
+                            ],
+                            n_units,
+                        )
         if panels:
             name = f"{ab['id']}-{kind}.svg"
             metric_name = metrics[plot_metric]["name"]
@@ -1985,8 +2350,11 @@ def render_ablation(
         refs = {ref for ref, _ in mcoe.values()}
         if mcoe:
             versus = short_label(next(iter(refs)), ab) if len(refs) == 1 else "cheapest"
+            # A packet's section or page accuracy prices one wrong section or page.
+            err = error_unit(kind, str(table_mcoe))
+            what = f"wrong {err}" if err in PER_DOC_COUNTS else "error"
             header.append(
-                f"[{cost_words(cost_col, metrics)} per error prevented]({MCOE_PAGE}) "
+                f"[{cost_words(cost_col, metrics)} per {what} prevented]({MCOE_PAGE}) "
                 f"vs {versus}"
             )
         d.append("| " + " | ".join(header) + " |")
@@ -2062,6 +2430,7 @@ def render_ablation(
         out.faq += [" ".join(too_easy), ""]
     out.faq += [f"**Answer:** {answer}", ""]
     if results:
+        out.faq += render_econ(ab, reg, results, cells)
         while d and d[-1] == "":
             d.pop()
         out.faq += [
@@ -2074,6 +2443,31 @@ def render_ablation(
             "",
         ]
     return out
+
+
+def render_feature(ab: dict[str, Any]) -> Rendered:
+    """A `feature` ablation's FAQ entry: its question, so its anchor stays, and one
+    line linking to the section on the page that answers it. No plots."""
+    heading = ab["feature"]
+    if not isinstance(heading, str) or not heading.strip():
+        raise SystemExit(f"{ab['id']}: feature must be the heading of its section")
+    out = Rendered()
+    out.faq += [
+        f"### {ab['question']}",
+        "",
+        f"See [{heading}](#{slugify(heading)}).",
+        "",
+    ]
+    return out
+
+
+def render_entry(
+    ab: dict[str, Any], reg: dict[str, Any], results: dict[str, Any] | None
+) -> Rendered:
+    """An ablation's FAQ entry and plots: a feature's link, else render_ablation."""
+    return (
+        render_feature(ab) if ab.get("feature") else render_ablation(ab, reg, results)
+    )
 
 
 def grid_number(v: float, metric: str) -> str:
@@ -2264,7 +2658,7 @@ def render_page(
         if results is None:
             planned.append(f"- {ab['question']} ({ab['id']})")
             continue
-        r = render_ablation(ab, reg, results)
+        r = render_entry(ab, reg, results)
         faq += r.faq
         plots.update(r.plots)
     if planned:
@@ -2306,11 +2700,15 @@ def main() -> int:
         if ab is None:
             raise SystemExit(f"no ablation {args.preview}")
         results = json.loads(args.results.read_text(encoding="utf-8"))
-        plots = render_ablation(ab, reg, results).plots
+        rendered = render_entry(ab, reg, results)
         args.out.mkdir(parents=True, exist_ok=True)
-        for name, svg in plots.items():
+        for name, svg in rendered.plots.items():
             (args.out / name).write_text(svg, encoding="utf-8")
             print(f"wrote {args.out / name}")
+        # The FAQ entry as its page would show it, beside the plots.
+        entry = args.out / f"{ab['id']}.md"
+        entry.write_text("\n".join(rendered.faq).rstrip() + "\n", encoding="utf-8")
+        print(f"wrote {entry}")
         return 0
 
     stale: list[str] = []

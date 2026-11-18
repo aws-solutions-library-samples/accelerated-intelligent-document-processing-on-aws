@@ -3231,5 +3231,405 @@
         "cost": 0.020481
       }
     }
+  },
+  "long_context": {
+    "realkie|Amazon Nova 2 Lite": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 82,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 82,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|Claude Sonnet 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 70,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 70,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|Claude Opus 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 85,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 85,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 133,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 73,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|OpenAI GPT-6 Astra": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 87,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 87,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|xAI Grok 4.6": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 86,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 86,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Amazon Nova 2 Lite": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 62,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 62,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 122,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 62,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Claude Sonnet 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 60,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Claude Opus 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 61,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|OpenAI GPT-6 Astra": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 60,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|xAI Grok 4.6": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 61,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
   }
 }

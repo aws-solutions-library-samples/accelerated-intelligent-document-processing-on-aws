@@ -213,8 +213,9 @@ def split_then(name_by):
     for (a, b, _), ox in zip(GROUPS, spread(CX, 3, 16)):
         g.append(arrow(ox, B1 + JOB_H + 3, group_centre(sx, a, b), T2 - 3))
     for i, (x, d) in enumerate(zip(sx, DOCS)):
-        first = any(i == a for a, _, _ in GROUPS)
-        g.append(page(x, T2, d, unread=(name_by == "dm" and not first)))
+        # The decision model reads each section's first two pages.
+        read = any(a <= i < min(a + 2, b) for a, b, _ in GROUPS)
+        g.append(page(x, T2, d, unread=(name_by == "dm" and not read)))
     for a, b, _ in GROUPS:
         gc = group_centre(sx, a, b)
         if name_by == "llm":
@@ -224,7 +225,9 @@ def split_then(name_by):
             g.append(call(gc, B2 + (DM_H - BOX_H) / 2, 40, ["LLM"]))
             g.append(arrow(gc, B2 + (DM_H + BOX_H) / 2 + 3, gc, OUT2 - 3))
         else:
-            g.append(arrow(sx[a] + TW / 2, T2 + TH + 3, gc, B2 - 2))
+            pages = range(a, min(a + 2, b))
+            for i, ex in zip(pages, spread(gc, len(pages), 9)):
+                g.append(arrow(sx[i] + TW / 2, T2 + TH + 3, ex, B2 - 2))
             g.append(call(gc, B2, 62, ["Decision", "model"], h=DM_H))
             g.append(arrow(gc, B2 + DM_H + 3, gc, OUT2 - 3))
     lx = group_centre(sx, *GROUPS[-1][:2]) + 31 + 8
@@ -258,7 +261,7 @@ def panel_split_dm():
         captions(
             [
                 "First call: where does each document start?",
-                "Then a decision model looks at each section’s first page",
+                "Then a decision model looks at each section’s first two pages",
                 "and picks its class from a fixed list.",
             ],
             CAP2,
@@ -332,7 +335,7 @@ def build():
         "reads the whole packet and returns only where each document starts; then one LLM "
         "call per section classifies it. 4. Split, then a decision model classifies each "
         "section: the same first call finds the sections; then a decision model looks at "
-        "each section's first page and picks its class from a fixed list."
+        "each section's first two pages and picks its class from a fixed list."
     )
     svg = (
         f'<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="{W}" height="{f(height)}"'

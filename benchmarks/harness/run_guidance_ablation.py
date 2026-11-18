@@ -379,11 +379,16 @@ def main() -> int:
         if mpath.exists()
         else {"ablation": ab["id"], "verdict": "Measured; see the table.", "runs": {}}
     )
+    # Merge, not replace: a run limited to some datasets (--datasets) must keep the
+    # other datasets' limits, or collecting their runs later refuses them.
     manifest["max_failed"] = {
-        k: int(reg["datasets"][k].get("max_failed", 0))
-        for k in keys
-        if reg["datasets"][k].get("max_failed")
-    } or manifest.get("max_failed", {})
+        **(manifest.get("max_failed") or {}),
+        **{
+            k: int(reg["datasets"][k].get("max_failed", 0))
+            for k in keys
+            if reg["datasets"][k].get("max_failed")
+        },
+    }
     manifest.update(
         stack=args.stack,
         region=args.region,

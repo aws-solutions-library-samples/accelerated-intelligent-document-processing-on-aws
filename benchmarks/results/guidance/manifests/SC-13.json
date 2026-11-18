@@ -30,7 +30,8 @@
       ],
       "Split, then an LLM names each section \u00b7 Claude Haiku 5.5": [
         "DocSplit-Poly-Seq-20261118-162508",
-        "DocSplit-Poly-Seq-20261118-161841"
+        "DocSplit-Poly-Seq-20261118-161841",
+        "DocSplit-Poly-Seq-20261118-205422"
       ],
       "Page by page \u00b7 Claude Sonnet 5.5": [
         "DocSplit-Poly-Seq-20261118-164849",
@@ -46,15 +47,93 @@
         "DocSplit-Poly-Seq-20261118-171638",
         "DocSplit-Poly-Seq-20261118-172007",
         "DocSplit-Poly-Seq-20261118-172617"
+      ],
+      "Split, then a decision model names each section \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-Poly-Seq-20261118-205347",
+        "DocSplit-Poly-Seq-20261118-205358",
+        "DocSplit-Poly-Seq-20261118-205409"
+      ],
+      "Split, then a decision model names each section \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-210452",
+        "DocSplit-Poly-Seq-20261118-214640",
+        "DocSplit-Poly-Seq-20261118-214653"
+      ],
+      "Split, then a decision model names each section \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-Poly-Seq-20261118-214703",
+        "DocSplit-Poly-Seq-20261118-221426",
+        "DocSplit-Poly-Seq-20261118-214713"
+      ]
+    },
+    "docsplit_sameclass": {
+      "Page by page \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-SameClass-20261118-182219",
+        "DocSplit-SameClass-20261118-182229",
+        "DocSplit-SameClass-20261118-182252"
+      ],
+      "Holistic \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-SameClass-20261118-182239",
+        "DocSplit-SameClass-20261118-184106",
+        "DocSplit-SameClass-20261118-183946"
+      ],
+      "Split, then an LLM names each section \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-SameClass-20261118-184116",
+        "DocSplit-SameClass-20261118-184126",
+        "DocSplit-SameClass-20261118-185827"
+      ],
+      "Page by page \u00b7 Claude Haiku 5.5": [
+        "DocSplit-SameClass-20261118-190435",
+        "DocSplit-SameClass-20261118-190358",
+        "DocSplit-SameClass-20261118-190450"
+      ],
+      "Holistic \u00b7 Claude Haiku 5.5": [
+        "DocSplit-SameClass-20261118-192811",
+        "DocSplit-SameClass-20261118-192933",
+        "DocSplit-SameClass-20261118-193010"
+      ],
+      "Split, then an LLM names each section \u00b7 Claude Haiku 5.5": [
+        "DocSplit-SameClass-20261118-193020",
+        "DocSplit-SameClass-20261118-222839",
+        "DocSplit-SameClass-20261118-222850"
+      ],
+      "Split, then a decision model names each section \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-SameClass-20261118-213051",
+        "DocSplit-SameClass-20261118-230005",
+        "DocSplit-SameClass-20261118-230015"
+      ],
+      "Split, then a decision model names each section \u00b7 Amazon Nova 2 Lite": [
+        "DocSplit-SameClass-20261118-222201",
+        "DocSplit-SameClass-20261118-221933",
+        "DocSplit-SameClass-20261118-222734"
+      ],
+      "Split, then a decision model names each section \u00b7 Claude Haiku 5.5": [
+        "DocSplit-SameClass-20261118-222906",
+        "DocSplit-SameClass-20261118-223720",
+        "DocSplit-SameClass-20261118-224020"
+      ],
+      "Page by page \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-SameClass-20261118-224042",
+        "DocSplit-SameClass-20261118-224238",
+        "DocSplit-SameClass-20261118-224254"
+      ],
+      "Holistic \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-SameClass-20261118-225029",
+        "DocSplit-SameClass-20261118-225009",
+        "DocSplit-SameClass-20261118-225019"
+      ],
+      "Split, then an LLM names each section \u00b7 Claude Sonnet 5.5": [
+        "DocSplit-SameClass-20261118-225116",
+        "DocSplit-SameClass-20261118-225934",
+        "DocSplit-SameClass-20261118-225949"
       ]
     }
   },
   "max_failed": {
+    "docsplit_sameclass": 6,
     "docsplit_100": 10
   },
   "stack": "sr-testing",
   "region": "us-east-1",
-  "release": "0.6.15-develop-d1be93f",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
   "measured": "November 2026",
   "cache_isolated": [
     "DocSplit-Poly-Seq-20261118-151031",
@@ -82,6 +161,52 @@
     "DocSplit-Poly-Seq-20261118-171346",
     "DocSplit-Poly-Seq-20261118-171638",
     "DocSplit-Poly-Seq-20261118-172007",
-    "DocSplit-Poly-Seq-20261118-172617"
+    "DocSplit-Poly-Seq-20261118-172617",
+    "DocSplit-Poly-Seq-20261118-205347",
+    "DocSplit-Poly-Seq-20261118-205358",
+    "DocSplit-Poly-Seq-20261118-205409",
+    "DocSplit-Poly-Seq-20261118-205422",
+    "DocSplit-Poly-Seq-20261118-210452",
+    "DocSplit-Poly-Seq-20261118-214640",
+    "DocSplit-Poly-Seq-20261118-214653",
+    "DocSplit-Poly-Seq-20261118-214703",
+    "DocSplit-Poly-Seq-20261118-214713",
+    "DocSplit-Poly-Seq-20261118-221426",
+    "DocSplit-SameClass-20261118-182219",
+    "DocSplit-SameClass-20261118-182229",
+    "DocSplit-SameClass-20261118-182239",
+    "DocSplit-SameClass-20261118-182252",
+    "DocSplit-SameClass-20261118-183946",
+    "DocSplit-SameClass-20261118-184106",
+    "DocSplit-SameClass-20261118-184116",
+    "DocSplit-SameClass-20261118-184126",
+    "DocSplit-SameClass-20261118-185827",
+    "DocSplit-SameClass-20261118-190358",
+    "DocSplit-SameClass-20261118-190435",
+    "DocSplit-SameClass-20261118-190450",
+    "DocSplit-SameClass-20261118-192811",
+    "DocSplit-SameClass-20261118-192933",
+    "DocSplit-SameClass-20261118-193010",
+    "DocSplit-SameClass-20261118-193020",
+    "DocSplit-SameClass-20261118-213051",
+    "DocSplit-SameClass-20261118-221933",
+    "DocSplit-SameClass-20261118-222201",
+    "DocSplit-SameClass-20261118-222734",
+    "DocSplit-SameClass-20261118-222839",
+    "DocSplit-SameClass-20261118-222850",
+    "DocSplit-SameClass-20261118-222906",
+    "DocSplit-SameClass-20261118-223720",
+    "DocSplit-SameClass-20261118-224020",
+    "DocSplit-SameClass-20261118-224042",
+    "DocSplit-SameClass-20261118-224238",
+    "DocSplit-SameClass-20261118-224254",
+    "DocSplit-SameClass-20261118-225009",
+    "DocSplit-SameClass-20261118-225019",
+    "DocSplit-SameClass-20261118-225029",
+    "DocSplit-SameClass-20261118-225116",
+    "DocSplit-SameClass-20261118-225934",
+    "DocSplit-SameClass-20261118-225949",
+    "DocSplit-SameClass-20261118-230005",
+    "DocSplit-SameClass-20261118-230015"
   ]
 }

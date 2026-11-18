@@ -1,0 +1,4018 @@
+{
+  "ablation": "SC-13",
+  "dataset": "docsplit_100",
+  "manifest": "benchmarks/results/guidance/manifests/SC-13.json",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
+  "measured": "November 2026",
+  "scope": "common",
+  "packets": {
+    "analysed": [
+      "packet_0001.pdf",
+      "packet_0002.pdf",
+      "packet_0004.pdf",
+      "packet_0005.pdf",
+      "packet_0006.pdf",
+      "packet_0008.pdf",
+      "packet_0009.pdf",
+      "packet_0010.pdf",
+      "packet_0012.pdf",
+      "packet_0013.pdf",
+      "packet_0014.pdf",
+      "packet_0015.pdf",
+      "packet_0016.pdf",
+      "packet_0017.pdf",
+      "packet_0018.pdf",
+      "packet_0019.pdf",
+      "packet_0020.pdf",
+      "packet_0022.pdf",
+      "packet_0023.pdf",
+      "packet_0024.pdf",
+      "packet_0026.pdf",
+      "packet_0027.pdf",
+      "packet_0028.pdf",
+      "packet_0030.pdf",
+      "packet_0031.pdf",
+      "packet_0032.pdf",
+      "packet_0033.pdf",
+      "packet_0034.pdf",
+      "packet_0035.pdf",
+      "packet_0038.pdf",
+      "packet_0039.pdf",
+      "packet_0040.pdf",
+      "packet_0041.pdf",
+      "packet_0042.pdf",
+      "packet_0043.pdf",
+      "packet_0044.pdf",
+      "packet_0046.pdf",
+      "packet_0048.pdf",
+      "packet_0052.pdf",
+      "packet_0053.pdf",
+      "packet_0054.pdf",
+      "packet_0055.pdf",
+      "packet_0056.pdf",
+      "packet_0058.pdf",
+      "packet_0059.pdf",
+      "packet_0060.pdf",
+      "packet_0061.pdf",
+      "packet_0062.pdf",
+      "packet_0063.pdf",
+      "packet_0064.pdf",
+      "packet_0065.pdf",
+      "packet_0066.pdf",
+      "packet_0068.pdf",
+      "packet_0069.pdf",
+      "packet_0070.pdf",
+      "packet_0071.pdf",
+      "packet_0072.pdf",
+      "packet_0073.pdf",
+      "packet_0074.pdf",
+      "packet_0075.pdf",
+      "packet_0076.pdf",
+      "packet_0077.pdf",
+      "packet_0078.pdf",
+      "packet_0080.pdf",
+      "packet_0081.pdf",
+      "packet_0082.pdf",
+      "packet_0083.pdf",
+      "packet_0085.pdf",
+      "packet_0086.pdf",
+      "packet_0088.pdf",
+      "packet_0089.pdf",
+      "packet_0091.pdf",
+      "packet_0092.pdf",
+      "packet_0093.pdf",
+      "packet_0094.pdf",
+      "packet_0095.pdf",
+      "packet_0096.pdf",
+      "packet_0097.pdf",
+      "packet_0098.pdf",
+      "packet_0100.pdf"
+    ],
+    "n": 80,
+    "scored_by_some_run": 100,
+    "left_out": {
+      "packet_0003.pdf": 2,
+      "packet_0007.pdf": 1,
+      "packet_0011.pdf": 1,
+      "packet_0021.pdf": 1,
+      "packet_0025.pdf": 2,
+      "packet_0029.pdf": 1,
+      "packet_0036.pdf": 1,
+      "packet_0037.pdf": 1,
+      "packet_0045.pdf": 1,
+      "packet_0047.pdf": 1,
+      "packet_0049.pdf": 1,
+      "packet_0050.pdf": 1,
+      "packet_0051.pdf": 1,
+      "packet_0057.pdf": 1,
+      "packet_0067.pdf": 1,
+      "packet_0079.pdf": 2,
+      "packet_0084.pdf": 1,
+      "packet_0087.pdf": 1,
+      "packet_0090.pdf": 1,
+      "packet_0099.pdf": 1
+    },
+    "analysed_ground_truth": {
+      "packets": 80,
+      "pages": 1154,
+      "true_sections": 316,
+      "pages_per_packet": {
+        "min": 5,
+        "median": 15.0,
+        "max": 20
+      },
+      "sections_per_packet": {
+        "min": 1,
+        "median": 4.0,
+        "max": 8
+      },
+      "pages_distribution": {
+        "5": 4,
+        "6": 2,
+        "7": 3,
+        "8": 3,
+        "9": 5,
+        "10": 1,
+        "11": 7,
+        "12": 6,
+        "13": 4,
+        "15": 6,
+        "16": 6,
+        "17": 3,
+        "18": 5,
+        "19": 6,
+        "20": 19
+      },
+      "packets_with_same_class_adjacent": [],
+      "packets_repeating_a_class": [
+        "packet_0014.pdf",
+        "packet_0016.pdf",
+        "packet_0017.pdf",
+        "packet_0019.pdf",
+        "packet_0023.pdf",
+        "packet_0024.pdf",
+        "packet_0028.pdf",
+        "packet_0033.pdf",
+        "packet_0040.pdf",
+        "packet_0041.pdf",
+        "packet_0056.pdf",
+        "packet_0058.pdf",
+        "packet_0059.pdf",
+        "packet_0060.pdf",
+        "packet_0071.pdf",
+        "packet_0094.pdf"
+      ],
+      "true_sections_without_pages": 0
+    },
+    "all_scored_ground_truth": {
+      "packets": 100,
+      "pages": 1468,
+      "true_sections": 416,
+      "pages_per_packet": {
+        "min": 5,
+        "median": 16.0,
+        "max": 20
+      },
+      "sections_per_packet": {
+        "min": 1,
+        "median": 4.0,
+        "max": 10
+      },
+      "pages_distribution": {
+        "5": 5,
+        "6": 2,
+        "7": 3,
+        "8": 3,
+        "9": 8,
+        "10": 2,
+        "11": 7,
+        "12": 6,
+        "13": 4,
+        "14": 3,
+        "15": 6,
+        "16": 7,
+        "17": 4,
+        "18": 5,
+        "19": 9,
+        "20": 26
+      },
+      "packets_with_same_class_adjacent": [],
+      "packets_repeating_a_class": [
+        "packet_0003.pdf",
+        "packet_0007.pdf",
+        "packet_0014.pdf",
+        "packet_0016.pdf",
+        "packet_0017.pdf",
+        "packet_0019.pdf",
+        "packet_0021.pdf",
+        "packet_0023.pdf",
+        "packet_0024.pdf",
+        "packet_0025.pdf",
+        "packet_0028.pdf",
+        "packet_0033.pdf",
+        "packet_0040.pdf",
+        "packet_0041.pdf",
+        "packet_0047.pdf",
+        "packet_0051.pdf",
+        "packet_0056.pdf",
+        "packet_0058.pdf",
+        "packet_0059.pdf",
+        "packet_0060.pdf",
+        "packet_0067.pdf",
+        "packet_0071.pdf",
+        "packet_0084.pdf",
+        "packet_0090.pdf",
+        "packet_0094.pdf"
+      ],
+      "true_sections_without_pages": 0
+    }
+  },
+  "length_buckets": {
+    "edges": [
+      11,
+      18
+    ],
+    "labels": [
+      "5-11 pages",
+      "12-18 pages",
+      "19-20 pages"
+    ],
+    "chosen": "automatic",
+    "analysed_counts": [
+      25,
+      30,
+      25
+    ],
+    "all_scored_counts": [
+      30,
+      35,
+      35
+    ]
+  },
+  "values": {
+    "Page by page \u00b7 Amazon Nova 2 Lite": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-151031",
+        "DocSplit-Poly-Seq-20261118-151044",
+        "DocSplit-Poly-Seq-20261118-151109"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.441215,
+        "se": 0.013857,
+        "runs": 3,
+        "per_run": [
+          0.415967,
+          0.463735,
+          0.443943
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.503111,
+            "se": 0.007778,
+            "runs": 3,
+            "per_run": [
+              0.505333,
+              0.488667,
+              0.515333
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.437619,
+            "se": 0.034636,
+            "runs": 3,
+            "per_run": [
+              0.375635,
+              0.495397,
+              0.441825
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.383635,
+            "se": 0.008587,
+            "runs": 3,
+            "per_run": [
+              0.375,
+              0.40081,
+              0.375095
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.441215,
+          "se": 0.013857,
+          "runs": 3,
+          "per_run": [
+            0.415967,
+            0.463735,
+            0.443943
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.0,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.481013,
+            "se": 0.009668,
+            "runs": 3,
+            "per_run": [
+              0.462025,
+              0.493671,
+              0.487342
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.03903,
+            "se": 0.006416,
+            "runs": 3,
+            "per_run": [
+              0.050633,
+              0.037975,
+              0.028481
+            ]
+          },
+          "merged": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "split": {
+            "mean": 0.479958,
+            "se": 0.005873,
+            "runs": 3,
+            "per_run": [
+              0.487342,
+              0.468354,
+              0.484177
+            ]
+          },
+          "other": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 456,
+          "wrong_class": 37,
+          "merged": 0,
+          "split": 455,
+          "other": 0
+        },
+        "split_kind": {
+          "within": 455,
+          "across": 0
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "email",
+          "predicted": "memo",
+          "count": 18
+        },
+        {
+          "true": "email",
+          "predicted": "letter",
+          "count": 8
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 6
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 3
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 1
+        }
+      ],
+      "confidence": {
+        "n_right": 456,
+        "n_wrong": 37,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            146,
+            16
+          ],
+          [
+            156,
+            12
+          ],
+          [
+            154,
+            9
+          ]
+        ],
+        "distinct_values": 5,
+        "share_at_most_common": 0.967546,
+        "constant": false,
+        "notes": [
+          "nearly constant: 96.8% of sections at 0.95, so AUROC rests on the few that differ"
+        ],
+        "ece": {
+          "mean": 0.024888,
+          "se": 0.011938,
+          "runs": 3,
+          "per_run": [
+            0.047428,
+            0.020437,
+            0.0068
+          ]
+        },
+        "auroc": {
+          "mean": 0.492557,
+          "se": 0.008468,
+          "runs": 3,
+          "per_run": [
+            0.482449,
+            0.485844,
+            0.50938
+          ]
+        },
+        "pooled": {
+          "auroc": 0.489924,
+          "ece": 0.023749
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 8.2875,
+        "se": 0.026021,
+        "runs": 3,
+        "per_run": [
+          8.275,
+          8.25,
+          8.3375
+        ]
+      }
+    },
+    "Holistic \u00b7 Amazon Nova 2 Lite": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-151058",
+        "DocSplit-Poly-Seq-20261118-151427",
+        "DocSplit-Poly-Seq-20261118-151512"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.535412,
+        "se": 0.009505,
+        "runs": 3,
+        "per_run": [
+          0.527693,
+          0.554315,
+          0.524226
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.570889,
+            "se": 0.019204,
+            "runs": 3,
+            "per_run": [
+              0.558,
+              0.608667,
+              0.546
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.570767,
+            "se": 0.011609,
+            "runs": 3,
+            "per_run": [
+              0.559921,
+              0.593968,
+              0.558413
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.457508,
+            "se": 0.002681,
+            "runs": 3,
+            "per_run": [
+              0.458714,
+              0.452381,
+              0.461429
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.535412,
+          "se": 0.009505,
+          "runs": 3,
+          "per_run": [
+            0.527693,
+            0.554315,
+            0.524226
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.326271,
+          "se": 0.004893,
+          "runs": 3,
+          "per_run": [
+            0.326271,
+            0.317797,
+            0.334746
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.501055,
+            "se": 0.005873,
+            "runs": 3,
+            "per_run": [
+              0.496835,
+              0.512658,
+              0.493671
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.07384,
+            "se": 0.006416,
+            "runs": 3,
+            "per_run": [
+              0.072785,
+              0.085443,
+              0.063291
+            ]
+          },
+          "merged": {
+            "mean": 0.276371,
+            "se": 0.011888,
+            "runs": 3,
+            "per_run": [
+              0.275316,
+              0.256329,
+              0.297468
+            ]
+          },
+          "split": {
+            "mean": 0.14346,
+            "se": 0.004219,
+            "runs": 3,
+            "per_run": [
+              0.151899,
+              0.139241,
+              0.139241
+            ]
+          },
+          "other": {
+            "mean": 0.005274,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.003165,
+              0.006329,
+              0.006329
+            ]
+          }
+        },
+        "counts": {
+          "correct": 475,
+          "wrong_class": 70,
+          "merged": 262,
+          "split": 136,
+          "other": 5
+        },
+        "split_kind": {
+          "within": 13,
+          "across": 123
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "email",
+          "predicted": "letter",
+          "count": 17
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 10
+        },
+        {
+          "true": "memo",
+          "predicted": "letter",
+          "count": 9
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 7
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 5
+        }
+      ],
+      "confidence": {
+        "n_right": 475,
+        "n_wrong": 70,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            157,
+            23
+          ],
+          [
+            162,
+            27
+          ],
+          [
+            156,
+            20
+          ]
+        ],
+        "distinct_values": 8,
+        "share_at_most_common": 0.411009,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.093005,
+          "se": 0.008775,
+          "runs": 3,
+          "per_run": [
+            0.089056,
+            0.109788,
+            0.08017
+          ]
+        },
+        "auroc": {
+          "mean": 0.661123,
+          "se": 0.044871,
+          "runs": 3,
+          "per_run": [
+            0.582803,
+            0.738226,
+            0.66234
+          ]
+        },
+        "pooled": {
+          "auroc": 0.664526,
+          "ece": 0.092826
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 3.554167,
+        "se": 0.032543,
+        "runs": 3,
+        "per_run": [
+          3.6125,
+          3.55,
+          3.5
+        ]
+      }
+    },
+    "Split, then an LLM names each section \u00b7 Amazon Nova 2 Lite": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-151417",
+        "DocSplit-Poly-Seq-20261118-151438",
+        "DocSplit-Poly-Seq-20261118-151501"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.491682,
+        "se": 0.007152,
+        "runs": 3,
+        "per_run": [
+          0.497649,
+          0.499955,
+          0.47744
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.563111,
+            "se": 0.013901,
+            "runs": 3,
+            "per_run": [
+              0.576,
+              0.578,
+              0.535333
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.507063,
+            "se": 0.003451,
+            "runs": 3,
+            "per_run": [
+              0.512143,
+              0.508571,
+              0.500476
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.401794,
+            "se": 0.005678,
+            "runs": 3,
+            "per_run": [
+              0.401905,
+              0.411571,
+              0.391905
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.491682,
+          "se": 0.007152,
+          "runs": 3,
+          "per_run": [
+            0.497649,
+            0.499955,
+            0.47744
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.378531,
+          "se": 0.009262,
+          "runs": 3,
+          "per_run": [
+            0.385593,
+            0.360169,
+            0.389831
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.462025,
+            "se": 0.004834,
+            "runs": 3,
+            "per_run": [
+              0.46519,
+              0.468354,
+              0.452532
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.051688,
+            "se": 0.007607,
+            "runs": 3,
+            "per_run": [
+              0.047468,
+              0.066456,
+              0.041139
+            ]
+          },
+          "merged": {
+            "mean": 0.341772,
+            "se": 0.01141,
+            "runs": 3,
+            "per_run": [
+              0.325949,
+              0.335443,
+              0.363924
+            ]
+          },
+          "split": {
+            "mean": 0.142405,
+            "se": 0.008373,
+            "runs": 3,
+            "per_run": [
+              0.158228,
+              0.129747,
+              0.139241
+            ]
+          },
+          "other": {
+            "mean": 0.00211,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.003165,
+              0.0,
+              0.003165
+            ]
+          }
+        },
+        "counts": {
+          "correct": 438,
+          "wrong_class": 49,
+          "merged": 324,
+          "split": 135,
+          "other": 2
+        },
+        "split_kind": {
+          "within": 11,
+          "across": 124
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "language",
+          "predicted": "scientific_publication",
+          "count": 14
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 13
+        },
+        {
+          "true": "language",
+          "predicted": "news_article",
+          "count": 8
+        },
+        {
+          "true": "email",
+          "predicted": "memo",
+          "count": 7
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 6
+        }
+      ],
+      "confidence": {
+        "n_right": 438,
+        "n_wrong": 49,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            147,
+            15
+          ],
+          [
+            148,
+            21
+          ],
+          [
+            143,
+            13
+          ]
+        ],
+        "distinct_values": 3,
+        "share_at_most_common": 0.960986,
+        "constant": false,
+        "notes": [
+          "nearly constant: 96.1% of sections at 0.95, so AUROC rests on the few that differ"
+        ],
+        "ece": {
+          "mean": 0.04681,
+          "se": 0.011634,
+          "runs": 3,
+          "per_run": [
+            0.039815,
+            0.069527,
+            0.03109
+          ]
+        },
+        "auroc": {
+          "mean": 0.7829,
+          "se": 0.003289,
+          "runs": 3,
+          "per_run": [
+            0.776644,
+            0.784266,
+            0.787789
+          ]
+        },
+        "pooled": {
+          "auroc": 0.782686,
+          "ece": 0.047331
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 3.391667,
+        "se": 0.022048,
+        "runs": 3,
+        "per_run": [
+          3.425,
+          3.4,
+          3.35
+        ]
+      }
+    },
+    "Split, then a decision model names each section \u00b7 Amazon Nova 2 Lite": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-205347",
+        "DocSplit-Poly-Seq-20261118-205358",
+        "DocSplit-Poly-Seq-20261118-205409"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.52253,
+        "se": 0.01154,
+        "runs": 3,
+        "per_run": [
+          0.51,
+          0.512009,
+          0.54558
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.582889,
+            "se": 0.012539,
+            "runs": 3,
+            "per_run": [
+              0.598,
+              0.558,
+              0.592667
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.585132,
+            "se": 0.027286,
+            "runs": 3,
+            "per_run": [
+              0.545556,
+              0.572381,
+              0.63746
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.387048,
+            "se": 0.004153,
+            "runs": 3,
+            "per_run": [
+              0.379333,
+              0.393571,
+              0.388238
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.52253,
+          "se": 0.01154,
+          "runs": 3,
+          "per_run": [
+            0.51,
+            0.512009,
+            0.54558
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.40678,
+          "se": 0.011211,
+          "runs": 3,
+          "per_run": [
+            0.411017,
+            0.423729,
+            0.385593
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.458861,
+            "se": 0.011114,
+            "runs": 3,
+            "per_run": [
+              0.446203,
+              0.449367,
+              0.481013
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.033755,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.03481,
+              0.031646,
+              0.03481
+            ]
+          },
+          "merged": {
+            "mean": 0.361814,
+            "se": 0.012165,
+            "runs": 3,
+            "per_run": [
+              0.367089,
+              0.379747,
+              0.338608
+            ]
+          },
+          "split": {
+            "mean": 0.142405,
+            "se": 0.003165,
+            "runs": 3,
+            "per_run": [
+              0.14557,
+              0.136076,
+              0.14557
+            ]
+          },
+          "other": {
+            "mean": 0.003165,
+            "se": 0.001827,
+            "runs": 3,
+            "per_run": [
+              0.006329,
+              0.003165,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 435,
+          "wrong_class": 32,
+          "merged": 343,
+          "split": 135,
+          "other": 3
+        },
+        "split_kind": {
+          "within": 12,
+          "across": 123
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "language",
+          "predicted": "generic",
+          "count": 15
+        },
+        {
+          "true": "language",
+          "predicted": "news_article",
+          "count": 12
+        },
+        {
+          "true": "news_article",
+          "predicted": "generic",
+          "count": 3
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 2
+        }
+      ],
+      "confidence": {
+        "n_right": 435,
+        "n_wrong": 32,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            141,
+            11
+          ],
+          [
+            142,
+            10
+          ],
+          [
+            152,
+            11
+          ]
+        ],
+        "distinct_values": 105,
+        "share_at_most_common": 0.03212,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.089923,
+          "se": 0.001615,
+          "runs": 3,
+          "per_run": [
+            0.086872,
+            0.09053,
+            0.092366
+          ]
+        },
+        "auroc": {
+          "mean": 0.933113,
+          "se": 0.008098,
+          "runs": 3,
+          "per_run": [
+            0.944552,
+            0.937324,
+            0.917464
+          ]
+        },
+        "pooled": {
+          "auroc": 0.93319,
+          "ece": 0.087716
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 3.308333,
+        "se": 0.043501,
+        "runs": 3,
+        "per_run": [
+          3.3,
+          3.2375,
+          3.3875
+        ]
+      }
+    },
+    "Page by page \u00b7 Claude Haiku 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-151451",
+        "DocSplit-Poly-Seq-20261118-160137",
+        "DocSplit-Poly-Seq-20261118-160148"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.690084,
+        "se": 0.005478,
+        "runs": 3,
+        "per_run": [
+          0.700848,
+          0.682932,
+          0.686473
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.657778,
+            "se": 0.004257,
+            "runs": 3,
+            "per_run": [
+              0.658667,
+              0.664667,
+              0.65
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.724048,
+            "se": 0.01484,
+            "runs": 3,
+            "per_run": [
+              0.75119,
+              0.700079,
+              0.720873
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.681635,
+            "se": 0.000578,
+            "runs": 3,
+            "per_run": [
+              0.682619,
+              0.680619,
+              0.681667
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.690084,
+          "se": 0.005478,
+          "runs": 3,
+          "per_run": [
+            0.700848,
+            0.682932,
+            0.686473
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.0,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.703586,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.702532,
+              0.702532,
+              0.705696
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.015823,
+            "se": 0.001827,
+            "runs": 3,
+            "per_run": [
+              0.018987,
+              0.012658,
+              0.015823
+            ]
+          },
+          "merged": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "split": {
+            "mean": 0.280591,
+            "se": 0.00211,
+            "runs": 3,
+            "per_run": [
+              0.278481,
+              0.28481,
+              0.278481
+            ]
+          },
+          "other": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 667,
+          "wrong_class": 15,
+          "merged": 0,
+          "split": 266,
+          "other": 0
+        },
+        "split_kind": {
+          "within": 266,
+          "across": 0
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 6
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 5
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 4
+        }
+      ],
+      "confidence": {
+        "n_right": 667,
+        "n_wrong": 15,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            222,
+            6
+          ],
+          [
+            222,
+            4
+          ],
+          [
+            223,
+            5
+          ]
+        ],
+        "distinct_values": 132,
+        "share_at_most_common": 0.151026,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.072226,
+          "se": 0.002869,
+          "runs": 3,
+          "per_run": [
+            0.067829,
+            0.077617,
+            0.071231
+          ]
+        },
+        "auroc": {
+          "mean": 0.916277,
+          "se": 0.032578,
+          "runs": 3,
+          "per_run": [
+            0.948949,
+            0.948761,
+            0.851121
+          ]
+        },
+        "pooled": {
+          "auroc": 0.914043,
+          "ece": 0.07221
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 6.391667,
+        "se": 0.016667,
+        "runs": 3,
+        "per_run": [
+          6.375,
+          6.375,
+          6.425
+        ]
+      }
+    },
+    "Holistic \u00b7 Claude Haiku 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-160211",
+        "DocSplit-Poly-Seq-20261118-160158",
+        "DocSplit-Poly-Seq-20261118-160233"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.763299,
+        "se": 0.01691,
+        "runs": 3,
+        "per_run": [
+          0.729494,
+          0.779301,
+          0.781101
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.711111,
+            "se": 0.015983,
+            "runs": 3,
+            "per_run": [
+              0.684,
+              0.739333,
+              0.71
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.803466,
+            "se": 0.020151,
+            "runs": 3,
+            "per_run": [
+              0.770794,
+              0.840238,
+              0.799365
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.767286,
+            "se": 0.032063,
+            "runs": 3,
+            "per_run": [
+              0.725429,
+              0.746143,
+              0.830286
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.763299,
+          "se": 0.01691,
+          "runs": 3,
+          "per_run": [
+            0.729494,
+            0.779301,
+            0.781101
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.100282,
+          "se": 0.018685,
+          "runs": 3,
+          "per_run": [
+            0.135593,
+            0.09322,
+            0.072034
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.738397,
+            "se": 0.024124,
+            "runs": 3,
+            "per_run": [
+              0.693038,
+              0.746835,
+              0.775316
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.042194,
+            "se": 0.002791,
+            "runs": 3,
+            "per_run": [
+              0.041139,
+              0.037975,
+              0.047468
+            ]
+          },
+          "merged": {
+            "mean": 0.07384,
+            "se": 0.017269,
+            "runs": 3,
+            "per_run": [
+              0.107595,
+              0.063291,
+              0.050633
+            ]
+          },
+          "split": {
+            "mean": 0.133966,
+            "se": 0.011013,
+            "runs": 3,
+            "per_run": [
+              0.151899,
+              0.136076,
+              0.113924
+            ]
+          },
+          "other": {
+            "mean": 0.011603,
+            "se": 0.002791,
+            "runs": 3,
+            "per_run": [
+              0.006329,
+              0.015823,
+              0.012658
+            ]
+          }
+        },
+        "counts": {
+          "correct": 700,
+          "wrong_class": 40,
+          "merged": 70,
+          "split": 127,
+          "other": 11
+        },
+        "split_kind": {
+          "within": 77,
+          "across": 50
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 16
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 7
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 5
+        },
+        {
+          "true": "language",
+          "predicted": "news_article",
+          "count": 5
+        },
+        {
+          "true": "email",
+          "predicted": "budget",
+          "count": 2
+        }
+      ],
+      "confidence": {
+        "n_right": 543,
+        "n_wrong": 31,
+        "n_without_confidence": 166,
+        "per_run_right_wrong": [
+          [
+            190,
+            12
+          ],
+          [
+            179,
+            10
+          ],
+          [
+            174,
+            9
+          ]
+        ],
+        "distinct_values": 19,
+        "share_at_most_common": 0.264808,
+        "constant": false,
+        "notes": [
+          "166 sections carry no confidence"
+        ],
+        "ece": {
+          "mean": 0.041536,
+          "se": 0.003247,
+          "runs": 3,
+          "per_run": [
+            0.036436,
+            0.047566,
+            0.040605
+          ]
+        },
+        "auroc": {
+          "mean": 0.905591,
+          "se": 0.012679,
+          "runs": 3,
+          "per_run": [
+            0.888816,
+            0.930447,
+            0.89751
+          ]
+        },
+        "pooled": {
+          "auroc": 0.904592,
+          "ece": 0.03812
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 4.65,
+        "se": 0.033072,
+        "runs": 3,
+        "per_run": [
+          4.6,
+          4.7125,
+          4.6375
+        ]
+      }
+    },
+    "Split, then an LLM names each section \u00b7 Claude Haiku 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-162508",
+        "DocSplit-Poly-Seq-20261118-161841",
+        "DocSplit-Poly-Seq-20261118-205422"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.743413,
+        "se": 0.007211,
+        "runs": 3,
+        "per_run": [
+          0.736577,
+          0.757827,
+          0.735833
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.708222,
+            "se": 0.016592,
+            "runs": 3,
+            "per_run": [
+              0.739333,
+              0.702667,
+              0.682667
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.767037,
+            "se": 0.039409,
+            "runs": 3,
+            "per_run": [
+              0.745397,
+              0.843492,
+              0.712222
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.750254,
+            "se": 0.033751,
+            "runs": 3,
+            "per_run": [
+              0.723238,
+              0.71019,
+              0.817333
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.743413,
+          "se": 0.007211,
+          "runs": 3,
+          "per_run": [
+            0.736577,
+            0.757827,
+            0.735833
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.117232,
+          "se": 0.005093,
+          "runs": 3,
+          "per_run": [
+            0.114407,
+            0.127119,
+            0.110169
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.74789,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.746835,
+              0.75,
+              0.746835
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.022152,
+            "se": 0.003165,
+            "runs": 3,
+            "per_run": [
+              0.025316,
+              0.015823,
+              0.025316
+            ]
+          },
+          "merged": {
+            "mean": 0.072785,
+            "se": 0.001827,
+            "runs": 3,
+            "per_run": [
+              0.072785,
+              0.06962,
+              0.075949
+            ]
+          },
+          "split": {
+            "mean": 0.156118,
+            "se": 0.004219,
+            "runs": 3,
+            "per_run": [
+              0.151899,
+              0.164557,
+              0.151899
+            ]
+          },
+          "other": {
+            "mean": 0.001055,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.003165,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 709,
+          "wrong_class": 21,
+          "merged": 69,
+          "split": 148,
+          "other": 1
+        },
+        "split_kind": {
+          "within": 79,
+          "across": 69
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 14
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 4
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 3
+        }
+      ],
+      "confidence": {
+        "n_right": 709,
+        "n_wrong": 21,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            236,
+            8
+          ],
+          [
+            237,
+            5
+          ],
+          [
+            236,
+            8
+          ]
+        ],
+        "distinct_values": 20,
+        "share_at_most_common": 0.20137,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.067089,
+          "se": 0.002521,
+          "runs": 3,
+          "per_run": [
+            0.069754,
+            0.069463,
+            0.062049
+          ]
+        },
+        "auroc": {
+          "mean": 0.958563,
+          "se": 0.010804,
+          "runs": 3,
+          "per_run": [
+            0.971663,
+            0.937131,
+            0.966896
+          ]
+        },
+        "pooled": {
+          "auroc": 0.959803,
+          "ece": 0.063575
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 4.7875,
+        "se": 0.021651,
+        "runs": 3,
+        "per_run": [
+          4.7875,
+          4.75,
+          4.825
+        ]
+      }
+    },
+    "Split, then a decision model names each section \u00b7 Claude Haiku 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-210452",
+        "DocSplit-Poly-Seq-20261118-214640",
+        "DocSplit-Poly-Seq-20261118-214653"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.756508,
+        "se": 0.01211,
+        "runs": 3,
+        "per_run": [
+          0.780565,
+          0.742054,
+          0.746905
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.683778,
+            "se": 0.011759,
+            "runs": 3,
+            "per_run": [
+              0.706,
+              0.666,
+              0.679333
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.82172,
+            "se": 0.015535,
+            "runs": 3,
+            "per_run": [
+              0.84881,
+              0.795,
+              0.821349
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.750984,
+            "se": 0.013999,
+            "runs": 3,
+            "per_run": [
+              0.773238,
+              0.754571,
+              0.725143
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.756508,
+          "se": 0.01211,
+          "runs": 3,
+          "per_run": [
+            0.780565,
+            0.742054,
+            0.746905
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.097458,
+          "se": 0.006473,
+          "runs": 3,
+          "per_run": [
+            0.084746,
+            0.105932,
+            0.101695
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.748945,
+            "se": 0.014881,
+            "runs": 3,
+            "per_run": [
+              0.778481,
+              0.731013,
+              0.737342
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.040084,
+            "se": 0.00211,
+            "runs": 3,
+            "per_run": [
+              0.037975,
+              0.037975,
+              0.044304
+            ]
+          },
+          "merged": {
+            "mean": 0.058017,
+            "se": 0.005582,
+            "runs": 3,
+            "per_run": [
+              0.047468,
+              0.060127,
+              0.066456
+            ]
+          },
+          "split": {
+            "mean": 0.146624,
+            "se": 0.005274,
+            "runs": 3,
+            "per_run": [
+              0.136076,
+              0.151899,
+              0.151899
+            ]
+          },
+          "other": {
+            "mean": 0.006329,
+            "se": 0.006329,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.018987,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 710,
+          "wrong_class": 38,
+          "merged": 55,
+          "split": 139,
+          "other": 6
+        },
+        "split_kind": {
+          "within": 77,
+          "across": 62
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "language",
+          "predicted": "news_article",
+          "count": 20
+        },
+        {
+          "true": "language",
+          "predicted": "generic",
+          "count": 10
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 5
+        },
+        {
+          "true": "news_article",
+          "predicted": "generic",
+          "count": 3
+        }
+      ],
+      "confidence": {
+        "n_right": 710,
+        "n_wrong": 38,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            246,
+            12
+          ],
+          [
+            231,
+            12
+          ],
+          [
+            233,
+            14
+          ]
+        ],
+        "distinct_values": 132,
+        "share_at_most_common": 0.026738,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.092169,
+          "se": 0.000827,
+          "runs": 3,
+          "per_run": [
+            0.090939,
+            0.093742,
+            0.091825
+          ]
+        },
+        "auroc": {
+          "mean": 0.911334,
+          "se": 0.002317,
+          "runs": 3,
+          "per_run": [
+            0.915312,
+            0.907287,
+            0.911404
+          ]
+        },
+        "pooled": {
+          "auroc": 0.911564,
+          "ece": 0.092142
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 4.8,
+        "se": 0.031458,
+        "runs": 3,
+        "per_run": [
+          4.8375,
+          4.7375,
+          4.825
+        ]
+      }
+    },
+    "Page by page \u00b7 Claude Sonnet 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-164849",
+        "DocSplit-Poly-Seq-20261118-165109",
+        "DocSplit-Poly-Seq-20261118-164955"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.743586,
+        "se": 0.00653,
+        "runs": 3,
+        "per_run": [
+          0.743467,
+          0.732336,
+          0.754955
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.704667,
+            "se": 0.006667,
+            "runs": 3,
+            "per_run": [
+              0.698,
+              0.698,
+              0.718
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.799921,
+            "se": 0.013834,
+            "runs": 3,
+            "per_run": [
+              0.812302,
+              0.772302,
+              0.815159
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.714905,
+            "se": 0.004295,
+            "runs": 3,
+            "per_run": [
+              0.706333,
+              0.718714,
+              0.719667
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.743586,
+          "se": 0.00653,
+          "runs": 3,
+          "per_run": [
+            0.743467,
+            0.732336,
+            0.754955
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.0,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.739451,
+            "se": 0.003803,
+            "runs": 3,
+            "per_run": [
+              0.737342,
+              0.734177,
+              0.746835
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.009494,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.009494,
+              0.009494,
+              0.009494
+            ]
+          },
+          "merged": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "split": {
+            "mean": 0.251055,
+            "se": 0.003803,
+            "runs": 3,
+            "per_run": [
+              0.253165,
+              0.256329,
+              0.243671
+            ]
+          },
+          "other": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 701,
+          "wrong_class": 9,
+          "merged": 0,
+          "split": 238,
+          "other": 0
+        },
+        "split_kind": {
+          "within": 238,
+          "across": 0
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 6
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 3
+        }
+      ],
+      "confidence": {
+        "n_right": 701,
+        "n_wrong": 9,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            233,
+            3
+          ],
+          [
+            232,
+            3
+          ],
+          [
+            236,
+            3
+          ]
+        ],
+        "distinct_values": 139,
+        "share_at_most_common": 0.170423,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.067425,
+          "se": 0.001523,
+          "runs": 3,
+          "per_run": [
+            0.068556,
+            0.06441,
+            0.069307
+          ]
+        },
+        "auroc": {
+          "mean": 0.874984,
+          "se": 0.006555,
+          "runs": 3,
+          "per_run": [
+            0.886981,
+            0.873563,
+            0.864407
+          ]
+        },
+        "pooled": {
+          "auroc": 0.875733,
+          "ece": 0.067437
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 6.045833,
+        "se": 0.015023,
+        "runs": 3,
+        "per_run": [
+          6.075,
+          6.025,
+          6.0375
+        ]
+      }
+    },
+    "Holistic \u00b7 Claude Sonnet 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-165944",
+        "DocSplit-Poly-Seq-20261118-165956",
+        "DocSplit-Poly-Seq-20261118-171346"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.904335,
+        "se": 0.00542,
+        "runs": 3,
+        "per_run": [
+          0.914107,
+          0.895387,
+          0.903512
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.889778,
+            "se": 0.004444,
+            "runs": 3,
+            "per_run": [
+              0.898667,
+              0.885333,
+              0.885333
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.939101,
+            "se": 0.010158,
+            "runs": 3,
+            "per_run": [
+              0.959048,
+              0.925794,
+              0.93246
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.877175,
+            "se": 0.005254,
+            "runs": 3,
+            "per_run": [
+              0.875619,
+              0.868952,
+              0.886952
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.904335,
+          "se": 0.00542,
+          "runs": 3,
+          "per_run": [
+            0.914107,
+            0.895387,
+            0.903512
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.0,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.908228,
+            "se": 0.003165,
+            "runs": 3,
+            "per_run": [
+              0.911392,
+              0.901899,
+              0.911392
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.014768,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.012658,
+              0.015823,
+              0.015823
+            ]
+          },
+          "merged": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "split": {
+            "mean": 0.077004,
+            "se": 0.002791,
+            "runs": 3,
+            "per_run": [
+              0.075949,
+              0.082278,
+              0.072785
+            ]
+          },
+          "other": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 861,
+          "wrong_class": 14,
+          "merged": 0,
+          "split": 73,
+          "other": 0
+        },
+        "split_kind": {
+          "within": 73,
+          "across": 0
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 6
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 5
+        },
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 3
+        }
+      ],
+      "confidence": {
+        "n_right": 159,
+        "n_wrong": 1,
+        "n_without_confidence": 715,
+        "per_run_right_wrong": [
+          [
+            75,
+            1
+          ],
+          [
+            24,
+            0
+          ],
+          [
+            60,
+            0
+          ]
+        ],
+        "distinct_values": 14,
+        "share_at_most_common": 0.25,
+        "constant": false,
+        "notes": [
+          "AUROC undefined in 2 of 3 runs (no wrong-class section, or one confidence value)",
+          "715 sections carry no confidence"
+        ],
+        "ece": {
+          "mean": 0.052303,
+          "se": 0.006347,
+          "runs": 3,
+          "per_run": [
+            0.040658,
+            0.05375,
+            0.0625
+          ]
+        },
+        "auroc": {
+          "mean": 0.92,
+          "se": 0.0,
+          "runs": 1,
+          "per_run": [
+            0.92,
+            null,
+            null
+          ]
+        },
+        "pooled": {
+          "auroc": 0.918239,
+          "ece": 0.050813
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 4.758333,
+        "se": 0.008333,
+        "runs": 3,
+        "per_run": [
+          4.75,
+          4.775,
+          4.75
+        ]
+      }
+    },
+    "Split, then an LLM names each section \u00b7 Claude Sonnet 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-171638",
+        "DocSplit-Poly-Seq-20261118-172007",
+        "DocSplit-Poly-Seq-20261118-172617"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.873884,
+        "se": 0.006102,
+        "runs": 3,
+        "per_run": [
+          0.865372,
+          0.885714,
+          0.870565
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.800667,
+            "se": 0.004619,
+            "runs": 3,
+            "per_run": [
+              0.792667,
+              0.808667,
+              0.800667
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.937063,
+            "se": 0.003314,
+            "runs": 3,
+            "per_run": [
+              0.931032,
+              0.94246,
+              0.937698
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.871286,
+            "se": 0.011692,
+            "runs": 3,
+            "per_run": [
+              0.859286,
+              0.894667,
+              0.859905
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.873884,
+          "se": 0.006102,
+          "runs": 3,
+          "per_run": [
+            0.865372,
+            0.885714,
+            0.870565
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.0,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.880802,
+            "se": 0.007607,
+            "runs": 3,
+            "per_run": [
+              0.870253,
+              0.89557,
+              0.876582
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.021097,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.018987,
+              0.022152,
+              0.022152
+            ]
+          },
+          "merged": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "split": {
+            "mean": 0.098101,
+            "se": 0.008373,
+            "runs": 3,
+            "per_run": [
+              0.110759,
+              0.082278,
+              0.101266
+            ]
+          },
+          "other": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 835,
+          "wrong_class": 20,
+          "merged": 0,
+          "split": 93,
+          "other": 0
+        },
+        "split_kind": {
+          "within": 93,
+          "across": 0
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "handwritten",
+          "predicted": "letter",
+          "count": 7
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 6
+        },
+        {
+          "true": "handwritten",
+          "predicted": "language",
+          "count": 3
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 3
+        },
+        {
+          "true": "handwritten",
+          "predicted": "generic",
+          "count": 1
+        }
+      ],
+      "confidence": {
+        "n_right": 835,
+        "n_wrong": 20,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            275,
+            6
+          ],
+          [
+            283,
+            7
+          ],
+          [
+            277,
+            7
+          ]
+        ],
+        "distinct_values": 21,
+        "share_at_most_common": 0.225731,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.054981,
+          "se": 0.001349,
+          "runs": 3,
+          "per_run": [
+            0.052989,
+            0.057552,
+            0.054401
+          ]
+        },
+        "auroc": {
+          "mean": 0.961975,
+          "se": 0.003457,
+          "runs": 3,
+          "per_run": [
+            0.967879,
+            0.96214,
+            0.955905
+          ]
+        },
+        "pooled": {
+          "auroc": 0.961228,
+          "ece": 0.054398
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 4.841667,
+        "se": 0.039747,
+        "runs": 3,
+        "per_run": [
+          4.8875,
+          4.7625,
+          4.875
+        ]
+      }
+    },
+    "Split, then a decision model names each section \u00b7 Claude Sonnet 5.5": {
+      "runs": [
+        "DocSplit-Poly-Seq-20261118-214703",
+        "DocSplit-Poly-Seq-20261118-221426",
+        "DocSplit-Poly-Seq-20261118-214713"
+      ],
+      "packets_per_run": [
+        80,
+        80,
+        80
+      ],
+      "section_accuracy": {
+        "mean": 0.842143,
+        "se": 0.001302,
+        "runs": 3,
+        "per_run": [
+          0.84128,
+          0.844702,
+          0.840446
+        ]
+      },
+      "section_accuracy_by_length": {
+        "5-11 pages": {
+          "cell": {
+            "mean": 0.762667,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.762667,
+              0.762667,
+              0.762667
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        },
+        "12-18 pages": {
+          "cell": {
+            "mean": 0.913995,
+            "se": 0.001933,
+            "runs": 3,
+            "per_run": [
+              0.914365,
+              0.917143,
+              0.910476
+            ]
+          },
+          "packets_per_run": [
+            30,
+            30,
+            30
+          ]
+        },
+        "19-20 pages": {
+          "cell": {
+            "mean": 0.835397,
+            "se": 0.002281,
+            "runs": 3,
+            "per_run": [
+              0.83219,
+              0.83981,
+              0.83419
+            ]
+          },
+          "packets_per_run": [
+            25,
+            25,
+            25
+          ]
+        }
+      },
+      "same_class_adjacent": {
+        "packets_with_per_run": [
+          0,
+          0,
+          0
+        ],
+        "section_accuracy_with": null,
+        "section_accuracy_without": {
+          "mean": 0.842143,
+          "se": 0.001302,
+          "runs": 3,
+          "per_run": [
+            0.84128,
+            0.844702,
+            0.840446
+          ]
+        },
+        "pairs_per_run": [
+          0,
+          0,
+          0
+        ],
+        "pairs_merged": null,
+        "different_class_pairs_per_run": [
+          236,
+          236,
+          236
+        ],
+        "different_class_pairs_merged": {
+          "mean": 0.0,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "errors": {
+        "true_sections_per_run": [
+          316,
+          316,
+          316
+        ],
+        "shares": {
+          "correct": {
+            "mean": 0.847046,
+            "se": 0.001055,
+            "runs": 3,
+            "per_run": [
+              0.848101,
+              0.848101,
+              0.844937
+            ]
+          },
+          "wrong_class": {
+            "mean": 0.055907,
+            "se": 0.003803,
+            "runs": 3,
+            "per_run": [
+              0.063291,
+              0.053797,
+              0.050633
+            ]
+          },
+          "merged": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "split": {
+            "mean": 0.097046,
+            "se": 0.004598,
+            "runs": 3,
+            "per_run": [
+              0.088608,
+              0.098101,
+              0.10443
+            ]
+          },
+          "other": {
+            "mean": 0.0,
+            "se": 0.0,
+            "runs": 3,
+            "per_run": [
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        },
+        "counts": {
+          "correct": 803,
+          "wrong_class": 53,
+          "merged": 0,
+          "split": 92,
+          "other": 0
+        },
+        "split_kind": {
+          "within": 92,
+          "across": 0
+        }
+      },
+      "top_confusions": [
+        {
+          "true": "language",
+          "predicted": "news_article",
+          "count": 33
+        },
+        {
+          "true": "language",
+          "predicted": "generic",
+          "count": 8
+        },
+        {
+          "true": "specification",
+          "predicted": "advertisement",
+          "count": 6
+        },
+        {
+          "true": "news_article",
+          "predicted": "generic",
+          "count": 3
+        },
+        {
+          "true": "questionnaire",
+          "predicted": "form",
+          "count": 3
+        }
+      ],
+      "confidence": {
+        "n_right": 803,
+        "n_wrong": 53,
+        "n_without_confidence": 0,
+        "per_run_right_wrong": [
+          [
+            268,
+            20
+          ],
+          [
+            268,
+            17
+          ],
+          [
+            267,
+            16
+          ]
+        ],
+        "distinct_values": 136,
+        "share_at_most_common": 0.038551,
+        "constant": false,
+        "notes": [],
+        "ece": {
+          "mean": 0.101224,
+          "se": 0.001607,
+          "runs": 3,
+          "per_run": [
+            0.098165,
+            0.101898,
+            0.103608
+          ]
+        },
+        "auroc": {
+          "mean": 0.900138,
+          "se": 0.006577,
+          "runs": 3,
+          "per_run": [
+            0.912687,
+            0.897278,
+            0.890449
+          ]
+        },
+        "pooled": {
+          "auroc": 0.901032,
+          "ece": 0.101208
+        }
+      },
+      "predicted_sections_per_packet": {
+        "mean": 4.8375,
+        "se": 0.0,
+        "runs": 3,
+        "per_run": [
+          4.8375,
+          4.8375,
+          4.8375
+        ]
+      }
+    }
+  },
+  "sanity_check": {
+    "cells": "SC-13.json",
+    "values": {
+      "Page by page \u00b7 Amazon Nova 2 Lite": {
+        "pooled_all_scored": {
+          "mean": 0.486378,
+          "se": 0.006985,
+          "runs": 3,
+          "per_run": [
+            0.473558,
+            0.497596,
+            0.487981
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.486378,
+          "se": 0.006985,
+          "runs": 3,
+          "per_run": [
+            0.473558,
+            0.497596,
+            0.487981
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.446071,
+          "se": 0.012204,
+          "runs": 3,
+          "per_run": [
+            0.426012,
+            0.468143,
+            0.44406
+          ]
+        },
+        "analysed": {
+          "mean": 0.441215,
+          "se": 0.013857,
+          "runs": 3,
+          "per_run": [
+            0.415967,
+            0.463735,
+            0.443943
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.481013,
+          "se": 0.009668
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": -0.039798
+      },
+      "Holistic \u00b7 Amazon Nova 2 Lite": {
+        "pooled_all_scored": {
+          "mean": 0.513622,
+          "se": 0.012895,
+          "runs": 3,
+          "per_run": [
+            0.524038,
+            0.528846,
+            0.487981
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.513622,
+          "se": 0.012895,
+          "runs": 3,
+          "per_run": [
+            0.524038,
+            0.528846,
+            0.487981
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.550202,
+          "se": 0.012317,
+          "runs": 3,
+          "per_run": [
+            0.551631,
+            0.570786,
+            0.52819
+          ]
+        },
+        "analysed": {
+          "mean": 0.535412,
+          "se": 0.009505,
+          "runs": 3,
+          "per_run": [
+            0.527693,
+            0.554315,
+            0.524226
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.501055,
+          "se": 0.005873
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": 0.034357
+      },
+      "Split, then an LLM names each section \u00b7 Amazon Nova 2 Lite": {
+        "pooled_all_scored": {
+          "mean": 0.463747,
+          "se": 0.010119,
+          "runs": 3,
+          "per_run": [
+            0.479218,
+            0.467312,
+            0.444712
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.463747,
+          "se": 0.010119,
+          "runs": 3,
+          "per_run": [
+            0.479218,
+            0.467312,
+            0.444712
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.494743,
+          "se": 0.009605,
+          "runs": 3,
+          "per_run": [
+            0.501972,
+            0.506542,
+            0.475714
+          ]
+        },
+        "analysed": {
+          "mean": 0.491682,
+          "se": 0.007152,
+          "runs": 3,
+          "per_run": [
+            0.497649,
+            0.499955,
+            0.47744
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.462025,
+          "se": 0.004834
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": 0.029657
+      },
+      "Split, then a decision model names each section \u00b7 Amazon Nova 2 Lite": {
+        "pooled_all_scored": {
+          "mean": 0.457012,
+          "se": 0.003396,
+          "runs": 3,
+          "per_run": [
+            0.459135,
+            0.450363,
+            0.461538
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.457012,
+          "se": 0.003396,
+          "runs": 3,
+          "per_run": [
+            0.459135,
+            0.450363,
+            0.461538
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.512884,
+          "se": 0.006119,
+          "runs": 3,
+          "per_run": [
+            0.51119,
+            0.503235,
+            0.524226
+          ]
+        },
+        "analysed": {
+          "mean": 0.52253,
+          "se": 0.01154,
+          "runs": 3,
+          "per_run": [
+            0.51,
+            0.512009,
+            0.54558
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.458861,
+          "se": 0.011114
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": 0.063669
+      },
+      "Page by page \u00b7 Claude Haiku 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.696314,
+          "se": 0.00212,
+          "runs": 3,
+          "per_run": [
+            0.699519,
+            0.692308,
+            0.697115
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.696314,
+          "se": 0.00212,
+          "runs": 3,
+          "per_run": [
+            0.699519,
+            0.692308,
+            0.697115
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.683401,
+          "se": 0.006074,
+          "runs": 3,
+          "per_run": [
+            0.695345,
+            0.675512,
+            0.679345
+          ]
+        },
+        "analysed": {
+          "mean": 0.690084,
+          "se": 0.005478,
+          "runs": 3,
+          "per_run": [
+            0.700848,
+            0.682932,
+            0.686473
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.703586,
+          "se": 0.001055
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": -0.013502
+      },
+      "Holistic \u00b7 Claude Haiku 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.745991,
+          "se": 0.019072,
+          "runs": 3,
+          "per_run": [
+            0.709443,
+            0.754808,
+            0.773723
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.745991,
+          "se": 0.019072,
+          "runs": 3,
+          "per_run": [
+            0.709443,
+            0.754808,
+            0.773723
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.761367,
+          "se": 0.015348,
+          "runs": 3,
+          "per_run": [
+            0.730688,
+            0.777583,
+            0.77583
+          ]
+        },
+        "analysed": {
+          "mean": 0.763299,
+          "se": 0.01691,
+          "runs": 3,
+          "per_run": [
+            0.729494,
+            0.779301,
+            0.781101
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.738397,
+          "se": 0.024124
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": 0.024902
+      },
+      "Split, then an LLM names each section \u00b7 Claude Haiku 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.749188,
+          "se": 0.00435,
+          "runs": 3,
+          "per_run": [
+            0.747283,
+            0.757493,
+            0.742788
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.749188,
+          "se": 0.00435,
+          "runs": 3,
+          "per_run": [
+            0.747283,
+            0.757493,
+            0.742788
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.740281,
+          "se": 0.009372,
+          "runs": 3,
+          "per_run": [
+            0.72808,
+            0.758704,
+            0.73406
+          ]
+        },
+        "analysed": {
+          "mean": 0.743413,
+          "se": 0.007211,
+          "runs": 3,
+          "per_run": [
+            0.736577,
+            0.757827,
+            0.735833
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.74789,
+          "se": 0.001055
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": -0.004477
+      },
+      "Split, then a decision model names each section \u00b7 Claude Haiku 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.747596,
+          "se": 0.012019,
+          "runs": 3,
+          "per_run": [
+            0.771635,
+            0.735577,
+            0.735577
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.747596,
+          "se": 0.012019,
+          "runs": 3,
+          "per_run": [
+            0.771635,
+            0.735577,
+            0.735577
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.74681,
+          "se": 0.009184,
+          "runs": 3,
+          "per_run": [
+            0.764881,
+            0.734929,
+            0.740619
+          ]
+        },
+        "analysed": {
+          "mean": 0.756508,
+          "se": 0.01211,
+          "runs": 3,
+          "per_run": [
+            0.780565,
+            0.742054,
+            0.746905
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.748945,
+          "se": 0.014881
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": 0.007563
+      },
+      "Page by page \u00b7 Claude Sonnet 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.728365,
+          "se": 0.002404,
+          "runs": 3,
+          "per_run": [
+            0.730769,
+            0.723558,
+            0.730769
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.728365,
+          "se": 0.002404,
+          "runs": 3,
+          "per_run": [
+            0.730769,
+            0.723558,
+            0.730769
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.730155,
+          "se": 0.00505,
+          "runs": 3,
+          "per_run": [
+            0.732298,
+            0.720536,
+            0.737631
+          ]
+        },
+        "analysed": {
+          "mean": 0.743586,
+          "se": 0.00653,
+          "runs": 3,
+          "per_run": [
+            0.743467,
+            0.732336,
+            0.754955
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.739451,
+          "se": 0.003803
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": 0.004135
+      },
+      "Holistic \u00b7 Claude Sonnet 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.900641,
+          "se": 0.001603,
+          "runs": 3,
+          "per_run": [
+            0.903846,
+            0.899038,
+            0.899038
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.900641,
+          "se": 0.001603,
+          "runs": 3,
+          "per_run": [
+            0.903846,
+            0.899038,
+            0.899038
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.895397,
+          "se": 0.003991,
+          "runs": 3,
+          "per_run": [
+            0.903024,
+            0.893619,
+            0.889548
+          ]
+        },
+        "analysed": {
+          "mean": 0.904335,
+          "se": 0.00542,
+          "runs": 3,
+          "per_run": [
+            0.914107,
+            0.895387,
+            0.903512
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.908228,
+          "se": 0.003165
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": -0.003893
+      },
+      "Split, then an LLM names each section \u00b7 Claude Sonnet 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.876603,
+          "se": 0.00641,
+          "runs": 3,
+          "per_run": [
+            0.870192,
+            0.889423,
+            0.870192
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.876603,
+          "se": 0.00641,
+          "runs": 3,
+          "per_run": [
+            0.870192,
+            0.889423,
+            0.870192
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.870639,
+          "se": 0.005516,
+          "runs": 3,
+          "per_run": [
+            0.866607,
+            0.881548,
+            0.863762
+          ]
+        },
+        "analysed": {
+          "mean": 0.873884,
+          "se": 0.006102,
+          "runs": 3,
+          "per_run": [
+            0.865372,
+            0.885714,
+            0.870565
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.880802,
+          "se": 0.007607
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": -0.006918
+      },
+      "Split, then a decision model names each section \u00b7 Claude Sonnet 5.5": {
+        "pooled_all_scored": {
+          "mean": 0.838942,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.838942,
+            0.838942,
+            0.838942
+          ]
+        },
+        "pooled_all_scored_reporting_runs": {
+          "mean": 0.838942,
+          "se": 0.0,
+          "runs": 3,
+          "per_run": [
+            0.838942,
+            0.838942,
+            0.838942
+          ]
+        },
+        "packet_mean_all_scored": {
+          "mean": 0.834389,
+          "se": 0.001194,
+          "runs": 3,
+          "per_run": [
+            0.832143,
+            0.836214,
+            0.83481
+          ]
+        },
+        "analysed": {
+          "mean": 0.842143,
+          "se": 0.001302,
+          "runs": 3,
+          "per_run": [
+            0.84128,
+            0.844702,
+            0.840446
+          ]
+        },
+        "runs_without_run_figure": [],
+        "cell": {
+          "mean": 0.847046,
+          "se": 0.001055
+        },
+        "cell_reproduced": false,
+        "analysed_minus_cell": -0.004903
+      }
+    }
+  },
+  "warnings": []
+}

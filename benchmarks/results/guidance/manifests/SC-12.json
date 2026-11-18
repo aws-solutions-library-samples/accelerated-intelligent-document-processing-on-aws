@@ -1,6 +1,6 @@
 {
   "ablation": "SC-12",
-  "verdict": "Measured; see the table.",
+  "verdict": "Claude Haiku 5.5 is a good place to start for classifying sections, and the Strands Decider 2B comes close once its classes are described well. Given a one-line description of what each class's pages look like and the first two page images, the Decider 2B gave the right class to 0.95 of the sections with the right pages, against 0.98 for Claude Haiku 5.5 with the same descriptions, at the same classification cost (about $31 per 1,000 packets). Sections exactly right were within run-to-run variation (0.77 against 0.78), because section detection, the same Claude Haiku 5.5 step in every row, causes most errors. With the preset's class descriptions, written for the LLM prompt, the Decider 2B got 0.77. Test it on your own packets.",
   "runs": {
     "docsplit_100": {
       "Decision model \u00b7 first page image": [
@@ -9,7 +9,9 @@
         "DocSplit-Poly-Seq-20261118-165649"
       ],
       "LLM \u00b7 Claude Haiku 5.5 \u00b7 short descriptions": [
-        "DocSplit-Poly-Seq-20261118-161805"
+        "DocSplit-Poly-Seq-20261118-161805",
+        "DocSplit-Poly-Seq-20261118-210758",
+        "DocSplit-Poly-Seq-20261118-210813"
       ],
       "Decision model \u00b7 first page image \u00b7 short descriptions": [
         "DocSplit-Poly-Seq-20261118-170107",
@@ -22,7 +24,13 @@
         "DocSplit-Poly-Seq-20261118-173624"
       ],
       "Decision model \u00b7 first page image and text \u00b7 short descriptions": [
-        "DocSplit-Poly-Seq-20261118-174232"
+        "DocSplit-Poly-Seq-20261118-174232",
+        "DocSplit-Poly-Seq-20261118-175359",
+        "DocSplit-Poly-Seq-20261118-175226"
+      ],
+      "LLM \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Poly-Seq-20261118-162508",
+        "DocSplit-Poly-Seq-20261118-161841"
       ]
     }
   },
@@ -31,11 +39,13 @@
   },
   "stack": "sr-testing",
   "region": "us-east-1",
-  "release": "0.6.15-develop-d1be93f",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
   "measured": "November 2026",
   "cache_isolated": [
     "DocSplit-Poly-Seq-20261118-161805",
     "DocSplit-Poly-Seq-20261118-161828",
+    "DocSplit-Poly-Seq-20261118-161841",
+    "DocSplit-Poly-Seq-20261118-162508",
     "DocSplit-Poly-Seq-20261118-164945",
     "DocSplit-Poly-Seq-20261118-165649",
     "DocSplit-Poly-Seq-20261118-165731",
@@ -44,6 +54,11 @@
     "DocSplit-Poly-Seq-20261118-172239",
     "DocSplit-Poly-Seq-20261118-173421",
     "DocSplit-Poly-Seq-20261118-173624",
-    "DocSplit-Poly-Seq-20261118-174232"
-  ]
+    "DocSplit-Poly-Seq-20261118-174232",
+    "DocSplit-Poly-Seq-20261118-175226",
+    "DocSplit-Poly-Seq-20261118-175359",
+    "DocSplit-Poly-Seq-20261118-210758",
+    "DocSplit-Poly-Seq-20261118-210813"
+  ],
+  "common_docs": true
 }

@@ -41,6 +41,11 @@ weight, giving each document a score from 0 to 1. The error rate is 1 minus that
 One error is one document's worth of wrong field weight. 1,000 documents with a mean score
 of 0.80 carry 200 errors.
 
+Splitting and classification count sections instead. Section accuracy is the share of
+sections with exactly the right pages and class, so one error is one wrong section. A
+DocSplit packet holds about four sections, so 1,000 packets with a section accuracy of
+0.80 carry about 800 errors, and the cost per error prevented is per section.
+
 ## How to read the lines on our charts
 
 Each chart on our benchmark pages plots accuracy against cost per 1,000 documents, one point

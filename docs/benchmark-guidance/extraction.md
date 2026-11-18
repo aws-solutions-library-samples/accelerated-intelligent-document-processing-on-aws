@@ -28,6 +28,8 @@ annotation errors are more than half of what Test Studio reports. Check each rep
 and fix the annotation when the extraction was right. See
 [Measure with ground truth](../idp-fundamentals/index.md#4-measure-with-ground-truth).
 
+**The dataset behind most of these results.** Most extraction questions here are answered on [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified): real invoices with ground truth that people checked for every header field and every line item. We lean on it because its ground truth is accurate and its documents are real, varied layouts, not synthetic ones. It is one kind of document, broadcast advertising invoices, many of them with long lists of line items. If your documents have few or no line items, weigh the line-item results less and confirm on your own documents.
+
 **Settings** are what we measure:
 
 | Setting | What it changes | Questions |
@@ -63,11 +65,11 @@ Full definitions: Stickler's [Thresholds and Metrics](https://awslabs.github.io/
 
 ### When is agentic extraction worth it?
 
-![Agentic extraction wins only above about 100 line items: line-item score per invoice against line items per invoice](../../images/benchmark-guidance/EX-01-by-size-realkie-all.svg)
+![Agentic extraction helps only on very long extractions, such as 100+ line items: line-item score per invoice against line items per invoice](../../images/benchmark-guidance/EX-01-by-size-realkie-all.svg)
 
 *One point per invoice per extraction mode and model; each line is its running median.*
 
-**Answer:** Single-pass is a good place to start, with agentic on Claude Haiku 5.5 above about 100 line items: there single-pass got almost no line items right and agentic got 0.44 to 0.79. Test it on your own documents.
+**Answer:** Single-pass is a good place to start for most documents. For documents with exceptionally long or complex extractions, such as invoices or receipts with many line items, agentic extraction may do better: on [RealKIE](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified) invoices with more than about 100 line items, single-pass got almost no line items right and agentic with Claude Haiku 5.5 got 0.44 to 0.79. Below that, single-pass scored as well or better, at about the same cost or less (agentic calls over 100,000 tokens, which Claude Haiku 5.5 bills at a higher rate, aren't priced here). Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -76,7 +78,7 @@ Full definitions: Stickler's [Thresholds and Metrics](https://awslabs.github.io/
 
 *Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 62 Test Studio runs (12 failed documents left out of the scores), listed in `benchmarks/results/guidance/EX-01.json`.*
 
-Single-pass scored as well as agentic or better up to 100 line items, and cost about the same there with the 5.5 models. Above 100 line items, agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($316 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, and Test Studio could not score the longest (1,490 items) because its evaluation step timed out.
+Single-pass scored as well as agentic or better up to 100 line items, and cost about the same there with the 5.5 models. Above 100 line items, agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for at least $316 against $1,073 per 1,000 invoices; Claude Haiku 5.5's agentic calls over 100,000 tokens bill at its long-context rate and can't be priced from our metering, so its cost could be up to about two thirds of Claude Sonnet 5.5's. Only 5 RealKIE invoices have more than 100 line items, and Test Studio could not score the longest (1,490 items) because its evaluation step timed out.
 
 | | |
 |---|---|
@@ -98,9 +100,9 @@ Single-pass scored as well as agentic or better up to 100 line items, and cost a
 <tr><td>No line items</td><td>4</td><td class="group">—</td><td>—</td><td class="group">0.70</td><td>0.68</td><td class="group">$22.0</td><td>$43.2</td><td class="group">2.0×</td></tr>
 <tr><td>1–20</td><td>41</td><td class="group"><strong>0.69</strong></td><td>0.57</td><td class="group">0.84</td><td>0.83</td><td class="group">$73.2</td><td>$69.6</td><td class="group">1.0×</td></tr>
 <tr><td>21–100</td><td>25</td><td class="group">0.53</td><td>0.49</td><td class="group">0.80</td><td>0.79</td><td class="group">$104</td><td>$105</td><td class="group">1.0×</td></tr>
-<tr><td>101–300</td><td>2</td><td class="group">0.02</td><td><strong>0.44</strong></td><td class="group">0.75</td><td>0.72</td><td class="group">$218</td><td>$238</td><td class="group">1.1×</td></tr>
-<tr><td>More than 300</td><td>2</td><td class="group">0.00</td><td><strong>0.79</strong></td><td class="group">0.89</td><td>0.98</td><td class="group">$203</td><td>$316</td><td class="group">1.6×</td></tr>
-<tr><td><strong>All invoices</strong></td><td>74</td><td class="group">0.57</td><td>0.52</td><td class="group">0.82</td><td>0.81</td><td class="group">$88.3</td><td>$91.3</td><td class="group">1.0×</td></tr>
+<tr><td>101–300</td><td>2</td><td class="group">0.02</td><td><strong>0.44</strong></td><td class="group">0.75</td><td>0.72</td><td class="group">$248</td><td>$238</td><td class="group">1.0×</td></tr>
+<tr><td>More than 300</td><td>2</td><td class="group">0.00</td><td><strong>0.79</strong></td><td class="group">0.89</td><td>0.98</td><td class="group">$228</td><td>$316</td><td class="group">1.4×</td></tr>
+<tr><td><strong>All invoices</strong></td><td>74</td><td class="group">0.57</td><td>0.52</td><td class="group">0.82</td><td>0.81</td><td class="group">$89.8</td><td>$91.3</td><td class="group">1.0×</td></tr>
 </tbody>
 </table>
 
@@ -133,10 +135,10 @@ Test Studio could not score 1 invoice for Agentic · Claude Sonnet 5.5: its eval
 
 *Bands show ±2 standard errors.*
 
-| Dataset | Extraction mode | Weighted accuracy | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | [Cost per error prevented](marginal-cost-of-error.md) vs Single-pass · Haiku 5.5 |
+| Dataset | Extraction mode | Weighted accuracy | Extraction tokens per page | Total tokens per page | Cost per 1,000 documents (USD) | Median seconds per document | [Cost per error prevented](marginal-cost-of-error.md) vs Agentic · Haiku 5.5 |
 |---|---|---|---|---|---|---|---|
-| RealKIE, all | Single-pass · Claude Haiku 5.5 | 0.82 ± 0.04 | 7,673 ± 11 | **26,263 ± 1,091** | $105 ± $7.41 | 52 ± 2.33 | — |
-| RealKIE, all | Agentic · Claude Haiku 5.5 | 0.81 ± 0.04 | 38,874 ± 1,241 | 50,089 ± 1,853 | $105 ± $1.92 | 60 ± 1.67 | no measurable gain |
+| RealKIE, all | Single-pass · Claude Haiku 5.5 | 0.82 ± 0.04 | 7,673 ± 11 | **26,263 ± 1,091** | $108 ± $7.45 | 52 ± 2.33 | no measurable gain |
+| RealKIE, all | Agentic · Claude Haiku 5.5 | 0.81 ± 0.04 | 38,874 ± 1,241 | 50,089 ± 1,853 | $105 ± $1.92 | 60 ± 1.67 | — |
 | RealKIE, all | Single-pass · Claude Sonnet 5.5 | 0.82 ± 0.04 | **7,428 ± 20** | 33,542 ± 1,190 | $200 ± $2.55 | 54 ± 9.18 | no measurable gain |
 | RealKIE, all | Agentic · Claude Sonnet 5.5 | 0.84 ± 0.03 | 24,766 ± 3,108 | 37,144 ± 4,911 | $227 ± $46.1 | 59 ± 9.6 | no measurable gain |
 
@@ -155,6 +157,18 @@ Failed documents per run: Agentic · Claude Haiku 5.5: 1, 1, 1; Agentic · Claud
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
 **Answer:** Claude Haiku 5.5 is a good place to start: no model scored measurably higher on RealKIE invoices, and it cost $23 per 1,000 against $85 to $601 for the Claude, OpenAI and xAI models. Test it on your own documents.
+
+**The economics:** On RealKIE invoices, OpenAI GPT-6 Astra scored no measurably better than Claude Haiku 5.5, so the extra $578 per 1,000 documents buys nothing measurable.
+
+| Instead of Haiku 5.5 | Extra cost per 1,000 documents | Extra documents right per 1,000 documents | [Cost per document it gets right](marginal-cost-of-error.md) |
+|---|---|---|---|
+| Nova 2 Lite | +$2.11 | no measurable difference | no measurable gain |
+| Sonnet 5.5 | +$62.0 | no measurable difference | no measurable gain |
+| Opus 5.5 | +$127 | no measurable difference | no measurable gain |
+| GPT-6 Astra | +$578 | no measurable difference | no measurable gain |
+| Grok 4.6 | +$36.2 | no measurable difference | no measurable gain |
+
+*RealKIE invoices, N = 20 documents × 3 runs. A difference within twice the combined standard error is no measurable difference. Costs use on-demand prices for us-east-1 from [config_library/pricing.yaml](../../config_library/pricing.yaml) as of 2026-11-18.*
 
 <details>
 <summary>Details</summary>
@@ -277,7 +291,7 @@ Failed documents per run: OmniAI, bank checks — OCR text only: 0, 0, 1.
 
 *One point per document per table parsing, a tool that turns Textract's tables into rows by code instead of the model retyping them; each line is its running median.*
 
-**Answer:** Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more ($257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.
+**Answer:** Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more (at least $257 against $210 per 1,000 invoices; agentic calls over 100,000 tokens, which Claude Haiku 5.5 bills at a higher rate, can't be priced from our metering) and took longer. Test it on your own long tables.
 
 <details>
 <summary>Details</summary>

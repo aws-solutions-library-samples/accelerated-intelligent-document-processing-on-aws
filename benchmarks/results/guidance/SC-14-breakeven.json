@@ -1,0 +1,6111 @@
+{
+ "a": "Holistic \u00b7 Claude Haiku 5.5",
+ "b": "Page by page \u00b7 Claude Haiku 5.5",
+ "c": "Split, then an LLM classifies each section \u00b7 Claude Haiku 5.5",
+ "packets": 140,
+ "line": {
+  "intercept": 0.10056092270779585,
+  "slope": -0.0019132970660816074,
+  "crossing_pages": 52.55896979643758,
+  "crossing_ci95": [
+   32.689306155385786,
+   220.77602475441242
+  ],
+  "negative_slope_share": 0.947
+ },
+ "bands": [
+  {
+   "pages": [
+    5,
+    10
+   ],
+   "n": 23,
+   "mean": 0.057487922705314,
+   "se": 0.045324521939363975
+  },
+  {
+   "pages": [
+    11,
+    15
+   ],
+   "n": 26,
+   "mean": 0.021520146520146534,
+   "se": 0.061303651886351236
+  },
+  {
+   "pages": [
+    16,
+    20
+   ],
+   "n": 51,
+   "mean": 0.11658885776532836,
+   "se": 0.027012857546036013
+  },
+  {
+   "pages": [
+    30,
+    37
+   ],
+   "n": 10,
+   "mean": -0.026759259259259243,
+   "se": 0.06060088316258561
+  },
+  {
+   "pages": [
+    38,
+    45
+   ],
+   "n": 10,
+   "mean": 0.026519036519036553,
+   "se": 0.07776068800670266
+  },
+  {
+   "pages": [
+    46,
+    53
+   ],
+   "n": 10,
+   "mean": 0.0526129426129426,
+   "se": 0.04906680318160172
+  },
+  {
+   "pages": [
+    54,
+    60
+   ],
+   "n": 10,
+   "mean": -0.055433006535947696,
+   "se": 0.05028912001589581
+  }
+ ],
+ "metrics": {
+  "keys": [
+   "split_accuracy_without_order",
+   "final_score",
+   "boundary_accuracy",
+   "v_measure",
+   "rand_index",
+   "avg_ordering_score",
+   "page_level_accuracy",
+   "label_accuracy"
+  ],
+  "a_minus_b": {
+   "docsplit_100": {
+    "split_accuracy_without_order": {
+     "mean": 0.07827777777777778,
+     "se": 0.02359495172590818,
+     "n": 100
+    },
+    "final_score": {
+     "mean": 0.09112811119660488,
+     "se": 0.013601541536832651,
+     "n": 100
+    },
+    "boundary_accuracy": {
+     "mean": 0.105296,
+     "se": 0.025336543449281934,
+     "n": 100
+    },
+    "v_measure": {
+     "mean": 0.07377664983463457,
+     "se": 0.015433339689362719,
+     "n": 100
+    },
+    "rand_index": {
+     "mean": 0.05006703733716118,
+     "se": 0.010332033306168158,
+     "n": 100
+    },
+    "avg_ordering_score": {
+     "mean": 0.1203343788073119,
+     "se": 0.0179616446778176,
+     "n": 100
+    },
+    "page_level_accuracy": {
+     "mean": 0.00804873221320591,
+     "se": 0.017510510385301385,
+     "n": 100
+    },
+    "label_accuracy": {
+     "mean": -0.03242508591065292,
+     "se": 0.010881838697046274,
+     "n": 97
+    }
+   },
+   "docsplit_long": {
+    "split_accuracy_without_order": {
+     "mean": -0.0007650716658069434,
+     "se": 0.02986718050348836,
+     "n": 40
+    },
+    "final_score": {
+     "mean": 0.0621010424846538,
+     "se": 0.012084916237003683,
+     "n": 40
+    },
+    "boundary_accuracy": {
+     "mean": 0.02825375,
+     "se": 0.029313057875236637,
+     "n": 40
+    },
+    "v_measure": {
+     "mean": 0.03305779089983898,
+     "se": 0.0055949249227956474,
+     "n": 40
+    },
+    "rand_index": {
+     "mean": 0.013117686826765201,
+     "se": 0.0031712147088463,
+     "n": 40
+    },
+    "avg_ordering_score": {
+     "mean": 0.10111434610600553,
+     "se": 0.021443905343025906,
+     "n": 40
+    },
+    "page_level_accuracy": {
+     "mean": 0.010051676568407983,
+     "se": 0.016561513698558572,
+     "n": 40
+    },
+    "label_accuracy": {
+     "mean": -0.048493333333333326,
+     "se": 0.012394167647190616,
+     "n": 40
+    }
+   }
+  },
+  "c_minus_a": {
+   "docsplit_100": {
+    "split_accuracy_without_order": {
+     "mean": -0.01933221099887766,
+     "se": 0.022762829096842987,
+     "n": 99
+    },
+    "final_score": {
+     "mean": -0.018007907403330442,
+     "se": 0.009677298984632472,
+     "n": 99
+    },
+    "boundary_accuracy": {
+     "mean": -0.033466329966329963,
+     "se": 0.024696878814878802,
+     "n": 99
+    },
+    "v_measure": {
+     "mean": -0.017919172146499653,
+     "se": 0.00785729182137382,
+     "n": 99
+    },
+    "rand_index": {
+     "mean": -0.010174131920230683,
+     "se": 0.005180799044332862,
+     "n": 99
+    },
+    "avg_ordering_score": {
+     "mean": -0.021969162773295733,
+     "se": 0.01420554429296847,
+     "n": 99
+    },
+    "page_level_accuracy": {
+     "mean": 0.023600993579024655,
+     "se": 0.013592884716821036,
+     "n": 99
+    },
+    "label_accuracy": {
+     "mean": 0.014747743055555552,
+     "se": 0.013380221773619624,
+     "n": 96
+    }
+   },
+   "docsplit_long": {
+    "split_accuracy_without_order": {
+     "mean": 0.04803585915718269,
+     "se": 0.03161114241818573,
+     "n": 40
+    },
+    "final_score": {
+     "mean": 0.01955789022151408,
+     "se": 0.010529095193294796,
+     "n": 40
+    },
+    "boundary_accuracy": {
+     "mean": 0.03790041666666669,
+     "se": 0.03113285415318468,
+     "n": 40
+    },
+    "v_measure": {
+     "mean": 0.0030089863171779557,
+     "se": 0.005142375858416795,
+     "n": 40
+    },
+    "rand_index": {
+     "mean": -0.0003588983924914635,
+     "se": 0.0024125269451705463,
+     "n": 40
+    },
+    "avg_ordering_score": {
+     "mean": 0.03779073648068491,
+     "se": 0.018494020469421123,
+     "n": 40
+    },
+    "page_level_accuracy": {
+     "mean": 0.031317643085247676,
+     "se": 0.013823512932265521,
+     "n": 40
+    },
+    "label_accuracy": {
+     "mean": 0.026003333333333333,
+     "se": 0.013496641428270397,
+     "n": 40
+    }
+   }
+  },
+  "means": {
+   "a": {
+    "docsplit_100": {
+     "split_accuracy_without_order": {
+      "mean": 0.7616785714285714,
+      "se": 0.021506359927443375,
+      "n": 100
+     },
+     "final_score": {
+      "mean": 0.9110588921629502,
+      "se": 0.012006839861148384,
+      "n": 100
+     },
+     "boundary_accuracy": {
+      "mean": 0.8048503333333333,
+      "se": 0.01986653881896246,
+      "n": 100
+     },
+     "v_measure": {
+      "mean": 0.9092012419015333,
+      "se": 0.013975727584360392,
+      "n": 100
+     },
+     "rand_index": {
+      "mean": 0.9269568255102311,
+      "se": 0.0132402866055536,
+      "n": 100
+     },
+     "avg_ordering_score": {
+      "mean": 0.9040387506200183,
+      "se": 0.012955477770697188,
+      "n": 100
+     },
+     "page_level_accuracy": {
+      "mean": 0.8974688479018974,
+      "se": 0.01397795914706571,
+      "n": 100
+     },
+     "label_accuracy": {
+      "mean": 0.9416036666666666,
+      "se": 0.013013797891255004,
+      "n": 100
+     }
+    },
+    "docsplit_long": {
+     "split_accuracy_without_order": {
+      "mean": 0.6232856937452526,
+      "se": 0.026904995743972652,
+      "n": 40
+     },
+     "final_score": {
+      "mean": 0.8814651405294935,
+      "se": 0.013244658629286468,
+      "n": 40
+     },
+     "boundary_accuracy": {
+      "mean": 0.6737429166666666,
+      "se": 0.026788925574492892,
+      "n": 40
+     },
+     "v_measure": {
+      "mean": 0.9178261830681029,
+      "se": 0.00952746053021515,
+      "n": 40
+     },
+     "rand_index": {
+      "mean": 0.9580622933302247,
+      "se": 0.006333873886382804,
+      "n": 40
+     },
+     "avg_ordering_score": {
+      "mean": 0.8249860428598232,
+      "se": 0.021425501608101277,
+      "n": 40
+     },
+     "page_level_accuracy": {
+      "mean": 0.838347499261425,
+      "se": 0.017205875389743035,
+      "n": 40
+     },
+     "label_accuracy": {
+      "mean": 0.9192658333333334,
+      "se": 0.01261099434624396,
+      "n": 40
+     }
+    }
+   },
+   "b": {
+    "docsplit_100": {
+     "split_accuracy_without_order": {
+      "mean": 0.6834007936507936,
+      "se": 0.02427085076197597,
+      "n": 100
+     },
+     "final_score": {
+      "mean": 0.8199307809663453,
+      "se": 0.016133061221903076,
+      "n": 100
+     },
+     "boundary_accuracy": {
+      "mean": 0.6995543333333333,
+      "se": 0.02481246145526751,
+      "n": 100
+     },
+     "v_measure": {
+      "mean": 0.8354245920668987,
+      "se": 0.019157111198216288,
+      "n": 100
+     },
+     "rand_index": {
+      "mean": 0.8768897881730698,
+      "se": 0.01623627903453708,
+      "n": 100
+     },
+     "avg_ordering_score": {
+      "mean": 0.7837043718127064,
+      "se": 0.019358720815122413,
+      "n": 100
+     },
+     "page_level_accuracy": {
+      "mean": 0.8894201156886915,
+      "se": 0.014324032859075676,
+      "n": 100
+     },
+     "label_accuracy": {
+      "mean": 0.9808137457044673,
+      "se": 0.0065239473679205165,
+      "n": 97
+     }
+    },
+    "docsplit_long": {
+     "split_accuracy_without_order": {
+      "mean": 0.6240507654110595,
+      "se": 0.018916407307768963,
+      "n": 40
+     },
+     "final_score": {
+      "mean": 0.8193640980448398,
+      "se": 0.009860230137242194,
+      "n": 40
+     },
+     "boundary_accuracy": {
+      "mean": 0.6454891666666667,
+      "se": 0.01827277022255042,
+      "n": 40
+     },
+     "v_measure": {
+      "mean": 0.884768392168264,
+      "se": 0.00907166042434388,
+      "n": 40
+     },
+     "rand_index": {
+      "mean": 0.9449446065034597,
+      "se": 0.007048594892454828,
+      "n": 40
+     },
+     "avg_ordering_score": {
+      "mean": 0.7238716967538178,
+      "se": 0.01644753096584024,
+      "n": 40
+     },
+     "page_level_accuracy": {
+      "mean": 0.8282958226930169,
+      "se": 0.017690711247328933,
+      "n": 40
+     },
+     "label_accuracy": {
+      "mean": 0.9677591666666666,
+      "se": 0.010207363166004554,
+      "n": 40
+     }
+    }
+   },
+   "c": {
+    "docsplit_100": {
+     "split_accuracy_without_order": {
+      "mean": 0.7416225749559083,
+      "se": 0.026726333640664998,
+      "n": 99
+     },
+     "final_score": {
+      "mean": 0.892748757328375,
+      "se": 0.013884582094005811,
+      "n": 99
+     },
+     "boundary_accuracy": {
+      "mean": 0.770675420875421,
+      "se": 0.026382398822554026,
+      "n": 99
+     },
+     "v_measure": {
+      "mean": 0.8907337380607611,
+      "se": 0.015278573254074355,
+      "n": 99
+     },
+     "rand_index": {
+      "mean": 0.9163038840056696,
+      "se": 0.014323406136754216,
+      "n": 99
+     },
+     "avg_ordering_score": {
+      "mean": 0.8819787036235345,
+      "se": 0.016417427946889784,
+      "n": 99
+     },
+     "page_level_accuracy": {
+      "mean": 0.9205151737589115,
+      "se": 0.014079584167785377,
+      "n": 99
+     },
+     "label_accuracy": {
+      "mean": 0.9677248263888889,
+      "se": 0.0112957817915078,
+      "n": 96
+     }
+    },
+    "docsplit_long": {
+     "split_accuracy_without_order": {
+      "mean": 0.6713215529024352,
+      "se": 0.021011416907048025,
+      "n": 40
+     },
+     "final_score": {
+      "mean": 0.9010230307510076,
+      "se": 0.008630039873367527,
+      "n": 40
+     },
+     "boundary_accuracy": {
+      "mean": 0.7116433333333333,
+      "se": 0.021022213803959213,
+      "n": 40
+     },
+     "v_measure": {
+      "mean": 0.9208351693852809,
+      "se": 0.007851567347358526,
+      "n": 40
+     },
+     "rand_index": {
+      "mean": 0.9577033949377334,
+      "se": 0.005951911034606042,
+      "n": 40
+     },
+     "avg_ordering_score": {
+      "mean": 0.8627767793405082,
+      "se": 0.014065926630761205,
+      "n": 40
+     },
+     "page_level_accuracy": {
+      "mean": 0.8696651423466726,
+      "se": 0.019576086378699488,
+      "n": 40
+     },
+     "label_accuracy": {
+      "mean": 0.9452691666666666,
+      "se": 0.012365466593895993,
+      "n": 40
+     }
+    }
+   }
+  }
+ },
+ "points": [
+  {
+   "pages": 20,
+   "sections": 6,
+   "delta": -0.11111111111111116,
+   "dataset": "docsplit_100",
+   "a_score": 0.38888888888888884,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.38888888888888884,
+     "final_score": 0.5872981583600306,
+     "boundary_accuracy": 0.4444333333333333,
+     "v_measure": 0.5950155698911529,
+     "rand_index": 0.643859649122807,
+     "avg_ordering_score": 0.5551587072130814,
+     "page_level_accuracy": 0.75,
+     "label_accuracy": 0.9166666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.6671524558777618,
+     "boundary_accuracy": 0.6111333333333333,
+     "v_measure": 0.633441257843096,
+     "rand_index": 0.6508771929824562,
+     "avg_ordering_score": 0.6921456863427474,
+     "page_level_accuracy": 0.8166666666666668,
+     "label_accuracy": 0.8333333333333334
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5555555555555555,
+     "final_score": 0.702841848802317,
+     "boundary_accuracy": 0.7222333333333334,
+     "v_measure": 0.6474824837421101,
+     "rand_index": 0.6596491228070175,
+     "avg_ordering_score": 0.7521178943300703,
+     "page_level_accuracy": 0.8166666666666668,
+     "label_accuracy": 0.7666666666666666
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 3,
+   "delta": 0.4444444444444445,
+   "dataset": "docsplit_100",
+   "a_score": 0.7777777777777778,
+   "b_score": 0.3333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777778,
+     "final_score": 0.8921683434571316,
+     "boundary_accuracy": 0.7777666666666666,
+     "v_measure": 0.9205252256803784,
+     "rand_index": 0.9444444444444445,
+     "avg_ordering_score": 0.8518518518518517,
+     "page_level_accuracy": 0.9629629629629629,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.5250494409818929,
+     "boundary_accuracy": 0.3333,
+     "v_measure": 0.6835310972609049,
+     "rand_index": 0.75,
+     "avg_ordering_score": 0.3333333333333333,
+     "page_level_accuracy": 0.6666666666666666,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 14,
+   "sections": 8,
+   "delta": 0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.8333333333333334,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9409794078561914,
+     "boundary_accuracy": 0.875,
+     "v_measure": 0.9634860796345178,
+     "rand_index": 0.9743589743589745,
+     "avg_ordering_score": 0.9130362887156366,
+     "page_level_accuracy": 0.9523809523809524,
+     "label_accuracy": 0.9523666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.814785748080292,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.858044091222267,
+     "rand_index": 0.9010989010989011,
+     "avg_ordering_score": 0.75,
+     "page_level_accuracy": 0.8571428571428571,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 8,
+   "sections": 5,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9635339407468675,
+     "boundary_accuracy": 0.8666666666666667,
+     "v_measure": 0.9506890556924574,
+     "rand_index": 0.9523809523809524,
+     "avg_ordering_score": 0.9755328774570301,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 0.7666666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9635339407468675,
+     "boundary_accuracy": 0.8666666666666667,
+     "v_measure": 0.9506890556924574,
+     "rand_index": 0.9523809523809524,
+     "avg_ordering_score": 0.9755328774570301,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 0.7666666666666666
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.9453009111203011,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.926033583538686,
+     "rand_index": 0.9285714285714285,
+     "avg_ordering_score": 0.9632993161855451,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 0.75
+    }
+   }
+  },
+  {
+   "pages": 5,
+   "sections": 4,
+   "delta": -0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9387793400844057,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8884506936709559,
+     "rand_index": 0.8666666666666667,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8666666666666667,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 5,
+   "delta": -0.1999999999999999,
+   "dataset": "docsplit_100",
+   "a_score": 0.4000000000000001,
+   "b_score": 0.6,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4000000000000001,
+     "final_score": 0.8995917934812034,
+     "boundary_accuracy": 0.46666666666666673,
+     "v_measure": 0.8199701165490083,
+     "rand_index": 0.8257309941520469,
+     "avg_ordering_score": 0.9763330316118793,
+     "page_level_accuracy": 0.6666666666666666,
+     "label_accuracy": 0.8333333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.7063840086307372,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.6236904796824931,
+     "rand_index": 0.6157894736842106,
+     "avg_ordering_score": 0.7930280405781224,
+     "page_level_accuracy": 0.9499999999999998,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7333333333333334,
+     "final_score": 0.7535452599141665,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.673628188268907,
+     "rand_index": 0.6491228070175438,
+     "avg_ordering_score": 0.8457150221851076,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 14,
+   "sections": 5,
+   "delta": -0.06666666666666665,
+   "dataset": "docsplit_100",
+   "a_score": 0.6,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.7758918970327164,
+     "boundary_accuracy": 0.7,
+     "v_measure": 0.7830575658105083,
+     "rand_index": 0.8296703296703296,
+     "avg_ordering_score": 0.745419846325014,
+     "page_level_accuracy": 0.5357142857142857,
+     "label_accuracy": 0.875
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7685605900838167,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.7797368658297724,
+     "rand_index": 0.8278388278388279,
+     "avg_ordering_score": 0.7333333333333334,
+     "page_level_accuracy": 0.5238095238095238,
+     "label_accuracy": 0.9166666666666666
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7333333333333334,
+     "final_score": 0.8028114844525763,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.8112801131916285,
+     "rand_index": 0.8461538461538461,
+     "avg_ordering_score": 0.7769059892324149,
+     "page_level_accuracy": 0.5714285714285715,
+     "label_accuracy": 0.9166666666666666
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 2,
+   "delta": 0.3333333333333333,
+   "dataset": "docsplit_100",
+   "a_score": 0.3333333333333333,
+   "b_score": 0.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.9526109813937341,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8953591377125182,
+     "rand_index": 0.9583333333333334,
+     "avg_ordering_score": 0.9783757272645425,
+     "page_level_accuracy": 0.25,
+     "label_accuracy": 0.5
+    },
+    "b": {
+     "split_accuracy_without_order": 0.0,
+     "final_score": 0.6294115469767776,
+     "boundary_accuracy": 0.0,
+     "v_measure": 0.6669175276760307,
+     "rand_index": 0.8583333333333333,
+     "avg_ordering_score": 0.4961976634488731,
+     "page_level_accuracy": 0.9166666666666666
+    },
+    "c": {
+     "split_accuracy_without_order": 0.0,
+     "final_score": 0.8578329441812023,
+     "boundary_accuracy": 0.0,
+     "v_measure": 0.6860774131375543,
+     "rand_index": 0.875,
+     "avg_ordering_score": 0.9351271817936272,
+     "page_level_accuracy": 0.4791666666666667
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 2,
+   "delta": 0.5,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8037019404733522,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.7686543290379921,
+     "rand_index": 0.8545454545454545,
+     "avg_ordering_score": 0.7958039891549809,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.0,
+     "final_score": 0.2792615588089483,
+     "boundary_accuracy": 0.0,
+     "v_measure": 0.4079717516373202,
+     "rand_index": 0.4181818181818182,
+     "avg_ordering_score": 0.1454463327083275,
+     "page_level_accuracy": 0.9090909090909091
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8037019404733522,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.7686543290379921,
+     "rand_index": 0.8545454545454545,
+     "avg_ordering_score": 0.7958039891549809,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 4,
+   "delta": 0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.9166666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.9166666666666666,
+     "final_score": 0.9534681453185776,
+     "boundary_accuracy": 0.9166666666666666,
+     "v_measure": 0.9833170257187548,
+     "rand_index": 0.9972222222222222,
+     "avg_ordering_score": 0.9166666666666666,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9661949620547888,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9151145962342936,
+     "rand_index": 0.9611111111111111,
+     "avg_ordering_score": 0.994277070436875,
+     "page_level_accuracy": 0.9583333333333334,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 7,
+   "delta": 0.23809523809523803,
+   "dataset": "docsplit_100",
+   "a_score": 0.8095238095238094,
+   "b_score": 0.5714285714285714,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8095238095238094,
+     "final_score": 0.9683797810023559,
+     "boundary_accuracy": 0.8095,
+     "v_measure": 0.9650895770895193,
+     "rand_index": 0.9668615984405458,
+     "avg_ordering_score": 0.9707839742396794,
+     "page_level_accuracy": 0.9473684210526315,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5714285714285714,
+     "final_score": 0.8604569532200061,
+     "boundary_accuracy": 0.7143,
+     "v_measure": 0.8875798731183676,
+     "rand_index": 0.8947368421052632,
+     "avg_ordering_score": 0.829755548828197,
+     "page_level_accuracy": 0.43859649122807015,
+     "label_accuracy": 0.8000000000000002
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8571428571428571,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8947368421052632,
+     "label_accuracy": 0.8571
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 4,
+   "delta": 0.16666666666666663,
+   "dataset": "docsplit_100",
+   "a_score": 0.9166666666666666,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9166666666666666,
+     "final_score": 0.9735110950066344,
+     "boundary_accuracy": 0.9166666666666666,
+     "v_measure": 0.9761448046941754,
+     "rand_index": 0.9859649122807017,
+     "avg_ordering_score": 0.9659673315258303,
+     "page_level_accuracy": 0.9833333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.7901844882917773,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.6947156257888624,
+     "rand_index": 0.8175438596491228,
+     "avg_ordering_score": 0.8242392338645623,
+     "page_level_accuracy": 0.65,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 15,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 4,
+   "delta": 0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.873705514184449,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9273128518375423,
+     "rand_index": 0.9614035087719298,
+     "avg_ordering_score": 0.803052848064162,
+     "page_level_accuracy": 0.9499999999999998,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9405719761024107,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8914053691766225,
+     "rand_index": 0.9526315789473684,
+     "avg_ordering_score": 0.959125478142826,
+     "page_level_accuracy": 0.9499999999999998,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 4,
+   "delta": 0.16666666666666669,
+   "dataset": "docsplit_100",
+   "a_score": 0.5833333333333334,
+   "b_score": 0.4166666666666667,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5833333333333334,
+     "final_score": 0.8184517978918119,
+     "boundary_accuracy": 0.5833333333333334,
+     "v_measure": 0.8997898127394871,
+     "rand_index": 0.9351851851851851,
+     "avg_ordering_score": 0.7194160968212877,
+     "page_level_accuracy": 0.8888888888888888,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.4166666666666667,
+     "final_score": 0.7834630631896188,
+     "boundary_accuracy": 0.4166666666666667,
+     "v_measure": 0.8580397173251765,
+     "rand_index": 0.8981481481481483,
+     "avg_ordering_score": 0.6888321936425754,
+     "page_level_accuracy": 0.8888888888888888,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8578632307568032,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.900028136792045,
+     "rand_index": 0.9259259259259259,
+     "avg_ordering_score": 0.8027494301546211,
+     "page_level_accuracy": 0.9259259259259259,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 6,
+   "delta": 0.16666666666666674,
+   "dataset": "docsplit_100",
+   "a_score": 0.8333333333333334,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9954730635677186,
+     "boundary_accuracy": 0.8889,
+     "v_measure": 0.985790889748457,
+     "rand_index": 0.9961013645224172,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.7719298245614036,
+     "label_accuracy": 0.9444333333333333
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8431238516667312,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8692279123643082,
+     "rand_index": 0.8752436647173489,
+     "avg_ordering_score": 0.8140119147926338,
+     "page_level_accuracy": 0.8947368421052632,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999997,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.3684210526315789,
+     "label_accuracy": 0.8333
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 4,
+   "delta": 0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.698321129356323,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.6036921204574455,
+     "rand_index": 0.5872721018231855,
+     "avg_ordering_score": 0.8011601475723307,
+     "page_level_accuracy": 0.6833333333333332,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.5922783562708654,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.4855579564748371,
+     "rand_index": 0.4719298245614035,
+     "avg_ordering_score": 0.7058128220236105,
+     "page_level_accuracy": 0.8833333333333333,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.6262764251430655,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.4983065092816676,
+     "rand_index": 0.4807017543859649,
+     "avg_ordering_score": 0.7630487184523146,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 12,
+   "sections": 5,
+   "delta": -0.5999999999999999,
+   "dataset": "docsplit_100",
+   "a_score": 0.4000000000000001,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4000000000000001,
+     "final_score": 0.9282109605734409,
+     "boundary_accuracy": 0.4000000000000001,
+     "v_measure": 0.8436959343264716,
+     "rand_index": 0.8787878787878788,
+     "avg_ordering_score": 0.9951800145897067,
+     "page_level_accuracy": 0.8333333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7999999999999999,
+     "final_score": 0.9412890525903115,
+     "boundary_accuracy": 0.7999999999999999,
+     "v_measure": 0.9421069077054819,
+     "rand_index": 0.9595959595959597,
+     "avg_ordering_score": 0.9317266715299022,
+     "page_level_accuracy": 0.9722222222222222,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 18,
+   "sections": 7,
+   "delta": -0.1428571428571429,
+   "dataset": "docsplit_100",
+   "a_score": 0.8571428571428571,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8571428571428571,
+     "final_score": 0.9321826134409353,
+     "boundary_accuracy": 0.8571333333333334,
+     "v_measure": 0.9553511506621143,
+     "rand_index": 0.9782135076252724,
+     "avg_ordering_score": 0.8975828977381773,
+     "page_level_accuracy": 0.9629629629629629,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999999,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8095238095238094,
+     "final_score": 0.9184669112625641,
+     "boundary_accuracy": 0.8095333333333333,
+     "v_measure": 0.9400976162309034,
+     "rand_index": 0.9673202614379085,
+     "avg_ordering_score": 0.8832248836907222,
+     "page_level_accuracy": 0.9074074074074074,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 13,
+   "sections": 2,
+   "delta": -0.16666666666666663,
+   "dataset": "docsplit_100",
+   "a_score": 0.8333333333333334,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 1.0,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9999999999999999,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9743589743589745,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 5,
+   "delta": 0.06666666666666654,
+   "dataset": "docsplit_100",
+   "a_score": 0.4666666666666666,
+   "b_score": 0.4000000000000001,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4666666666666666,
+     "final_score": 0.7122771605453212,
+     "boundary_accuracy": 0.5333333333333333,
+     "v_measure": 0.7290576854591873,
+     "rand_index": 0.7859649122807016,
+     "avg_ordering_score": 0.6670430222206979,
+     "page_level_accuracy": 0.7000000000000001,
+     "label_accuracy": 0.8889
+    },
+    "b": {
+     "split_accuracy_without_order": 0.4000000000000001,
+     "final_score": 0.5577140069264873,
+     "boundary_accuracy": 0.4000000000000001,
+     "v_measure": 0.6678929090818065,
+     "rand_index": 0.7491228070175439,
+     "avg_ordering_score": 0.4069201558032994,
+     "page_level_accuracy": 0.6333333333333333,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.6874536950361281,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.7242077641701037,
+     "rand_index": 0.7789473684210526,
+     "avg_ordering_score": 0.623329823776678,
+     "page_level_accuracy": 0.75,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 8,
+   "sections": 3,
+   "delta": 0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7549387368219368,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.7721412442548193,
+     "rand_index": 0.8095238095238094,
+     "avg_ordering_score": 0.719044946754559,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 6,
+   "delta": 0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8008779540924064,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.9017574304047139,
+     "rand_index": 0.968421052631579,
+     "avg_ordering_score": 0.6666666666666666,
+     "page_level_accuracy": 0.85,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8900327490924506,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.9057136039349222,
+     "rand_index": 0.9526315789473685,
+     "avg_ordering_score": 0.850892906743756,
+     "page_level_accuracy": 0.9499999999999998,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 7,
+   "delta": 0.23809523809523808,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.42857142857142855,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8689075111397995,
+     "boundary_accuracy": 0.6666333333333333,
+     "v_measure": 0.8600607765036618,
+     "rand_index": 0.912280701754386,
+     "avg_ordering_score": 0.8516442831505749,
+     "page_level_accuracy": 0.7333333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.42857142857142855,
+     "final_score": 0.6791228888764144,
+     "boundary_accuracy": 0.42860000000000004,
+     "v_measure": 0.772148828237689,
+     "rand_index": 0.8649122807017543,
+     "avg_ordering_score": 0.5397152232831073,
+     "page_level_accuracy": 0.6166666666666667,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8571428571428571,
+     "final_score": 0.8728736567656767,
+     "boundary_accuracy": 0.8571,
+     "v_measure": 0.8838845672570013,
+     "rand_index": 0.9263157894736842,
+     "avg_ordering_score": 0.8406471351660106,
+     "page_level_accuracy": 0.75,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 12,
+   "sections": 1,
+   "delta": 0.6666666666666666,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.6666666666666666,
+     "label_accuracy": 0.6666666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.0,
+     "final_score": 0.6867613151172506,
+     "boundary_accuracy": 0.0,
+     "v_measure": 0.0,
+     "rand_index": 0.787878787878788,
+     "avg_ordering_score": 0.979583236295107,
+     "page_level_accuracy": 0.8888888888888888
+    },
+    "c": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.3333333333333333,
+     "label_accuracy": 0.3333333333333333
+    }
+   }
+  },
+  {
+   "pages": 7,
+   "sections": 4,
+   "delta": -0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.9166666666666666,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9166666666666666,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8095238095238094,
+     "label_accuracy": 0.9166666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 8,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.875,
+   "b_score": 0.875,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.875,
+     "final_score": 0.9535264940863355,
+     "boundary_accuracy": 0.875,
+     "v_measure": 0.9846712784895914,
+     "rand_index": 0.9961013645224172,
+     "avg_ordering_score": 0.9166666666666666,
+     "page_level_accuracy": 0.9473684210526315,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.875,
+     "final_score": 0.9304189408868716,
+     "boundary_accuracy": 0.875,
+     "v_measure": 0.9775237167638607,
+     "rand_index": 0.9941520467836257,
+     "avg_ordering_score": 0.875,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 0.75
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 0.75
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9162843451465048,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8078082912981024,
+     "rand_index": 0.8916666666666667,
+     "avg_ordering_score": 0.9828312113106251,
+     "page_level_accuracy": 0.8125,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.9877946127946128,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9696969696969696,
+     "rand_index": 0.9814814814814815,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8148148148148149,
+     "label_accuracy": 0.9166666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.7846225257754768,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.8051567697685735,
+     "rand_index": 0.8333333333333334,
+     "avg_ordering_score": 0.75,
+     "page_level_accuracy": 0.7407407407407408,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.5639248705039491,
+     "boundary_accuracy": 0.3333333333333333,
+     "v_measure": 0.7371809634972779,
+     "rand_index": 0.8518518518518517,
+     "avg_ordering_score": 0.3333333333333333,
+     "page_level_accuracy": 0.7777777777777777,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 17,
+   "sections": 4,
+   "delta": 0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.8333333333333334,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9607843137254902,
+     "label_accuracy": 0.8333333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.8608955296852051,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.9509350599172909,
+     "rand_index": 0.9926470588235294,
+     "avg_ordering_score": 0.75,
+     "page_level_accuracy": 0.9411764705882352,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 13,
+   "sections": 2,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 5,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8911841007761403,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.9699995609992981,
+     "rand_index": 0.994736842105263,
+     "avg_ordering_score": 0.8000000000000002,
+     "page_level_accuracy": 0.8833333333333333,
+     "label_accuracy": 0.8333333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8189314384963603,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9511643504766693,
+     "rand_index": 0.9912280701754387,
+     "avg_ordering_score": 0.6666666666666666,
+     "page_level_accuracy": 0.9166666666666666,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.8293913084409077,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9211852225484249,
+     "rand_index": 0.968421052631579,
+     "avg_ordering_score": 0.7139794792918134,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 0.9
+    }
+   }
+  },
+  {
+   "pages": 8,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9267270269792277,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.9006722920603312,
+     "rand_index": 0.9285714285714285,
+     "avg_ordering_score": 0.9388321936425754,
+     "page_level_accuracy": 0.9583333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9267270269792277,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.9006722920603312,
+     "rand_index": 0.9285714285714285,
+     "avg_ordering_score": 0.9388321936425754,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 0.951151351319485,
+     "boundary_accuracy": 0.7778,
+     "v_measure": 0.9337815280402207,
+     "rand_index": 0.9523809523809524,
+     "avg_ordering_score": 0.9592214624283836,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 15,
+   "sections": 5,
+   "delta": 0.20000000000000004,
+   "dataset": "docsplit_100",
+   "a_score": 0.4000000000000001,
+   "b_score": 0.20000000000000004,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4000000000000001,
+     "final_score": 0.6872592374952688,
+     "boundary_accuracy": 0.4000000000000001,
+     "v_measure": 0.7563344109198541,
+     "rand_index": 0.815873015873016,
+     "avg_ordering_score": 0.5884147615941027,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.20000000000000004,
+     "final_score": 0.622434525747972,
+     "boundary_accuracy": 0.20000000000000004,
+     "v_measure": 0.7863763273223787,
+     "rand_index": 0.8285714285714286,
+     "avg_ordering_score": 0.4373951735490402,
+     "page_level_accuracy": 0.8666666666666667,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.6650429517606837,
+     "boundary_accuracy": 0.3333333333333333,
+     "v_measure": 0.8032249197226758,
+     "rand_index": 0.846031746031746,
+     "avg_ordering_score": 0.5054575706441564,
+     "page_level_accuracy": 0.8444444444444444,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 17,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8922747928507079,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8451588076669655,
+     "rand_index": 0.9044117647058824,
+     "avg_ordering_score": 0.9097642995149918,
+     "page_level_accuracy": 0.9411764705882352,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8922747928507079,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8451588076669655,
+     "rand_index": 0.9044117647058824,
+     "avg_ordering_score": 0.9097642995149918,
+     "page_level_accuracy": 0.9411764705882352,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999998,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 12,
+   "sections": 1,
+   "delta": 0.6666666666666667,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.3333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.5316966109905593,
+     "boundary_accuracy": 0.3333333333333333,
+     "v_measure": 0.3333333333333333,
+     "rand_index": 0.5757575757575758,
+     "avg_ordering_score": 0.6088477674356642,
+     "page_level_accuracy": 0.9166666666666666,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.3333333333333333,
+     "label_accuracy": 0.3333333333333333
+    }
+   }
+  },
+  {
+   "pages": 12,
+   "sections": 3,
+   "delta": 0.2222222222222222,
+   "dataset": "docsplit_100",
+   "a_score": 0.7777777777777777,
+   "b_score": 0.5555555555555555,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 0.9213718565547353,
+     "boundary_accuracy": 0.8889,
+     "v_measure": 0.9380126787441934,
+     "rand_index": 0.9696969696969697,
+     "avg_ordering_score": 0.8888888888888888,
+     "page_level_accuracy": 0.8333333333333334,
+     "label_accuracy": 0.8889
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5555555555555555,
+     "final_score": 0.7042837414188009,
+     "boundary_accuracy": 0.5555666666666667,
+     "v_measure": 0.8019834505236885,
+     "rand_index": 0.904040404040404,
+     "avg_ordering_score": 0.5555555555555555,
+     "page_level_accuracy": 0.75,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 7,
+   "delta": 0.23809523809523808,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.42857142857142855,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8117853481309921,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9171497467428492,
+     "rand_index": 0.9649122807017544,
+     "avg_ordering_score": 0.6825396825396824,
+     "page_level_accuracy": 0.9166666666666666,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.42857142857142855,
+     "final_score": 0.6643901336592309,
+     "boundary_accuracy": 0.42860000000000004,
+     "v_measure": 0.8635755722309088,
+     "rand_index": 0.936842105263158,
+     "avg_ordering_score": 0.42857142857142855,
+     "page_level_accuracy": 0.7666666666666666,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7142857142857143,
+     "final_score": 0.8486010666836895,
+     "boundary_accuracy": 0.7143,
+     "v_measure": 0.9321653360747746,
+     "rand_index": 0.9701754385964912,
+     "avg_ordering_score": 0.746031746031746,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 18,
+   "sections": 7,
+   "delta": 0.23809523809523814,
+   "dataset": "docsplit_100",
+   "a_score": 0.9523809523809524,
+   "b_score": 0.7142857142857143,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9523809523809524,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9444444444444445,
+     "label_accuracy": 0.9523666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7142857142857143,
+     "final_score": 0.8581664886988012,
+     "boundary_accuracy": 0.7143,
+     "v_measure": 0.9315492071805865,
+     "rand_index": 0.954248366013072,
+     "avg_ordering_score": 0.7734341908007732,
+     "page_level_accuracy": 0.9444444444444443,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6190476190476191,
+     "final_score": 0.9234810505634633,
+     "boundary_accuracy": 0.6190333333333333,
+     "v_measure": 0.9091996478965442,
+     "rand_index": 0.9498910675381264,
+     "avg_ordering_score": 0.9174167434095911,
+     "page_level_accuracy": 0.9259259259259259,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 4,
+   "delta": 0.25,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.8721457449249602,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.8560863136546111,
+     "rand_index": 0.9403508771929824,
+     "avg_ordering_score": 0.8460728944261239,
+     "page_level_accuracy": 0.7833333333333333,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 2,
+   "delta": 0.5,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.6782464654410071,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.5857649466064131,
+     "rand_index": 0.7305555555555555,
+     "avg_ordering_score": 0.6983326798010298,
+     "page_level_accuracy": 0.5416666666666666,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 17,
+   "sections": 5,
+   "delta": -0.1999999999999999,
+   "dataset": "docsplit_100",
+   "a_score": 0.46666666666666673,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.46666666666666673,
+     "final_score": 0.9038206572091992,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.9208574008309136,
+     "rand_index": 0.9625816993464053,
+     "avg_ordering_score": 0.8659217643297392,
+     "page_level_accuracy": 0.8627450980392156,
+     "label_accuracy": 0.8222333333333333
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9267775096904062,
+     "boundary_accuracy": 0.8666666666666667,
+     "v_measure": 0.9786786662126051,
+     "rand_index": 0.9950980392156863,
+     "avg_ordering_score": 0.8666666666666667,
+     "page_level_accuracy": 0.9019607843137255,
+     "label_accuracy": 0.7666666666666666
+    },
+    "c": {
+     "split_accuracy_without_order": 0.4000000000000001,
+     "final_score": 0.6949580255826812,
+     "boundary_accuracy": 0.4666666666666666,
+     "v_measure": 0.8759105337032734,
+     "rand_index": 0.9705882352941178,
+     "avg_ordering_score": 0.4666666666666666,
+     "page_level_accuracy": 0.8627450980392156,
+     "label_accuracy": 0.9333333333333332
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.44444444444444436,
+   "dataset": "docsplit_100",
+   "a_score": 0.7777777777777777,
+   "b_score": 0.3333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 0.9196988860397016,
+     "boundary_accuracy": 0.7778,
+     "v_measure": 0.9567663657610797,
+     "rand_index": 0.9824561403508772,
+     "avg_ordering_score": 0.869786519023425,
+     "page_level_accuracy": 0.9666666666666667,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.6918046668088804,
+     "boundary_accuracy": 0.3333,
+     "v_measure": 0.8666310399898083,
+     "rand_index": 0.9578947368421052,
+     "avg_ordering_score": 0.4713464452018042,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 2,
+   "delta": -0.16666666666666663,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.6079275900694353,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.4822446178988047,
+     "rand_index": 0.5,
+     "avg_ordering_score": 0.7247328711894682,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.6006284759650041,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.5818174934050212,
+     "rand_index": 0.5740740740740741,
+     "avg_ordering_score": 0.6233111681904607,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.6241338983383873,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.4744473871465436,
+     "rand_index": 0.5,
+     "avg_ordering_score": 0.7610441031035027,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 10,
+   "delta": 0.2666666666666666,
+   "dataset": "docsplit_100",
+   "a_score": 0.9333333333333332,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9333333333333332,
+     "final_score": 0.996478675798088,
+     "boundary_accuracy": 0.9333333333333332,
+     "v_measure": 0.9911778610870892,
+     "rand_index": 0.994736842105263,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9833333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7855657104213055,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8738417890536434,
+     "rand_index": 0.9350877192982456,
+     "avg_ordering_score": 0.6666666666666666,
+     "page_level_accuracy": 0.7333333333333334,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.6175813230048797,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.45357422847838685,
+     "rand_index": 0.42105263157894735,
+     "avg_ordering_score": 0.7978492159810923,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.6253404828540293,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.4401204745045891,
+     "rand_index": 0.4105263157894737,
+     "avg_ordering_score": 0.8253575705610273,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.6253404828540293,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.44012047450458897,
+     "rand_index": 0.4105263157894737,
+     "avg_ordering_score": 0.8253575705610273,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 5,
+   "sections": 2,
+   "delta": 0.5,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.5928173713318594,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.6712694853274376,
+     "rand_index": 0.6999999999999998,
+     "avg_ordering_score": 0.5,
+     "page_level_accuracy": 0.8000000000000002,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.7124005918041224,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.7162690338831563,
+     "rand_index": 0.8,
+     "avg_ordering_score": 0.6666666666666667,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 5,
+   "delta": 0.20000000000000018,
+   "dataset": "docsplit_100",
+   "a_score": 0.8000000000000002,
+   "b_score": 0.6,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.8258366266090413,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.8465377489775568,
+     "rand_index": 0.9220272904483431,
+     "avg_ordering_score": 0.7673907335051325,
+     "page_level_accuracy": 0.7719298245614036,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.6350686710575076,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.6189081787611678,
+     "rand_index": 0.7056530214424951,
+     "avg_ordering_score": 0.6078567420131838,
+     "page_level_accuracy": 0.3684210526315789,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8,
+     "final_score": 0.8272207796510673,
+     "boundary_accuracy": 0.8,
+     "v_measure": 0.836942485168679,
+     "rand_index": 0.9181286549707602,
+     "avg_ordering_score": 0.776905989232415,
+     "page_level_accuracy": 0.7368421052631579,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 12,
+   "sections": 1,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.11111111111111116,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.8888888888888888,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8888888888888888,
+     "final_score": 0.9468051388276826,
+     "boundary_accuracy": 0.8889,
+     "v_measure": 0.9619161424620812,
+     "rand_index": 0.9789473684210526,
+     "avg_ordering_score": 0.9231785222137981,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 5,
+   "sections": 3,
+   "delta": 0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7792961161879388,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8838511314184215,
+     "rand_index": 0.9,
+     "avg_ordering_score": 0.6666666666666666,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 5,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.6,
+   "b_score": 0.6,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.8931116936443101,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.8877452847230977,
+     "rand_index": 0.9272727272727272,
+     "avg_ordering_score": 0.8787143812907079,
+     "page_level_accuracy": 0.9090909090909092,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.9586036227796443,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.9441794951111229,
+     "rand_index": 0.9636363636363635,
+     "avg_ordering_score": 0.9632993161855451,
+     "page_level_accuracy": 0.9090909090909091,
+     "label_accuracy": 0.75
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.9586036227796443,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.9441794951111229,
+     "rand_index": 0.9636363636363635,
+     "avg_ordering_score": 0.9632993161855451,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 6,
+   "delta": 0.05555555555555547,
+   "dataset": "docsplit_100",
+   "a_score": 0.5555555555555555,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5555555555555555,
+     "final_score": 0.9717333070727897,
+     "boundary_accuracy": 0.5555666666666667,
+     "v_measure": 0.9326110335036703,
+     "rand_index": 0.9736842105263158,
+     "avg_ordering_score": 0.9903189921305863,
+     "page_level_accuracy": 0.8666666666666667,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8013077585961045,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8110182057400017,
+     "rand_index": 0.875438596491228,
+     "avg_ordering_score": 0.7593871160765939,
+     "page_level_accuracy": 0.5333333333333333,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6111111111111112,
+     "final_score": 0.960292037708844,
+     "boundary_accuracy": 0.6111,
+     "v_measure": 0.9276244936195038,
+     "rand_index": 0.9736842105263158,
+     "avg_ordering_score": 0.969929723344778,
+     "page_level_accuracy": 0.9666666666666667,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 10,
+   "sections": 2,
+   "delta": 0.16666666666666663,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9394801308551428,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9098857657650502,
+     "rand_index": 0.9703703703703704,
+     "avg_ordering_score": 0.9388321936425754,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9092201962827143,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8648286486475752,
+     "rand_index": 0.9555555555555556,
+     "avg_ordering_score": 0.9082482904638631,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9092201962827142,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8648286486475752,
+     "rand_index": 0.9555555555555556,
+     "avg_ordering_score": 0.9082482904638631,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 18,
+   "sections": 4,
+   "delta": 0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.8333333333333334,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9674118869221994,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.961734667009599,
+     "rand_index": 0.982570806100218,
+     "avg_ordering_score": 0.9626710372894903,
+     "page_level_accuracy": 0.9814814814814815,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.9152676670679587,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.9340499394637723,
+     "rand_index": 0.954248366013072,
+     "avg_ordering_score": 0.8863861813974953,
+     "page_level_accuracy": 0.9444444444444443,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9348237738443986,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.923469334019198,
+     "rand_index": 0.9651416122004357,
+     "avg_ordering_score": 0.9253420745789805,
+     "page_level_accuracy": 0.9629629629629629,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 6,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 12,
+   "sections": 5,
+   "delta": -0.06666666666666654,
+   "dataset": "docsplit_100",
+   "a_score": 0.8666666666666667,
+   "b_score": 0.9333333333333332,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8666666666666667,
+     "final_score": 0.9663953210451597,
+     "boundary_accuracy": 0.8666666666666667,
+     "v_measure": 0.9589448109243716,
+     "rand_index": 0.9696969696969697,
+     "avg_ordering_score": 0.9684697517796487,
+     "page_level_accuracy": 0.9722222222222222,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.9333333333333332,
+     "final_score": 0.962248659154992,
+     "boundary_accuracy": 0.9333333333333332,
+     "v_measure": 0.9873784750038065,
+     "rand_index": 0.9949494949494949,
+     "avg_ordering_score": 0.9333333333333332,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7333333333333334,
+     "final_score": 0.9311133929650747,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.9331423072813231,
+     "rand_index": 0.9595959595959597,
+     "avg_ordering_score": 0.9158576524915082,
+     "page_level_accuracy": 0.9444444444444445,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 5,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.7333333333333334,
+   "b_score": 0.7333333333333334,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7333333333333334,
+     "final_score": 0.8703240437981016,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.9275924714887024,
+     "rand_index": 0.9537037037037037,
+     "avg_ordering_score": 0.7999999999999999,
+     "page_level_accuracy": 0.8888888888888888,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7333333333333334,
+     "final_score": 0.8422682626600343,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.9394434210105079,
+     "rand_index": 0.9629629629629629,
+     "avg_ordering_score": 0.7333333333333334,
+     "page_level_accuracy": 0.8518518518518517,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 2,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8037019404733522,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.7686543290379921,
+     "rand_index": 0.8545454545454545,
+     "avg_ordering_score": 0.7958039891549809,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.4723179410169525,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.4074744085147928,
+     "rand_index": 0.4121212121212121,
+     "avg_ordering_score": 0.5348380717159026,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8037019404733522,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.7686543290379921,
+     "rand_index": 0.8545454545454545,
+     "avg_ordering_score": 0.7958039891549809,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 4,
+   "delta": 0.08333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8125,
+     "label_accuracy": 0.75
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8497183902570898,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9433463530959602,
+     "rand_index": 0.9861111111111112,
+     "avg_ordering_score": 0.7347080484106439,
+     "page_level_accuracy": 0.9583333333333334,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9166693797841878,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8396842729100316,
+     "rand_index": 0.9,
+     "avg_ordering_score": 0.9634966231133598,
+     "page_level_accuracy": 0.9375,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 2,
+   "delta": 0.16666666666666663,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.8333333333333334,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.933991510359007,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9430662002458656,
+     "rand_index": 0.9719298245614034,
+     "avg_ordering_score": 0.9104850083143793,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8222159310542231,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8643849356583092,
+     "rand_index": 0.9368421052631578,
+     "avg_ordering_score": 0.7438183416477125,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 7,
+   "delta": -0.23809523809523814,
+   "dataset": "docsplit_100",
+   "a_score": 0.38095238095238093,
+   "b_score": 0.6190476190476191,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.38095238095238093,
+     "final_score": 0.7232824376759829,
+     "boundary_accuracy": 0.3809666666666667,
+     "v_measure": 0.8598522473447354,
+     "rand_index": 0.9403508771929824,
+     "avg_ordering_score": 0.5464633130831068,
+     "page_level_accuracy": 0.8333333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6190476190476191,
+     "final_score": 0.8305537702909748,
+     "boundary_accuracy": 0.6190333333333333,
+     "v_measure": 0.9136338171771042,
+     "rand_index": 0.9596491228070175,
+     "avg_ordering_score": 0.7244660705898887,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.38095238095238093,
+     "final_score": 0.7485738707319579,
+     "boundary_accuracy": 0.3809666666666667,
+     "v_measure": 0.8494206136215636,
+     "rand_index": 0.9298245614035089,
+     "avg_ordering_score": 0.6075251539513796,
+     "page_level_accuracy": 0.7999999999999999,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 6,
+   "delta": -0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.8333333333333334,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9132636731823934,
+     "boundary_accuracy": 0.6111,
+     "v_measure": 0.9235174445499772,
+     "rand_index": 0.9571150097465887,
+     "avg_ordering_score": 0.8862111192165036,
+     "page_level_accuracy": 0.8771929824561404,
+     "label_accuracy": 0.7222333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9043833806540537,
+     "boundary_accuracy": 0.8333,
+     "v_measure": 0.9039521743988268,
+     "rand_index": 0.9395711500974658,
+     "avg_ordering_score": 0.8870050990599609,
+     "page_level_accuracy": 0.7719298245614036,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9598770650468352,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9688916828811688,
+     "rand_index": 0.9844054580896686,
+     "avg_ordering_score": 0.9431055596082518,
+     "page_level_accuracy": 0.9824561403508771,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 14,
+   "sections": 5,
+   "delta": -1.1102230246251565e-16,
+   "dataset": "docsplit_100",
+   "a_score": 0.39999999999999997,
+   "b_score": 0.4000000000000001,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.39999999999999997,
+     "final_score": 0.8360089256087145,
+     "boundary_accuracy": 0.5333333333333333,
+     "v_measure": 0.8429368013359569,
+     "rand_index": 0.9010989010989011,
+     "avg_ordering_score": 0.8000000000000002,
+     "page_level_accuracy": 0.6428571428571429,
+     "label_accuracy": 0.75
+    },
+    "b": {
+     "split_accuracy_without_order": 0.4000000000000001,
+     "final_score": 0.588518443992443,
+     "boundary_accuracy": 0.4000000000000001,
+     "v_measure": 0.7667180851783127,
+     "rand_index": 0.8351648351648352,
+     "avg_ordering_score": 0.3760954278133121,
+     "page_level_accuracy": 0.9523809523809524,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.7257729596590652,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.8239709595153818,
+     "rand_index": 0.8791208791208791,
+     "avg_ordering_score": 0.6,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 10,
+   "sections": 4,
+   "delta": 0.16666666666666663,
+   "dataset": "docsplit_100",
+   "a_score": 0.9166666666666666,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9166666666666666,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 0.9166666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.9496204375200689,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.9346779040608565,
+     "rand_index": 0.9555555555555556,
+     "avg_ordering_score": 0.9541241452319316,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 3,
+   "delta": 0.4444444444444444,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.2222222222222222,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8335784048444248,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.7752147992023906,
+     "rand_index": 0.7636363636363637,
+     "avg_ordering_score": 0.8977312282694725,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.2222222222222222,
+     "final_score": 0.5283647072948019,
+     "boundary_accuracy": 0.22219999999999998,
+     "v_measure": 0.7008160723109924,
+     "rand_index": 0.7212121212121212,
+     "avg_ordering_score": 0.345715317828047,
+     "page_level_accuracy": 0.8484848484848485,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8863765775614297,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8266148278325741,
+     "rand_index": 0.8181818181818182,
+     "avg_ordering_score": 0.9503548321156634,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 17,
+   "sections": 3,
+   "delta": 0.11111111111111116,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.8888888888888888,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999999,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8888888888888888,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999999,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9803921568627452,
+     "label_accuracy": 0.8889
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999999,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9607843137254902,
+     "label_accuracy": 0.7778
+    }
+   }
+  },
+  {
+   "pages": 15,
+   "sections": 7,
+   "delta": -0.33333333333333337,
+   "dataset": "docsplit_100",
+   "a_score": 0.38095238095238093,
+   "b_score": 0.7142857142857143,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.38095238095238093,
+     "final_score": 0.7308850125903558,
+     "boundary_accuracy": 0.38093333333333335,
+     "v_measure": 0.8568733836947562,
+     "rand_index": 0.9238095238095237,
+     "avg_ordering_score": 0.5714285714285714,
+     "page_level_accuracy": 0.7777777777777777,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7142857142857143,
+     "final_score": 0.8946486081678242,
+     "boundary_accuracy": 0.7143,
+     "v_measure": 0.9453096952633748,
+     "rand_index": 0.9714285714285714,
+     "avg_ordering_score": 0.8309280829896751,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7142857142857143,
+     "final_score": 0.8729754612801881,
+     "boundary_accuracy": 0.7142666666666666,
+     "v_measure": 0.928425980270493,
+     "rand_index": 0.9619047619047619,
+     "avg_ordering_score": 0.8007855514727488,
+     "page_level_accuracy": 0.9111111111111111,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 5,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.8000000000000002,
+   "b_score": 0.8000000000000002,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.7650627590047568,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.6994959439055837,
+     "rand_index": 0.7052631578947368,
+     "avg_ordering_score": 0.8277459671093537,
+     "page_level_accuracy": 0.9833333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.7428410251084451,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.6635010782784271,
+     "rand_index": 0.6842105263157895,
+     "avg_ordering_score": 0.8118262479197819,
+     "page_level_accuracy": 0.9499999999999998,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.7921076177878451,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.7301712965068955,
+     "rand_index": 0.7210526315789473,
+     "avg_ordering_score": 0.8586032715327688,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.9041414171261323,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.8902463809704696,
+     "rand_index": 0.890909090909091,
+     "avg_ordering_score": 0.9177050983124843,
+     "page_level_accuracy": 0.7272727272727272,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.7726221479385451,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.772306773572362,
+     "rand_index": 0.8181818181818182,
+     "avg_ordering_score": 0.75,
+     "page_level_accuracy": 0.6363636363636364,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.7455217306365984,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.8038371691911766,
+     "rand_index": 0.8363636363636363,
+     "avg_ordering_score": 0.6709430584957904,
+     "page_level_accuracy": 0.7272727272727272,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 2,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.40906994912360667,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.18449178290990206,
+     "rand_index": 0.2300194931773879,
+     "avg_ordering_score": 0.6108842602035683,
+     "page_level_accuracy": 0.8947368421052632,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.43072173476832215,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.1628732848013796,
+     "rand_index": 0.1851851851851852,
+     "avg_ordering_score": 0.6874142345433619,
+     "page_level_accuracy": 0.8947368421052632,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.3883747091570961,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.16623921639470357,
+     "rand_index": 0.1871345029239766,
+     "avg_ordering_score": 0.600062558654852,
+     "page_level_accuracy": 0.9473684210526315,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 7,
+   "delta": -0.04761904761904745,
+   "dataset": "docsplit_100",
+   "a_score": 0.8095238095238096,
+   "b_score": 0.8571428571428571,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8095238095238096,
+     "final_score": 0.9892279831141672,
+     "boundary_accuracy": 0.8095333333333334,
+     "v_measure": 0.9709470201759666,
+     "rand_index": 0.9859649122807017,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9666666666666667,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8571428571428571,
+     "final_score": 0.8994989020657589,
+     "boundary_accuracy": 0.8571,
+     "v_measure": 0.9152888413457424,
+     "rand_index": 0.968421052631579,
+     "avg_ordering_score": 0.8571428571428571,
+     "page_level_accuracy": 0.8833333333333333,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 18,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 5,
+   "sections": 3,
+   "delta": 0.11111111111111105,
+   "dataset": "docsplit_100",
+   "a_score": 0.7777777777777777,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 0.9183900712985974,
+     "boundary_accuracy": 0.7778,
+     "v_measure": 0.8884506936709559,
+     "rand_index": 0.8666666666666667,
+     "avg_ordering_score": 0.9592214624283836,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8775851069478962,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8326760405064336,
+     "rand_index": 0.8000000000000002,
+     "avg_ordering_score": 0.9388321936425754,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8775851069478962,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8326760405064336,
+     "rand_index": 0.8000000000000002,
+     "avg_ordering_score": 0.9388321936425754,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 3,
+   "delta": 0.44444444444444453,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.5555555555555555,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5555555555555555,
+     "final_score": 0.8107975129874334,
+     "boundary_accuracy": 0.5555666666666667,
+     "v_measure": 0.8507368298276798,
+     "rand_index": 0.9472222222222223,
+     "avg_ordering_score": 0.7226154999499158,
+     "page_level_accuracy": 0.9375,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8125,
+     "label_accuracy": 0.6667
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7473265140656031,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.7170196247134047,
+     "rand_index": 0.7649122807017544,
+     "avg_ordering_score": 0.7536870754236267,
+     "page_level_accuracy": 0.9833333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7033832578342722,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.6611358522849747,
+     "rand_index": 0.7368421052631579,
+     "avg_ordering_score": 0.7077775368944782,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.0,
+     "final_score": 0.6401423694037446,
+     "boundary_accuracy": 0.0,
+     "v_measure": 0.6290200109079427,
+     "rand_index": 0.7228070175438597,
+     "avg_ordering_score": 0.6043712245815879,
+     "page_level_accuracy": 0.9499999999999998
+    }
+   }
+  },
+  {
+   "pages": 16,
+   "sections": 4,
+   "delta": 0.5,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.7371196236242158,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.7360007402648406,
+     "rand_index": 0.8083333333333332,
+     "avg_ordering_score": 0.7020722104493445,
+     "page_level_accuracy": 0.3958333333333333,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 15,
+   "sections": 5,
+   "delta": 0.2666666666666666,
+   "dataset": "docsplit_100",
+   "a_score": 0.9333333333333332,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9333333333333332,
+     "final_score": 0.9734089249594268,
+     "boundary_accuracy": 0.9333333333333332,
+     "v_measure": 0.976451958647932,
+     "rand_index": 0.9777777777777779,
+     "avg_ordering_score": 0.9697029817059987,
+     "page_level_accuracy": 0.9777777777777779,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.847098537813685,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9098588007012874,
+     "rand_index": 0.9269841269841269,
+     "avg_ordering_score": 0.7757756117846628,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999999,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.11111111111111105,
+   "dataset": "docsplit_100",
+   "a_score": 0.7777777777777777,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 0.9999999999999997,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8666666666666667,
+     "label_accuracy": 0.7778
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.7962481234141419,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.8832381076916552,
+     "rand_index": 0.968421052631579,
+     "avg_ordering_score": 0.6666666666666666,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.2222222222222222,
+     "final_score": 0.848628774322521,
+     "boundary_accuracy": 0.22219999999999998,
+     "v_measure": 0.8262476960575081,
+     "rand_index": 0.9228070175438597,
+     "avg_ordering_score": 0.8227301918443581,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 4,
+   "delta": 0.16666666666666674,
+   "dataset": "docsplit_100",
+   "a_score": 0.8333333333333334,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9082952212518206,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9743114892957813,
+     "rand_index": 0.9922027290448344,
+     "avg_ordering_score": 0.8333333333333334,
+     "page_level_accuracy": 0.9824561403508771,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9229239480814471,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9337674378394731,
+     "rand_index": 0.9649122807017544,
+     "avg_ordering_score": 0.8965080368922802,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.8826133322879061,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.9380440342535531,
+     "rand_index": 0.9766081871345028,
+     "avg_ordering_score": 0.8079005538817837,
+     "page_level_accuracy": 0.9649122807017544,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 10,
+   "delta": 0.06666666666666665,
+   "dataset": "docsplit_100",
+   "a_score": 0.9666666666666667,
+   "b_score": 0.9,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9666666666666667,
+     "final_score": 0.9814788916328725,
+     "boundary_accuracy": 0.9666666666666667,
+     "v_measure": 0.9945315509369484,
+     "rand_index": 0.9980506822612085,
+     "avg_ordering_score": 0.9666666666666667,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.9,
+     "final_score": 0.9444366748986178,
+     "boundary_accuracy": 0.9,
+     "v_measure": 0.9835946528108453,
+     "rand_index": 0.9941520467836257,
+     "avg_ordering_score": 0.9,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7,
+     "final_score": 0.9330525366399546,
+     "boundary_accuracy": 0.7,
+     "v_measure": 0.9556019594253155,
+     "rand_index": 0.9766081871345029,
+     "avg_ordering_score": 0.9,
+     "page_level_accuracy": 0.9210526315789473,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 15,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 18,
+   "sections": 1,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 5,
+   "delta": -0.20000000000000007,
+   "dataset": "docsplit_100",
+   "a_score": 0.7999999999999999,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7999999999999999,
+     "final_score": 0.8660730885396205,
+     "boundary_accuracy": 0.7999999999999999,
+     "v_measure": 0.9198479097140374,
+     "rand_index": 0.9444444444444445,
+     "avg_ordering_score": 0.7999999999999999,
+     "page_level_accuracy": 0.9259259259259259,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 19,
+   "sections": 1,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 3,
+   "delta": -0.4444444444444444,
+   "dataset": "docsplit_100",
+   "a_score": 0.2222222222222222,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.2222222222222222,
+     "final_score": 0.9566607709499196,
+     "boundary_accuracy": 0.7777666666666666,
+     "v_measure": 0.9238568082047879,
+     "rand_index": 0.9515151515151515,
+     "avg_ordering_score": 0.9756355620398697,
+     "page_level_accuracy": 0.6060606060606061,
+     "label_accuracy": 0.22219999999999998
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8181818181818182,
+     "label_accuracy": 0.6667
+    },
+    "c": {
+     "split_accuracy_without_order": 0.0,
+     "final_score": 0.5107010004274276,
+     "boundary_accuracy": 0.0,
+     "v_measure": 0.6390821397587724,
+     "rand_index": 0.8181818181818182,
+     "avg_ordering_score": 0.29277002188455997,
+     "page_level_accuracy": 0.7272727272727272
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 4,
+   "delta": 0.16666666666666669,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.3333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.5784750956202648,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.4798521825962136,
+     "rand_index": 0.5245614035087719,
+     "avg_ordering_score": 0.654743398188037,
+     "page_level_accuracy": 0.8333333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.5192423151690936,
+     "boundary_accuracy": 0.3333333333333333,
+     "v_measure": 0.5066197310745527,
+     "rand_index": 0.5228070175438596,
+     "avg_ordering_score": 0.5237712560289809,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.6050846888005577,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.5131471203372513,
+     "rand_index": 0.5263157894736842,
+     "avg_ordering_score": 0.6904379226956475,
+     "page_level_accuracy": 0.9,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 6,
+   "sections": 4,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 15,
+   "sections": 3,
+   "delta": 0.0,
+   "dataset": "docsplit_100",
+   "a_score": 1.0,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0000000000000002,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 11,
+   "sections": 6,
+   "delta": -0.2222222222222222,
+   "dataset": "docsplit_100",
+   "a_score": 0.5,
+   "b_score": 0.7222222222222222,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.9107784780046014,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9259421948466887,
+     "rand_index": 0.9393939393939394,
+     "avg_ordering_score": 0.888888888888889,
+     "page_level_accuracy": 0.5454545454545455,
+     "label_accuracy": 0.8333333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7222222222222222,
+     "final_score": 0.7928816471235112,
+     "boundary_accuracy": 0.7222333333333334,
+     "v_measure": 0.8482942652617215,
+     "rand_index": 0.8787878787878788,
+     "avg_ordering_score": 0.7222222222222222,
+     "page_level_accuracy": 0.9090909090909092,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.16666666666666666,
+     "final_score": 0.8137522172336867,
+     "boundary_accuracy": 0.1667,
+     "v_measure": 0.7810215895126854,
+     "rand_index": 0.8363636363636363,
+     "avg_ordering_score": 0.8188118215292128,
+     "page_level_accuracy": 0.8181818181818182,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 13,
+   "sections": 7,
+   "delta": -0.19047619047619035,
+   "dataset": "docsplit_100",
+   "a_score": 0.6190476190476191,
+   "b_score": 0.8095238095238094,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6190476190476191,
+     "final_score": 0.7086846641393448,
+     "boundary_accuracy": 0.6190666666666667,
+     "v_measure": 0.864042685861409,
+     "rand_index": 0.923076923076923,
+     "avg_ordering_score": 0.5238095238095238,
+     "page_level_accuracy": 0.8461538461538461,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.8095238095238094,
+     "final_score": 0.8914412577055012,
+     "boundary_accuracy": 0.8095,
+     "v_measure": 0.9638114288684028,
+     "rand_index": 0.982905982905983,
+     "avg_ordering_score": 0.8095238095238094,
+     "page_level_accuracy": 0.8974358974358975,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8571428571428571,
+     "final_score": 0.910952364949193,
+     "boundary_accuracy": 0.8571333333333334,
+     "v_measure": 0.9551647711520834,
+     "rand_index": 0.9743589743589745,
+     "avg_ordering_score": 0.8571428571428571,
+     "page_level_accuracy": 0.9487179487179488,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 13,
+   "sections": 5,
+   "delta": -0.4,
+   "dataset": "docsplit_100",
+   "a_score": 0.19999999999999998,
+   "b_score": 0.6,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.19999999999999998,
+     "final_score": 0.8421903664318169,
+     "boundary_accuracy": 0.3333333333333333,
+     "v_measure": 0.8415113285913728,
+     "rand_index": 0.8974358974358975,
+     "avg_ordering_score": 0.8149071198499986,
+     "page_level_accuracy": 0.4358974358974359,
+     "label_accuracy": 0.375
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.6916447514611447,
+     "boundary_accuracy": 0.6,
+     "v_measure": 0.7810548168846211,
+     "rand_index": 0.8333333333333334,
+     "avg_ordering_score": 0.5760954278133121,
+     "page_level_accuracy": 0.923076923076923,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.8327777863912083,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.846495760949448,
+     "rand_index": 0.8846153846153846,
+     "avg_ordering_score": 0.8000000000000002,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 7,
+   "sections": 3,
+   "delta": 0.1111111111111111,
+   "dataset": "docsplit_100",
+   "a_score": 0.4444444444444444,
+   "b_score": 0.3333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4444444444444444,
+     "final_score": 0.7483106906976283,
+     "boundary_accuracy": 0.4444333333333333,
+     "v_measure": 0.8525776157115241,
+     "rand_index": 0.8888888888888888,
+     "avg_ordering_score": 0.6258881290950503,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.7222589567628552,
+     "boundary_accuracy": 0.3333,
+     "v_measure": 0.8208952492900795,
+     "rand_index": 0.8571428571428571,
+     "avg_ordering_score": 0.605498860309242,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.1111111111111111,
+     "final_score": 0.5725211174180072,
+     "boundary_accuracy": 0.11109999999999999,
+     "v_measure": 0.7298803998471953,
+     "rand_index": 0.7936507936507936,
+     "avg_ordering_score": 0.38327663808701984,
+     "page_level_accuracy": 0.9047619047619048,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 7,
+   "sections": 3,
+   "delta": 0.2222222222222222,
+   "dataset": "docsplit_100",
+   "a_score": 0.8888888888888888,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8888888888888888,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.8095238095238094,
+     "label_accuracy": 0.8889
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.6886526549020355,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.706991571989095,
+     "rand_index": 0.7142857142857143,
+     "avg_ordering_score": 0.6666666666666666,
+     "page_level_accuracy": 0.8571428571428571,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8981824792958784,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8943172187708152,
+     "rand_index": 0.9206349206349206,
+     "avg_ordering_score": 0.8888888888888888,
+     "page_level_accuracy": 0.9523809523809524,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 20,
+   "sections": 3,
+   "delta": 0.5555555555555555,
+   "dataset": "docsplit_100",
+   "a_score": 0.7777777777777777,
+   "b_score": 0.2222222222222222,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.6666666666666666,
+     "label_accuracy": 0.7778
+    },
+    "b": {
+     "split_accuracy_without_order": 0.2222222222222222,
+     "final_score": 0.711041139977089,
+     "boundary_accuracy": 0.22219999999999998,
+     "v_measure": 0.8741791541468982,
+     "rand_index": 0.9421052631578948,
+     "avg_ordering_score": 0.5139400713017812,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5555555555555555,
+     "final_score": 0.8572615210806865,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9192950160008491,
+     "rand_index": 0.9666666666666667,
+     "avg_ordering_score": 0.7715422008276155,
+     "page_level_accuracy": 0.7999999999999999,
+     "label_accuracy": 0.83335
+    }
+   }
+  },
+  {
+   "pages": 9,
+   "sections": 5,
+   "delta": -0.20000000000000007,
+   "dataset": "docsplit_100",
+   "a_score": 0.7999999999999999,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7999999999999999,
+     "final_score": 0.9891309281682407,
+     "boundary_accuracy": 0.8666666666666667,
+     "v_measure": 0.9750422311914811,
+     "rand_index": 0.9814814814814815,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9259259259259259,
+     "label_accuracy": 0.8889
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8,
+     "final_score": 0.9836963922523609,
+     "boundary_accuracy": 0.8,
+     "v_measure": 0.9625633467872218,
+     "rand_index": 0.9722222222222222,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9444444444444444,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 5,
+   "sections": 4,
+   "delta": -0.25,
+   "dataset": "docsplit_100",
+   "a_score": 0.75,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.8664684806453368,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.8992072559146802,
+     "rand_index": 0.9,
+     "avg_ordering_score": 0.8333333333333334,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 33,
+   "sections": 9,
+   "delta": -0.07407407407407407,
+   "dataset": "docsplit_long",
+   "a_score": 0.5185185185185185,
+   "b_score": 0.5925925925925926,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5185185185185185,
+     "final_score": 0.956976672293066,
+     "boundary_accuracy": 0.5926,
+     "v_measure": 0.9396555390872431,
+     "rand_index": 0.9640151515151515,
+     "avg_ordering_score": 0.9621179992849348,
+     "page_level_accuracy": 0.8686868686868686,
+     "label_accuracy": 0.8888666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5925925925925926,
+     "final_score": 0.8794557133451235,
+     "boundary_accuracy": 0.7037333333333334,
+     "v_measure": 0.9372583821931793,
+     "rand_index": 0.9797979797979798,
+     "avg_ordering_score": 0.8003832456946677,
+     "page_level_accuracy": 0.7676767676767676,
+     "label_accuracy": 0.8412333333333333
+    },
+    "c": {
+     "split_accuracy_without_order": 0.48148148148148145,
+     "final_score": 0.9638047180373368,
+     "boundary_accuracy": 0.5926,
+     "v_measure": 0.9403868774435509,
+     "rand_index": 0.9671717171717171,
+     "avg_ordering_score": 0.9738301387670397,
+     "page_level_accuracy": 0.8585858585858586,
+     "label_accuracy": 0.8055333333333333
+    }
+   }
+  },
+  {
+   "pages": 40,
+   "sections": 11,
+   "delta": -0.030303030303030276,
+   "dataset": "docsplit_long",
+   "a_score": 0.6060606060606061,
+   "b_score": 0.6363636363636364,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6060606060606061,
+     "final_score": 0.771168259892543,
+     "boundary_accuracy": 0.697,
+     "v_measure": 0.8232993007320305,
+     "rand_index": 0.9004824924179763,
+     "avg_ordering_score": 0.6804456232100825,
+     "page_level_accuracy": 0.6416666666666667,
+     "label_accuracy": 0.8690333333333333
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6363636363636364,
+     "final_score": 0.7768102620419638,
+     "boundary_accuracy": 0.7273,
+     "v_measure": 0.7489682243994302,
+     "rand_index": 0.8435897435897436,
+     "avg_ordering_score": 0.757341540089341,
+     "page_level_accuracy": 0.525,
+     "label_accuracy": 0.875
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7272727272727272,
+     "final_score": 0.8967479888033484,
+     "boundary_accuracy": 0.9091,
+     "v_measure": 0.8435030950074908,
+     "rand_index": 0.8935897435897436,
+     "avg_ordering_score": 0.9249495583080795,
+     "page_level_accuracy": 0.4749999999999999,
+     "label_accuracy": 0.8000000000000002
+    }
+   }
+  },
+  {
+   "pages": 44,
+   "sections": 12,
+   "delta": 0.33333333333333337,
+   "dataset": "docsplit_long",
+   "a_score": 0.9722222222222222,
+   "b_score": 0.6388888888888888,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.9722222222222222,
+     "final_score": 1.0,
+     "boundary_accuracy": 0.9722333333333334,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.9848484848484849,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6388888888888888,
+     "final_score": 0.8095054087650785,
+     "boundary_accuracy": 0.6389,
+     "v_measure": 0.9091370165731836,
+     "rand_index": 0.9732205778717407,
+     "avg_ordering_score": 0.677832020307695,
+     "page_level_accuracy": 0.9015151515151515,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7222222222222223,
+     "final_score": 0.8817094880738724,
+     "boundary_accuracy": 0.7222,
+     "v_measure": 0.9279341806247979,
+     "rand_index": 0.9679351656095841,
+     "avg_ordering_score": 0.8154843030305536,
+     "page_level_accuracy": 0.962121212121212,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 51,
+   "sections": 14,
+   "delta": -0.04761904761904756,
+   "dataset": "docsplit_long",
+   "a_score": 0.7380952380952381,
+   "b_score": 0.7857142857142857,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7380952380952381,
+     "final_score": 0.8698935068259902,
+     "boundary_accuracy": 0.7381000000000001,
+     "v_measure": 0.9679942061639316,
+     "rand_index": 0.9929411764705881,
+     "avg_ordering_score": 0.7593193223347203,
+     "page_level_accuracy": 0.9281045751633986,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7857142857142857,
+     "final_score": 0.9385793045266319,
+     "boundary_accuracy": 0.7857,
+     "v_measure": 0.9670808089652728,
+     "rand_index": 0.9929411764705881,
+     "avg_ordering_score": 0.8971476163353334,
+     "page_level_accuracy": 0.9673202614379085,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8242050840255645,
+     "boundary_accuracy": 0.5238,
+     "v_measure": 0.9280810333603208,
+     "rand_index": 0.9798929217076902,
+     "avg_ordering_score": 0.6944231905171238,
+     "page_level_accuracy": 0.8954248366013072,
+     "label_accuracy": 0.9583333333333334
+    }
+   }
+  },
+  {
+   "pages": 39,
+   "sections": 10,
+   "delta": 0.23333333333333345,
+   "dataset": "docsplit_long",
+   "a_score": 0.7000000000000001,
+   "b_score": 0.4666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7000000000000001,
+     "final_score": 0.9568940048486377,
+     "boundary_accuracy": 0.8666666666666667,
+     "v_measure": 0.980949235640146,
+     "rand_index": 0.9928025191183085,
+     "avg_ordering_score": 0.9269121323180484,
+     "page_level_accuracy": 0.8974358974358975,
+     "label_accuracy": 0.8102
+    },
+    "b": {
+     "split_accuracy_without_order": 0.4666666666666666,
+     "final_score": 0.7884221714972938,
+     "boundary_accuracy": 0.5666666666666667,
+     "v_measure": 0.8837208752737392,
+     "rand_index": 0.94017094017094,
+     "avg_ordering_score": 0.6648984352722478,
+     "page_level_accuracy": 0.8632478632478633,
+     "label_accuracy": 0.8381
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9706742715895738,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9671573682775533,
+     "rand_index": 0.9811066126855601,
+     "avg_ordering_score": 0.9672165526975909,
+     "page_level_accuracy": 0.8803418803418803,
+     "label_accuracy": 0.7964333333333333
+    }
+   }
+  },
+  {
+   "pages": 36,
+   "sections": 10,
+   "delta": -0.23333333333333323,
+   "dataset": "docsplit_long",
+   "a_score": 0.4666666666666666,
+   "b_score": 0.6999999999999998,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4666666666666666,
+     "final_score": 0.8067160622648432,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.8309973724809857,
+     "rand_index": 0.9015873015873016,
+     "avg_ordering_score": 0.7471397874955424,
+     "page_level_accuracy": 0.8425925925925926,
+     "label_accuracy": 0.9523666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6999999999999998,
+     "final_score": 0.7890138237961194,
+     "boundary_accuracy": 0.6999999999999998,
+     "v_measure": 0.8082432370996893,
+     "rand_index": 0.8751322751322751,
+     "avg_ordering_score": 0.7363398914762564,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8585051678353643,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8560910515157261,
+     "rand_index": 0.9058201058201059,
+     "avg_ordering_score": 0.8360547570028128,
+     "page_level_accuracy": 0.9722222222222222,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 48,
+   "sections": 13,
+   "delta": 0.2564102564102564,
+   "dataset": "docsplit_long",
+   "a_score": 0.7692307692307692,
+   "b_score": 0.5128205128205128,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7692307692307692,
+     "final_score": 0.9111109877930845,
+     "boundary_accuracy": 0.8205333333333332,
+     "v_measure": 0.9213579568273533,
+     "rand_index": 0.9556737588652483,
+     "avg_ordering_score": 0.8837061177398682,
+     "page_level_accuracy": 0.923611111111111,
+     "label_accuracy": 0.9352
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5128205128205128,
+     "final_score": 0.7548335140436072,
+     "boundary_accuracy": 0.5128333333333334,
+     "v_measure": 0.8647729871413473,
+     "rand_index": 0.9397163120567376,
+     "avg_ordering_score": 0.6074223784881719,
+     "page_level_accuracy": 0.8611111111111112,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.358974358974359,
+     "final_score": 0.8650047414080381,
+     "boundary_accuracy": 0.35896666666666666,
+     "v_measure": 0.8686431050362501,
+     "rand_index": 0.9400118203309692,
+     "avg_ordering_score": 0.8256820201324665,
+     "page_level_accuracy": 0.923611111111111,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 46,
+   "sections": 13,
+   "delta": -0.08974358974358976,
+   "dataset": "docsplit_long",
+   "a_score": 0.2692307692307693,
+   "b_score": 0.35897435897435903,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.2692307692307693,
+     "final_score": 0.7130804205249788,
+     "boundary_accuracy": 0.30765,
+     "v_measure": 0.890258175777171,
+     "rand_index": 0.9695652173913043,
+     "avg_ordering_score": 0.4962491444657199,
+     "page_level_accuracy": 0.782608695652174,
+     "label_accuracy": 0.91665
+    },
+    "b": {
+     "split_accuracy_without_order": 0.35897435897435903,
+     "final_score": 0.7326164371987501,
+     "boundary_accuracy": 0.35896666666666666,
+     "v_measure": 0.8876438209956539,
+     "rand_index": 0.96682769726248,
+     "avg_ordering_score": 0.5379971152684332,
+     "page_level_accuracy": 0.8913043478260869,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.894820659467745,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9536120853644546,
+     "rand_index": 0.9838969404186795,
+     "avg_ordering_score": 0.820886806043923,
+     "page_level_accuracy": 0.9565217391304349,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 51,
+   "sections": 14,
+   "delta": 0.23809523809523814,
+   "dataset": "docsplit_long",
+   "a_score": 0.7380952380952381,
+   "b_score": 0.5,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7380952380952381,
+     "final_score": 0.9543544767400448,
+     "boundary_accuracy": 0.7857333333333333,
+     "v_measure": 0.9766042044956,
+     "rand_index": 0.9929411764705881,
+     "avg_ordering_score": 0.9239362629969956,
+     "page_level_accuracy": 0.9215686274509803,
+     "label_accuracy": 0.9326666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5,
+     "final_score": 0.8260028005173345,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.9034115712595722,
+     "rand_index": 0.9636601307189542,
+     "avg_ordering_score": 0.718469750045406,
+     "page_level_accuracy": 0.6993464052287582,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.9030929583001882,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.9581346931195612,
+     "rand_index": 0.9882352941176471,
+     "avg_ordering_score": 0.8330009229817722,
+     "page_level_accuracy": 0.9607843137254902,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 32,
+   "sections": 9,
+   "delta": -0.2592592592592592,
+   "dataset": "docsplit_long",
+   "a_score": 0.7407407407407408,
+   "b_score": 1.0,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7407407407407408,
+     "final_score": 0.9684177535856273,
+     "boundary_accuracy": 0.7407333333333334,
+     "v_measure": 0.9663313434669908,
+     "rand_index": 0.9831989247311829,
+     "avg_ordering_score": 0.9620703730721679,
+     "page_level_accuracy": 0.9583333333333334,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 1.0,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7777777777777778,
+     "final_score": 0.9453430157663036,
+     "boundary_accuracy": 0.7778,
+     "v_measure": 0.9537137596004591,
+     "rand_index": 0.9758064516129034,
+     "avg_ordering_score": 0.925925925925926,
+     "page_level_accuracy": 0.96875,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 41,
+   "sections": 11,
+   "delta": -0.06060606060606055,
+   "dataset": "docsplit_long",
+   "a_score": 0.6363636363636364,
+   "b_score": 0.6969696969696969,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6363636363636364,
+     "final_score": 0.9126641978746116,
+     "boundary_accuracy": 0.7273,
+     "v_measure": 0.9634431920897253,
+     "rand_index": 0.9902439024390244,
+     "avg_ordering_score": 0.8484848484848485,
+     "page_level_accuracy": 0.8455284552845529,
+     "label_accuracy": 0.8714
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6969696969696969,
+     "final_score": 0.8259857621807183,
+     "boundary_accuracy": 0.697,
+     "v_measure": 0.9278898336452679,
+     "rand_index": 0.9821138211382113,
+     "avg_ordering_score": 0.6969696969696969,
+     "page_level_accuracy": 0.9186991869918698,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7272727272727272,
+     "final_score": 0.8976172297623904,
+     "boundary_accuracy": 0.7273,
+     "v_measure": 0.9638613802469013,
+     "rand_index": 0.9902439024390244,
+     "avg_ordering_score": 0.8181818181818182,
+     "page_level_accuracy": 0.975609756097561,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 35,
+   "sections": 10,
+   "delta": 0.23333333333333323,
+   "dataset": "docsplit_long",
+   "a_score": 0.6999999999999998,
+   "b_score": 0.4666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6999999999999998,
+     "final_score": 0.8505522387551864,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.792666973409735,
+     "rand_index": 0.8359742381801206,
+     "avg_ordering_score": 0.886783871715445,
+     "page_level_accuracy": 0.6285714285714286,
+     "label_accuracy": 0.875
+    },
+    "b": {
+     "split_accuracy_without_order": 0.4666666666666666,
+     "final_score": 0.7334885060164371,
+     "boundary_accuracy": 0.6333333333333333,
+     "v_measure": 0.7386946286205572,
+     "rand_index": 0.819607843137255,
+     "avg_ordering_score": 0.6878257761539682,
+     "page_level_accuracy": 0.5333333333333333,
+     "label_accuracy": 0.7381000000000001
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6,
+     "final_score": 0.8649542846227153,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.8007970471082789,
+     "rand_index": 0.8442577030812325,
+     "avg_ordering_score": 0.907381194150675,
+     "page_level_accuracy": 0.5904761904761905,
+     "label_accuracy": 0.75
+    }
+   }
+  },
+  {
+   "pages": 58,
+   "sections": 16,
+   "delta": -0.14583333333333331,
+   "dataset": "docsplit_long",
+   "a_score": 0.4166666666666667,
+   "b_score": 0.5625,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4166666666666667,
+     "final_score": 0.8211388715066921,
+     "boundary_accuracy": 0.5,
+     "v_measure": 0.9064223740490993,
+     "rand_index": 0.9708682626105493,
+     "avg_ordering_score": 0.70363242468356,
+     "page_level_accuracy": 0.8045977011494253,
+     "label_accuracy": 0.7916666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5625,
+     "final_score": 0.77967232377949,
+     "boundary_accuracy": 0.5625,
+     "v_measure": 0.8927345162717568,
+     "rand_index": 0.964710627142569,
+     "avg_ordering_score": 0.6306220758518172,
+     "page_level_accuracy": 0.7586206896551725,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.625,
+     "final_score": 0.8424098936517929,
+     "boundary_accuracy": 0.6875,
+     "v_measure": 0.9220530327663742,
+     "rand_index": 0.9745916515426497,
+     "avg_ordering_score": 0.7364974451490736,
+     "page_level_accuracy": 0.7586206896551723,
+     "label_accuracy": 0.9091
+    }
+   }
+  },
+  {
+   "pages": 56,
+   "sections": 15,
+   "delta": 0.11111111111111116,
+   "dataset": "docsplit_long",
+   "a_score": 0.7555555555555555,
+   "b_score": 0.6444444444444444,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7555555555555555,
+     "final_score": 0.9546453932367052,
+     "boundary_accuracy": 0.7555333333333333,
+     "v_measure": 0.9662410381189649,
+     "rand_index": 0.9902597402597403,
+     "avg_ordering_score": 0.9310403972840579,
+     "page_level_accuracy": 0.9523809523809524,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6444444444444444,
+     "final_score": 0.8614575990234491,
+     "boundary_accuracy": 0.6444666666666666,
+     "v_measure": 0.9315164382408363,
+     "rand_index": 0.9770562770562771,
+     "avg_ordering_score": 0.7686288403983413,
+     "page_level_accuracy": 0.9226190476190476,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5333333333333333,
+     "final_score": 0.8437474530964315,
+     "boundary_accuracy": 0.5333333333333333,
+     "v_measure": 0.9280055270667683,
+     "rand_index": 0.9796536796536796,
+     "avg_ordering_score": 0.7336653028326392,
+     "page_level_accuracy": 0.9166666666666666,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 50,
+   "sections": 14,
+   "delta": 0.2142857142857142,
+   "dataset": "docsplit_long",
+   "a_score": 0.7857142857142857,
+   "b_score": 0.5714285714285715,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7857142857142857,
+     "final_score": 0.9694103488787906,
+     "boundary_accuracy": 0.8333666666666666,
+     "v_measure": 0.9726746468957265,
+     "rand_index": 0.9923809523809523,
+     "avg_ordering_score": 0.956292898119242,
+     "page_level_accuracy": 0.9333333333333332,
+     "label_accuracy": 0.9373333333333335
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5714285714285715,
+     "final_score": 0.814441273248539,
+     "boundary_accuracy": 0.5714333333333333,
+     "v_measure": 0.9298679043022022,
+     "rand_index": 0.9817687074829932,
+     "avg_ordering_score": 0.6730642406044804,
+     "page_level_accuracy": 0.94,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8095238095238096,
+     "final_score": 0.9825342794095998,
+     "boundary_accuracy": 0.8095333333333333,
+     "v_measure": 0.9785167936552805,
+     "rand_index": 0.9937414965986395,
+     "avg_ordering_score": 0.9789394136922397,
+     "page_level_accuracy": 0.9866666666666667,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 53,
+   "sections": 15,
+   "delta": 0.0444444444444444,
+   "dataset": "docsplit_long",
+   "a_score": 0.7777777777777777,
+   "b_score": 0.7333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 0.9013021216842905,
+     "boundary_accuracy": 0.7999999999999999,
+     "v_measure": 0.9229651650142768,
+     "rand_index": 0.9281567489114658,
+     "avg_ordering_score": 0.8770432864057094,
+     "page_level_accuracy": 0.7735849056603774,
+     "label_accuracy": 0.9722333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7333333333333333,
+     "final_score": 0.7925649868114406,
+     "boundary_accuracy": 0.7333,
+     "v_measure": 0.834288036068228,
+     "rand_index": 0.8918722786647315,
+     "avg_ordering_score": 0.7220498162564016,
+     "page_level_accuracy": 0.7672955974842767,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8444444444444444,
+     "final_score": 0.9419080350348801,
+     "boundary_accuracy": 0.8444666666666668,
+     "v_measure": 0.9348753929469557,
+     "rand_index": 0.9332365747460086,
+     "avg_ordering_score": 0.9497600862232779,
+     "page_level_accuracy": 0.7861635220125787,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 35,
+   "sections": 10,
+   "delta": -0.20000000000000007,
+   "dataset": "docsplit_long",
+   "a_score": 0.5333333333333333,
+   "b_score": 0.7333333333333334,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5333333333333333,
+     "final_score": 0.8131395687483239,
+     "boundary_accuracy": 0.5333333333333333,
+     "v_measure": 0.804804872248285,
+     "rand_index": 0.869467787114846,
+     "avg_ordering_score": 0.7891428078150823,
+     "page_level_accuracy": 0.7714285714285714,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7333333333333334,
+     "final_score": 0.8029224313906131,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.789989893236868,
+     "rand_index": 0.8560224089635854,
+     "avg_ordering_score": 0.7828387116809995,
+     "page_level_accuracy": 0.8857142857142857,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.8963963805546616,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.8581230961548805,
+     "rand_index": 0.884593837535014,
+     "avg_ordering_score": 0.921434294264376,
+     "page_level_accuracy": 0.8571428571428571,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 55,
+   "sections": 16,
+   "delta": -0.2916666666666667,
+   "dataset": "docsplit_long",
+   "a_score": 0.4166666666666667,
+   "b_score": 0.7083333333333334,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4166666666666667,
+     "final_score": 0.9075772442628095,
+     "boundary_accuracy": 0.5416666666666666,
+     "v_measure": 0.9370510109508384,
+     "rand_index": 0.978675645342312,
+     "avg_ordering_score": 0.8572911603790437,
+     "page_level_accuracy": 0.8303030303030302,
+     "label_accuracy": 0.7121333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7083333333333334,
+     "final_score": 0.9039811548824406,
+     "boundary_accuracy": 0.7083333333333334,
+     "v_measure": 0.9305588515288769,
+     "rand_index": 0.9741863075196409,
+     "avg_ordering_score": 0.8555897302406223,
+     "page_level_accuracy": 0.7818181818181819,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7083333333333334,
+     "final_score": 0.9440310250933145,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.9654905690350967,
+     "rand_index": 0.98989898989899,
+     "avg_ordering_score": 0.9103672707195858,
+     "page_level_accuracy": 0.9454545454545454,
+     "label_accuracy": 0.9327
+    }
+   }
+  },
+  {
+   "pages": 49,
+   "sections": 14,
+   "delta": -0.14285714285714285,
+   "dataset": "docsplit_long",
+   "a_score": 0.4047619047619047,
+   "b_score": 0.5476190476190476,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4047619047619047,
+     "final_score": 0.7892799109256948,
+     "boundary_accuracy": 0.4285666666666667,
+     "v_measure": 0.9145231630777233,
+     "rand_index": 0.9764739229024944,
+     "avg_ordering_score": 0.6330612788612808,
+     "page_level_accuracy": 0.7346938775510203,
+     "label_accuracy": 0.9166666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5476190476190476,
+     "final_score": 0.8135088580270113,
+     "boundary_accuracy": 0.5476,
+     "v_measure": 0.9018190843251396,
+     "rand_index": 0.9742063492063492,
+     "avg_ordering_score": 0.6890049992882782,
+     "page_level_accuracy": 0.8231292517006802,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7619047619047619,
+     "final_score": 0.9503129495311278,
+     "boundary_accuracy": 0.7619000000000001,
+     "v_measure": 0.9686484717470906,
+     "rand_index": 0.9906462585034014,
+     "avg_ordering_score": 0.9209785339370095,
+     "page_level_accuracy": 0.8843537414965986,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 38,
+   "sections": 11,
+   "delta": 0.393939393939394,
+   "dataset": "docsplit_long",
+   "a_score": 0.8484848484848485,
+   "b_score": 0.45454545454545453,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8484848484848485,
+     "final_score": 0.9736695214290095,
+     "boundary_accuracy": 0.8788,
+     "v_measure": 0.9723538476023262,
+     "rand_index": 0.9829302987197724,
+     "avg_ordering_score": 0.9696969696969697,
+     "page_level_accuracy": 0.9736842105263158,
+     "label_accuracy": 0.9629666666666666
+    },
+    "b": {
+     "split_accuracy_without_order": 0.45454545454545453,
+     "final_score": 0.7136109007998979,
+     "boundary_accuracy": 0.45450000000000007,
+     "v_measure": 0.8625183427239826,
+     "rand_index": 0.926031294452347,
+     "avg_ordering_score": 0.5329469830116308,
+     "page_level_accuracy": 0.8684210526315789,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.787878787878788,
+     "final_score": 0.9445292426892932,
+     "boundary_accuracy": 0.7879,
+     "v_measure": 0.9557108325615603,
+     "rand_index": 0.9739212897107633,
+     "avg_ordering_score": 0.9242424242424243,
+     "page_level_accuracy": 0.9736842105263158,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 57,
+   "sections": 16,
+   "delta": -0.10416666666666663,
+   "dataset": "docsplit_long",
+   "a_score": 0.625,
+   "b_score": 0.7291666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.625,
+     "final_score": 0.9380623878130295,
+     "boundary_accuracy": 0.6875,
+     "v_measure": 0.9547037377030074,
+     "rand_index": 0.9862155388471178,
+     "avg_ordering_score": 0.9056651373509964,
+     "page_level_accuracy": 0.9064327485380117,
+     "label_accuracy": 0.9011
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7291666666666666,
+     "final_score": 0.8983294504166429,
+     "boundary_accuracy": 0.7291666666666666,
+     "v_measure": 0.9388051380147769,
+     "rand_index": 0.977234753550543,
+     "avg_ordering_score": 0.8386389550506257,
+     "page_level_accuracy": 0.8362573099415204,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9408109318646666,
+     "boundary_accuracy": 0.8333333333333334,
+     "v_measure": 0.9643361266207015,
+     "rand_index": 0.9914369256474519,
+     "avg_ordering_score": 0.9037353375952564,
+     "page_level_accuracy": 0.9590643274853802,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 42,
+   "sections": 12,
+   "delta": 0.13888888888888884,
+   "dataset": "docsplit_long",
+   "a_score": 0.8055555555555555,
+   "b_score": 0.6666666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8055555555555555,
+     "final_score": 0.9502035755112366,
+     "boundary_accuracy": 0.8055666666666667,
+     "v_measure": 0.9642222542853148,
+     "rand_index": 0.9856755710414248,
+     "avg_ordering_score": 0.9254582383591035,
+     "page_level_accuracy": 0.9603174603174603,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8588245109984044,
+     "boundary_accuracy": 0.6667,
+     "v_measure": 0.9164565810503263,
+     "rand_index": 0.9698025551684087,
+     "avg_ordering_score": 0.7745194538874411,
+     "page_level_accuracy": 0.8809523809523809,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5277777777777778,
+     "final_score": 0.8862958111350577,
+     "boundary_accuracy": 0.5277666666666667,
+     "v_measure": 0.9264986203578395,
+     "rand_index": 0.9660592467993645,
+     "avg_ordering_score": 0.8263126886915134,
+     "page_level_accuracy": 0.873015873015873,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 60,
+   "sections": 17,
+   "delta": -0.019607843137254943,
+   "dataset": "docsplit_long",
+   "a_score": 0.5882352941176471,
+   "b_score": 0.607843137254902,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5882352941176471,
+     "final_score": 0.7865063311916112,
+     "boundary_accuracy": 0.6274666666666667,
+     "v_measure": 0.9012434318286399,
+     "rand_index": 0.9630885122410545,
+     "avg_ordering_score": 0.6408466903483752,
+     "page_level_accuracy": 0.8888888888888888,
+     "label_accuracy": 0.9444666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.607843137254902,
+     "final_score": 0.798016038781208,
+     "boundary_accuracy": 0.6078333333333333,
+     "v_measure": 0.8962492129147027,
+     "rand_index": 0.9606403013182674,
+     "avg_ordering_score": 0.6675873204459308,
+     "page_level_accuracy": 0.9055555555555556,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.4901960784313726,
+     "final_score": 0.8661656461588025,
+     "boundary_accuracy": 0.4902,
+     "v_measure": 0.8927976045898826,
+     "rand_index": 0.9580037664783427,
+     "avg_ordering_score": 0.8069306067834924,
+     "page_level_accuracy": 0.9111111111111111,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 30,
+   "sections": 8,
+   "delta": 0.125,
+   "dataset": "docsplit_long",
+   "a_score": 0.875,
+   "b_score": 0.75,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.875,
+     "final_score": 0.9693481616833838,
+     "boundary_accuracy": 0.875,
+     "v_measure": 0.9639035236865586,
+     "rand_index": 0.9777777777777779,
+     "avg_ordering_score": 0.9678556726345996,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.75,
+     "final_score": 0.912893098947027,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.893368018690372,
+     "rand_index": 0.9348659003831418,
+     "avg_ordering_score": 0.9116692383572969,
+     "page_level_accuracy": 0.6999999999999998,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.9285476846900961,
+     "boundary_accuracy": 0.875,
+     "v_measure": 0.909121169562998,
+     "rand_index": 0.9494252873563219,
+     "avg_ordering_score": 0.9278221409205324,
+     "page_level_accuracy": 0.9888888888888889,
+     "label_accuracy": 0.9523666666666667
+    }
+   }
+  },
+  {
+   "pages": 37,
+   "sections": 10,
+   "delta": 0.06666666666666676,
+   "dataset": "docsplit_long",
+   "a_score": 0.7000000000000001,
+   "b_score": 0.6333333333333333,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7000000000000001,
+     "final_score": 0.9304792262811379,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.9466662536981069,
+     "rand_index": 0.964964964964965,
+     "avg_ordering_score": 0.9051428432307397,
+     "page_level_accuracy": 0.8198198198198199,
+     "label_accuracy": 0.9666666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6333333333333333,
+     "final_score": 0.827905518547697,
+     "boundary_accuracy": 0.6333333333333333,
+     "v_measure": 0.9341575521259431,
+     "rand_index": 0.9784784784784785,
+     "avg_ordering_score": 0.6994930217931831,
+     "page_level_accuracy": 0.9009009009009009,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6333333333333333,
+     "final_score": 0.9559787712081705,
+     "boundary_accuracy": 0.7333333333333334,
+     "v_measure": 0.9704717517828878,
+     "rand_index": 0.98998998998999,
+     "avg_ordering_score": 0.9317266715299022,
+     "page_level_accuracy": 0.6576576576576577,
+     "label_accuracy": 0.8597666666666667
+    }
+   }
+  },
+  {
+   "pages": 59,
+   "sections": 16,
+   "delta": 0.27083333333333337,
+   "dataset": "docsplit_long",
+   "a_score": 0.7083333333333334,
+   "b_score": 0.4375,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7083333333333334,
+     "final_score": 0.8707528304070945,
+     "boundary_accuracy": 0.7291666666666666,
+     "v_measure": 0.9472488074060611,
+     "rand_index": 0.987336840054549,
+     "avg_ordering_score": 0.7742128370838839,
+     "page_level_accuracy": 0.824858757062147,
+     "label_accuracy": 0.9762
+    },
+    "b": {
+     "split_accuracy_without_order": 0.4375,
+     "final_score": 0.7168574824914717,
+     "boundary_accuracy": 0.4375,
+     "v_measure": 0.8772786564250067,
+     "rand_index": 0.9664913306058835,
+     "avg_ordering_score": 0.5118299714674982,
+     "page_level_accuracy": 0.711864406779661,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7083333333333334,
+     "final_score": 0.9035304097828479,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.9429491386796603,
+     "rand_index": 0.9840249366842002,
+     "avg_ordering_score": 0.8435737818837657,
+     "page_level_accuracy": 0.7627118644067797,
+     "label_accuracy": 0.9444666666666667
+    }
+   }
+  },
+  {
+   "pages": 34,
+   "sections": 9,
+   "delta": -0.22222222222222227,
+   "dataset": "docsplit_long",
+   "a_score": 0.48148148148148145,
+   "b_score": 0.7037037037037037,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.48148148148148145,
+     "final_score": 0.8829704581697038,
+     "boundary_accuracy": 0.48146666666666665,
+     "v_measure": 0.8810839722657139,
+     "rand_index": 0.9411764705882354,
+     "avg_ordering_score": 0.8548106949124327,
+     "page_level_accuracy": 0.7450980392156863,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7037037037037037,
+     "final_score": 0.8086011113426603,
+     "boundary_accuracy": 0.7037333333333334,
+     "v_measure": 0.8272651853801861,
+     "rand_index": 0.9126559714795008,
+     "avg_ordering_score": 0.7472416442554771,
+     "page_level_accuracy": 0.6470588235294118,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8888888888888888,
+     "final_score": 0.9156413987446704,
+     "boundary_accuracy": 0.8889,
+     "v_measure": 0.9354032658850301,
+     "rand_index": 0.9750445632798574,
+     "avg_ordering_score": 0.876058882906897,
+     "page_level_accuracy": 0.8529411764705882,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 57,
+   "sections": 16,
+   "delta": -0.20833333333333331,
+   "dataset": "docsplit_long",
+   "a_score": 0.3333333333333333,
+   "b_score": 0.5416666666666666,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.7324545267594255,
+     "boundary_accuracy": 0.3958333333333333,
+     "v_measure": 0.8023541038811598,
+     "rand_index": 0.8953634085213033,
+     "avg_ordering_score": 0.6160502973176195,
+     "page_level_accuracy": 0.7719298245614036,
+     "label_accuracy": 0.8055666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5416666666666666,
+     "final_score": 0.7648991505158578,
+     "boundary_accuracy": 0.6041666666666666,
+     "v_measure": 0.8133248784917336,
+     "rand_index": 0.8968253968253969,
+     "avg_ordering_score": 0.6747231633731503,
+     "page_level_accuracy": 0.8128654970760234,
+     "label_accuracy": 0.8956333333333334
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6041666666666666,
+     "final_score": 0.845362247856102,
+     "boundary_accuracy": 0.7291666666666666,
+     "v_measure": 0.8310234890988945,
+     "rand_index": 0.9001670843776107,
+     "avg_ordering_score": 0.8251292089739516,
+     "page_level_accuracy": 0.8538011695906432,
+     "label_accuracy": 0.8264999999999999
+    }
+   }
+  },
+  {
+   "pages": 47,
+   "sections": 13,
+   "delta": 0.17948717948717952,
+   "dataset": "docsplit_long",
+   "a_score": 0.7435897435897436,
+   "b_score": 0.5641025641025641,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7435897435897436,
+     "final_score": 0.9516827948619597,
+     "boundary_accuracy": 0.7692333333333333,
+     "v_measure": 0.9635807216176695,
+     "rand_index": 0.9855072463768115,
+     "avg_ordering_score": 0.9288216057266788,
+     "page_level_accuracy": 0.8652482269503546,
+     "label_accuracy": 0.9722333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5641025641025641,
+     "final_score": 0.8511923550377078,
+     "boundary_accuracy": 0.6410333333333332,
+     "v_measure": 0.9092889537067794,
+     "rand_index": 0.9623805118717237,
+     "avg_ordering_score": 0.7665499772861644,
+     "page_level_accuracy": 0.75177304964539,
+     "label_accuracy": 0.8796333333333334
+    },
+    "c": {
+     "split_accuracy_without_order": 0.4358974358974359,
+     "final_score": 0.8779214019351139,
+     "boundary_accuracy": 0.5384666666666666,
+     "v_measure": 0.9333348550829946,
+     "rand_index": 0.9784150477952513,
+     "avg_ordering_score": 0.7999678524311049,
+     "page_level_accuracy": 0.7375886524822696,
+     "label_accuracy": 0.8023666666666666
+    }
+   }
+  },
+  {
+   "pages": 58,
+   "sections": 16,
+   "delta": -0.08333333333333331,
+   "dataset": "docsplit_long",
+   "a_score": 0.4791666666666667,
+   "b_score": 0.5625,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.4791666666666667,
+     "final_score": 0.8475383050454145,
+     "boundary_accuracy": 0.5416666666666666,
+     "v_measure": 0.924318727718861,
+     "rand_index": 0.9749949586610204,
+     "avg_ordering_score": 0.7454197669008883,
+     "page_level_accuracy": 0.8275862068965517,
+     "label_accuracy": 0.882
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5625,
+     "final_score": 0.7803424031218235,
+     "boundary_accuracy": 0.5625,
+     "v_measure": 0.9170659588820681,
+     "rand_index": 0.9820528332325065,
+     "avg_ordering_score": 0.6111254101863595,
+     "page_level_accuracy": 0.867816091954023,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5625,
+     "final_score": 0.8301965719583286,
+     "boundary_accuracy": 0.5625,
+     "v_measure": 0.9239251671705131,
+     "rand_index": 0.9790280298447267,
+     "avg_ordering_score": 0.7089165454090373,
+     "page_level_accuracy": 0.8735632183908045,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 45,
+   "sections": 12,
+   "delta": -0.361111111111111,
+   "dataset": "docsplit_long",
+   "a_score": 0.3333333333333333,
+   "b_score": 0.6944444444444443,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.6402068961474815,
+     "boundary_accuracy": 0.3333333333333333,
+     "v_measure": 0.7767521235604787,
+     "rand_index": 0.8872053872053872,
+     "avg_ordering_score": 0.44843503691203007,
+     "page_level_accuracy": 0.5703703703703703,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6944444444444443,
+     "final_score": 0.7808832051206701,
+     "boundary_accuracy": 0.6944666666666667,
+     "v_measure": 0.8190967354679515,
+     "rand_index": 0.901010101010101,
+     "avg_ordering_score": 0.7017129920023142,
+     "page_level_accuracy": 0.6888888888888888,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.4166666666666667,
+     "final_score": 0.7087852694179673,
+     "boundary_accuracy": 0.47223333333333334,
+     "v_measure": 0.813527866244281,
+     "rand_index": 0.8983164983164983,
+     "avg_ordering_score": 0.5616483565555448,
+     "page_level_accuracy": 0.6444444444444445,
+     "label_accuracy": 0.8963000000000001
+    }
+   }
+  },
+  {
+   "pages": 43,
+   "sections": 13,
+   "delta": -0.23076923076923078,
+   "dataset": "docsplit_long",
+   "a_score": 0.3333333333333333,
+   "b_score": 0.5641025641025641,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.3333333333333333,
+     "final_score": 0.7731495038559312,
+     "boundary_accuracy": 0.35896666666666666,
+     "v_measure": 0.8574626104296441,
+     "rand_index": 0.9344407530454042,
+     "avg_ordering_score": 0.6503473259743381,
+     "page_level_accuracy": 0.7674418604651163,
+     "label_accuracy": 0.9444333333333333
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5641025641025641,
+     "final_score": 0.7701598983738366,
+     "boundary_accuracy": 0.5641333333333333,
+     "v_measure": 0.8509032705395222,
+     "rand_index": 0.9136212624584718,
+     "avg_ordering_score": 0.6580575302486763,
+     "page_level_accuracy": 0.937984496124031,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.8860012530427556,
+     "boundary_accuracy": 0.7179666666666668,
+     "v_measure": 0.8966511794471738,
+     "rand_index": 0.9387227759320783,
+     "avg_ordering_score": 0.8543155283958853,
+     "page_level_accuracy": 0.9147286821705426,
+     "label_accuracy": 0.9352
+    }
+   }
+  },
+  {
+   "pages": 32,
+   "sections": 9,
+   "delta": 0.11111111111111116,
+   "dataset": "docsplit_long",
+   "a_score": 0.8148148148148149,
+   "b_score": 0.7037037037037037,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.8148148148148149,
+     "final_score": 1.0,
+     "boundary_accuracy": 1.0,
+     "v_measure": 1.0,
+     "rand_index": 1.0,
+     "avg_ordering_score": 1.0,
+     "page_level_accuracy": 0.875,
+     "label_accuracy": 0.8148333333333334
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7037037037037037,
+     "final_score": 0.8878436713142149,
+     "boundary_accuracy": 0.8148333333333334,
+     "v_measure": 0.9351859158422838,
+     "rand_index": 0.9865591397849461,
+     "avg_ordering_score": 0.8148148148148149,
+     "page_level_accuracy": 0.8854166666666666,
+     "label_accuracy": 0.8630666666666666
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8518518518518517,
+     "final_score": 0.9786685955215435,
+     "boundary_accuracy": 0.9259333333333334,
+     "v_measure": 0.9900925421817535,
+     "rand_index": 0.9986559139784946,
+     "avg_ordering_score": 0.9629629629629629,
+     "page_level_accuracy": 0.9270833333333334,
+     "label_accuracy": 0.9259333333333334
+    }
+   }
+  },
+  {
+   "pages": 48,
+   "sections": 13,
+   "delta": -0.10256410256410264,
+   "dataset": "docsplit_long",
+   "a_score": 0.6666666666666666,
+   "b_score": 0.7692307692307693,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6666666666666666,
+     "final_score": 0.878612440468275,
+     "boundary_accuracy": 0.7435666666666667,
+     "v_measure": 0.8494444552448831,
+     "rand_index": 0.9143026004728133,
+     "avg_ordering_score": 0.875351353077702,
+     "page_level_accuracy": 0.6527777777777778,
+     "label_accuracy": 0.8963000000000001
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7692307692307693,
+     "final_score": 0.8624399368409376,
+     "boundary_accuracy": 0.7692,
+     "v_measure": 0.8323062118323197,
+     "rand_index": 0.9131205673758865,
+     "avg_ordering_score": 0.8521664840777721,
+     "page_level_accuracy": 0.75,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.5641025641025642,
+     "final_score": 0.8553380462866969,
+     "boundary_accuracy": 0.5640999999999999,
+     "v_measure": 0.8448719535283399,
+     "rand_index": 0.9175531914893617,
+     "avg_ordering_score": 0.829463520064543,
+     "page_level_accuracy": 0.6944444444444443,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 52,
+   "sections": 14,
+   "delta": -0.023809523809523725,
+   "dataset": "docsplit_long",
+   "a_score": 0.5238095238095238,
+   "b_score": 0.5476190476190476,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.5238095238095238,
+     "final_score": 0.8626381533024063,
+     "boundary_accuracy": 0.6428666666666666,
+     "v_measure": 0.9492978854308687,
+     "rand_index": 0.9871794871794872,
+     "avg_ordering_score": 0.7570376202996347,
+     "page_level_accuracy": 0.7243589743589745,
+     "label_accuracy": 0.7696999999999999
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5476190476190476,
+     "final_score": 0.8235110309785281,
+     "boundary_accuracy": 0.6190666666666668,
+     "v_measure": 0.9067951092932698,
+     "rand_index": 0.9728506787330317,
+     "avg_ordering_score": 0.7071991679439052,
+     "page_level_accuracy": 0.7435897435897436,
+     "label_accuracy": 0.8842666666666666
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6190476190476191,
+     "final_score": 0.9379038799136393,
+     "boundary_accuracy": 0.7857333333333333,
+     "v_measure": 0.9744003350990518,
+     "rand_index": 0.9924585218702866,
+     "avg_ordering_score": 0.8923783313426094,
+     "page_level_accuracy": 0.7628205128205128,
+     "label_accuracy": 0.7985000000000001
+    }
+   }
+  },
+  {
+   "pages": 43,
+   "sections": 12,
+   "delta": 0.0,
+   "dataset": "docsplit_long",
+   "a_score": 0.6388888888888888,
+   "b_score": 0.6388888888888888,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.6388888888888888,
+     "final_score": 0.869697366612988,
+     "boundary_accuracy": 0.6666666666666666,
+     "v_measure": 0.8809657470562794,
+     "rand_index": 0.9246684493423007,
+     "avg_ordering_score": 0.8365776350266861,
+     "page_level_accuracy": 0.9302325581395349,
+     "label_accuracy": 0.9523666666666667
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6388888888888888,
+     "final_score": 0.8058707911584309,
+     "boundary_accuracy": 0.6389,
+     "v_measure": 0.8506728640113348,
+     "rand_index": 0.9121447028423773,
+     "avg_ordering_score": 0.7303327988900055,
+     "page_level_accuracy": 0.8527131782945737,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8333333333333334,
+     "final_score": 0.8965865790734804,
+     "boundary_accuracy": 0.8333,
+     "v_measure": 0.9078734793863079,
+     "rand_index": 0.9339239571797711,
+     "avg_ordering_score": 0.8722744398639213,
+     "page_level_accuracy": 1.0,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 31,
+   "sections": 9,
+   "delta": 0.18518518518518523,
+   "dataset": "docsplit_long",
+   "a_score": 0.7407407407407408,
+   "b_score": 0.5555555555555556,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7407407407407408,
+     "final_score": 0.8415131730415076,
+     "boundary_accuracy": 0.7407666666666666,
+     "v_measure": 0.9365692571894115,
+     "rand_index": 0.9741935483870968,
+     "avg_ordering_score": 0.7276449432947611,
+     "page_level_accuracy": 0.956989247311828,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5555555555555556,
+     "final_score": 0.7692962198060126,
+     "boundary_accuracy": 0.5556,
+     "v_measure": 0.9184582835513048,
+     "rand_index": 0.9777777777777779,
+     "avg_ordering_score": 0.5904744089474838,
+     "page_level_accuracy": 0.8924731182795699,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7407407407407408,
+     "final_score": 0.8991446815633694,
+     "boundary_accuracy": 0.7407666666666667,
+     "v_measure": 0.9212156472951433,
+     "rand_index": 0.9491039426523299,
+     "avg_ordering_score": 0.8631295681530021,
+     "page_level_accuracy": 0.989247311827957,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 40,
+   "sections": 11,
+   "delta": -0.1515151515151515,
+   "dataset": "docsplit_long",
+   "a_score": 0.48484848484848486,
+   "b_score": 0.6363636363636364,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.48484848484848486,
+     "final_score": 0.9058875980242623,
+     "boundary_accuracy": 0.6364,
+     "v_measure": 0.9041326593656573,
+     "rand_index": 0.94017094017094,
+     "avg_ordering_score": 0.8896233962802258,
+     "page_level_accuracy": 0.85,
+     "label_accuracy": 0.7579333333333333
+    },
+    "b": {
+     "split_accuracy_without_order": 0.6363636363636364,
+     "final_score": 0.8292013875284998,
+     "boundary_accuracy": 0.6364,
+     "v_measure": 0.9152038420613752,
+     "rand_index": 0.9743589743589743,
+     "avg_ordering_score": 0.7136213668468248,
+     "page_level_accuracy": 0.9250000000000002,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.7272727272727272,
+     "final_score": 0.9483439747046288,
+     "boundary_accuracy": 0.7273,
+     "v_measure": 0.9465461243189148,
+     "rand_index": 0.9743589743589743,
+     "avg_ordering_score": 0.9362354000703128,
+     "page_level_accuracy": 0.975,
+     "label_accuracy": 1.0
+    }
+   }
+  },
+  {
+   "pages": 56,
+   "sections": 20,
+   "delta": -0.01666666666666672,
+   "dataset": "docsplit_long",
+   "a_score": 0.55,
+   "b_score": 0.5666666666666668,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.55,
+     "final_score": 0.8754152380635448,
+     "boundary_accuracy": 0.65,
+     "v_measure": 0.8912577272222737,
+     "rand_index": 0.9382087424770351,
+     "avg_ordering_score": 0.8360972412774353,
+     "page_level_accuracy": 0.6607142857142857,
+     "label_accuracy": 0.84245
+    },
+    "b": {
+     "split_accuracy_without_order": 0.5666666666666668,
+     "final_score": 0.7830636177571756,
+     "boundary_accuracy": 0.6333333333333333,
+     "v_measure": 0.8364825245870756,
+     "rand_index": 0.9002164502164502,
+     "avg_ordering_score": 0.6977777481125885,
+     "page_level_accuracy": 0.8571428571428571,
+     "label_accuracy": 0.8953333333333333
+    },
+    "c": {
+     "split_accuracy_without_order": 0.6833333333333332,
+     "final_score": 0.8756340735951235,
+     "boundary_accuracy": 0.75,
+     "v_measure": 0.8575257008478462,
+     "rand_index": 0.904978354978355,
+     "avg_ordering_score": 0.8700161192771464,
+     "page_level_accuracy": 0.8988095238095238,
+     "label_accuracy": 0.9172666666666668
+    }
+   }
+  },
+  {
+   "pages": 54,
+   "sections": 15,
+   "delta": -0.06666666666666654,
+   "dataset": "docsplit_long",
+   "a_score": 0.7111111111111111,
+   "b_score": 0.7777777777777777,
+   "metrics": {
+    "a": {
+     "split_accuracy_without_order": 0.7111111111111111,
+     "final_score": 0.9494950918684194,
+     "boundary_accuracy": 0.7111000000000001,
+     "v_measure": 0.9672457050053729,
+     "rand_index": 0.9913813184253435,
+     "avg_ordering_score": 0.9196766720214806,
+     "page_level_accuracy": 0.9382716049382717,
+     "label_accuracy": 1.0
+    },
+    "b": {
+     "split_accuracy_without_order": 0.7777777777777777,
+     "final_score": 0.9075598108228443,
+     "boundary_accuracy": 0.7777666666666666,
+     "v_measure": 0.9522563409974406,
+     "rand_index": 0.9820638248311204,
+     "avg_ordering_score": 0.847959538731408,
+     "page_level_accuracy": 0.9074074074074074,
+     "label_accuracy": 1.0
+    },
+    "c": {
+     "split_accuracy_without_order": 0.8000000000000002,
+     "final_score": 0.9917151348337029,
+     "boundary_accuracy": 0.8000000000000002,
+     "v_measure": 0.9775013655916679,
+     "rand_index": 0.9902166317260658,
+     "avg_ordering_score": 0.9995712710085386,
+     "page_level_accuracy": 0.9814814814814815,
+     "label_accuracy": 1.0
+    }
+   }
+  }
+ ]
+}

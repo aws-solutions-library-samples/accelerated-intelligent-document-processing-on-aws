@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs DocSplit-Poly-Seq-20261116-172703, DocSplit-Poly-Seq-20261116-172704, DocSplit-Poly-Seq-20261116-172709, DocSplit-Poly-Seq-20261116-172710, DocSplit-Poly-Seq-20261116-172708, DocSplit-Poly-Seq-20261116-173502, DocSplit-Poly-Seq-20261116-172705, DocSplit-Poly-Seq-20261116-172707, DocSplit-Poly-Seq-20261116-172706, DocSplit-Poly-Seq-20261116-173535, DocSplit-Poly-Seq-20261116-173504, DocSplit-Poly-Seq-20261116-173830, DocSplit-Poly-Seq-20261116-174110, DocSplit-Poly-Seq-20261116-174026, DocSplit-Poly-Seq-20261116-173908, DocSplit-Poly-Seq-20261116-173854, DocSplit-Poly-Seq-20261116-173840, DocSplit-Poly-Seq-20261116-173853, DocSplit-Poly-Seq-20261116-175241, DocSplit-Poly-Seq-20261116-175116, DocSplit-Poly-Seq-20261116-175338, DocSplit-Poly-Seq-20261116-175755, DocSplit-Poly-Seq-20261116-180116, DocSplit-Poly-Seq-20261116-180225, DocSplit-Poly-Seq-20261116-175421, DocSplit-Poly-Seq-20261116-175413, DocSplit-Poly-Seq-20261116-175754, DocSplit-Poly-Seq-20261116-180735, DocSplit-Poly-Seq-20261116-180823, DocSplit-Poly-Seq-20261116-180519, DocSplit-Poly-Seq-20261116-180933, DocSplit-Poly-Seq-20261116-180912, DocSplit-Poly-Seq-20261116-181109, DocSplit-Poly-Seq-20261116-174631, DocSplit-Poly-Seq-20261116-174726, DocSplit-Poly-Seq-20261116-174833 (28 failed documents left out of the scores)",
-  "verdict": "Holistic classification is a good place to start. With Claude Sonnet 5.5 it got 0.91 of sections exactly right, against 0.76 page by page, for $201 of classification per 1,000 packets; with Claude Haiku 5.5 reading text only it got 0.88 for $2.55 (SC-02). Test it on your own packets.",
+  "verdict": "On 20 packets; [Which approach should I use?](#which-approach-should-i-use) compares the same approaches on 100. Holistic classification is a good place to start. With Claude Sonnet 5.5 it got 0.91 of sections exactly right, against 0.76 page by page, for $201 of classification per 1,000 packets; with Claude Haiku 5.5 reading text only it got 0.88 for $2.55 (SC-02). Test it on your own packets.",
   "cells": {
     "docsplit|Page by page \u00b7 Amazon Nova 2 Lite|weighted_accuracy": {
       "mean": 0.317087,
@@ -362,8 +362,8 @@
       "se": 0.022243
     },
     "docsplit|Holistic \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
-      "mean": 10.414035,
-      "se": 0.005157
+      "mean": 23.805995,
+      "se": 0.020554
     },
     "docsplit|Page by page \u00b7 Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.244928,
@@ -506,8 +506,8 @@
       "se": 0.007566
     },
     "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5|classification_cost_per_1000_docs": {
-      "mean": 16.928187,
-      "se": 0.376259
+      "mean": 29.111096,
+      "se": 1.704905
     },
     "docsplit|Holistic \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
       "mean": 0.248471,
@@ -1773,7 +1773,7 @@
         "boundary_accuracy": 0.555533,
         "label_accuracy": 0.944433,
         "weighted_accuracy": 0.292351,
-        "cost": 0.116412
+        "cost": 0.158294
       },
       "packet_0020.pdf": {
         "boundary_accuracy": 1.0,
@@ -1793,7 +1793,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.081301,
-        "cost": 0.112665
+        "cost": 0.165715
       },
       "packet_0015.pdf": {
         "boundary_accuracy": 0.583333,
@@ -1805,7 +1805,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.383562,
-        "cost": 0.111037
+        "cost": 0.160845
       },
       "packet_0020.pdf": {
         "boundary_accuracy": 0.666667,
@@ -1857,7 +1857,7 @@
         "boundary_accuracy": 0.5,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.203252,
-        "cost": 0.120136
+        "cost": 0.173092
       },
       "packet_0015.pdf": {
         "boundary_accuracy": 0.583333,
@@ -1869,7 +1869,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 0.944433,
         "weighted_accuracy": 0.353346,
-        "cost": 0.115248
+        "cost": 0.165353
       },
       "packet_0020.pdf": {
         "boundary_accuracy": 1.0,
@@ -2232,6 +2232,522 @@
           "FAILED"
         ]
       }
+    }
+  },
+  "pages_per_doc": {
+    "docsplit": 14.9
+  },
+  "sections_per_doc": {
+    "docsplit": 4.5
+  },
+  "long_context": {
+    "docsplit|Page by page \u00b7 Amazon Nova 2 Lite": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 59,
+      "long_documents": 0,
+      "requests": 1130,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 565,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 565,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Two steps: split page by page, then classify \u00b7 Amazon Nova 2 Lite": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 59,
+      "long_documents": 3,
+      "requests": 850,
+      "long_requests": 3,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 59,
+          "long_documents": 3,
+          "requests": 425,
+          "long_requests": 3,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 425,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00275372,
+        0.00234375,
+        0.00354397
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Holistic \u00b7 Amazon Nova 2 Lite": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 3,
+      "requests": 522,
+      "long_requests": 6,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 3,
+          "requests": 261,
+          "long_requests": 3,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 3,
+          "requests": 261,
+          "long_requests": 3,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00571122,
+        0.00570653,
+        0.00569733
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Two steps: split holistically, then classify \u00b7 Amazon Nova 2 Lite": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 59,
+      "long_documents": 8,
+      "requests": 464,
+      "long_requests": 11,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 59,
+          "long_documents": 8,
+          "requests": 232,
+          "long_requests": 8,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 59,
+          "long_documents": 3,
+          "requests": 232,
+          "long_requests": 3,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00607292,
+        0.0057268,
+        0.01741897
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Holistic \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 16,
+      "requests": 784,
+      "long_requests": 16,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 1,
+          "requests": 357,
+          "long_requests": 1,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 60,
+          "long_documents": 15,
+          "requests": 69,
+          "long_requests": 15,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 358,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.01631715,
+        0.01340557,
+        0.01341094
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Page by page \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 56,
+      "long_documents": 2,
+      "requests": 1727,
+      "long_requests": 2,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 56,
+          "long_documents": 2,
+          "requests": 444,
+          "long_requests": 2,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 56,
+          "long_documents": 0,
+          "requests": 839,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 56,
+          "long_documents": 0,
+          "requests": 444,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.00229635,
+        0.00224083
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 57,
+      "long_documents": 13,
+      "requests": 1062,
+      "long_requests": 13,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 57,
+          "long_documents": 0,
+          "requests": 331,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 57,
+          "long_documents": 0,
+          "requests": 332,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "SectionClassification": {
+          "documents": 57,
+          "long_documents": 0,
+          "requests": 333,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Splitting": {
+          "documents": 57,
+          "long_documents": 13,
+          "requests": 66,
+          "long_requests": 13,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.01352164,
+        0.0135135,
+        0.00951359
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Holistic \u00b7 Claude Sonnet 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 59,
+      "long_documents": 0,
+      "requests": 672,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 336,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 336,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Page by page \u00b7 Claude Sonnet 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 58,
+      "long_documents": 2,
+      "requests": 825,
+      "long_requests": 2,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 58,
+          "long_documents": 2,
+          "requests": 412,
+          "long_requests": 2,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 58,
+          "long_documents": 0,
+          "requests": 413,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0031757,
+        0.0030526,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Sonnet 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 58,
+      "long_documents": 3,
+      "requests": 750,
+      "long_requests": 3,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 58,
+          "long_documents": 3,
+          "requests": 375,
+          "long_requests": 3,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 58,
+          "long_documents": 0,
+          "requests": 375,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00327838,
+        0.00198617,
+        0.00222994
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Two steps: split holistically, then classify \u00b7 Claude Sonnet 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 720,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 360,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 360,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Two steps: split page by page, then classify \u00b7 Claude Haiku 5.5": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 47,
+      "long_documents": 3,
+      "requests": 1485,
+      "long_requests": 3,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 47,
+          "long_documents": 3,
+          "requests": 262,
+          "long_requests": 3,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 47,
+          "long_documents": 0,
+          "requests": 262,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "SectionClassification": {
+          "documents": 47,
+          "long_documents": 0,
+          "requests": 262,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Splitting": {
+          "documents": 47,
+          "long_documents": 0,
+          "requests": 699,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00335684,
+        0.00381121,
+        0.00214488
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
     }
   }
 }

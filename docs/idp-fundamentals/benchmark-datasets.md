@@ -55,7 +55,7 @@ narrative text, and none measures rule validation. For those, build a test set f
 - **Source:**
   [amazon-agi/RealKIE-FCC-Verified](https://huggingface.co/datasets/amazon-agi/RealKIE-FCC-Verified):
   invoices for broadcast advertising, from US Federal Communications Commission filings.
-- **Size:** 75 invoices. The benchmark uses the first 20, which hold 81 pages.
+- **Size:** 75 invoices. Most benchmarks use the first 20, which hold 81 pages; the comparison of agentic and single-pass extraction uses all 75.
 - **Ground truth:** values for the header fields (agency, advertiser, gross total, payment
   terms, agency commission, net amount due) and a list of line items. The accelerator's
   evaluation scores them as weighted accuracy.

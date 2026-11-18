@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="792" height="390" viewBox="0 0 792 390" role="img"><title>With Claude Haiku 5.5, holistic still groups long packets better than page by page</title><desc>Sections exactly right, 5–20 pages: +0.08 ± 0.05. Sections exactly right, 30–60 pages: 0.00 ± 0.06. Grouping score, 5–20 pages: +0.09 ± 0.03. Grouping score, 30–60 pages: +0.06 ± 0.02. Boundary accuracy, 5–20 pages: +0.11 ± 0.05. Boundary accuracy, 30–60 pages: +0.03 ± 0.06. V-measure, 5–20 pages: +0.07 ± 0.03. V-measure, 30–60 pages: +0.03 ± 0.01. Rand index, 5–20 pages: +0.05 ± 0.02. Rand index, 30–60 pages: +0.01 ± 0.01. Ordering, 5–20 pages: +0.12 ± 0.04. Ordering, 30–60 pages: +0.10 ± 0.04. Page accuracy, 5–20 pages: +0.01 ± 0.04. Page accuracy, 30–60 pages: +0.01 ± 0.03. Label accuracy, 5–20 pages: −0.03 ± 0.02. Label accuracy, 30–60 pages: −0.05 ± 0.02.</desc><style>
+  .viz { --series: #2a78d6; --ring: #ffffff; --ink: #0b0b0b; --ink-2: #52514e;
+         --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+         --fam-nova: #2a78d6; --fam-claude: #eb6834; --fam-other: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz, svg.viz:root { --series: #3987e5;
+      --ring: #17181c; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835;
+      --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  }
+  :root[data-theme="dark"] .viz { --series: #3987e5; --ring: #17181c; --ink: #f0efec;
+    --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  .viz { max-width: 100%; height: auto; }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .viz .ctitle { font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .panel { font-size: 13px; font-weight: 600; fill: var(--ink); }
+  .sub { font-size: 12px; fill: var(--muted); }
+  .viz .lead { font-size: 12px; fill: var(--ink); }
+  .label { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel.dflt, .viz .plabel .dflt { fill: var(--ink); font-weight: 700; }
+  .viz .dot.ref { stroke: var(--ink); stroke-width: 1.5; }
+  .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .none { font-size: 12px; fill: var(--muted); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--ink-2); stroke-width: 1; }
+  .viz .gap { fill: var(--ring); }
+  .viz .leader { stroke: var(--muted); stroke-width: 1; }
+  .band { fill: var(--series); opacity: 0.12; }
+  .dot { fill: var(--series); stroke: var(--ring); stroke-width: 2; }
+  .axislabel { font-size: 12px; fill: var(--ink-2); }
+  .prices { font-size: 10px; fill: var(--muted); }
+  .num { font-size: 11px; font-weight: 700; fill: var(--ink); }
+  .halo { paint-order: stroke; stroke: var(--ring); stroke-width: 3px;
+          stroke-linejoin: round; }
+  .mcoe { stroke: var(--ink-2); stroke-width: 1; fill: none; }
+  .mcoelabel { font-size: 11px; fill: var(--ink-2); }
+  .viz .ptitle { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .viz .fam-nova { fill: var(--fam-nova); }
+  .viz .fam-claude { fill: var(--fam-claude); }
+  .viz .fam-other { fill: var(--fam-other); }
+  .viz .baseline { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 5 4; }
+  .viz .baselinelabel { font-size: 11px; fill: var(--ink-2); }
+  .viz { --ap-page: #2a78d6; --ap-holistic: #eb6834; --ap-split: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz, svg.viz:root { --ap-page: #3987e5; --ap-holistic: #d95926; --ap-split: #199e70; }
+  }
+  :root[data-theme="dark"] .viz { --ap-page: #3987e5; --ap-holistic: #d95926; --ap-split: #199e70; }
+  .viz .ap-page { fill: var(--ap-page); }
+  .viz .band.ap-page { fill: var(--ap-page); opacity: 0.14; }
+  .viz .ap-holistic { fill: var(--ap-holistic); }
+  .viz .band.ap-holistic { fill: var(--ap-holistic); opacity: 0.14; }
+  .viz .ap-split { fill: var(--ap-split); }
+  .viz .band.ap-split { fill: var(--ap-split); opacity: 0.14; }
+  .viz .mlabel { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .viz .klabel { font-size: 12px; fill: var(--ink-2); }
+  .viz .gname { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .viz .val { font-size: 11px; fill: var(--ink-2); font-variant-numeric: tabular-nums; }
+  .viz .packet { fill: var(--muted); opacity: 0.35; }
+  .viz .est { fill: var(--ink); stroke: var(--ring); stroke-width: 2; }
+  .viz .ebar { stroke: var(--ink); stroke-width: 2; stroke-linecap: round; }
+  .viz .span { stroke: var(--ink-2); stroke-width: 2; stroke-linecap: round; }
+  .viz .zero { stroke: var(--ink-2); stroke-width: 1; }
+  .viz .bx { opacity: 0.22; }
+  .viz .bx.neutral { fill: var(--ink-2); opacity: 0.14; }
+  .viz .strip { opacity: 0.3; }
+  .viz .whisker { stroke: var(--ink-2); stroke-width: 1.5; }
+  .viz .median { stroke: var(--ink); stroke-width: 2; }
+  .viz .short { fill: var(--ring); stroke: var(--ink-2); stroke-width: 2; }
+  .viz .ebar2 { stroke: var(--ink-2); stroke-width: 1.5; stroke-linecap: round; }
+</style><text class="ctitle" x="0" y="18">With Claude Haiku 5.5, holistic still groups long packets better than page by page</text><text class="sub" x="0" y="40">Holistic minus page by page, mean over the packets each scored, ±2 standard errors · 100 packets of 5–20 pages, 40 of 30–60 pages</text><circle class="short" cx="6" cy="62" r="4.5"/><text class="label" x="16" y="66">5–20 pages</text><circle class="est" cx="106.0" cy="62" r="4.5"/><text class="label" x="116.0" y="66">30–60 pages</text><line class="grid" x1="170.0" x2="170.0" y1="98.0" y2="344.0"/><text class="tick" x="170.0" y="360.0" text-anchor="middle">−0.10</text><line class="grid" x1="270.3" x2="270.3" y1="98.0" y2="344.0"/><text class="tick" x="270.3" y="360.0" text-anchor="middle">−0.05</text><line class="grid" x1="370.7" x2="370.7" y1="98.0" y2="344.0"/><text class="tick" x="370.7" y="360.0" text-anchor="middle">0</text><line class="grid" x1="471.0" x2="471.0" y1="98.0" y2="344.0"/><text class="tick" x="471.0" y="360.0" text-anchor="middle">+0.05</text><line class="grid" x1="571.3" x2="571.3" y1="98.0" y2="344.0"/><text class="tick" x="571.3" y="360.0" text-anchor="middle">+0.10</text><line class="grid" x1="671.7" x2="671.7" y1="98.0" y2="344.0"/><text class="tick" x="671.7" y="360.0" text-anchor="middle">+0.15</text><line class="grid" x1="772.0" x2="772.0" y1="98.0" y2="344.0"/><text class="tick" x="772.0" y="360.0" text-anchor="middle">+0.20</text><line class="zero" x1="370.7" x2="370.7" y1="90.0" y2="344.0"/><text class="baselinelabel" x="370.7" y="86.0" text-anchor="middle">No difference</text><line class="axis" x1="170.0" x2="772.0" y1="344.0" y2="344.0"/><text class="axislabel" x="772.0" y="380.0" text-anchor="end">holistic better →</text><text class="axislabel" x="170.0" y="380.0">← page by page better</text><text class="label" x="0" y="123.0">Sections exactly right</text><g><title>Sections exactly right, 5–20 pages: +0.08 ± 0.05</title><line class="ebar2" x1="433.0" x2="622.4" y1="114.0" y2="114.0"/><circle class="short" cx="527.7" cy="114.0" r="4.5"/></g><g><title>Sections exactly right, 30–60 pages: 0.00 ± 0.06</title><line class="ebar" x1="249.3" x2="489.0" y1="124.0" y2="124.0"/><circle class="est" cx="369.1" cy="124.0" r="4.5"/></g><text class="label" x="0" y="153.0">Grouping score</text><g><title>Grouping score, 5–20 pages: +0.09 ± 0.03</title><line class="ebar2" x1="498.9" x2="608.1" y1="144.0" y2="144.0"/><circle class="short" cx="553.5" cy="144.0" r="4.5"/></g><g><title>Grouping score, 30–60 pages: +0.06 ± 0.02</title><line class="ebar" x1="446.8" x2="543.8" y1="154.0" y2="154.0"/><circle class="est" cx="495.3" cy="154.0" r="4.5"/></g><text class="label" x="0" y="183.0">Boundary accuracy</text><g><title>Boundary accuracy, 5–20 pages: +0.11 ± 0.05</title><line class="ebar2" x1="480.3" x2="683.6" y1="174.0" y2="174.0"/><circle class="short" cx="582.0" cy="174.0" r="4.5"/></g><g><title>Boundary accuracy, 30–60 pages: +0.03 ± 0.06</title><line class="ebar" x1="309.7" x2="545.0" y1="184.0" y2="184.0"/><circle class="est" cx="427.4" cy="184.0" r="4.5"/></g><text class="label" x="0" y="213.0">V-measure</text><g><title>V-measure, 5–20 pages: +0.07 ± 0.03</title><line class="ebar2" x1="456.8" x2="580.7" y1="204.0" y2="204.0"/><circle class="short" cx="518.7" cy="204.0" r="4.5"/></g><g><title>V-measure, 30–60 pages: +0.03 ± 0.01</title><line class="ebar" x1="414.5" x2="459.5" y1="214.0" y2="214.0"/><circle class="est" cx="437.0" cy="214.0" r="4.5"/></g><text class="label" x="0" y="243.0">Rand index</text><g><title>Rand index, 5–20 pages: +0.05 ± 0.02</title><line class="ebar2" x1="429.7" x2="512.6" y1="234.0" y2="234.0"/><circle class="short" cx="471.1" cy="234.0" r="4.5"/></g><g><title>Rand index, 30–60 pages: +0.01 ± 0.01</title><line class="ebar" x1="384.3" x2="409.7" y1="244.0" y2="244.0"/><circle class="est" cx="397.0" cy="244.0" r="4.5"/></g><text class="label" x="0" y="273.0">Ordering</text><g><title>Ordering, 5–20 pages: +0.12 ± 0.04</title><line class="ebar2" x1="540.1" x2="684.2" y1="264.0" y2="264.0"/><circle class="short" cx="612.1" cy="264.0" r="4.5"/></g><g><title>Ordering, 30–60 pages: +0.10 ± 0.04</title><line class="ebar" x1="487.5" x2="659.6" y1="274.0" y2="274.0"/><circle class="est" cx="573.6" cy="274.0" r="4.5"/></g><text class="label" x="0" y="303.0">Page accuracy</text><g><title>Page accuracy, 5–20 pages: +0.01 ± 0.04</title><line class="ebar2" x1="316.5" x2="457.1" y1="294.0" y2="294.0"/><circle class="short" cx="386.8" cy="294.0" r="4.5"/></g><g><title>Page accuracy, 30–60 pages: +0.01 ± 0.03</title><line class="ebar" x1="324.4" x2="457.3" y1="304.0" y2="304.0"/><circle class="est" cx="390.8" cy="304.0" r="4.5"/></g><text class="label" x="0" y="333.0">Label accuracy</text><g><title>Label accuracy, 5–20 pages: −0.03 ± 0.02</title><line class="ebar2" x1="261.9" x2="349.3" y1="324.0" y2="324.0"/><circle class="short" cx="305.6" cy="324.0" r="4.5"/></g><g><title>Label accuracy, 30–60 pages: −0.05 ± 0.02</title><line class="ebar" x1="223.6" x2="323.1" y1="334.0" y2="334.0"/><circle class="est" cx="273.4" cy="334.0" r="4.5"/></g></svg>

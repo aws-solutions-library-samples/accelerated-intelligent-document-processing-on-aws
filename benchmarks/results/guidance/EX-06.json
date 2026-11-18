@@ -2372,5 +2372,377 @@
         ]
       }
     }
+  },
+  "long_context": {
+    "realkie|Page image and OCR text": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 137,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 77,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|OCR text only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 139,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 79,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|Page image only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 129,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 69,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Page image and OCR text": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 121,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|OCR text only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 120,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Page image only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 121,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "omniai|Page image and OCR text": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 181,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "omniai|OCR text only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 59,
+      "long_documents": 0,
+      "requests": 177,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 59,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 59,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 59,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "omniai|Page image only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 180,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
   }
 }

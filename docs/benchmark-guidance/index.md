@@ -27,14 +27,14 @@ These are good places to start. Test each one on your own documents.
 
 | Decision | Start with | Why |
 |---|---|---|
-| Splitting packets into documents | Holistic classification with Claude Haiku 5.5, reading text only | [0.88 of sections exactly right for $83 per 1,000 packets](splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt) ([SC-11](splitting-and-classification.md#does-holistic-classification-beat-page-by-page-classification)) |
+| Splitting packets into documents | Holistic classification with Claude Haiku 5.5, reading text only | [0.88 of sections exactly right on 20 DocSplit packets, for $2.55 of classification per 1,000 packets, against 0.76 for $23 with page images](splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt); [with page images, no approach under $200 got measurably more right](splitting-and-classification.md#which-approach-should-i-use) |
 | Extraction model | Claude Haiku 5.5 | [No model scored measurably higher, and it cost the least](extraction.md#which-extraction-model-should-i-use) |
-| Single-pass or agentic extraction | Single-pass; agentic with Claude Haiku 5.5 above about 100 line items, with table parsing off | [Above 100 line items single-pass got almost none right](extraction.md#when-is-agentic-extraction-worth-it); [table parsing cost more and scored no better](extraction.md#does-deterministic-table-parsing-help-agentic-extraction) |
+| Single-pass or agentic extraction | Single-pass for most documents; consider agentic, with Claude Haiku 5.5 and table parsing off, for exceptionally long or complex extractions, such as invoices with many line items | [On RealKIE invoices with more than about 100 line items, single-pass got almost none right](extraction.md#when-is-agentic-extraction-worth-it); [table parsing cost more and scored no better](extraction.md#does-deterministic-table-parsing-help-agentic-extraction) |
 | What the extraction model reads | Page images and OCR text | [Without page images, W-2 forms with every field right fell from 78% to 3%](extraction.md#what-is-the-impact-of-document-modality) |
 | Reasoning effort (Claude Sonnet 5.5) | Low | [Medium and high scored the same](extraction.md#does-more-reasoning-effort-improve-extraction) |
 | Scoring model, if people review by confidence | Claude Haiku 5.5, with escalation off | [Caught as many errors as Claude Sonnet 5.5 for a fifth of the cost](confidence-assessment.md#which-scoring-model-should-i-use) |
 | Confidence, if nobody reviews by it | Off | [Same accuracy, 13% to 28% cheaper](confidence-assessment.md#separate-scoring-pass-or-integrated-into-extraction) |
-| Decision model ([Strands Decider 2B](https://huggingface.co/StrandsAgents/strands-decider-2B-qwen3.5-v1-2610), Qwen3.5, on AWS Lambda) | Not yet as the default. If you try it for section classification, give each class a one-line description of what its pages look like | [With one-line descriptions it classified 0.90 of sections right, against 0.77 with the preset's descriptions and 0.97 for Claude Haiku 5.5](splitting-and-classification.md#can-a-decision-model-classify-the-sections) (interim); [as a confidence scorer it separated right from wrong values less well than Claude Haiku 5.5, for more](confidence-assessment.md#can-a-decision-model-score-confidence) |
+| Decision model ([Strands Decider 2B](https://huggingface.co/StrandsAgents/strands-decider-2B-qwen3.5-v1-2610), Qwen3.5, on AWS Lambda) | For section classification, worth testing if you give each class a one-line description of what its pages look like and send the first two page images; not yet for scoring confidence | [With one-line descriptions it gave 0.95 of sections the right class, against 0.98 for Claude Haiku 5.5, for the same cost; with the preset's descriptions it got 0.77](splitting-and-classification.md#can-a-decision-model-classify-the-sections); [as a confidence scorer it separated right from wrong values less well than Claude Haiku 5.5, for more](confidence-assessment.md#can-a-decision-model-score-confidence) |
 | Schema enforcement | Structured output once it is released ([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)), or off; not the forced tool | [The forced tool lowered W-2 accuracy](extraction.md#does-schema-enforcement-improve-accuracy-or-cost) |
 | OCR | Amazon Textract, Layout only, at 300 DPI | [Scored best on W-2s and as well on invoices, for the lowest cost](digitization.md#which-textract-features-do-i-need) ([DG-01](digitization.md#does-the-ocr-reader-make-a-difference-to-extraction-accuracy), [DG-04](digitization.md#what-resolution-should-pages-be-rendered-at)) |
 | Lowest cost | Claude Haiku 5.5 extraction, Textract Layout only, confidence off or scored by Claude Haiku 5.5 | [$21 against $135 per 1,000 invoices, at the same accuracy](token-use.md#what-is-the-cheapest-configuration-that-keeps-accuracy) |
@@ -54,7 +54,7 @@ classification:
       modality: {text: true, images: false}
 extraction:
   model: us.anthropic.claude-haiku-5-5
-  mode: simple                   # single-pass; use advanced (agentic) above ~100 line items
+  mode: simple                   # single-pass; consider advanced (agentic) for very long extractions
   schema_enforcement: {mode: structured_output}   # not in a release yet; leave out until it is
   confidence:                    # or mode: off if nobody reviews by confidence
     mode: separate
@@ -116,6 +116,8 @@ Defaults differ from preset to preset. To configure your own stack, start from t
 - **Your documents.** Confirm a choice on your own test set; see
   [Measure with ground truth](../idp-fundamentals/index.md#4-measure-with-ground-truth).
 - **BDA mode.** These benchmarks cover Pipeline mode.
+- **Some costs are floors.** Costs come from each document's own metering. Claude Haiku 5.5 bills a prompt over 100,000 tokens at a higher long-context rate; we price that wherever a call's size can be worked out from the metering, but not for agentic extraction's calls, and a Lambda attempt that failed and was retried is billed without being metered.
+- **Other kinds of documents.** Most extraction results come from [RealKIE-FCC-Verified](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified), real invoices with checked ground truth. We rely on it because it is accurate and representative of real layouts, but it is one kind of document.
 - **Datasets we haven't built yet:** packets with field ground truth, and handwritten
   forms.
 

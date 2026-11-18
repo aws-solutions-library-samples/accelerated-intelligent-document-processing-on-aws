@@ -69,6 +69,19 @@
 #             reference point (bold) on the chart, in place of a "(default)" value. A
 #             results table bolds it and adds "(recommended)" unless the value already
 #             carries a parenthesized note, such as "(preset default)"
+#   econ      optional {against, line, dataset, names}: the economics under the answer.
+#             `against` is the value the others are priced against (the question's
+#             Claude Haiku 5.5 setting); `line` is the value, or list of values, the
+#             economics sentence prices against it; a table under the sentence
+#             prices every other measured value. Each counts the cost the page shows
+#             (`cost_metric`, else the whole pipeline's) against the plotted
+#             accuracy (`plot`, its first metric), in errors per 1,000 documents:
+#             one per document's fields, or the results file's `sections_per_doc`
+#             for a packet's section, label or boundary accuracy. A gap within
+#             twice the combined standard error is no measurable difference.
+#             `dataset` picks the dataset (default: the first that measured
+#             `against`); `names` {value: words} names a value in the sentence
+#             (default: the value without the parts it shares with the other)
 #   transform optional: per value, the name of a function in
 #             benchmarks/harness/profile_transforms.py applied to the profile last
 #   notes     optional: caveats and secondary results, printed in the details
@@ -282,6 +295,7 @@ ablations:
     metrics: ["page_accuracy", "section_accuracy", "grouping_score", "boundary_accuracy", "label_accuracy", "classification_tokens", "total_tokens"]
     plot: section_accuracy
     cost_metric: classification_cost_per_1000_docs
+    econ: {against: "Holistic · Claude Haiku 5.5", line: "Holistic · Claude Sonnet 5.5"}
     families: true
   - id: SC-02
     page: splitting-and-classification
@@ -299,6 +313,7 @@ ablations:
     metrics: ["section_accuracy", "page_accuracy", "boundary_accuracy", "label_accuracy", "classification_tokens"]
     plot: section_accuracy
     cost_metric: classification_cost_per_1000_docs
+    econ: {against: "Text and images (baseline)", line: "Text only"}
   - id: SC-04
     page: splitting-and-classification
     question: "How long a packet can holistic classification handle?"
@@ -352,9 +367,9 @@ ablations:
   # ------------------------------------------------------------------- extraction
   - id: EX-01
     page: extraction
-    notes: "Single-pass scored as well as agentic or better up to 100 line items, and cost about the same there with the 5.5 models. Above 100 line items, agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for about a third of the cost ($316 against $1,073 per 1,000 invoices). Only 5 RealKIE invoices have more than 100 line items, and Test Studio could not score the longest (1,490 items) because its evaluation step timed out."
+    notes: "Single-pass scored as well as agentic or better up to 100 line items, and cost about the same there with the 5.5 models. Above 100 line items, agentic with Claude Haiku 5.5 scored as well as with Claude Sonnet 5.5 for at least $316 against $1,073 per 1,000 invoices; Claude Haiku 5.5's agentic calls over 100,000 tokens bill at its long-context rate and can't be priced from our metering, so its cost could be up to about two thirds of Claude Sonnet 5.5's. Only 5 RealKIE invoices have more than 100 line items, and Test Studio could not score the longest (1,490 items) because its evaluation step timed out."
     question: "When is agentic extraction worth it?"
-    takeaway: "Agentic extraction wins only above about 100 line items"
+    takeaway: "Agentic extraction helps only on very long extractions, such as 100+ line items"
     details_takeaway: "Averaged over whole datasets, the two modes score within the noise"
     varies: "extraction mode and model"
     short_values: {"Single-pass (Simple, default)": "Single-pass · Sonnet 5", "Agentic (Advanced)": "Agentic · Sonnet 5"}
@@ -380,6 +395,7 @@ ablations:
     datasets: ["realkie", "fake_w2"]
     runs: 3
     metrics: ["weighted_accuracy", "all_fields_right", "extraction_tokens", "total_tokens", "median_seconds"]
+    econ: {against: "Claude Haiku 5.5", line: "OpenAI GPT-6 Astra"}
     families: true
   - id: EX-03
     page: extraction
@@ -626,7 +642,7 @@ ablations:
   - id: SC-12
     page: "splitting-and-classification"
     question: "Can a decision model classify the sections?"
-    takeaway: "To be measured"
+    takeaway: "With one-line descriptions, Decider 2B comes close to Haiku 5.5 at classifying sections"
     changes: "Which model classifies each section after Claude Haiku 5.5 detects the sections, and the class descriptions it reads"
     varies: "which model classifies each section, and the class descriptions"
     fixed: "Classification"
@@ -641,6 +657,10 @@ ablations:
     metrics: ["section_accuracy", "label_accuracy", "page_accuracy", "boundary_accuracy", "classification_tokens", "total_tokens", "median_seconds"]
     plot: "label_accuracy"
     cost_metric: classification_cost_per_1000_docs
+    econ:
+      against: "LLM · Claude Haiku 5.5"
+      line: "Decision model · first 2 page images · short descriptions"
+      names: {"LLM · Claude Haiku 5.5": "Claude Haiku 5.5", "Decision model · first 2 page images · short descriptions": "the Strands Decider 2B, reading the first two page images with one-line class descriptions,"}
     families: false
     notes: >-
       Short descriptions replace each class's preset description with one line about what
@@ -668,8 +688,11 @@ ablations:
   - id: SC-13
     page: splitting-and-classification
     question: "Which way of splitting and classifying should I use?"
+    # Answered by the page's "Which approach should I use?" section, which
+    # render_splitting_approaches.py writes; the FAQ entry links to it.
+    feature: "Which approach should I use?"
     takeaway: "To be measured"
-    changes: "How the packet is split and who names each section, by model"
+    changes: "How the packet is split and who classifies each section, by model"
     varies: "approach and model"
     short_values: {"Split, then an LLM names each section": "Split, LLM classifies", "Split, then a decision model names each section": "Split, Decider 2B classifies"}
     values:
@@ -689,15 +712,16 @@ ablations:
       - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}
       - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0"}
       - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.method": "llm"}
-      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.splitting.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.llm.model": "us.amazon.nova-2-lite-v1:0", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first_k", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 2, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
       - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}
       - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5"}
       - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "llm"}
-      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-haiku-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first_k", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 2, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
       - {"classification.strategy": "combined", "classification.combined.granularity": "page", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}
       - {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5"}
       - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.method": "llm"}
-      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 1, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+      - {"classification.strategy": "split_then_classify", "classification.split_then_classify.splitting.llm.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.splitting.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.llm.model": "us.anthropic.claude-sonnet-5-5", "classification.split_then_classify.section_classification.method": "decision_model", "classification.split_then_classify.section_classification.pages": "first_k", "classification.split_then_classify.section_classification.decision_model.endpoint": "${DECIDER_ENDPOINT}", "classification.split_then_classify.section_classification.decision_model.input": "images", "classification.split_then_classify.section_classification.decision_model.max_pages": 2, "classification.split_then_classify.section_classification.decision_model.timeout_ms": 300000}
+    transform: [null, null, null, "short_class_descriptions", null, null, null, "short_class_descriptions", null, null, null, "short_class_descriptions"]
     grid:
       rows: ["Page by page", "Holistic", "Split, then an LLM names each section", "Split, then a decision model names each section"]
       cols: ["Amazon Nova 2 Lite", "Claude Haiku 5.5", "Claude Sonnet 5.5"]
@@ -709,16 +733,17 @@ ablations:
     metrics: [section_accuracy, boundary_accuracy, label_accuracy, page_accuracy, grouping_score, over_splits, merges, auroc, calibration_error, classification_tokens, median_seconds]
     plot: section_accuracy
     cost_metric: classification_cost_per_1000_docs
+    econ: {against: "Holistic · Claude Haiku 5.5", line: "Holistic · Claude Sonnet 5.5"}
     families: true
     notes: >-
       In the two split rows the model named in the column finds the section boundaries
       (reading the whole packet); the LLM row then has that same model classify each section,
       and the decision-model row has the Strands Decider 2B (StrandsAgents/strands-decider-2B-qwen3.5-v1-2610, 8-bit, on AWS Lambda, images at 448 pixels)
-      classify it from the section's first page image.
+      classify it from the section's first two page images, with one-line class descriptions (the setting SC-12 found works best for it; the section detection step in that row reads the same descriptions).
   - id: SC-14
     page: splitting-and-classification
     question: "Do long packets change which approach to use?"
-    takeaway: "To be measured"
+    takeaway: "With Claude Haiku 5.5, long packets cost every approach whole sections"
     changes: "How the packet is split and classified, on packets of 5 to 20 pages and of 30 to 60 pages"
     varies: "approach and packet length"
     fixed: "Classification"

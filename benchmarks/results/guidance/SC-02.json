@@ -146,8 +146,8 @@
       "se": 0.011024
     },
     "docsplit|Text and images (baseline)|classification_cost_per_1000_docs": {
-      "mean": 10.384651,
-      "se": 0.04245
+      "mean": 23.120588,
+      "se": 0.702006
     },
     "docsplit|Images only|weighted_accuracy": {
       "mean": 0.337162,
@@ -514,7 +514,7 @@
         "boundary_accuracy": 0.6111,
         "label_accuracy": 0.85,
         "weighted_accuracy": 0.423737,
-        "cost": 0.128905
+        "cost": 0.184793
       },
       "packet_0002.pdf": {
         "boundary_accuracy": 0.777767,
@@ -544,7 +544,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 0.666667,
         "weighted_accuracy": 0.489579,
-        "cost": 0.093376
+        "cost": 0.113153
       },
       "packet_0009.pdf": {
         "boundary_accuracy": 0.5,
@@ -580,7 +580,7 @@
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.081301,
-        "cost": 0.117784
+        "cost": 0.170461
       },
       "packet_0015.pdf": {
         "boundary_accuracy": 0.75,
@@ -592,13 +592,13 @@
         "boundary_accuracy": 0.6111,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.474925,
-        "cost": 0.117618
+        "cost": 0.167928
       },
       "packet_0017.pdf": {
         "boundary_accuracy": 0.75,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.425,
-        "cost": 0.128806
+        "cost": 0.184461
       },
       "packet_0018.pdf": {
         "boundary_accuracy": 0.8,
@@ -747,6 +747,152 @@
           "FAILED"
         ]
       }
+    }
+  },
+  "pages_per_doc": {
+    "docsplit": 14.9
+  },
+  "sections_per_doc": {
+    "docsplit": 4.5
+  },
+  "long_context": {
+    "docsplit|Text only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 761,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 350,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 350,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Text and images (baseline)": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 59,
+      "long_documents": 15,
+      "requests": 760,
+      "long_requests": 15,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 59,
+          "long_documents": 1,
+          "requests": 345,
+          "long_requests": 1,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 59,
+          "long_documents": 14,
+          "requests": 68,
+          "long_requests": 14,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 59,
+          "long_documents": 0,
+          "requests": 347,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.01636915,
+        0.01141637,
+        0.01338885
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit|Images only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 58,
+      "long_documents": 0,
+      "requests": 718,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 58,
+          "long_documents": 0,
+          "requests": 325,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 58,
+          "long_documents": 0,
+          "requests": 67,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 58,
+          "long_documents": 0,
+          "requests": 326,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
     }
   }
 }

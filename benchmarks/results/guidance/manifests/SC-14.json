@@ -1,6 +1,6 @@
 {
   "ablation": "SC-14",
-  "verdict": "Measured; see the table.",
+  "verdict": "Holistic is a good place to start on long packets if pages must be grouped well; page by page if cost matters most. With Claude Haiku 5.5, on 30-to-60-page packets every approach got fewer sections exactly right than on 5-to-20-page ones, and on that strict measure none was measurably ahead (0.62 to 0.67). On the grouping score, which gives credit for nearly right sections, holistic still beat page by page (0.88 against 0.82), but on Claude Haiku 5.5 it cost 2.3 times as much ($103 against $45 of classification per 1,000 packets), because its 20-page windows with page images go over the 100,000 tokens above which Claude Haiku 5.5 bills its long-context rate. Split-then-classify was no measurably better than holistic, for about a fifth more ($125). Test it on your own packets.",
   "runs": {
     "docsplit_100": {
       "Page by page \u00b7 Claude Haiku 5.5": [
@@ -15,7 +15,25 @@
       ],
       "Split, then an LLM classifies each section \u00b7 Claude Haiku 5.5": [
         "DocSplit-Poly-Seq-20261118-162508",
-        "DocSplit-Poly-Seq-20261118-161841"
+        "DocSplit-Poly-Seq-20261118-161841",
+        "DocSplit-Poly-Seq-20261118-205422"
+      ]
+    },
+    "docsplit_long": {
+      "Page by page \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Long-20261118-175526",
+        "DocSplit-Long-20261118-175535",
+        "DocSplit-Long-20261118-175546"
+      ],
+      "Holistic \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Long-20261118-183936",
+        "DocSplit-Long-20261118-210825",
+        "DocSplit-Long-20261118-210839"
+      ],
+      "Split, then an LLM classifies each section \u00b7 Claude Haiku 5.5": [
+        "DocSplit-Long-20261118-210852",
+        "DocSplit-Long-20261118-214631",
+        "DocSplit-Long-20261118-214621"
       ]
     }
   },
@@ -25,9 +43,18 @@
   },
   "stack": "sr-testing",
   "region": "us-east-1",
-  "release": "0.6.15-develop-d1be93f",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
   "measured": "November 2026",
   "cache_isolated": [
+    "DocSplit-Long-20261118-175526",
+    "DocSplit-Long-20261118-175535",
+    "DocSplit-Long-20261118-175546",
+    "DocSplit-Long-20261118-183936",
+    "DocSplit-Long-20261118-210825",
+    "DocSplit-Long-20261118-210839",
+    "DocSplit-Long-20261118-210852",
+    "DocSplit-Long-20261118-214621",
+    "DocSplit-Long-20261118-214631",
     "DocSplit-Poly-Seq-20261118-151451",
     "DocSplit-Poly-Seq-20261118-160137",
     "DocSplit-Poly-Seq-20261118-160148",
@@ -35,6 +62,7 @@
     "DocSplit-Poly-Seq-20261118-160211",
     "DocSplit-Poly-Seq-20261118-160233",
     "DocSplit-Poly-Seq-20261118-161841",
-    "DocSplit-Poly-Seq-20261118-162508"
+    "DocSplit-Poly-Seq-20261118-162508",
+    "DocSplit-Poly-Seq-20261118-205422"
   ]
 }

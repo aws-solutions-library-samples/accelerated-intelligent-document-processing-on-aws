@@ -1641,5 +1641,199 @@
         "cost": 0.024768
       }
     }
+  },
+  "long_context": {
+    "realkie|Low (preset default)": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 72,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 72,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|Medium": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 81,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 81,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "realkie|High": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 82,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 82,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Low (preset default)": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 61,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|Medium": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 60,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 60,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "fake_w2|High": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 60,
+      "long_documents": 0,
+      "requests": 61,
+      "long_requests": 0,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 60,
+          "long_documents": 0,
+          "requests": 61,
+          "long_requests": 0,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
   }
 }

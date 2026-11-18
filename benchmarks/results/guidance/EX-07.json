@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs realkie-fcc-long-20261116-210206, realkie-fcc-long-20261116-210241, realkie-fcc-long-20261116-210301, realkie-fcc-long-20261116-210217, realkie-fcc-long-20261116-210227, realkie-fcc-long-20261116-210251 (6 failed documents left out of the scores)",
-  "verdict": "Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more ($257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.",
+  "verdict": "Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more (at least $257 against $210 per 1,000 invoices; agentic calls over 100,000 tokens, which Claude Haiku 5.5 bills at a higher rate, can't be priced from our metering) and took longer. Test it on your own long tables.",
   "cells": {
     "realkie_long|On|weighted_accuracy": {
       "mean": 0.758226,
@@ -548,6 +548,86 @@
         "weighted_accuracy": 0.722334,
         "cost": 0.174205
       }
+    }
+  },
+  "long_context": {
+    "realkie_long|On": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 54,
+      "long_documents": 0,
+      "requests": 68,
+      "long_requests": 0,
+      "unsized_documents": 45,
+      "by_step": {
+        "Assessment": {
+          "documents": 54,
+          "long_documents": 0,
+          "requests": 68,
+          "long_requests": 0,
+          "unsized_documents": 27
+        },
+        "Extraction": {
+          "documents": 54,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 43
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.13958551,
+        0.17862675,
+        0.14112065
+      ]
+    },
+    "realkie_long|Off": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 54,
+      "long_documents": 0,
+      "requests": 79,
+      "long_requests": 0,
+      "unsized_documents": 54,
+      "by_step": {
+        "Assessment": {
+          "documents": 54,
+          "long_documents": 0,
+          "requests": 79,
+          "long_requests": 0,
+          "unsized_documents": 25
+        },
+        "Extraction": {
+          "documents": 54,
+          "long_documents": 0,
+          "requests": 0,
+          "long_requests": 0,
+          "unsized_documents": 54
+        }
+      },
+      "surcharge": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "unsized_ceiling": [
+        0.18022343,
+        0.13044874,
+        0.13085212
+      ]
     }
   }
 }
