@@ -132,19 +132,6 @@ global_settings:
         through the @graphql-codegen dev tooling and nothing under src/ui/src
         imports it. The fixed releases need Node 22.15, newer than the Node 22.14
         the UI build pins under engine-strict. Revisit when the Node pin moves.
-    - rule_id: 'GHSA-fc5q-39xc-vjpf'
-      path: 'src/ui/**'
-      reason: >-
-        picomatch ReDoS on a crafted extglob, with no fixed release. src/ui gets it
-        only through dev build tooling (vite, vitest, rollup, eslint plugins), so it
-        is not in the shipped bundle, and it compiles only patterns from the repo's
-        own build configuration.
-    - rule_id: 'GHSA-fc5q-39xc-vjpf'
-      path: 'docs-site/**'
-      reason: >-
-        picomatch ReDoS on a crafted extglob, with no fixed release. docs-site gets
-        it through astro and vite while the site is built to static pages, and it
-        compiles only patterns from the repo's own Astro and Vite configuration.
 
 # NOT suppressed, deliberately:
 #

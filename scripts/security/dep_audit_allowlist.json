@@ -26,12 +26,5 @@
     "severity": "HIGH",
     "reason": "Not reachable at runtime. Prototype pollution in mergeIncrementalResult. In src/ui the package is reached only through the @graphql-codegen/* dev tooling (npm ls @graphql-tools/utils), and nothing under src/ui/src imports @graphql-tools, so it never ships in the built bundle. The fixed releases depend on @whatwg-node/promise-helpers@2, which requires Node >=22.15.0, while the UI build pins Node 22.14.0 (.gitlab-ci.yml, the UI CodeBuild project in template.yaml, scripts/sdlc/cfn/codepipeline-s3.yml) and src/ui/.npmrc sets engine-strict=true, so the bump fails npm ci. Revisit when the Node pin moves to 22.15 or later.",
     "triagedOn": "2026-10-22"
-  },
-  {
-    "id": "GHSA-fc5q-39xc-vjpf",
-    "package": "picomatch",
-    "severity": "HIGH",
-    "reason": "Not reachable, and no fixed release exists. The advisory is a ReDoS on a crafted extglob pattern. picomatch is a direct dependency of neither package that carries it. In src/ui it arrives only through dev build tooling (vite, vitest, @rollup/pluginutils, tinyglobby, fdir, micromatch, eslint-plugin-formatjs), every one marked dev in src/ui/package-lock.json, so it is not in the shipped bundle. In docs-site it arrives through astro, vite, tinyglobby, fdir and anymatch, which run only while the site is built to static pages. In both, the patterns it compiles come from this repository's own build configuration, never from user input. Revisit when a fixed picomatch is published.",
-    "triagedOn": "2026-11-17"
   }
 ]
