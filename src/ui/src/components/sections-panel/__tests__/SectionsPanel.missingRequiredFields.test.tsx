@@ -37,6 +37,7 @@ describe('Document Sections table', () => {
         documentItem={{ objectKey: 'd', objectStatus: 'COMPLETED' } as never}
         mergedConfig={{}}
       />,
+      { wrapper: English },
     );
     const headers = [...document.querySelectorAll('table thead th')].map((th) => (th.textContent ?? '').trim());
     const index = headers.indexOf('Missing Required Fields');

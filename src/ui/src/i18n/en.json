@@ -163,6 +163,26 @@
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
   },
+  "common.columnPreferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the column preferences without applying them."
+  },
+  "common.columnPreferences.columnsGroup": {
+    "defaultMessage": "{table} columns",
+    "description": "Label of the group of column checkboxes. {table} is the table's name, such as Document Pages."
+  },
+  "common.columnPreferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that applies the column preferences."
+  },
+  "common.columnPreferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the column preferences dialog of a table on the document page."
+  },
+  "common.columnPreferences.visibleColumns": {
+    "defaultMessage": "Select visible columns",
+    "description": "Heading of the column choice in the column preferences."
+  },
   "common.configRevisionSelector.current": {
     "defaultMessage": "Current",
     "description": "Option for the profile’s current configuration when no revision is published, and the selector’s placeholder."
@@ -238,6 +258,10 @@
   "common.dateRangeFields.timeConstraint": {
     "defaultMessage": "HH:mm:ss",
     "description": "Format hint under a time field: hours, minutes and seconds, 24-hour clock."
+  },
+  "common.fileAccess.denied": {
+    "defaultMessage": "You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.",
+    "description": "Shown where a file or page image could not be loaded because the user lacks permission to read it."
   },
   "common.learnMoreLinks.heading": {
     "defaultMessage": "Learn more",
@@ -346,6 +370,94 @@
   "documents.abortModal.warningIconAriaLabel": {
     "defaultMessage": "Warning",
     "description": "Screen-reader label of the warning icon in the Abort dialog."
+  },
+  "documents.classConfidence.considered": {
+    "defaultMessage": "Considered",
+    "description": "Label above the ranked list of classes the classifier considered for the page."
+  },
+  "documents.classConfidence.header": {
+    "defaultMessage": "Why this class?",
+    "description": "Heading of the popover that explains a page's class: the classifier's reasoning and the other classes it considered."
+  },
+  "documents.classConfidence.sourceNote": {
+    "defaultMessage": "The classifier's own explanation, recorded at classification time.",
+    "description": "Note at the foot of the class explanation popover, saying where the explanation comes from."
+  },
+  "documents.classConfidence.why": {
+    "defaultMessage": "Why?",
+    "description": "Link that opens the class explanation of a page that has no confidence score."
+  },
+  "documents.classMismatch.badge": {
+    "defaultMessage": "Class mismatch",
+    "description": "Warning shown next to a class that differs from the ground truth's class."
+  },
+  "documents.classMismatch.classGroundTruth": {
+    "defaultMessage": "Document class (ground truth)",
+    "description": "Label of the class the ground truth expects for the section, in the evaluation view."
+  },
+  "documents.classMismatch.classPages": {
+    "defaultMessage": "{className} — {count, plural, one {page} other {pages}} {ranges}",
+    "description": "A class and its pages in the section popover. {count} is the number of pages; {ranges} lists them, such as 1-3, 5."
+  },
+  "documents.classMismatch.classPagesInline": {
+    "defaultMessage": "{className} ({count, plural, one {page} other {pages}} {ranges})",
+    "description": "One ground-truth class and its pages, in a comma-separated list. {count} is the number of pages; {ranges} lists them, such as 1-3, 5."
+  },
+  "documents.classMismatch.classThisRun": {
+    "defaultMessage": "Document class (this run)",
+    "description": "Label of the class this run assigned to the section, in the evaluation view."
+  },
+  "documents.classMismatch.evalSplit": {
+    "defaultMessage": "Ground truth splits these pages into separate sections, so the fields below were extracted as one section when they are more than one.",
+    "description": "Explanation above a section's fields in the evaluation view when its pages belong to several ground-truth classes."
+  },
+  "documents.classMismatch.evalWrongSchema": {
+    "defaultMessage": "The fields below were extracted against this class's schema, so their scores reflect the wrong schema rather than a bad extraction.",
+    "description": "Explanation above a section's fields in the evaluation view when the section's class is wrong."
+  },
+  "documents.classMismatch.groundTruth": {
+    "defaultMessage": "Ground truth",
+    "description": "Label of the class the ground truth expects."
+  },
+  "documents.classMismatch.header": {
+    "defaultMessage": "Does not match ground truth",
+    "description": "Heading of the popover explaining a class mismatch."
+  },
+  "documents.classMismatch.headerSpans": {
+    "defaultMessage": "Section spans more than one ground-truth class",
+    "description": "Heading of the popover when a section's pages belong to several ground-truth classes."
+  },
+  "documents.classMismatch.matches": {
+    "defaultMessage": "Class matches",
+    "description": "Shown when a section's class equals the ground truth's class."
+  },
+  "documents.classMismatch.noClass": {
+    "defaultMessage": "no class",
+    "description": "Fills {className} of the page explanation when this run assigned no class."
+  },
+  "documents.classMismatch.notClassified": {
+    "defaultMessage": "not classified",
+    "description": "Shown in place of the class when this run assigned none."
+  },
+  "documents.classMismatch.pageExplanation": {
+    "defaultMessage": "This page was extracted against the schema for {className}, so any low extraction score for it is a symptom of the classification rather than the cause.",
+    "description": "Explanation in the page popover. {className} is the class this run assigned to the page."
+  },
+  "documents.classMismatch.sectionSplit": {
+    "defaultMessage": "Ground truth splits these pages into separate sections, so this section was extracted as one when it is more than one.",
+    "description": "Explanation in the section popover when the section's pages belong to several ground-truth classes."
+  },
+  "documents.classMismatch.sectionWrongSchema": {
+    "defaultMessage": "Fields in this section were extracted against the wrong schema, so its extraction scores are a symptom of the classification rather than the cause.",
+    "description": "Explanation in the section popover when the section's class is wrong."
+  },
+  "documents.classMismatch.thisRun": {
+    "defaultMessage": "This run",
+    "description": "Label of the class this processing run assigned."
+  },
+  "documents.classMismatch.unknownPages": {
+    "defaultMessage": "Ground truth has no class for {count, plural, one {page} other {pages}} {ranges}.",
+    "description": "Note in the section popover. {count} is the number of pages; {ranges} lists them, such as 1-3, 5."
   },
   "documents.configSource.activeProfile": {
     "defaultMessage": "Active profile",
@@ -566,6 +678,70 @@
   "documents.malwareScan.threat.labelNamed": {
     "defaultMessage": "Threat found: {threat}",
     "description": "Malware-scan verdict of a quarantined document; {threat} is the threat name the scanner reported."
+  },
+  "documents.pageThumbnails.failed": {
+    "defaultMessage": "Page thumbnails could not be loaded.",
+    "description": "Alert text shown with the page thumbnails when they could not be loaded."
+  },
+  "documents.pages.actionsAriaLabel": {
+    "defaultMessage": "Actions for page {page}",
+    "description": "Screen-reader label of a page row's menu. {page} is the page id."
+  },
+  "documents.pages.column.actions": {
+    "defaultMessage": "Actions",
+    "description": "Column header of the pages table: the row menu."
+  },
+  "documents.pages.column.class": {
+    "defaultMessage": "Class/Type",
+    "description": "Column header of the pages table: the class the page was classified as."
+  },
+  "documents.pages.column.classConfidence": {
+    "defaultMessage": "Class Confidence",
+    "description": "Column header of the pages table: the classifier's confidence in the page's class."
+  },
+  "documents.pages.column.id": {
+    "defaultMessage": "Page ID",
+    "description": "Column header of the pages table: the page number."
+  },
+  "documents.pages.column.thumbnail": {
+    "defaultMessage": "Thumbnail",
+    "description": "Column header of the pages table: a small image of the page."
+  },
+  "documents.pages.editText": {
+    "defaultMessage": "Edit Page Text",
+    "description": "Item of a page row's menu that opens the page's text for editing."
+  },
+  "documents.pages.empty.body": {
+    "defaultMessage": "This document has no pages.",
+    "description": "Text of the pages table when the document has no page."
+  },
+  "documents.pages.empty.title": {
+    "defaultMessage": "No pages",
+    "description": "Heading of the pages table when the document has no page."
+  },
+  "documents.pages.noImage": {
+    "defaultMessage": "No image",
+    "description": "Shown in the Thumbnail column for a page without an image."
+  },
+  "documents.pages.thumbnailAlt": {
+    "defaultMessage": "Page thumbnail",
+    "description": "Alternative text of a page's thumbnail image."
+  },
+  "documents.pages.thumbnailTitle": {
+    "defaultMessage": "Click to view full size image",
+    "description": "Tooltip of a page's thumbnail, which opens the full-size image."
+  },
+  "documents.pages.thumbnailsUnavailable": {
+    "defaultMessage": "Page thumbnails unavailable",
+    "description": "Heading of the alert shown when the page thumbnails could not be loaded."
+  },
+  "documents.pages.title": {
+    "defaultMessage": "Document Pages",
+    "description": "Heading of the pages table on the document page; also names the table in its column preferences."
+  },
+  "documents.pages.viewText": {
+    "defaultMessage": "View Page Text",
+    "description": "Item of a page row's menu that shows the page's text, read-only."
   },
   "documents.panel.field.completed": {
     "defaultMessage": "Completed",

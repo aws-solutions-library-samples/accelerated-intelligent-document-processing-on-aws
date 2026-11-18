@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 226,
-    "findings": 5880
+    "files": 222,
+    "findings": 5830
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -48,8 +48,6 @@
     "src/ui/src/components/capacity-planning/tools-panel.tsx": 12,
     "src/ui/src/components/chat-panel/ChatPanel.tsx": 21,
     "src/ui/src/components/common/CircuitBreakerPanel.tsx": 15,
-    "src/ui/src/components/common/ClassConfidence.tsx": 4,
-    "src/ui/src/components/common/ClassMismatchIndicator.tsx": 26,
     "src/ui/src/components/common/CreateConfigProfileModal.tsx": 23,
     "src/ui/src/components/common/DateRangeModal.tsx": 4,
     "src/ui/src/components/common/FieldGeometryAffordance.tsx": 2,
@@ -64,7 +62,6 @@
     "src/ui/src/components/common/UnrecordedChangesAlert.tsx": 5,
     "src/ui/src/components/common/copy-to-baseline.ts": 1,
     "src/ui/src/components/common/create-issue-button.tsx": 4,
-    "src/ui/src/components/common/detail-table-columns.tsx": 5,
     "src/ui/src/components/common/download-func.ts": 1,
     "src/ui/src/components/common/geometry-coverage.ts": 5,
     "src/ui/src/components/common/info-link.tsx": 1,
@@ -179,7 +176,6 @@
     "src/ui/src/components/json-schema-builder/utils/badgeHelpers.tsx": 5,
     "src/ui/src/components/model-config-limits-layout/ModelConfigLimitsLayout.tsx": 94,
     "src/ui/src/components/pages-panel/PageTextEditorModal.tsx": 43,
-    "src/ui/src/components/pages-panel/PagesPanel.tsx": 15,
     "src/ui/src/components/pricing-layout/PricingLayout.tsx": 78,
     "src/ui/src/components/pricing-layout/tools-panel.tsx": 9,
     "src/ui/src/components/review-queues/AssignModal.tsx": 10,
