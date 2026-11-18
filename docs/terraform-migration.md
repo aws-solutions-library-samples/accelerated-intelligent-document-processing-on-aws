@@ -410,6 +410,15 @@ that has revisions but no pre-migration one (the first deploy could not record i
 a finding naming the `fix-config` backup file, which is then the only copy of the old
 content. Without `--apply` it lists what it would restore.
 
+When the old configuration table had no revision counters, `fix-config` has nothing
+to change and writes no backup. `restore-config` then checks every profile in the
+configuration table against its revision history instead. A profile with no
+pre-migration revision whose history starts at revision 1, as for a profile the new
+deployment created, is listed as having nothing to restore. One whose history starts
+later is a finding, because a revision number was used before it and the old content
+may have been replaced; if `fix-config` ran with another `--terraform-dir`, its backup
+is there.
+
 In the measured run the `default` profile was the one replaced, and a configuration
 edit made on the old deployment was missing from the new one until this phase ran.
 
@@ -474,8 +483,8 @@ empty object), a plan Terraform marked as errored, a plan with any change other 
 a delete, and a plan none of whose deletions is an address `plan` recorded for the old
 deployment. It then fails if the plan deletes anything the migration kept: an address
 that was to be detached (the detach did not run), an adopted or kept bucket, table,
-key, user pool, or BDA project, a setting on one of those, or a user or group
-membership in the adopted pool. It also fails on a deletion of an address `plan`
+key, user pool, or BDA project, a setting on one of those, a user or group
+membership in the adopted pool, or the Region's API Gateway account settings. It also fails on a deletion of an address `plan`
 never saw, because nothing decided whether that may be destroyed; run `plan` again.
 The old deployment's own app client, identity pool and WAF association are expected
 in the plan. When it passes, apply the saved destroy plan in the old directory
@@ -524,6 +533,7 @@ unmanaged** means it stays in the account, managed by neither.
 | Installed-features table | Recreate; features installed on the old deployment do not carry over | | measured |
 | Test-sets table | Recreate; test-set definitions do not carry over, their documents stay in the adopted bucket | | measured |
 | BDA project | Keep unmanaged; the `bda` configuration row names it | none | measured |
+| API Gateway account settings (the Region's CloudWatch logging role), and the role they name with its policies | Keep unmanaged; destroying them would stop API Gateway logging for every API in the Region | none | inferred |
 | Fine-tuning data bucket, hosted-UI domain | Not handled; `plan` refuses | | |
 
 Functions, roles, policies, log groups, the state machine, event rules and the other
