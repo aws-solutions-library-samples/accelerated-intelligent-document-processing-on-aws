@@ -31,7 +31,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
 import boto3
 from botocore.config import Config
@@ -290,14 +290,36 @@ class DecisionModelClient:
         Results are in request order. The first failure is raised once every
         request has finished, so no call is abandoned mid-flight.
         """
+        return self._map(lambda r: self.decide(r, context), requests)
+
+    def decide_each(
+        self, requests: Sequence[SystemOneRequest], context: str
+    ) -> List[Union[DecisionResult, DecisionModelError]]:
+        """:meth:`decide_many`, with each request's failure in its own slot.
+
+        A request that was refused or did not complete holds its
+        :class:`DecisionModelError` instead of a result, so the caller can say
+        which request failed. Any other exception is still raised.
+        """
+
+        def one(request: SystemOneRequest) -> Union[DecisionResult, DecisionModelError]:
+            try:
+                return self.decide(request, context)
+            except DecisionModelError as e:
+                return e
+
+        return self._map(one, requests)
+
+    def _map(self, call: Callable[[SystemOneRequest], Any], requests: Sequence[Any]):
+        """``call`` on each request, at most ``max_concurrency`` at once, in order."""
         if not requests:
             return []
         if len(requests) == 1 or self.max_concurrency == 1:
-            return [self.decide(r, context) for r in requests]
+            return [call(r) for r in requests]
         with ThreadPoolExecutor(
             max_workers=min(self.max_concurrency, len(requests))
         ) as pool:
-            futures = [pool.submit(self.decide, r, context) for r in requests]
+            futures = [pool.submit(call, r) for r in requests]
         errors = [f.exception() for f in futures if f.exception() is not None]
         if errors:
             raise errors[0]

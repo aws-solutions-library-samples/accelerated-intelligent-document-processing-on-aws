@@ -21,7 +21,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
 from idp_common import bedrock, image, metrics, s3, utils
-from idp_common.assessment.degradation import skip_section_no_confidence
+from idp_common.assessment.degradation import (
+    merge_assessment_issues_into_result,
+    skip_section_no_confidence,
+)
 from idp_common.config import without_prompt_comments
 from idp_common.config.models import IDPConfig
 from idp_common.config.schema_constants import (
@@ -36,6 +39,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_LIST_ITEM_DESCRIPTION,
 )
 from idp_common.config.schema_utils import deref_schema
+from idp_common.decision_model import DecisionModelRefused
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -1035,6 +1039,7 @@ class AssessmentService:
         page_images: List[Any],
         ocr_text_confidence: str = "",
         model_id_override: Optional[str] = None,
+        page_texts: Optional[List[str]] = None,
     ) -> AssessmentCoreResult:
         """Run the pure assessment inference over in-memory inputs.
 
@@ -1062,6 +1067,9 @@ class AssessmentService:
                 configured confidence model. Used by the self-healing escalation
                 ladder to re-assess still-missing rows with a stronger model
                 (bigger output cap) WITHOUT mutating config.
+            page_texts: The OCR text of each assessed page, in the order of
+                ``page_images``. Read only by the decision model, which asks
+                about one page at a time; the LLM reads ``document_text``.
 
         Returns:
             An ``AssessmentCoreResult`` with the enhanced per-field assessment,
@@ -1091,6 +1099,7 @@ class AssessmentService:
                 extraction_results=extraction_results,
                 document_text=document_text,
                 page_images=page_images,
+                page_texts=page_texts,
             )
         model_id = model_id_override or confidence_cfg.model
         temperature = confidence_cfg.temperature
@@ -1301,6 +1310,7 @@ class AssessmentService:
         extraction_results: Dict[str, Any],
         document_text: str,
         page_images: List[Any],
+        page_texts: Optional[List[str]] = None,
     ) -> AssessmentCoreResult:
         """``extraction.confidence.method: decision_model``: one yes/no per value."""
         from idp_common.assessment.decision_model_confidence import (
@@ -1314,7 +1324,11 @@ class AssessmentService:
             self.config.extraction.confidence, region=self.region
         )
         assessment_data, metering, duration = scorer.score(
-            extraction_results, class_schema, document_text, page_images
+            extraction_results,
+            class_schema,
+            document_text,
+            page_images,
+            page_texts=page_texts,
         )
         return self._finalize_assessment(
             assessment_data,
@@ -1812,6 +1826,9 @@ class AssessmentService:
                 extraction_results=extraction_results,
                 document_text=document_text,
                 page_images=page_images,
+                # Per page as well as joined: the decision model reads one page
+                # at a time, and the whole section overflows its window.
+                page_texts=document_texts,
                 batch_size=confidence_cfg.list_batch_size,
                 ocr_text_confidence=ocr_text_confidence,
                 confidence_model_id=confidence_cfg.model,
@@ -1950,34 +1967,9 @@ class AssessmentService:
             # owns only the assessment-stage ones. Replacing the list dropped
             # everything extraction had reported — which mattered most for the
             # on-by-default validation issue, because `separate` (the recommended
-            # confidence mode) is exactly the mode where this step runs.
-            _inherited = [
-                pi
-                for pi in (
-                    extraction_data.get("metadata", {}).get("processing_issues") or []
-                )
-                if isinstance(pi, dict) and pi.get("stage") != "assessment"
-            ]
-            _merged = _inherited + [pi.to_dict() for pi in processing_issues]
-            if _merged:
-                extraction_data["metadata"]["processing_issues"] = _merged
-                # Append a Processing Issues block to the (extraction-generated)
-                # processing report so the human-readable report on the simple/
-                # separate path also surfaces the root cause — the extraction
-                # report was written before this assessment step ran, so it
-                # otherwise wouldn't mention assessment issues.
-                existing_report = extraction_data.get("processing_report", "")
-                icons = {"error": "✗", "warning": "⚠", "info": "ℹ"}
-                issue_lines = ["", "Processing Issues (assessment):"]
-                for pi in processing_issues:
-                    issue_lines.append(
-                        f"  {icons.get(pi.severity, '•')} [{pi.code}] {pi.message}"
-                    )
-                    if pi.root_cause:
-                        issue_lines.append(f"      Root cause: {pi.root_cause}")
-                extraction_data["processing_report"] = (
-                    existing_report + "\n" + "\n".join(issue_lines)
-                ).strip()
+            # confidence mode) is exactly the mode where this step runs. Shared
+            # with the degrade path, which writes its issue the same way.
+            merge_assessment_issues_into_result(extraction_data, processing_issues)
 
             # Write the updated result back to S3
             bucket, key = utils.parse_s3_uri(section.extraction_result_uri)
@@ -2053,6 +2045,17 @@ class AssessmentService:
             )
 
         except Exception as e:
+            if isinstance(e, DecisionModelRefused):
+                # Deterministic, so the caller degrades the section rather than
+                # retrying it. The error names the refused pages; this names the
+                # section, so the two are found together.
+                logger.warning(
+                    "The decision model refused confidence requests for section %s "
+                    "of document %s, so the section gets no confidence scores: %s",
+                    section_id,
+                    document.id,
+                    e,
+                )
             error_msg = (
                 f"Error processing assessment for section {section_id}: {str(e)}"
             )

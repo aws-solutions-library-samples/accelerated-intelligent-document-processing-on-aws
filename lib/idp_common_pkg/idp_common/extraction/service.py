@@ -38,6 +38,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_INSTANCE_ARRAY,
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
+from idp_common.decision_model import function_name
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -288,6 +289,12 @@ class ExtractionService:
         # Per-page OCR text in section order, populated per section. Used to
         # shard the input by page range for concurrent agentic extraction.
         self._page_texts: list[str] = []
+        # The page ids _load_document_images loaded an image for, and each one's
+        # OCR text, in that order: what the confidence pass pairs image i with.
+        # ``_page_texts`` keeps a "" for a section page the document lacks, which
+        # has no image, so it cannot be paired with the images directly.
+        self._image_page_ids: list[str] = []
+        self._image_page_texts: list[str] = []
         # Optional checkpoint callback for incremental saves during agentic extraction.
         # When set, called after each successful extraction_tool or apply_json_patches
         # invocation with the current extraction dict, enabling resume on Lambda timeout.
@@ -746,6 +753,12 @@ class ExtractionService:
                         "assess_page_images": self._cap_agent_images(
                             self._slice_images(saved_images, shard.start, shard.end)
                         ),
+                        # The text of each page in assess_page_images, sliced the
+                        # same way from a list built over the same page ids, for a
+                        # decision model, which pairs each image with its text.
+                        "assess_page_texts": self._image_page_texts[
+                            shard.start : shard.end
+                        ],
                         # Integrated mode: tell the shard agent to emit per-field
                         # confidence/bbox inline (one inference, no second pass).
                         "emit_field_assessment": self._integrated_assessment_enabled(),
@@ -1398,6 +1411,8 @@ class ExtractionService:
         self._wire_class_schema = {}
         self._instance_probe_requested = False
         self._page_images = []
+        self._image_page_ids = []
+        self._image_page_texts = []
         self._image_uris = []
         self._pending_image_fit_metadata = None
         self._pending_cache_marker_seen = False
@@ -1813,6 +1828,7 @@ class ExtractionService:
         max_dimension = image.max_dimension_for_image_count(effective_image_count)
 
         page_images = []
+        loaded_page_ids: list[str] = []
         for page_id in sorted_page_ids:
             if page_id not in document.pages:
                 continue
@@ -1835,10 +1851,12 @@ class ExtractionService:
                     {"page_id": page_id, **fit.to_dict()}
                 )
             page_images.append(image_content)
+            loaded_page_ids.append(page_id)
 
         t1 = time.time()
         logger.info(f"Time taken to read images: {t1 - t0:.2f} seconds")
 
+        self._image_page_ids = loaded_page_ids
         return page_images
 
     def _initialize_extraction_context(
@@ -5176,6 +5194,17 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             batch_count = split.get("batch_count")
             concurrent = split.get("concurrent_batches")
             c_status = "ok"
+            # Who scores the separate pass. With method decision_model that is
+            # the decision model, one request per page; the confidence LLM is
+            # never called, so naming it would report a model that scored nothing.
+            if conf_cfg.method == "decision_model":
+                conf_model = function_name(conf_cfg.decision_model.endpoint or "")
+                conf_name = f"decision model {conf_model}".strip()
+                one_pass = f"{conf_cfg.decision_model.input}, one request per page"
+            else:
+                conf_model = conf_cfg.model
+                conf_name = conf_cfg.model or "model"
+                one_pass = "1 pass"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
                 # Report what HAPPENED, not what was configured; the full reason
@@ -5193,12 +5222,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 c_detail = "integrated (inline with extraction)"
                 fan = 0
             elif batch_count and batch_count > 1:
-                c_detail = f"{conf_cfg.model or 'model'} · {batch_count} batches"
+                c_detail = f"{conf_name} · {batch_count} batches"
                 if concurrent and concurrent > 1:
                     c_detail += f" · {concurrent}× concurrent"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
             else:
-                c_detail = f"{conf_cfg.model or 'model'} · 1 pass"
+                c_detail = f"{conf_name} · {one_pass}"
                 fan = 0
             stages.append(
                 {
@@ -5207,7 +5236,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     "detail": c_detail,
                     "status": c_status,
                     "fanout": fan,
-                    "model": conf_cfg.model,
+                    "model": conf_model,
                 }
             )
 
@@ -8512,6 +8541,10 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         page_images = self._load_document_images(
             document, section_info.sorted_page_ids, page_texts=self._page_texts
         )
+        # The text of each page an image was just loaded for, from the same ids.
+        self._image_page_texts = [
+            page_id_to_text.get(pid, "") for pid in self._image_page_ids
+        ]
 
         # Initialize extraction context
         class_schema, attribute_descriptions = self._initialize_extraction_context(
@@ -8714,6 +8747,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
         extraction_results: dict[str, Any],
         document_text: str,
         page_images: list[bytes],
+        page_texts: list[str] | None = None,
     ) -> dict[str, Any]:
         """Assess one scope, batching large list fields across multiple inferences.
 
@@ -8736,6 +8770,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             extraction_results=extraction_results,
             document_text=document_text,
             page_images=page_images,
+            page_texts=page_texts,
             batch_size=confidence_cfg.list_batch_size,
             confidence_model_id=confidence_cfg.model,
             geometry_mode=self.config.extraction.geometry.mode,
@@ -8794,6 +8829,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 return None
             document_text = payload.get("assess_document_text", "") or ""
             page_images = payload.get("assess_page_images", []) or []
+            page_texts = payload.get("assess_page_texts")
 
             # assess_results does Bedrock I/O; run it off the event loop so the
             # concurrent shard scheduler is not blocked.
@@ -8810,6 +8846,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     extraction_results=extraction_results,
                     document_text=document_text,
                     page_images=page_images,
+                    page_texts=page_texts,
                 )
                 shard_assessment = result.get("assessment") or {}
                 if ground_in_shard:
@@ -8947,6 +8984,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 extraction_results=extracted_fields,
                 document_text=self._document_text,
                 page_images=self._page_images,
+                page_texts=self._image_page_texts,
             )
             metering["_merged_assessment"] = batched["assessment"]
             metering["_merged_assessment_alerts"] = batched["alerts"]

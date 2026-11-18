@@ -1323,6 +1323,37 @@ class TestProcessingFlow:
         assert rec["rows_recovered_by_escalation"] == 5
         assert rec["unrecoverable_rows"] == 2
 
+    def test_decision_model_confidence_names_the_decision_model_not_the_llm(self):
+        """With method decision_model the confidence LLM is never called, so the
+        flow must not name it as the model that scored the section."""
+        cfg = {
+            "classes": [{"$id": "x", "type": "object", "properties": {}}],
+            "extraction": {
+                "model": "us.anthropic.claude-sonnet-5",
+                "confidence": {
+                    "mode": "separate",
+                    "model": "us.amazon.nova-lite-v1:0",
+                    "method": "decision_model",
+                    "decision_model": {
+                        "endpoint": (
+                            "arn:aws:lambda:us-west-2:123456789012:function:"
+                            "GENAIIDP-decider"
+                        ),
+                        "input": "text",
+                    },
+                },
+            },
+        }
+        svc = ExtractionService(region="us-west-2", config=cfg)
+        md = {"extraction_method": "traditional", "ocr_analysis": {}}
+        flow = svc._build_processing_flow(md, "traditional", False)
+        conf = next(s for s in flow["stages"] if s["label"] == "Confidence")
+        assert conf["model"] == "GENAIIDP-decider"
+        assert conf["detail"] == (
+            "decision model GENAIIDP-decider · text, one request per page"
+        )
+        assert not any("nova" in str(value) for value in conf.values())
+
     def test_confidence_off_marks_stage_skipped(self):
         svc = self._svc(conf_enabled=False, conf_mode="off")
         md = {"extraction_method": "agentic", "ocr_analysis": {"tables_detected": 0}}

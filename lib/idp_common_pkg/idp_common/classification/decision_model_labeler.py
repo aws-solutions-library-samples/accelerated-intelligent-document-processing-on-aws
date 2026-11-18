@@ -9,6 +9,14 @@ classes. Its top probability is the section's confidence and the whole distribut
 is its ``classification_candidates``, in the shape the LLM path writes, so section
 forming, HITL and extraction do not change.
 
+With ``input`` ``text`` or ``both`` the section's pages are joined into one state,
+cut from the end so the request fits ``decision_model.max_input_tokens`` (an
+estimate; see ``idp_common.decision_model.budget``). The first page is kept whole
+when it fits. Text past the cut is never sent, so a class cue only there is not
+seen. A section whose text would be cut to nothing (the question and images fill
+the limit) is not sent: the call is refused and the section fails like any refused
+call, rather than being classified from no evidence.
+
 A failed call fails its section: the segment keeps no class and the error is
 recorded on it, exactly as an LLM labeling call that fails. A request the client
 reports as ``retry_later`` (throttled or refused for capacity past its retries, or a
@@ -22,6 +30,7 @@ error, and is off at its default of 0.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
@@ -34,6 +43,9 @@ from idp_common.decision_model import (
     SystemOneRequest,
     client_from_config,
     encode_image,
+    estimate_tokens,
+    fit_text,
+    state_budget,
 )
 from idp_common.utils.transient_errors import TransientError
 
@@ -111,14 +123,21 @@ class DecisionModelSectionLabeler:
                     f"loaded for pages {', '.join(page_ids)}"
                 )
             images = [encode_image(image_bytes) for _, image_bytes in loaded]
+        question = ChoiceQuestion(
+            instructions=self.cfg.instructions, criteria=self.criteria
+        )
+        # The question counts in full, every class description with it, and so do
+        # the images. Cutting from the end keeps the first page whole whenever it
+        # fits; text past the cut is never sent, so the model never reads it, and
+        # text that would be cut to nothing is refused rather than sent empty.
+        question_tokens = estimate_tokens(json.dumps(question.model_dump(mode="json")))
+        budget = state_budget(
+            int(self.cfg.max_input_tokens), question_tokens, len(images)
+        )
         return SystemOneRequest(
-            state=state,
+            state=fit_text(state, budget, f"the text of pages {', '.join(page_ids)}"),
             images=images,
-            questions={
-                QUESTION_NAME: ChoiceQuestion(
-                    instructions=self.cfg.instructions, criteria=self.criteria
-                )
-            },
+            questions={QUESTION_NAME: question},
         )
 
     def label(

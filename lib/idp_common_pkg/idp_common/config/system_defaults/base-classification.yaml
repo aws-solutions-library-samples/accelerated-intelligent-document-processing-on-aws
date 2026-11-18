@@ -334,6 +334,10 @@ classification:
         input: images
         # Pages read per section after `pages` selects them: 1 to 4 (the API's image limit).
         max_pages: 1
+        # The most tokens one request holds (section text, images, class question),
+        # an estimate from characters. Text past it is cut from the end and never
+        # read, so a class cue only in the cut part is not seen. Window 4,096 less 512.
+        max_input_tokens: 3584
         instructions: Which type of document is this?
         timeout_ms: 300000
         max_concurrency: 4

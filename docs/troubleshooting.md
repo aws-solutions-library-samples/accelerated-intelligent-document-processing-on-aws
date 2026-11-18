@@ -162,15 +162,29 @@ returned, the document succeeds, and the missing confidence is recorded as an
 error-severity `assessment_failed_confidence_unavailable` issue on the section.
 Because that section has no confidence values, HITL confidence routing and the UI
 threshold signals do not apply to it — the processing issue is the signal. Find it in
-the **Status** column of the Sections panel; this one is written to the section
-record only, not into the section's `result.json`, so it does not appear in the
-Processing Report tab. Transient
+the **Status** column of the Sections panel and in the section's Processing Report
+tab, whose Confidence stage then reads *no confidence scores*. Writing it into the
+report is best effort; if that write fails, the Status column still has it. Transient
 failures (throttling, read timeouts) are unaffected and still retry. To get
 confidence back, reduce the confidence request's size: `geometry.mode: ocr_only`,
 a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extraction,
 which shards the confidence pass. Automatically re-batching an oversized confidence
 input so the pass succeeds rather than degrades remains open as part of
 [#901](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/901).
+
+**The same issue with a decision model.** With `extraction.confidence.method:
+decision_model`, `assessment_failed_confidence_unavailable` records a call the
+decision model refused or could not answer. A refusal is not retried, and the
+issue's root cause names the refused pages. The decision model reads one page per
+request in every input mode, and a page's text is cut to fit
+`extraction.confidence.decision_model.max_input_tokens` (text past the cut is never
+read). A refusal for length means that estimate fell short on that page: lower
+`max_input_tokens`, or set `input` to `images`. A root cause that begins **Not sent**
+means the opposite: the question and image filled the limit and left no room for
+the page's text, so raise `max_input_tokens` or shorten the field descriptions. A
+root cause from `DecisionModelUnavailable` means the call did not complete: check
+the function ARN, the invoke permission and the function's logs. See
+[Decision models](./decision-models.md#text-longer-than-the-window).
 
 **`assessment_skipped_confidence_unavailable` on a section.** The sibling of the
 issue above, and it means something different: the confidence model was never
@@ -183,7 +197,7 @@ confidence model and its context window are not the place to look. The issue's
 `root_cause` names what was missing and which stage to check: **Extraction** for a
 missing or empty result, **Classification** for a section with no pages or with
 pages the document does not contain, and **configuration** for a section whose
-class the configuration no longer defines. Like the
+class the configuration no longer defines. Unlike the
 issue above it is written to the section record only, so look in the **Status**
 column of the Sections panel rather than the Processing Report tab.
 

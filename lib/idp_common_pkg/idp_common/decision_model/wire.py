@@ -41,6 +41,11 @@ MAX_SCORE_LEVELS = 10
 MAX_REQUEST_IMAGES = 4
 IMAGE_MAX_SIDE = 448
 
+#: The decider's context window, in tokens (its ``max_length`` in the v1 release).
+#: The state, the request's images and the longest question must fit in it
+#: together, or the request is refused; the state is never shortened to fit.
+CONTEXT_WINDOW_TOKENS = 4096
+
 #: A state or instructions value: a string, or structured data the decision model
 #: renders deterministically.
 Content = Union[str, Dict[str, Any], List[Any]]

@@ -16,7 +16,10 @@ from idp_common import assessment, get_config, s3
 # below) or never ran at all (the skip paths inside AssessmentService). Both live
 # in one module so the alarm on AssessmentConfidenceUnavailable cannot see one
 # cause and miss the other.
-from idp_common.assessment.degradation import degrade_section_to_no_confidence
+from idp_common.assessment.degradation import (
+    degrade_section_to_no_confidence,
+    record_no_confidence_in_result,
+)
 from idp_common.docs_service import create_document_service
 from idp_common.lambda_deadline import lambda_deadline_scope, set_lambda_deadline_epoch
 from idp_common.models import Document, Status
@@ -387,6 +390,16 @@ def _handle(event, context):
             updated_document = document
             issue = degrade_section_to_no_confidence(updated_document, section_id, e)
             logger.warning(f"Recorded assessment ProcessingIssue: {issue.code}")
+            # And in the section's extraction result, which the Processing Report
+            # reads: extraction wrote it before this pass, so it still shows a
+            # Confidence stage as if the pass had scored the section. Best effort.
+            degraded = next(
+                (s for s in updated_document.sections if s.section_id == section_id),
+                None,
+            )
+            record_no_confidence_in_result(
+                degraded.extraction_result_uri if degraded else None, issue
+            )
 
     # (The optional post-assessment validation checks — previously gated behind
     # the removed `confidence.validation_enabled` toggle — are no longer run
