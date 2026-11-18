@@ -129,9 +129,11 @@ documentation, testing, code-review).
   renamed or removed, a requirement it does not meet) is 🔴; a backward-compatible
   change needs nothing; one that may break it, or a prompt, page or story that no
   longer matches, is 🟡. Where the PR description or commit messages are available,
-  also note whether they say how the Quick Start journey was exercised: open it,
-  describe a document, approve the drafted fields, profile created and activated.
-  The paths are in `.claude/rules/quick-start.md`
+  also note whether they say how the change was checked: for a change to the
+  journey or to a contract it calls, the journey on a stack (open Quick Start,
+  describe a document, approve the drafted fields, profile created and activated);
+  for any other change under the rule's paths, the offline suites. The paths are
+  in `.claude/rules/quick-start.md`
 - No obvious race conditions, unbounded loops, or missing pagination
 - Error handling uses explicit exceptions (no bare `except:`), with `exc_info=True`
 - No removal of observability (X-Ray `patch_all`, structured logging)

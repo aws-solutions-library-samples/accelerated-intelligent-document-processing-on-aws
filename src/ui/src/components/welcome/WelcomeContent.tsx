@@ -4,10 +4,17 @@ import React, { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Box, Button, Container, Header, SpaceBetween, Link } from '@cloudscape-design/components';
 import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
-import { DOCUMENTS_PATH, MY_TASKS_PATH, CONFIGURATION_PATH, UPLOAD_DOCUMENT_PATH, WELCOME_DISMISSED_KEY } from '../../routes/constants';
+import {
+  DOCUMENTS_PATH,
+  DISCOVERY_PATH,
+  MY_TASKS_PATH,
+  CONFIGURATION_PATH,
+  UPLOAD_DOCUMENT_PATH,
+  WELCOME_DISMISSED_KEY,
+} from '../../routes/constants';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
-import { isQuickStartEnabled } from '../../utils/quick-start-flag';
+import useQuickStartAvailable from '../../hooks/use-quick-start-available';
 
 /** A hint sentence: its opening question in bold, and one phrase that is a link. */
 type Hint = { readonly b: MessageTag; readonly link: MessageTag };
@@ -20,7 +27,8 @@ const messages = defineMessages<{
   goToQueue: NoMessageValues;
   enterConsole: NoMessageValues;
   helpHeading: NoMessageValues;
-  noConfigHint: Hint;
+  noConfigurationQuickStart: { readonly b: MessageTag; readonly quickStart: MessageTag; readonly discovery: MessageTag };
+  noConfigurationDiscovery: Hint;
   haveConfigHint: Hint;
   testDocumentHint: Hint;
   dismiss: NoMessageValues;
@@ -62,12 +70,18 @@ const messages = defineMessages<{
     defaultMessage: 'Not sure where to begin?',
     description: 'Heading above the hints on the Welcome page.',
   },
-  noConfigHint: {
-    id: 'welcome.page.noConfigHint',
+  noConfigurationQuickStart: {
+    id: 'welcome.page.noConfigurationQuickStart',
     defaultMessage:
-      "<b>No configuration yet?</b> Use <link>Quick Start</link> to describe your document type (or upload an example) and we'll build a config for you.",
+      '<b>No configuration yet?</b> Open <quickStart>Quick Start</quickStart> to describe your document type or upload an example. Once you approve, it creates and activates a configuration for you. In the console, Quick Start is also at the top of the side navigation. Or let <discovery>Discovery</discovery> infer classes and fields from example documents.',
     description:
-      'First hint on the Welcome page. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the name of the Quick Start feature (the same as the Quick Start button) and opens it.',
+      'First hint on the Welcome page, for a user offered Quick Start. The <b> phrase is the question that opens the hint, shown in bold. The <quickStart> phrase is the name of the Quick Start feature (the same as the Quick Start button) and opens it. The <discovery> phrase is the name of the Discovery page in the side navigation and opens it.',
+  },
+  noConfigurationDiscovery: {
+    id: 'welcome.page.noConfigurationDiscovery',
+    defaultMessage: '<b>No configuration yet?</b> <link>Discovery</link> infers classes and fields from example documents.',
+    description:
+      'First hint on the Welcome page, for a user who can create a configuration but is not offered Quick Start. The <b> phrase is the question that opens the hint, shown in bold. The <link> phrase is the name of the Discovery page in the side navigation and opens it.',
   },
   haveConfigHint: {
     id: 'welcome.page.haveConfigHint',
@@ -98,22 +112,26 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
   const intl = useIntl();
   const navigate = useNavigate();
   const { settings } = useSettingsContext();
-  const { isAnnotatorOnly } = useUserRole();
-  const quickStart = isQuickStartEnabled();
+  const { isAnnotatorOnly, isReviewerOnly, canWrite } = useUserRole();
+  const quickStart = useQuickStartAvailable();
 
   const openQuickStart = useCallback(() => {
     navigate(DOCUMENTS_PATH);
     window.dispatchEvent(new CustomEvent('openQuickStart'));
   }, [navigate]);
 
+  const bold = (chunks: React.ReactNode[]): React.JSX.Element => <b>{chunks}</b>;
+  const openDiscovery = (chunks: React.ReactNode[]): React.JSX.Element => <Link onFollow={() => navigate(DISCOVERY_PATH)}>{chunks}</Link>;
+
   const startTour = useCallback(() => {
     const pattern = (settings?.IDPPattern as string | undefined)?.toLowerCase();
     const detail = {
       customModels: (import.meta.env.VITE_AWS_REGION as string | undefined) === 'us-east-1',
       capacityPlanning: !pattern || /pattern[\s\-_]?2/.test(pattern) || pattern.includes('unified'),
+      quickStart,
     };
     window.dispatchEvent(new CustomEvent('startTutorial', { detail }));
-  }, [settings?.IDPPattern]);
+  }, [settings?.IDPPattern, quickStart]);
 
   const enterConsole = useCallback(() => {
     // An Annotator cannot read the document list, so sending them there would be
@@ -133,7 +151,9 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
         {/* An Annotator is scoped to reading and annotating their assigned test
             set(s). Quick Start drives discovery and upload, the tour ends at Quick
             Start, and Configuration / Upload Document are out of scope too — so
-            for them this page would be a set of dead ends. */}
+            for them this page would be a set of dead ends. A Reviewer-only user's
+            side navigation is the review queues alone, which the tour has no step
+            for, so they are not offered it. */}
         <SpaceBetween direction="horizontal" size="s">
           {!isAnnotatorOnly && (
             <>
@@ -142,9 +162,11 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
                   <FormattedMessage {...messages.quickStart} />
                 </Button>
               )}
-              <Button iconName="status-info" onClick={startTour}>
-                <FormattedMessage {...messages.takeTour} />
-              </Button>
+              {!isReviewerOnly && (
+                <Button iconName="status-info" onClick={startTour}>
+                  <FormattedMessage {...messages.takeTour} />
+                </Button>
+              )}
             </>
           )}
           <Button variant={isAnnotatorOnly ? 'primary' : undefined} onClick={enterConsole}>
@@ -161,9 +183,18 @@ const WelcomeContent = ({ showDismiss = false, onDismiss }: WelcomeContentProps)
               {quickStart && (
                 <Box variant="p">
                   <FormattedMessage
-                    {...messages.noConfigHint}
-                    values={{ b: (chunks) => <b>{chunks}</b>, link: (chunks) => <Link onFollow={openQuickStart}>{chunks}</Link> }}
+                    {...messages.noConfigurationQuickStart}
+                    values={{
+                      b: bold,
+                      quickStart: (chunks: React.ReactNode[]) => <Link onFollow={openQuickStart}>{chunks}</Link>,
+                      discovery: openDiscovery,
+                    }}
                   />
+                </Box>
+              )}
+              {!quickStart && canWrite && (
+                <Box variant="p">
+                  <FormattedMessage {...messages.noConfigurationDiscovery} values={{ b: bold, link: openDiscovery }} />
                 </Box>
               )}
               <Box variant="p">

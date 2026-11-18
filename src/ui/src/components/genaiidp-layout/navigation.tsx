@@ -4,7 +4,7 @@ import React, { useMemo } from 'react';
 import { defineMessages, FormattedMessage, useIntl, type IntlShape, type MessageTag, type NoMessageValues } from 'react-intl';
 import { useLocation } from 'react-router-dom';
 import type { SideNavigationProps } from '@cloudscape-design/components';
-import { Badge, Box, Button, Hotspot, Link, Popover, SideNavigation, SpaceBetween } from '@cloudscape-design/components';
+import { Badge, Box, Button, Link, Popover, SideNavigation, SpaceBetween } from '@cloudscape-design/components';
 import useSettingsContext from '../../contexts/settings';
 import useUserRole from '../../hooks/use-user-role';
 import useInstalledFeatures from '../../hooks/use-installed-features';
@@ -13,9 +13,10 @@ import { BROWSE_CATALOG_HREF, buildFeaturesNavSection, COMING_SOON_HREF } from '
 import useLatestVersion from '../../hooks/use-latest-version';
 import useInbox from '../../hooks/use-inbox';
 import { buildInboxNavLink } from '../inbox/inbox-nav-link';
+import { TourHotspot } from '../../contexts/tourHotspots';
 import { useOptionalReviewWork } from '../../hooks/use-review-work';
 import { buildReviewStudioNavSection, buildHomeNavSection } from './review-queues-nav-items';
-import { isQuickStartEnabled } from '../../utils/quick-start-flag';
+import useQuickStartAvailable from '../../hooks/use-quick-start-available';
 import './navigation.css';
 
 import {
@@ -359,7 +360,7 @@ const NAV_HOTSPOTS: Record<string, string> = {
 };
 
 const withInfoHotspot = (link: SideNavigationProps.Link, hotspotId: string): SideNavigationProps.Link => {
-  const hotspot = React.createElement(Hotspot, { hotspotId, side: 'right' });
+  const hotspot = React.createElement(TourHotspot, { hotspotId, side: 'right' });
   const info = link.info ? React.createElement(SpaceBetween, { direction: 'horizontal', size: 'xxs' }, link.info, hotspot) : hotspot;
   return { ...link, info };
 };
@@ -780,7 +781,8 @@ const FullNavigation = ({
   const path = location.pathname;
   let activeHref = `#${DEFAULT_PATH}`;
   const { settings } = useSettingsContext();
-  const { isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
+  const { loading: roleLoading, isAdmin, isAuthor, isViewerOnly, isQueueWorker, canReview } = useUserRole();
+  const quickStartAvailable = useQuickStartAvailable();
   const reviewWork = useOptionalReviewWork();
   const reviewCount = reviewWork?.count ?? null;
   // Home (the Inbox) is everyone's; its Tasks and Queues are for Annotators, who are
@@ -960,16 +962,24 @@ const FullNavigation = ({
   const deploymentInfo = useDeploymentInfoNavSection();
   if (deploymentInfo) navigationItems.push(deploymentInfo);
 
+  if (roleLoading && !items) {
+    return (
+      <div className="idp-side-nav">
+        <SideNavigation items={[]} header={header} />
+      </div>
+    );
+  }
+
   return (
     <div className="idp-side-nav">
       {/* Annotator-only and Reviewer-only users get QueueWorkerNavigation, which has no Quick Start. */}
-      {isQuickStartEnabled() && (
+      {quickStartAvailable && (
         <div className="nav-quick-start">
-          <Hotspot hotspotId="nav-quick-start" side="right">
+          <TourHotspot hotspotId="nav-quick-start" side="right">
             <Button variant="primary" iconName="gen-ai" onClick={() => window.dispatchEvent(new CustomEvent('openQuickStart'))}>
               <FormattedMessage {...messages.quickStart} />
             </Button>
-          </Hotspot>
+          </TourHotspot>
         </div>
       )}
       <SideNavigation

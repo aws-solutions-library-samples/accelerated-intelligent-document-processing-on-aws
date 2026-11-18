@@ -1038,7 +1038,7 @@ UI to be rebuilt before it takes effect in the browser:
 | `AllowedSignUpEmailDomain` | Whether the login page offers the **Sign Up** tab |
 | `ExternalIdPType` / `ExternalIdPName` | The federated "Sign in with …" button and Amplify's OAuth configuration |
 | `ExternalIdPAutoLogin` | Automatic redirect to the external IdP |
-| `EnableQuickStartWidget` | The Quick Start widget |
+| `EnableQuickStartWidget` | The Quick Start entry points in the UI. The chat routes read it at run time as well, and refuse Quick Start without a rebuild |
 | `WebUIHosting` | The SPA's asset base path (`/` vs `/api/`) and the OAuth redirect origin |
 | `CustomDomainUrl` | The OAuth redirect origin |
 

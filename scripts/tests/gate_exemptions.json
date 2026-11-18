@@ -126,6 +126,17 @@
       ],
       "reason": "Discovered by name: KNOWN_ is in the discovery vocabulary, and the match is the mechanism working on a constant whose shape is a hand-written list beside a gate. Registered rather than renamed, because renaming to slip past discovery is what this registry exists to prevent. Why JUDGEMENT: membership is the claim 'this Lambda saves a profile at runtime', established by reading each handler and its idp_common call path when the gate was written (discovery, the Replace-mode clear, multi-document save, BDA optimization and sync, the configuration resolver and updater, the two chat processors and the agent processor via the Quick Start agent, the feature platform's config-preset installer, and the data generator's bootstrap); computing it would be the derivation itself, which is what the floor exists to check. The ratchet is that test_the_derivation_finds_every_measured_writer fails when a member is no longer derived -- whether because a resolution rule regressed (measured: disabling the registry-carrier rule shrank the derived set from 11 to 8 and this test went red) or because the Lambda vanished from its template -- so a dead member fails rather than lingering. The residual is the other direction: a new writer the derivation cannot see and nobody adds here is unchecked, which the derivation's documented blind spots (getattr, registries filled inside a function, third-party modules) describe. The universe is deployed Lambdas only, so a local writer (the CLI, the SDK, a notebook) is outside it entirely; the SDK and CLI writers are covered instead by lib/idp_sdk/tests/unit/test_discovery_operations.py and the CLI bootstrap test, which assert they resolve the bucket."
     },
+    "scripts/tests/test_quick_start_flag_wiring.py::KNOWN_HANDLERS": {
+      "kind": "fixture",
+      "memberKind": "a (template, logical id) pair naming a Lambda that handles a Quick Start turn",
+      "turnsOff": "nothing. It is a FLOOR under the derived set of Quick Start handlers, not the list the gate checks: the wiring assertions are parametrised over the functions whose own code compares a method with quick_start, and this constant only adds the requirement that the derivation still finds the three handlers that exist. A member being in it makes the gate stricter, never looser.",
+      "premise": [
+        "JUDGEMENT"
+      ],
+      "ratchet": "staleness",
+      "ratchetEvidence": "scripts/tests/test_quick_start_flag_wiring.py",
+      "reason": "Discovered by name: KNOWN_ is in the discovery vocabulary, and the match is the mechanism working on a hand-written list beside a gate. Registered rather than renamed, because renaming to slip past discovery is what this registry exists to prevent. Why JUDGEMENT: membership is the claim 'this function handles a Quick Start turn', established by reading the agent chat resolver, the agent chat processor and the copy of it the streaming route runs. A member the derivation no longer finds fails test_the_derivation_finds_the_known_handlers, so no entry can outlive the function it names."
+    },
     ".ash/.ash.yaml::suppressions": {
       "kind": "exemption",
       "memberKind": "advisory id",
