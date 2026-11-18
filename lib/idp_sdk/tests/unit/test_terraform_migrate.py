@@ -2862,13 +2862,14 @@ class TestRestoreConfigOperation:
         self.backup.unlink()
         FakeConfigManager.profiles_in_table = ["default", "extra"]
         FakeConfigManager.revisions_by_profile = {
-            "default": [_rev(4, "stack-deployment", published=True)],
+            # A backfill that failed after taking revision 1.
+            "default": [_rev(2, "stack-deployment", published=True)],
             "extra": [_rev(1, "stack-deployment", published=True)],
         }
         result = migration().restore_config(str(self.dir), apply=True)
         assert result.ok is False and FakeConfigManager.restored == []
         assert len(result.findings) == 1
-        assert result.findings[0].startswith("default: its earliest revision is 4")
+        assert result.findings[0].startswith("default: its earliest revision is 2")
         assert any(n.startswith("extra:") for n in result.notes)
 
     def test_without_a_backup_a_dry_run_restores_nothing(self):

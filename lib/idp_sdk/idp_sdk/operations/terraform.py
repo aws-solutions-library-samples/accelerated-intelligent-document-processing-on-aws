@@ -856,6 +856,9 @@ class GenaiIdpTerraformMigration:
                     # old revision counter left on the row, or a pre-migration
                     # backfill that failed after taking its number (or retention
                     # pruned the early ones). Old content may have been replaced.
+                    # A backfill that failed before taking a number leaves the
+                    # deploy's save at revision 1, which this cannot tell from a
+                    # profile the new deployment created.
                     findings.append(
                         f"{profile}: its earliest revision is {lowest}, not 1, and "
                         "none records what it held before the migration, so its "
