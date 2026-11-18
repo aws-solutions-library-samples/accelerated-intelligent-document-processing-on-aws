@@ -163,6 +163,134 @@
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
   },
+  "common.circuitBreakerPanel.adminControls": {
+    "defaultMessage": "Admin controls",
+    "description": "Heading above the pause, resume and probe buttons of the circuit breaker dialog."
+  },
+  "common.circuitBreakerPanel.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that leaves the confirmation without running the action."
+  },
+  "common.circuitBreakerPanel.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the circuit breaker dialog."
+  },
+  "common.circuitBreakerPanel.field.failureCount": {
+    "defaultMessage": "Failure count",
+    "description": "Label of the number of failures the circuit breaker counted."
+  },
+  "common.circuitBreakerPanel.field.lastChecked": {
+    "defaultMessage": "Last checked",
+    "description": "Label of the time the circuit breaker was last checked."
+  },
+  "common.circuitBreakerPanel.field.lastError": {
+    "defaultMessage": "Last error",
+    "description": "Label of the last error the circuit breaker recorded."
+  },
+  "common.circuitBreakerPanel.field.openedAt": {
+    "defaultMessage": "Opened at",
+    "description": "Label of the time the circuit breaker opened."
+  },
+  "common.circuitBreakerPanel.field.recoveryAttempts": {
+    "defaultMessage": "Recovery attempts",
+    "description": "Label of the number of recovery attempts of the circuit breaker."
+  },
+  "common.circuitBreakerPanel.field.state": {
+    "defaultMessage": "State",
+    "description": "Label of the circuit breaker state in its dialog."
+  },
+  "common.circuitBreakerPanel.pause.buttonLabel": {
+    "defaultMessage": "Pause processing",
+    "description": "Admin button that opens the confirmation for pausing processing."
+  },
+  "common.circuitBreakerPanel.pause.confirmLabel": {
+    "defaultMessage": "Pause",
+    "description": "Button that confirms pausing processing."
+  },
+  "common.circuitBreakerPanel.pause.description": {
+    "defaultMessage": "This will force the circuit breaker OPEN. In-flight documents continue; new documents wait in the queue until processing resumes.",
+    "description": "What pausing does. OPEN is the stored state; keep it as written."
+  },
+  "common.circuitBreakerPanel.pause.submitted": {
+    "defaultMessage": "Pause request submitted.",
+    "description": "Notice after a pause request was sent."
+  },
+  "common.circuitBreakerPanel.pause.title": {
+    "defaultMessage": "Pause document processing",
+    "description": "Heading of the confirmation for pausing processing."
+  },
+  "common.circuitBreakerPanel.probe.buttonLabel": {
+    "defaultMessage": "Probe recovery",
+    "description": "Admin button that opens the confirmation for probing recovery."
+  },
+  "common.circuitBreakerPanel.probe.confirmLabel": {
+    "defaultMessage": "Probe",
+    "description": "Button that confirms probing recovery."
+  },
+  "common.circuitBreakerPanel.probe.description": {
+    "defaultMessage": "This moves the circuit breaker to HALF_OPEN to allow a small number of probe requests.",
+    "description": "What probing does. HALF_OPEN is the stored state; keep it as written."
+  },
+  "common.circuitBreakerPanel.probe.submitted": {
+    "defaultMessage": "Probe request submitted.",
+    "description": "Notice after a probe request was sent."
+  },
+  "common.circuitBreakerPanel.probe.title": {
+    "defaultMessage": "Probe recovery",
+    "description": "Heading of the confirmation for probing whether processing can recover."
+  },
+  "common.circuitBreakerPanel.reason.description": {
+    "defaultMessage": "Recorded in DynamoDB and sent to SNS subscribers.",
+    "description": "Hint under the reason field: where the reason goes."
+  },
+  "common.circuitBreakerPanel.reason.label": {
+    "defaultMessage": "Reason",
+    "description": "Label of the field where an Admin explains a circuit breaker action."
+  },
+  "common.circuitBreakerPanel.reason.placeholder": {
+    "defaultMessage": "Explain why this action is being taken",
+    "description": "Placeholder of the reason field."
+  },
+  "common.circuitBreakerPanel.requestFailed": {
+    "defaultMessage": "Request failed",
+    "description": "Error notice of the circuit breaker dialog when an action failed without a reason."
+  },
+  "common.circuitBreakerPanel.resume.buttonLabel": {
+    "defaultMessage": "Resume processing",
+    "description": "Admin button that opens the confirmation for resuming processing."
+  },
+  "common.circuitBreakerPanel.resume.confirmLabel": {
+    "defaultMessage": "Resume",
+    "description": "Button that confirms resuming processing."
+  },
+  "common.circuitBreakerPanel.resume.description": {
+    "defaultMessage": "This will force the circuit breaker CLOSED and reset failure/recovery counters. Queued documents will resume processing.",
+    "description": "What resuming does. CLOSED is the stored state; keep it as written."
+  },
+  "common.circuitBreakerPanel.resume.submitted": {
+    "defaultMessage": "Resume request submitted.",
+    "description": "Notice after a resume request was sent."
+  },
+  "common.circuitBreakerPanel.resume.title": {
+    "defaultMessage": "Resume document processing",
+    "description": "Heading of the confirmation for resuming processing."
+  },
+  "common.circuitBreakerPanel.state.closed": {
+    "defaultMessage": "CLOSED (processing)",
+    "description": "State of a closed circuit breaker. CLOSED is the stored state; keep it as written."
+  },
+  "common.circuitBreakerPanel.state.halfOpen": {
+    "defaultMessage": "HALF_OPEN (recovering)",
+    "description": "State of a half-open circuit breaker. HALF_OPEN is the stored state; keep it as written."
+  },
+  "common.circuitBreakerPanel.state.open": {
+    "defaultMessage": "OPEN (paused)",
+    "description": "State of an open circuit breaker. OPEN is the stored state; keep it as written."
+  },
+  "common.circuitBreakerPanel.title": {
+    "defaultMessage": "Circuit breaker",
+    "description": "Title of the circuit breaker dialog, opened from the document list header."
+  },
   "common.columnPreferences.cancel": {
     "defaultMessage": "Cancel",
     "description": "Button that closes the column preferences without applying them."
@@ -258,6 +386,22 @@
   "common.dateRangeFields.timeConstraint": {
     "defaultMessage": "HH:mm:ss",
     "description": "Format hint under a time field: hours, minutes and seconds, 24-hour clock."
+  },
+  "common.dateRangeModal.apply": {
+    "defaultMessage": "Apply",
+    "description": "Button that applies the custom date range."
+  },
+  "common.dateRangeModal.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the custom date range dialog without applying a range."
+  },
+  "common.dateRangeModal.note": {
+    "defaultMessage": "Documents are queried server-side for custom date ranges. Results are paginated for performance. All times are in UTC.",
+    "description": "Note under the date and time fields of the custom date range dialog."
+  },
+  "common.dateRangeModal.title": {
+    "defaultMessage": "Select custom date range",
+    "description": "Title of the dialog that picks a custom date range for a list."
   },
   "common.fileAccess.denied": {
     "defaultMessage": "You do not have permission to view this file. If your account is new, ask an administrator to assign it a role.",
