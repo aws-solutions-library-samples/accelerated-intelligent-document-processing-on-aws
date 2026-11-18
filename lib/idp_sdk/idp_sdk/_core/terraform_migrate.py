@@ -133,7 +133,6 @@ STATEFUL_TYPES = frozenset(
 # visible in state.
 RECREATE_SAFE_TYPES = frozenset(
     {
-        "aws_api_gateway_account",
         "aws_api_gateway_authorizer",
         "aws_api_gateway_deployment",
         "aws_api_gateway_gateway_response",
@@ -203,6 +202,16 @@ POOL_SETTING_TYPES = frozenset(
         "aws_cognito_managed_login_branding",
     }
 )
+# The Region's API Gateway account settings: one per account and Region, shared by
+# every REST API there. Destroying it resets the CloudWatch role ARN (the provider
+# sends `UpdateAccount` with an empty value), which stops execution and access
+# logging for every API in the Region, not only the old deployment's. So it is
+# detached and kept, as the module's own `awscc_apigateway_account` is retained on
+# delete; and the role it names, with the role's policies, is kept with it, because
+# a setting that points at a deleted role stops logging just the same.
+API_GATEWAY_ACCOUNT_TYPE = "aws_api_gateway_account"
+ROLE_POLICY_TYPES = frozenset({"aws_iam_role_policy_attachment", "aws_iam_role_policy"})
+
 # Kept with the BDA project, which names them.
 BDA_MEMBER_TYPES = frozenset({"awscc_bedrock_blueprint"})
 
@@ -1230,6 +1239,25 @@ def build_plan(
         and i.type == "aws_kms_key"
         and planned[i.address].detach
     }
+    gateway_role_arns = {
+        str(i.attributes["cloudwatch_role_arn"])
+        for i in instances
+        if i.type == API_GATEWAY_ACCOUNT_TYPE
+        and i.attributes.get("cloudwatch_role_arn")
+    }
+    gateway_roles = {
+        str(i.attributes.get("name"))
+        for i in instances
+        if i.type == "aws_iam_role"
+        and str(i.attributes.get("arn")) in gateway_role_arns
+    }
+    # Customer-managed policies attached to that role go with it.
+    gateway_policy_arns = {
+        str(i.attributes.get("policy_arn"))
+        for i in instances
+        if i.type == "aws_iam_role_policy_attachment"
+        and i.attributes.get("role") in gateway_roles
+    }
 
     for inst in instances:
         if inst.address in planned:
@@ -1335,6 +1363,25 @@ def build_plan(
                     + ("" if scope else ", not recorded in the state")
                     + "). Whatever that invocation manages stays in the account."
                 )
+        elif inst.type == API_GATEWAY_ACCOUNT_TYPE:
+            pr.verdict, pr.detach = KEEP_UNMANAGED, True
+            pr.note = (
+                "The Region's API Gateway account settings, shared by every API in "
+                "the Region; detached, because destroying it clears the CloudWatch "
+                f"role ({a.get('cloudwatch_role_arn') or 'none recorded'}) and stops "
+                "API Gateway logging Region-wide. Managed by neither deployment."
+            )
+        elif (
+            (inst.type == "aws_iam_role" and a.get("name") in gateway_roles)
+            or (inst.type in ROLE_POLICY_TYPES and a.get("role") in gateway_roles)
+            or (inst.type == "aws_iam_policy" and a.get("arn") in gateway_policy_arns)
+        ):
+            pr.verdict, pr.detach = KEEP_UNMANAGED, True
+            pr.note = (
+                "The CloudWatch role the Region's API Gateway account settings name "
+                "(or one of its policies); detached with those settings, so logging "
+                "keeps a role to write with. Managed by neither deployment."
+            )
         elif inst.type in STATEFUL_TYPES:
             refusals.append(
                 f"{inst.address} ({inst.type} {pr.physical_id}): a resource that holds "
@@ -2945,6 +2992,14 @@ def check_destroy_plan(
             findings.append(
                 f"{address} is in the destroy plan, but the migration detached it "
                 "from the old state; run `detach --apply` first"
+            )
+            continue
+        if rc.get("type") == API_GATEWAY_ACCOUNT_TYPE:
+            findings.append(
+                f"{address} is in the destroy plan; destroying it clears the "
+                "Region's API Gateway CloudWatch role and stops logging for every "
+                "API in the Region. Run `plan` again with this version of idp-cli, "
+                "then `detach --apply`"
             )
             continue
         if planned is None:
