@@ -3336,3 +3336,87 @@ class TestClassificationErrorsFromTheDocSplitMatcher:
             }
         ]
         assert index._classification_errors_for_doc("b.pdf", excluded) == []
+
+
+@pytest.mark.unit
+class TestEmptyValueCalibration:
+    """Empty predictions are reported beside the calibration metrics (#2052).
+
+    The evaluation service drops ``None`` predictions before Stickler builds its
+    models, so ``prediction_confidences`` never scores a missed field and the
+    run-level AUROC is computed without one. A scorer that rates missed fields
+    higher than found ones (#2033) was invisible in it.
+    """
+
+    @staticmethod
+    def _row(path, expected, actual, match):
+        return {
+            "field_path": path,
+            "expected_key": path,
+            "actual_key": path,
+            "expected_value": expected,
+            "actual_value": actual,
+            "match": match,
+            "score": 1.0 if match else 0.0,
+        }
+
+    def test_high_confidence_on_missed_fields_is_reported(self, mock_env):
+        """A synthetic run whose missed fields carry the highest confidence.
+
+        Found values: 10 correct at 0.6 and 2 wrong at 0.3, so the existing
+        AUROC over found values reads a perfect 1.0. Empty predictions: 4 missed
+        fields at 0.95 and 2 correctly empty fields at 0.4. Counted, the
+        scorer ranks correct below wrong, which the block must say.
+        """
+        index = import_test_module()
+        found = [self._row(f"F{i}", "v", "v", True) for i in range(10)]
+        found_wrong = [self._row(f"W{i}", "v", "x", False) for i in range(2)]
+        missed = [self._row(f"M{i}", "v", None, False) for i in range(4)]
+        correctly_empty = [self._row(f"E{i}", None, None, True) for i in range(2)]
+        current = {
+            "field_comparisons": found + found_wrong + missed + correctly_empty,
+            "prediction_confidences": {
+                **{r["actual_key"]: 0.6 for r in found},
+                **{r["actual_key"]: 0.3 for r in found_wrong},
+            },
+            "empty_prediction_confidences": {
+                **{r["actual_key"]: 0.95 for r in missed},
+                **{r["actual_key"]: 0.4 for r in correctly_empty},
+            },
+            "confusion_matrix": {"tp": 10, "fp": 0, "tn": 2, "fn": 4, "fd": 2},
+            "_idp_source": {"doc_key": "a.pdf", "section_id": "1"},
+        }
+        # A section written before the writer recorded empty-value confidences:
+        # its missed field is counted but cannot be scored.
+        legacy = {
+            "field_comparisons": [
+                self._row("F0", "v", "v", True),
+                self._row("M9", "v", None, False),
+            ],
+            "prediction_confidences": {"F0": 0.6},
+            "confusion_matrix": {"tp": 1, "fp": 0, "tn": 0, "fn": 1},
+            "_idp_source": {"doc_key": "b.pdf", "section_id": "1"},
+        }
+        with patch.object(index, "_load_comparison_results") as mock_load:
+            mock_load.return_value = (
+                [current, legacy],
+                {"a.pdf": 0.8, "b.pdf": 0.5},
+                {},
+                [],
+                {},
+            )
+            result = index.aggregate_test_run_with_stickler("run-1", "table")
+
+        confidence = result["confidence_metrics"]
+        # The existing figure keeps its meaning: found values only.
+        assert confidence["overall"]["auroc"]["value"] == pytest.approx(1.0)
+
+        empty = confidence["empty_values"]
+        assert (empty["count"], empty["wrong"], empty["with_confidence"]) == (7, 5, 6)
+        assert empty["sections_without_record"] == 1
+        # Over empty predictions alone every wrong one outranks every right one.
+        assert empty["overall"]["auroc"]["value"] == pytest.approx(0.0)
+        # Over all fields: 13 correct, 6 wrong; correct beat wrong in 11*2 + 2*2
+        # = 26 of 78 pairs.
+        assert empty["including_empty"]["auroc"]["value"] == pytest.approx(26 / 78)
+        assert "brier" in empty["overall"] and "brier_score" not in empty["overall"]

@@ -319,6 +319,7 @@
         "tp": 2
       }
     },
+    "empty_prediction_confidences": {},
     "field_comparisons": [
       {
         "actual_key": "Transactions[0].date",

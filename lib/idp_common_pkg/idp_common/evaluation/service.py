@@ -27,6 +27,10 @@ from idp_common.evaluation.contract import (
     STICKLER_RESULT_VERSION,
     evaluation_results_key,
 )
+from idp_common.evaluation.empty_values import (
+    EMPTY_PREDICTION_CONFIDENCES_KEY,
+    empty_prediction_confidences,
+)
 from idp_common.evaluation.models import (
     AttributeEvaluationResult,
     DocSplitMetrics,
@@ -1546,6 +1550,28 @@ class EvaluationService:
                 logger.debug(
                     f"Field comparisons enabled: {len(field_comparisons)} detailed comparisons available"
                 )
+
+            # Keep the confidence of every empty prediction (#2052). The None
+            # values were removed above before the models were built, so
+            # Stickler's ``prediction_confidences`` has no entry for a field the
+            # extractor returned as null, and a scorer that rates missed fields
+            # highly would be invisible in the run-level calibration metrics.
+            # Recorded under its own key so the existing figures keep their
+            # meaning; the aggregation Lambda reports it beside them.
+            stickler_result[EMPTY_PREDICTION_CONFIDENCES_KEY] = (
+                empty_prediction_confidences(
+                    field_comparisons,
+                    stickler_result.get("prediction_confidences"),
+                    lambda path: (
+                        (
+                            self._get_confidence_for_field(confidence_scores, path)
+                            or {}
+                        ).get("confidence")
+                        if confidence_scores
+                        else None
+                    ),
+                )
+            )
 
             # Transform Stickler result to IDP format
             section_result = self._transform_stickler_result(

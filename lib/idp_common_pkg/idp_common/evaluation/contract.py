@@ -785,4 +785,10 @@ def compare_with_flags() -> Dict[str, Any]:
 #         ``mapper._add_evaluation_extensions_recursive`` removal); the
 #         aggregation Lambda's version-mismatch warning surfaces both
 #         cases.
-STICKLER_RESULT_VERSION = "3.0"
+#   3.1 — new optional top-level key ``empty_prediction_confidences``
+#         (``{field path: confidence}``) holding the confidence of each empty
+#         prediction Stickler's ``prediction_confidences`` omits (#2052). The
+#         aggregation Lambda reports it at ``confidence_metrics.empty_values``;
+#         a 3.0 blob lacks the key and is counted there as
+#         ``sections_without_record``. No existing key changes meaning.
+STICKLER_RESULT_VERSION = "3.1"

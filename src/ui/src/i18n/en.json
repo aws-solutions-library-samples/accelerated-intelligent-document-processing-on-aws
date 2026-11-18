@@ -2051,6 +2051,30 @@
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
   },
+  "testStudio.results.aurocIncludingEmpty": {
+    "defaultMessage": "AUROC incl. Empty Values",
+    "description": "Metric name: AUROC computed over all fields, including fields the extractor returned empty."
+  },
+  "testStudio.results.confidencePrefix": {
+    "defaultMessage": "Confidence:",
+    "description": "Prefix before a confidence calibration metric name in the test run breakdown table."
+  },
+  "testStudio.results.emptyPredictions": {
+    "defaultMessage": "Empty Predictions",
+    "description": "Metric name: fields the extractor returned no value for."
+  },
+  "testStudio.results.emptyPredictionsValue": {
+    "defaultMessage": "{count} ({wrong} wrong)",
+    "description": "{count} is the number of empty predictions; {wrong} is how many of them had a value in the ground truth."
+  },
+  "testStudio.results.emptyPredictionsValueWithAuroc": {
+    "defaultMessage": "{count} ({wrong} wrong, AUROC {auroc})",
+    "description": "{count} is the number of empty predictions; {wrong} is how many of them were wrong; {auroc} is the formatted AUROC over those fields alone."
+  },
+  "testStudio.results.olderSectionsNotScored": {
+    "defaultMessage": "{sections, plural, one {# older section not scored} other {# older sections not scored}}",
+    "description": "Appended to the empty-predictions value when some sections were evaluated before this measure existed."
+  },
   "topNavigation.feedback.ariaLabel": {
     "defaultMessage": "Feedback and issue reporting",
     "description": "Screen-reader label of the feedback menu button in the top navigation."

@@ -1042,6 +1042,8 @@ def test_the_calibration_keys_reach_the_csv():
     ``n_conf_leaves`` came to be computed by the scorer and readable from nothing."""
     for key in (
         "calibration_observations",
+        "calibration_empty_observations",
+        "calibration_empty_wrong",
         "calibration_ece",
         "calibration_ece_mean_conf",
         "calibration_auroc",
@@ -1050,6 +1052,24 @@ def test_the_calibration_keys_reach_the_csv():
         "calibration_bin_coverage",
     ):
         assert key in aggregate.CSV_COLS, key
+
+
+def test_missed_cells_with_high_confidence_are_counted_and_scored():
+    """Empty predictions are in the harness's figures, and the counts say so (#2052).
+
+    Ten found cells at 0.6, all right, and four MISSED cells (the extractor returned
+    null) at 0.95. Excluding the empties would read a single-class set with no AUROC;
+    including them the grader ranks every wrong cell above every right one.
+    """
+    rows = _rows(14, confidence=lambda s: 0.95 if s >= 10 else 0.6)
+    rows = [(s, None if s >= 10 else a, c) for s, a, c in rows]
+    scored = analyze.score_calibration(
+        [_section(rows)], _truth(range(14))["rows_typed"], LIST_KEY
+    )
+    assert scored["calibration_observations"] == 14
+    assert scored["calibration_empty_observations"] == 4
+    assert scored["calibration_empty_wrong"] == 4
+    assert scored["calibration_auroc_unbinned"] == 0.0
 
 
 def test_score_synthetic_declares_every_calibration_key_even_with_no_observations():
