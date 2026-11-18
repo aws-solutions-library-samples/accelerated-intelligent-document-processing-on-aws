@@ -557,11 +557,21 @@ To upgrade, point the module at the new release's URL and apply:
 The label stack's description and metadata move to the new version in the same apply.
 With `idp-cli`, run `idp-cli deploy --terraform` again with the same `--stack-name`
 and `--terraform-dir`, and the new `--terraform-module-url` (or none, for the latest).
-You do not need to repeat `--parameters`: `idp-cli` remembers the values of the
-previous deploy, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
-directory, and applies only the parameters you pass over them, as a CloudFormation
-update keeps the parameters it is not given. A remembered parameter the new module no
-longer has is dropped with a warning. The deploy runs `init -upgrade` because the
+You do not need to repeat the `--parameters` you passed before: `idp-cli` remembers
+them, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
+directory, and applies the parameters you pass now over them. A remembered parameter
+the new module no longer has is dropped with a warning.
+
+⚠️ `idp-cli` remembers only the values that were passed, not the defaults that were
+in effect, so a parameter you have never passed takes the new module's default. This
+differs from a CloudFormation update through `idp-cli`, which keeps the previous value
+of every parameter it is not given. When a release changes a parameter's default, the
+upgrade applies the new default unless you pass the old value. For example, release
+0.6.15 changed the default of `EnableMCP` from `true` to `false`, so upgrading a
+deployment from an earlier release without `--parameters EnableMCP=true` removes its
+MCP integration. Read the release's `CHANGELOG.md` for changed defaults before
+upgrading. The same applies to your own root configuration: a variable you do not set
+takes the new module's default. The deploy runs `init -upgrade` because the
 module source changed, and refuses the plan if it would delete or replace a stateful
 or retained resource (see
 [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
