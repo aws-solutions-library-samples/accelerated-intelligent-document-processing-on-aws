@@ -43,6 +43,39 @@ from idp_common.utils.bedrock_utils import (  # noqa: E402
     async_exponential_backoff_retry,
     exponential_backoff_retry,
 )
+from tests.unit._botocore_errors import (  # noqa: E402
+    bare_replies,
+    named_reply,
+    service_error,
+)
+
+
+def _bedrock_error(
+    code: str,
+    message: str = "m",
+    status: int | None = None,
+    operation: str = "Converse",
+) -> botocore.exceptions.ClientError:
+    """``code`` as a real ``bedrock-runtime`` client raises it from a JSON error
+    reply: its modelled subclass, at the status the model declares (#2050).
+
+    ``MockClientError`` stays for the cases botocore does not build from an HTTP
+    reply — event-stream errors and the streaming APIs' lower-cased spellings, which
+    arrive mid-stream — and for the vocabulary tests, whose codes are not Bedrock's
+    and must not acquire a 5xx status that would let the server-error rule pass them.
+    """
+    return service_error(named_reply(code, status, message), operation)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_backoff(monkeypatch):
+    """The decorators sleep at least 0.1 s per retry; nothing here needs the wait."""
+
+    async def no_wait(_seconds):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    monkeypatch.setattr("idp_common.utils.bedrock_utils.time.sleep", lambda _s: None)
 
 
 @pytest.mark.unit
@@ -75,15 +108,7 @@ class TestAsyncExponentialBackoffRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise MockClientError(
-                    {
-                        "Error": {
-                            "Code": "ThrottlingException",
-                            "Message": "Rate exceeded",
-                        }
-                    },
-                    "TestOperation",
-                )
+                raise _bedrock_error("ThrottlingException", "Rate exceeded")
             return "success"
 
         result = await throttled_func()
@@ -101,14 +126,8 @@ class TestAsyncExponentialBackoffRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                raise MockClientError(
-                    {
-                        "Error": {
-                            "Code": "ServiceUnavailableException",
-                            "Message": "Service unavailable",
-                        }
-                    },
-                    "TestOperation",
+                raise _bedrock_error(
+                    "ServiceUnavailableException", "Service unavailable"
                 )
             return "success"
 
@@ -188,17 +207,9 @@ class TestAsyncExponentialBackoffRetry:
         async def non_retryable_func():
             nonlocal call_count
             call_count += 1
-            raise MockClientError(
-                {
-                    "Error": {
-                        "Code": "AccessDeniedException",
-                        "Message": "Access denied",
-                    }
-                },
-                "TestOperation",
-            )
+            raise _bedrock_error("AccessDeniedException", "Access denied")
 
-        with pytest.raises(MockClientError) as exc_info:
+        with pytest.raises(botocore.exceptions.ClientError) as exc_info:
             await non_retryable_func()
 
         assert "AccessDeniedException" in str(exc_info.value)
@@ -213,12 +224,9 @@ class TestAsyncExponentialBackoffRetry:
         async def always_fails_func():
             nonlocal call_count
             call_count += 1
-            raise MockClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
-                "TestOperation",
-            )
+            raise _bedrock_error("ThrottlingException", "Rate exceeded")
 
-        with pytest.raises(MockClientError) as exc_info:
+        with pytest.raises(botocore.exceptions.ClientError) as exc_info:
             await always_fails_func()
 
         assert "ThrottlingException" in str(exc_info.value)
@@ -233,17 +241,9 @@ class TestAsyncExponentialBackoffRetry:
         async def validation_error_func():
             nonlocal call_count
             call_count += 1
-            raise MockClientError(
-                {
-                    "Error": {
-                        "Code": "ValidationException",
-                        "Message": "Invalid parameter",
-                    }
-                },
-                "TestOperation",
-            )
+            raise _bedrock_error("ValidationException", "Invalid parameter")
 
-        with pytest.raises(MockClientError):
+        with pytest.raises(botocore.exceptions.ClientError):
             await validation_error_func()
 
         assert call_count == 1
@@ -258,14 +258,8 @@ class TestAsyncExponentialBackoffRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                raise MockClientError(
-                    {
-                        "Error": {
-                            "Code": "ValidationException",
-                            "Message": "Output blocked by content filtering policy",
-                        }
-                    },
-                    "TestOperation",
+                raise _bedrock_error(
+                    "ValidationException", "Output blocked by content filtering policy"
                 )
             return "success"
 
@@ -335,10 +329,7 @@ class TestAsyncExponentialBackoffRetry:
         async def tracking_func():
             nonlocal call_count
             call_count += 1
-            raise MockClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
-                "TestOperation",
-            )
+            raise _bedrock_error("ThrottlingException", "Rate exceeded")
 
         # Patch asyncio.sleep to capture delay values
         original_sleep = asyncio.sleep
@@ -348,7 +339,7 @@ class TestAsyncExponentialBackoffRetry:
             await original_sleep(0.001)  # Actually sleep a tiny bit
 
         with patch("asyncio.sleep", mock_sleep):
-            with pytest.raises(MockClientError):
+            with pytest.raises(botocore.exceptions.ClientError):
                 await tracking_func()
 
         assert call_count == 4
@@ -504,15 +495,7 @@ class TestExponentialBackoffRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 2:
-                raise MockClientError(
-                    {
-                        "Error": {
-                            "Code": "InternalServerException",
-                            "Message": "transient",
-                        }
-                    },
-                    "Converse",
-                )
+                raise _bedrock_error("InternalServerException", "transient")
             return "ok"
 
         assert flaky() == "ok"
@@ -551,9 +534,8 @@ class TestExponentialBackoffRetry:
         def denied():
             nonlocal call_count
             call_count += 1
-            raise MockClientError(
-                {"Error": {"Code": "AccessDeniedException", "Message": "no"}},
-                "ConverseStream",
+            raise _bedrock_error(
+                "AccessDeniedException", "no", operation="ConverseStream"
             )
 
         with pytest.raises(botocore.exceptions.ClientError):
@@ -569,15 +551,7 @@ class TestExponentialBackoffRetry:
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise MockClientError(
-                    {
-                        "Error": {
-                            "Code": "ThrottlingException",
-                            "Message": "Rate exceeded",
-                        }
-                    },
-                    "TestOperation",
-                )
+                raise _bedrock_error("ThrottlingException", "Rate exceeded")
             return "success"
 
         result = throttled_func()
@@ -593,12 +567,9 @@ class TestExponentialBackoffRetry:
         def always_fails_func():
             nonlocal call_count
             call_count += 1
-            raise MockClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "Rate exceeded"}},
-                "TestOperation",
-            )
+            raise _bedrock_error("ThrottlingException", "Rate exceeded")
 
-        with pytest.raises(MockClientError) as exc_info:
+        with pytest.raises(botocore.exceptions.ClientError) as exc_info:
             always_fails_func()
 
         assert "ThrottlingException" in str(exc_info.value)
@@ -620,34 +591,32 @@ class TestExponentialBackoffRetry:
         assert call_count == 1
 
 
-def _http_error(code: str, status: int) -> botocore.exceptions.ClientError:
-    """A ClientError carrying the reply's HTTP status, as botocore builds it."""
-    return botocore.exceptions.ClientError(
-        {
-            "Error": {"Code": code, "Message": "Internal Server Error"},
-            "ResponseMetadata": {"HTTPStatusCode": status},
-        },
-        "ConverseStream",
-    )
-
-
 class EventLoopException(Exception):
     """Stands in for Strands' wrapper, raised ``from`` the Bedrock error."""
 
 
-#: (code, status) pairs both decorators retry: the bare statuses botocore uses as the
-#: code when a reply names no error type (#2036), and a named code in neither
-#: vocabulary that is retried for its 500 status alone.
-_RETRIED_SERVER_ERRORS = [
-    ("500", 500),
-    ("502", 502),
-    ("503", 503),
-    ("504", 504),
-    ("InternalFailure", 500),
-]
+#: Replies both decorators retry, each turned into its ``ConverseStream`` error by a
+#: real client: the bare statuses botocore uses as the code when a reply names no
+#: error type (#2036), each with an empty body and with an HTML one, and a named code
+#: in neither vocabulary that is retried for its 500 status alone.
+_RETRIED_SERVER_ERRORS = {
+    "500": bare_replies(500),
+    "502": bare_replies(502),
+    "503": bare_replies(503),
+    "504": bare_replies(504),
+    "InternalFailure": (named_reply("InternalFailure", 500),),
+}
 
 #: A 501 fails the same way every time; a bare 4xx is a request error.
-_NOT_RETRIED_STATUS_ERRORS = [("501", 501), ("400", 400), ("AccessDenied", 403)]
+_NOT_RETRIED_STATUS_ERRORS = {
+    "501": bare_replies(501),
+    "400": bare_replies(400),
+    "AccessDenied": (named_reply("AccessDenied", 403),),
+}
+
+
+def _stream_errors(replies) -> list[tuple[str, botocore.exceptions.ClientError]]:
+    return [(reply.label, service_error(reply, "ConverseStream")) for reply in replies]
 
 
 @pytest.mark.unit
@@ -690,50 +659,52 @@ class TestHttpServerErrorsAreRetried:
         except EventLoopException as wrapped:
             return wrapped
 
-    @pytest.mark.parametrize("code,status", _RETRIED_SERVER_ERRORS)
-    def test_sync_retries_a_server_error(self, code, status):
-        call, calls = self._flaky_sync(_http_error(code, status))
-        assert call() == "ok"
-        assert len(calls) == 2
+    @pytest.mark.parametrize("reply", sorted(_RETRIED_SERVER_ERRORS))
+    def test_sync_retries_a_server_error(self, reply):
+        for what, error in _stream_errors(_RETRIED_SERVER_ERRORS[reply]):
+            call, calls = self._flaky_sync(error)
+            assert call() == "ok", what
+            assert len(calls) == 2, what
 
-    @pytest.mark.parametrize("code,status", _NOT_RETRIED_STATUS_ERRORS)
-    def test_sync_does_not_retry_other_statuses(self, code, status):
-        call, calls = self._flaky_sync(_http_error(code, status))
-        with pytest.raises(botocore.exceptions.ClientError):
-            call()
-        assert len(calls) == 1
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
-    @pytest.mark.parametrize("code,status", _RETRIED_SERVER_ERRORS)
-    async def test_async_retries_a_server_error(self, code, status, wrapped):
-        error = _http_error(code, status)
-        call, calls = self._flaky_async(self._wrapped(error) if wrapped else error)
-        assert await call() == "ok"
-        assert len(calls) == 2
+    @pytest.mark.parametrize("reply", sorted(_NOT_RETRIED_STATUS_ERRORS))
+    def test_sync_does_not_retry_other_statuses(self, reply):
+        for what, error in _stream_errors(_NOT_RETRIED_STATUS_ERRORS[reply]):
+            call, calls = self._flaky_sync(error)
+            with pytest.raises(botocore.exceptions.ClientError):
+                call()
+            assert len(calls) == 1, what
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
-    @pytest.mark.parametrize("code,status", _NOT_RETRIED_STATUS_ERRORS)
-    async def test_async_does_not_retry_other_statuses(self, code, status, wrapped):
-        error = _http_error(code, status)
-        raised = self._wrapped(error) if wrapped else error
-        call, calls = self._flaky_async(raised)
-        with pytest.raises(type(raised)):
-            await call()
-        assert len(calls) == 1
+    @pytest.mark.parametrize("reply", sorted(_RETRIED_SERVER_ERRORS))
+    async def test_async_retries_a_server_error(self, reply, wrapped):
+        for what, error in _stream_errors(_RETRIED_SERVER_ERRORS[reply]):
+            call, calls = self._flaky_async(self._wrapped(error) if wrapped else error)
+            assert await call() == "ok", what
+            assert len(calls) == 2, what
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
+    @pytest.mark.parametrize("reply", sorted(_NOT_RETRIED_STATUS_ERRORS))
+    async def test_async_does_not_retry_other_statuses(self, reply, wrapped):
+        for what, error in _stream_errors(_NOT_RETRIED_STATUS_ERRORS[reply]):
+            raised = self._wrapped(error) if wrapped else error
+            call, calls = self._flaky_async(raised)
+            with pytest.raises(type(raised)):
+                await call()
+            assert len(calls) == 1, what
 
     @staticmethod
     def _lambda_502() -> botocore.exceptions.ClientError:
         """Lambda answers ``KMSAccessDeniedException`` with a 502, and a retry
         fails the same way: the 5xx rule is for Bedrock replies only."""
-        return botocore.exceptions.ClientError(
-            {
-                "Error": {"Code": "KMSAccessDeniedException", "Message": "denied"},
-                "ResponseMetadata": {"HTTPStatusCode": 502},
-            },
+        error = service_error(
+            named_reply("KMSAccessDeniedException", message="denied", service="lambda"),
             "Invoke",
+            "lambda",
         )
+        assert error.response["ResponseMetadata"]["HTTPStatusCode"] == 502
+        return error
 
     def test_sync_does_not_retry_another_services_5xx(self):
         call, calls = self._flaky_sync(self._lambda_502())
@@ -755,14 +726,14 @@ class TestHttpServerErrorsAreRetried:
     @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
     async def test_a_narrowed_vocabulary_has_no_5xx_rule(self, wrapped):
         """A caller that names its own codes gets exactly those codes."""
-        error = _http_error("500", 500)
-        raised = self._wrapped(error) if wrapped else error
-        call, calls = self._flaky_async(
-            raised, retryable_errors={"ThrottlingException"}
-        )
-        with pytest.raises(type(raised)):
-            await call()
-        assert len(calls) == 1
+        for what, error in _stream_errors(bare_replies(500)):
+            raised = self._wrapped(error) if wrapped else error
+            call, calls = self._flaky_async(
+                raised, retryable_errors={"ThrottlingException"}
+            )
+            with pytest.raises(type(raised)):
+                await call()
+            assert len(calls) == 1, what
 
 
 @pytest.mark.unit

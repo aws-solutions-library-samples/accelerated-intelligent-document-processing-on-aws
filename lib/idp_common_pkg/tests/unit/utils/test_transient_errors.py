@@ -10,6 +10,14 @@ import asyncio
 
 import botocore.exceptions
 import pytest
+from tests.unit._botocore_errors import (
+    SERVER_ERROR_STATUSES,
+    bare_replies,
+    empty_reply,
+    named_reply,
+    service_error,
+    xml_reply,
+)
 
 from idp_common.utils.transient_errors import (
     _NOT_TRANSIENT_AT_TASK_LEVEL,
@@ -32,23 +40,50 @@ _TOOL_USE_MESSAGE = (
 )
 
 
-def _client_error(code: str, message: str = "x"):
-    return botocore.exceptions.ClientError(
-        {"Error": {"Code": code, "Message": message}}, "Converse"
+def _client_error(
+    code: str,
+    message: str = "x",
+    *,
+    status: int | None = None,
+    service: str = "bedrock-runtime",
+    operation: str = "Converse",
+):
+    """``code`` as a real ``service`` client raises it from a JSON error reply: the
+    client's modelled subclass, at the status the model declares (#2050)."""
+    return service_error(
+        named_reply(code, status, message, service=service), operation, service
     )
 
 
-def _stream_error(message: str):
+def _lambda_error(code: str, message: str = "x"):
+    return _client_error(code, message, service="lambda", operation="Invoke")
+
+
+def _s3_error(code: str, status: int):
+    """S3 names its errors in an XML body and its model declares no status."""
+    return service_error(xml_reply(code, status), "GetObject", "s3")
+
+
+def _stream_error(message: str, code: str = "modelStreamErrorException"):
     """An ``EventStreamError`` shaped like the one in the #895 logs.
 
     ``EventStreamError`` subclasses ``ClientError``, so its code is what rule 1
     would normally judge it by — and ``modelStreamErrorException`` IS a transient
-    code.
+    code. Built here rather than by ``_botocore_errors``: botocore builds it from an
+    event-stream message mid-response, not from an HTTP status, and that is also
+    where the streaming APIs' lower-cased spellings arrive.
     """
     return botocore.exceptions.EventStreamError(
-        {"Error": {"Code": "modelStreamErrorException", "Message": message}},
+        {"Error": {"Code": code, "Message": message}},
         "ConverseStream",
     )
+
+
+def _case_id(e: BaseException) -> str:
+    if isinstance(e, botocore.exceptions.ClientError):
+        error = e.response["Error"]
+        return f"{type(e).__name__}:{error['Code']}:{error['Message'][:30]}"
+    return f"{type(e).__name__}:{str(e)[:30]}"
 
 
 class TestTransient:
@@ -58,10 +93,10 @@ class TestTransient:
             _client_error("ThrottlingException"),
             _client_error("ServiceUnavailableException"),
             _client_error("InternalServerException"),
-            _client_error("internalServerException"),  # streaming API casing
+            _stream_error("x", "internalServerException"),  # streaming API casing
             _client_error("ModelTimeoutException"),
             _client_error("ModelNotReadyException"),
-            _client_error("TooManyRequestsException"),
+            _lambda_error("TooManyRequestsException"),
             botocore.exceptions.ReadTimeoutError(endpoint_url="https://bedrock"),
             botocore.exceptions.ConnectTimeoutError(endpoint_url="https://bedrock"),
             botocore.exceptions.EndpointConnectionError(endpoint_url="https://bedrock"),
@@ -74,10 +109,12 @@ class TestTransient:
                 "Read timed out."
             ),
             # S3 spellings (SlowDown is S3's throttling code) and the stream error.
-            _client_error("SlowDown"),
-            _client_error("ServiceUnavailable"),
-            _client_error("InternalError"),
-            _client_error("ModelStreamErrorException"),
+            _s3_error("SlowDown", 503),
+            _s3_error("ServiceUnavailable", 503),
+            _s3_error("InternalError", 500),
+            _client_error(
+                "ModelStreamErrorException", operation="InvokeModelWithResponseStream"
+            ),
             ConnectionRefusedError(111, "Connection refused"),
             BrokenPipeError(32, "Broken pipe"),
             botocore.exceptions.IncompleteReadError(actual_bytes=1, expected_bytes=2),
@@ -86,7 +123,7 @@ class TestTransient:
                 endpoint_url="https://x"
             ),
         ],
-        ids=lambda e: f"{type(e).__name__}:{str(e)[:30]}",
+        ids=_case_id,
     )
     def test_transient_conditions_are_recognised(self, exc):
         assert is_transient_error(exc) is True
@@ -139,7 +176,7 @@ class TestNotTransient:
             type("EventLoopException", (Exception,), {})("tool returned invalid JSON"),
             RuntimeError("schema validation failed: 'Amount' is a required property"),
         ],
-        ids=lambda e: f"{type(e).__name__}:{str(e)[:30]}",
+        ids=_case_id,
     )
     def test_deterministic_failures_are_not_transient(self, exc):
         assert is_transient_error(exc) is False
@@ -192,7 +229,7 @@ class TestNotTransient:
                 "AccessDeniedException", "throttled by policy: rate exceeded"
             ),
         ],
-        ids=lambda e: f"{type(e).__name__}:{str(e)[:30]}",
+        ids=_case_id,
     )
     def test_throttling_words_in_a_deterministic_error_do_not_make_it_transient(
         self, exc
@@ -211,8 +248,10 @@ class TestRaiseIfTransient:
         with pytest.raises(TransientError) as info:
             raise_if_transient(root, where="extraction")
         assert info.value.__cause__ is root
-        assert info.value.original_type == "ClientError"
-        assert "extraction: ClientError" in str(info.value)
+        # botocore raises a modelled error as the client's own subclass, so the name
+        # kept is the error's, not ``ClientError``.
+        assert info.value.original_type == "ThrottlingException"
+        assert "extraction: ThrottlingException" in str(info.value)
         assert "Rate exceeded" in str(info.value)
         # The NAME is what workflow.asl.json matches on.
         assert type(info.value).__name__ == "TransientError"
@@ -234,7 +273,7 @@ class TestProducersInThisCodebase:
         throttle or a botocore timeout invoking the hook is transient THROUGH the
         cause; the same wrapper text without a cause (a hook that failed on its own
         terms) stays hard."""
-        throttle = _client_error("TooManyRequestsException", "Rate Exceeded")
+        throttle = _lambda_error("TooManyRequestsException", "Rate Exceeded")
         try:
             raise Exception(
                 "Failed to invoke custom prompt Lambda arn: x"
@@ -264,7 +303,14 @@ class TestProducersInThisCodebase:
 
     def test_dynamodb_throttle_code_is_transient(self):
         assert (
-            is_transient_error(_client_error("ProvisionedThroughputExceededException"))
+            is_transient_error(
+                _client_error(
+                    "ProvisionedThroughputExceededException",
+                    status=400,
+                    service="dynamodb",
+                    operation="GetItem",
+                )
+            )
             is True
         )
 
@@ -272,32 +318,34 @@ class TestProducersInThisCodebase:
 @pytest.mark.unit
 class TestBareHttpServerStatus:
     """#2036: botocore uses the bare HTTP status as the code when a reply names no
-    error type (``"500"``, ``"Internal Server Error"``). A 500, 502, 503 or 504 there
-    is the server failing, so it is transient; nothing else about the status is."""
+    error type (an empty body, or a front end's HTML page). A 500, 502, 503 or 504
+    there is the server failing, so it is transient; nothing else about the status
+    is. Each reply is turned into its error by a real client, with both bodies."""
 
-    @pytest.mark.parametrize("code", ["500", "502", "503", "504"])
-    def test_a_bare_server_error_status_is_transient(self, code):
-        assert is_transient_error(_client_error(code, "Internal Server Error")) is True
+    @pytest.mark.parametrize("status", SERVER_ERROR_STATUSES)
+    def test_a_bare_server_error_status_is_transient(self, status):
+        for reply in bare_replies(status):
+            error = service_error(reply)
+            assert error.response["Error"]["Code"] == str(status), reply.label
+            assert is_transient_error(error) is True, reply.label
 
-    @pytest.mark.parametrize("code", ["400", "404", "501", "505"])
-    def test_any_other_bare_status_is_not(self, code):
-        assert is_transient_error(_client_error(code)) is False
+    @pytest.mark.parametrize("status", [400, 404, 501, 505])
+    def test_any_other_bare_status_is_not(self, status):
+        for reply in bare_replies(status):
+            error = service_error(reply)
+            assert error.response["Error"]["Code"] == str(status), reply.label
+            assert is_transient_error(error) is False, reply.label
 
     def test_a_named_code_is_judged_by_its_name_not_its_status(self):
         """Lambda answers ``KMSAccessDeniedException`` with a 502, and it is
         deterministic, so rule 1 holds: a named code decides on its own."""
-        denied = botocore.exceptions.ClientError(
-            {
-                "Error": {"Code": "KMSAccessDeniedException", "Message": "x"},
-                "ResponseMetadata": {"HTTPStatusCode": 502},
-            },
-            "Invoke",
-        )
+        denied = _lambda_error("KMSAccessDeniedException")
+        assert denied.response["ResponseMetadata"]["HTTPStatusCode"] == 502
         assert is_transient_error(denied) is False
 
     def test_a_bare_server_error_status_is_found_through_a_wrapper(self):
         try:
-            raise RuntimeError("model call failed") from _client_error("500")
+            raise RuntimeError("model call failed") from service_error(empty_reply(500))
         except RuntimeError as wrapped:
             assert is_transient_error(wrapped) is True
             with pytest.raises(TransientError):
