@@ -315,7 +315,9 @@ class ProcessingIssue:
             are the set the UI renders as "Failed" rather than "Incomplete", or
             ``"classification_failed"`` / ``"classification_page_no_content"`` /
             ``"classification_invalid_class_fallback"`` (classification produced no
-            usable class for one or more of the section's pages).
+            usable class for one or more of the section's pages), or
+            ``"classification_page_assigned_to_neighbour"`` (a packet call's page
+            ranges left pages out, and they were added to this section).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.

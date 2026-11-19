@@ -201,6 +201,19 @@ class Segment:
     buys the output tokens and discards the answer.
     """
 
+    filled_page_ids: List[str] = field(default_factory=list)
+    """Pages the service added to this segment because the model placed them in
+    no segment at all (#2037).
+
+    A packet call returns page ranges, and the ranges do not always cover every
+    page it was shown — most often the last one is left out. Such a page is
+    joined to the segment of the page before it (or, for a page before every
+    covered page, the segment after it) rather than being dropped, and listed
+    here so the section it lands in can carry a processing issue saying its
+    placement was inferred. Not part of :meth:`to_dict`, which describes what the
+    model reported.
+    """
+
     @property
     def start_page(self) -> str:
         """First page ID in the segment."""
