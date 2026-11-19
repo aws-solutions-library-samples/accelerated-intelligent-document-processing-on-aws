@@ -294,6 +294,7 @@
         },
         {
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -1265,6 +1266,7 @@
         },
         {
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",
@@ -1369,8 +1371,9 @@
           "BackoffRate": 1.0
         },
         {
-          "Comment": "Genuinely transient faults - these DO succeed on retry.",
+          "Comment": "Genuinely transient faults - these DO succeed on retry. TransientError is what the handler raises for an LLM-judge call that failed transiently (a throttle past the Bedrock client's retries, a bare HTTP 5xx, a read timeout), instead of scoring the field 0.0 (#2049).",
           "ErrorEquals": [
+            "TransientError",
             "Lambda.ServiceException",
             "Lambda.AWSLambdaException",
             "Lambda.SdkClientException",

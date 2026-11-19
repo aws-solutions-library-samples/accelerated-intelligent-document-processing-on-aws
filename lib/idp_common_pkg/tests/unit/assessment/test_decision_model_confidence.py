@@ -33,8 +33,17 @@ import pytest
 
 from idp_common.assessment import decision_model_confidence as dmc
 from idp_common.assessment.service import AssessmentService
+from idp_common.config.models import DECISION_MODEL_MAX_CONFIDENCE_PAGES
 from idp_common.decision_model import DecisionModelRefused
 from idp_common.models import Document, Page, Section, Status
+from tests.unit.decision_model.window_contract import (  # noqa: F401 - autouse
+    DENSE_STYLES,
+    WINDOW_INPUT_TOKENS,
+    dense_page,
+    no_oversize_requests,
+    request_tokens,
+    window_refusal,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -81,6 +90,9 @@ class FakeDecider:
     def invoke(self, FunctionName, InvocationType, Payload):
         request = json.loads(Payload)
         self.requests.append(request)
+        refusal = window_refusal(request)
+        if refusal:
+            return refusal
         if self.error is not None:
             return {
                 "FunctionError": "Unhandled",
@@ -329,6 +341,9 @@ class ScriptedDecider:
     def invoke(self, FunctionName, InvocationType, Payload):
         request = json.loads(Payload)
         self.requests.append(request)
+        refusal = window_refusal(request)
+        if refusal:
+            return refusal
         message = self.refuse(request) if self.refuse else None
         if message:
             error = {"errorType": "ValueError", "errorMessage": message}
@@ -783,3 +798,36 @@ def test_the_empty_value_question_is_a_setting():
         'The system found no value for the field "{FIELD}" ({DESCRIPTION}). '
         "Does the page show a value for it?"
     )
+
+
+def test_every_request_fits_the_window_at_the_largest_section():
+    """#2051: dense text on every page of a section at the largest ``max_pages``,
+    in ``text`` and ``both``, at the default ``max_input_tokens``. Every request,
+    one per page, fits the window, and each carries text that had to be cut."""
+    pages = DECISION_MODEL_MAX_CONFIDENCE_PAGES
+    images = _pages(pages)
+    for mode in ("text", "both"):
+        service = _service(input=mode, max_pages=pages)
+        cfg = service.config.extraction.confidence.decision_model
+        assert cfg.max_input_tokens == WINDOW_INPUT_TOKENS
+        for style in DENSE_STYLES:
+            texts = [dense_page(style, p) for p in range(1, pages + 1)]
+            decider = ScriptedDecider()
+            _score(service, decider, page_texts=texts, page_images=images)
+
+            case = f"input {mode}, {style} text"
+            # One request per page, each with a different page's text, cut.
+            states = [request["state"] for request in decider.requests]
+            assert len(set(states)) == pages, case
+            for state in states:
+                source = next(t for t in texts if t.startswith(state))
+                assert 0 < len(state) < len(source), (
+                    f"{case}: a page was not cut, so the case proves nothing"
+                )
+            for request in decider.requests:
+                assert len(request["images"]) == (mode == "both"), case
+                tokens = request_tokens(request)
+                assert tokens <= WINDOW_INPUT_TOKENS, (
+                    f"{case}: a request of about {tokens:.0f} tokens was sent, "
+                    f"over the {WINDOW_INPUT_TOKENS} the window holds"
+                )

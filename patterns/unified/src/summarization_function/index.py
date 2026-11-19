@@ -14,6 +14,7 @@ from idp_common import get_config, summarization
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import raise_if_transient
 
 # Configuration will be loaded in handler function
 
@@ -22,6 +23,24 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_LOG_LEVEL", "INFO"))
 
 def handler(event, context):
+    """Summarize one document. See ``_handle``.
+
+    Transient causes are re-raised as ``TransientError``, the name
+    SummarizationStep's retrier lists beside the modeled throttling codes, so a
+    read timeout or a bare HTTP 5xx is retried the way a modeled
+    ``ThrottlingException`` already was. The summarization service raises one
+    itself when a section's model call fails transiently, rather than returning
+    a FAILED document this handler could only report as an untyped error. Hard
+    errors keep their own name and are not retried.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="summarization")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda handler for document summarization using the SummarizationService.
     
