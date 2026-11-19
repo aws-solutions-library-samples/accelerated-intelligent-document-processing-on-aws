@@ -5714,11 +5714,7 @@ def config_validate(
             console.print("[green]✓ Pydantic validation passed[/green]")
 
             # Show warnings
-            if result.warnings:
-                console.print()
-                console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result.warnings:
-                    console.print(f"  ⚠ {warning}")
+            _print_config_warnings(result.warnings)
 
             # Check for document classes
             if result.class_count:
@@ -5758,11 +5754,7 @@ def config_validate(
             # which of the two the author wrote. On this path `warnings` holds these
             # findings and nothing else, since every other check runs only after the
             # configuration validates, so there is no duplication with the block above.
-            if result.warnings:
-                console.print()
-                console.print("[bold yellow]Warnings:[/bold yellow]")
-                for warning in result.warnings:
-                    console.print(f"  ⚠ {warning}")
+            _print_config_warnings(result.warnings)
             sys.exit(1)
 
     except FileNotFoundError as e:
@@ -5775,6 +5767,22 @@ def config_validate(
         logger.error(f"Error validating config: {e}", exc_info=True)
         console.print(f"[red]✗ Error: {e}[/red]")
         sys.exit(1)
+
+
+def _print_config_warnings(warnings: list[str]) -> None:
+    """Print validation warnings for `config-validate` and `config-upload`.
+
+    Each warning is escaped. Warnings quote what the user wrote (a key path, a
+    `fallback_class` value), so text such as `[bold]` would otherwise be swallowed
+    as a style tag, misnaming the key, and a `[/x]` would raise and turn a valid
+    configuration into exit 1.
+    """
+    if not warnings:
+        return
+    console.print()
+    console.print("[bold yellow]Warnings:[/bold yellow]")
+    for warning in warnings:
+        console.print(f"  ⚠ {escape(warning)}")
 
 
 @cli.command(name="config-upload")
@@ -5889,6 +5897,10 @@ def config_upload(
             console.print(
                 f"[red]✗ Failed to upload configuration: {result.error}[/red]"
             )
+            # Printed on a refusal too: an unread key is often why a value the
+            # author set did not take, and the finding names the field it was meant
+            # to be. `config-validate` does the same on its failing branch.
+            _print_config_warnings(result.warnings)
             if result.error and "Validation" in result.error:
                 console.print(
                     "[yellow]Use --no-validate to skip validation (not recommended)[/yellow]"
@@ -5896,6 +5908,10 @@ def config_upload(
             sys.exit(1)
 
         console.print("[green]✓ Configuration uploaded successfully[/green]")
+        # Warnings are non-fatal: the configuration was stored and the exit code
+        # stays 0. They are the findings `config-validate` prints for the same file,
+        # which this command used to drop.
+        _print_config_warnings(result.warnings)
         console.print()
         if config_version:
             action = "created" if result.version_created else "updated"
