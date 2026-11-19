@@ -5,7 +5,9 @@
 
 Every extraction failure raises — ``ExtractionInputTooLarge``,
 ``ExtractionImageRejected``, ``ModelInvalidToolUseSequence``,
-``ExtractionOutputIncomplete`` — and both extraction Lambda entry points persist
+``ExtractionOutputIncomplete`` — except a content-filter block, which
+``ExtractionService._handle_content_filtered`` records on the section without
+raising (#2038). Both extraction Lambda entry points persist
 the section to DynamoDB only *after* the call returns. So the write never
 happened on a failure and the section's record still said whatever classification
 left there: no issue, no status icon, nothing in the Sections panel. The

@@ -562,7 +562,9 @@ have to cover `extraction_failed` too.
 ### Adding a new failure code
 
 The codes meaning "the stage raised" are declared in `FAILURE_CODES` here and in
-`EXTRACTION_FAILED_CODE` in `extraction/failure.py`. The UI renders those as
+`EXTRACTION_FAILED_CODE` in `extraction/failure.py` (which extraction also writes,
+without raising, for a section a content filter blocked; the section still has no
+trustworthy result, which is what **Failed** means to a reader). The UI renders those as
 **Failed** and every other error-severity code as **Incomplete**, from a hand-written
 literal in `src/ui/src/components/common/processing-issues-utils.ts`. That is a
 different language, so nothing about adding a code here would make it appear there —

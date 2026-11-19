@@ -66,8 +66,8 @@ returns page ranges and never a class.
 Two of those settings are substituted rather than used as written when they
 cannot be. An empty `model` is not "no model" — every call needs a model id to
 send — so it falls back to the default classification model, which is the same
-`us.amazon.nova-2-lite-v1:0` the defaults put on all three calls, with a line in
-the log. And a `reasoning_effort` outside the levels listed in the editor is
+Amazon Nova 2 Lite the defaults put on all three calls (`us.amazon.nova-2-lite-v1:0`,
+or `eu.amazon.nova-2-lite-v1:0` in an EU Region), with a line in the log. And a `reasoning_effort` outside the levels listed in the editor is
 replaced with `medium`, also with a line in the log, because the value is
 forwarded to the provider as written and a misspelled one either fails the
 request or is silently ignored by a model family that has no effort control.
