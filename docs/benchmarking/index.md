@@ -146,25 +146,24 @@ keyed on each issue's own values, so a code added to any service is recorded wit
 a harness change.
 
 ⚠️ **A zero here does not cover everything, and this is the part to know before
-trusting one.** The figures come from the section's `result.json`. The issues below
-record onto the section's DynamoDB record *after* that file is written, and nothing
-rewrites it afterwards except where the degrade entry says so, so a
-`processing_issues: 0` is silent about them rather than evidence they did not fire:
+trusting one.** The figures come from the section's `result.json`. Some issues are
+recorded onto the section's DynamoDB record *after* that file is written, and are
+written into it only partly or not at all, so a `processing_issues: 0` is silent
+about them rather than evidence they did not fire:
 
-- **The assessment skip code** — `assessment_skipped_confidence_unavailable`. This is
-  the one that matters. It is **error** severity on a document that **completes**,
-  because not failing it is the whole purpose of that path, so a section whose
-  confidence pass *never ran* reads here as `processing_issues: 0, success: true`
-  with no `status` to fall back on. And it is live in what you measure: across
-  `results/v0.6.11/`, `resolved.assessment` is `separate` on 4,192 rows against 516
-  `integrated` and 257 `off`, and the skip path is the standalone one.
-- **The assessment degrade code, when its write does not happen** —
-  `assessment_failed_confidence_unavailable` normally *is* recorded, because after a
-  deterministic assessment failure the Assessment Lambda writes the issue into the
-  section's `result.json`. That write is best effort, and it is not made when the
-  result already holds the pass's scores, so in those cases the degrade is on the
-  tracking record only. (It is also not made when the section has no readable
-  result, but then there is nothing here to read either.)
+- **The assessment skip code** — `assessment_skipped_confidence_unavailable` — never
+  reaches `result.json`. This is the one that matters. It is **error** severity on a
+  document that **completes**, because not failing it is the whole purpose of that
+  path, so a section that came back with *no confidence scores at all* reads here as
+  `processing_issues: 0, success: true` with no `status` to fall back on. And it is
+  live in what you measure: across `results/v0.6.11/`, `resolved.assessment` is
+  `separate` on 4,192 rows against 516 `integrated` and 257 `off`, and the skip path
+  is the standalone one.
+- **The assessment degrade code** — `assessment_failed_confidence_unavailable` — is
+  written into the section's `result.json` on a best-effort basis, so it is usually
+  counted here. It is missed when that file already holds the confidence pass's
+  scores (the failure came after they were written) or when the write itself fails;
+  in both cases the code is only on the DynamoDB record.
 - **`rule_validation` and `postprocessing`** — smaller, because these accompany a
   document the harness already records as failed, so what is lost is the reason
   rather than the event.
@@ -173,12 +172,10 @@ The tracking record is not read instead because it would need de-duplicating aga
 the S3 copy of everything earlier, it is another large attribute fetched per run, and
 it is deleted with its stack while the S3 artifacts outlive it. So the boundary is
 declared and closed: universe-closure tests over the declared stage constants and
-over the codes `assessment/degradation.py` declares, plus computed checks that the
-module reaches an S3 write only from the function that carries a degrade issue into
-`result.json`, and that the one caller of that function passes it the issue the
-degrade built. These read source, so a write or a change to the issue reached by a
-route spelled only at run time is not seen. So a third such stage or code — or the
-boundary ceasing to be true in a way the source shows — fails a test rather than going quietly unread.
+over the codes `assessment/degradation.py` declares, plus computed checks that that
+module writes to S3 only in its best-effort result writer and that the skip path never
+calls it, so a third such stage or code — or the boundary ceasing to be true — fails a
+test rather than going quietly unread.
 
 Scoring is **resolver-free** — it reads S3 output and DynamoDB metering directly, so it
 works on any stack version (useful for cross-release comparisons).

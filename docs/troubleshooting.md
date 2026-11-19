@@ -246,7 +246,10 @@ outright and reported as unscored instead.
 **`classification_failed`, `classification_page_no_content` or
 `classification_invalid_class_fallback` on a section.** Classification could not
 produce a usable class for one or more of the section's pages, so those pages have
-no extraction schema and nothing was extracted from them. The codes and their
+no extraction schema and nothing was extracted from them. Under
+`sectionSplitting: disabled`, or when the document's name matched a class's name
+regex, such a page is usually given its section's class and extracted with the
+section instead, and the issue's message then names that class. The codes and their
 remedies are tabulated in
 [Classification](./classification.md#pages-classification-could-not-classify).
 Briefly: `classification_failed` is an error worth investigating. On a stack
@@ -268,9 +271,11 @@ artifacts rather than at an empty page, and the OCR step is the place to look.
 `classification_invalid_class_fallback` is a warning meaning the model's prediction
 was outside the configured vocabulary and was coerced to `fallback_class` —
 that is where a page the classifier cannot place ends up, so it is the one of the
-three you are most likely to see. These are recorded only at combined page
-granularity; packet granularity and split-then-classify still re-prompt and assign
-`fallback_class`, but record no issue for it.
+three you are most likely to see. All three are recorded at combined page
+granularity, and split-then-classify records `classification_failed` and
+`classification_invalid_class_fallback` for a section; packet granularity with the
+combined strategy still re-prompts and assigns `fallback_class`, but records no issue
+for it.
 
 **Some rows scored, most not, and nothing complained.** Sections whose scored rows
 fall materially short of the extracted rows now emit

@@ -249,7 +249,10 @@ export function applyModalityToPrompt(prompt: string, modality: Record<string, u
       // Removes every occurrence, as `strip_placeholder` does: each wrapped one
       // with its element when that element held nothing else (so an empty tag pair
       // announcing a switched-off modality is not left in), then any bare ones.
-      const wrapped = new RegExp(`[ \\t]*<${element}>\\s*${placeholder.replace(/[{}]/g, '\\$&')}\\s*</${element}>[ \\t]*\\n?`, 'gi');
+      const wrapped = new RegExp(
+        `[ \\t]*<${element}>\\s*${placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*</${element}>[ \\t]*\\n?`,
+        'gi',
+      );
       out = out.replace(wrapped, '').split(placeholder).join('');
     }
   }

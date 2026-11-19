@@ -648,7 +648,7 @@ one unlabeled document makes the whole set read as `unlabeled` until it is
 draft-labeled. A pattern re-applied when adding documents leaves every document
 already in the set as it is, labeled or not, so labels drafted or reviewed in the set
 are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
-From the input bucket a `.zip` the pattern matches is left out, because a `.zip`
+From either bucket a `.zip` the pattern matches is left out, because a `.zip`
 written into a set's folder is read as a test-set upload; a pattern that matches
 only `.zip` files fails with that reason. Every other matching file is copied.
 Patterns match the full
