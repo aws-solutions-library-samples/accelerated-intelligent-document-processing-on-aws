@@ -34,6 +34,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from ci_environment import in_ci
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 
@@ -383,7 +384,7 @@ class TestCursorOverlay:
 
 
 HAS_NODE = shutil.which("node") is not None
-IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS"))
+IN_CI = in_ci()
 
 CLICK_HARNESS_JS = r"""
 const input = JSON.parse(require('fs').readFileSync(0, 'utf8'));

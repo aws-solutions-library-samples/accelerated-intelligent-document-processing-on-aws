@@ -260,7 +260,9 @@ static_checks:
     - *node_setup
     # basedpyright is an npm package, which is the only reason this job needs Node
     # at all besides the UI lint below.
-    - npm install -g basedpyright
+    # Pinned for the reason CFN_LINT_VERSION is; keep in step with
+    # BASEDPYRIGHT_VERSION in the Makefile (test_ci_gate_parity.py asserts it).
+    - npm install -g basedpyright@1.40.2
     # Install UI deps ONCE here (restored from cache when unchanged). The
     # lint-cicd UI targets run with SKIP_NPM_CI=1 so they reuse this instead of
     # each doing its own `npm ci` (which previously happened 3× per run).
@@ -332,7 +334,9 @@ unit_tests:
     # carries the same two for the same two reasons. Read the suites, not the script
     # block.
     - *node_setup
-    - npm install -g basedpyright
+    # Pinned for the reason CFN_LINT_VERSION is; keep in step with
+    # BASEDPYRIGHT_VERSION in the Makefile (test_ci_gate_parity.py asserts it).
+    - npm install -g basedpyright@1.40.2
     # PINNING, not availability — same reasoning as on `package_tests`: cfn-lint
     # arrives transitively via moto either way, and what the cfn-lint-gated
     # assertions in `lib/idp_sdk/tests/unit/` would otherwise run against is whatever
@@ -443,7 +447,9 @@ package_tests:
     # JavaScript under node to check that a click is never labelled by what was
     # typed, and fails in CI when node is missing.
     - *node_setup
-    - npm install -g basedpyright
+    # Pinned for the reason CFN_LINT_VERSION is; keep in step with
+    # BASEDPYRIGHT_VERSION in the Makefile (test_ci_gate_parity.py asserts it).
+    - npm install -g basedpyright@1.40.2
     # ⚠️ This is about PINNING, not availability. cfn-lint arrives transitively
     # either way — moto declares `cfn-lint>=0.40.0` under several of its extras and
     # the install above pulls moto — so the ~10 cfn-lint-gated assertions in

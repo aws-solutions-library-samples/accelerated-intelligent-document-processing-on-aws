@@ -104,6 +104,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from ci_environment import in_ci
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 UI_ROOT = REPO_ROOT / "src" / "ui"
@@ -180,11 +181,10 @@ DISCOVERY_NARROWING_OPTIONS = (
 )
 
 #: Whether this is a CI run, which decides whether an absent Node toolchain is a
-#: skip or a failure — see :func:`_require_node`. Both platforms set ``CI``; the
-#: other two are named as well so that a runner which sets only its own variable
-#: is still recognised. Same rule, and the same reason, as ``IN_CI`` in
-#: ``scripts/tests/test_ux_recorder.py``.
-IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS"))
+#: skip or a failure — see :func:`_require_node`. The rule is
+#: :func:`ci_environment.in_ci`, shared by every suite here: ``CI``, ``GITLAB_CI``
+#: or ``GITHUB_ACTIONS`` set to anything but an explicit negative (``CI=false``).
+IN_CI = in_ci()
 
 pytestmark = pytest.mark.unit
 

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from ci_environment import in_ci
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 NAVIGATION_TSX = (
@@ -747,7 +748,7 @@ def test_the_links_read_are_the_ones_the_ui_source_renders() -> None:
 
 
 HAS_NODE = shutil.which("node") is not None
-IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS"))
+IN_CI = in_ci()
 
 #: Runs a page script under node against stub documents built from fixture trees:
 #: elements with their attributes and children, ``textContent`` as the DOM defines

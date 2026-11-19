@@ -72,10 +72,15 @@ runs:
       with:
         node-version: 22
 
+    # Pinned for the reason cfn-lint is: the type gate and the live probes in
+    # scripts/tests/test_pyright_config.py read basedpyright's output, so a release
+    # that changes it would turn every branch red with no code change. Keep in step
+    # with BASEDPYRIGHT_VERSION in the Makefile, which
+    # scripts/tests/test_ci_gate_parity.py asserts.
     - name: Install basedpyright
       if: inputs.node == 'true'
       shell: bash
-      run: npm install -g basedpyright
+      run: npm install -g basedpyright@1.40.2
 
     # Deliberately inside this action rather than as a step in the caller, which is
     # what puts it before the caller's own steps: a setup step that lands after the

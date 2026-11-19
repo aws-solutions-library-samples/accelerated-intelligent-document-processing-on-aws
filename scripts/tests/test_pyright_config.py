@@ -127,6 +127,7 @@ import tomllib
 from fnmatch import fnmatch
 from pathlib import Path
 
+import ci_environment
 import gate_premises
 import pytest
 from setuptools import find_packages
@@ -1045,19 +1046,6 @@ def test_no_extra_path_is_stale() -> None:
     )
 
 
-def _in_ci() -> bool:
-    """Whether this run is in CI, read when called so the tests below can drive it.
-
-    Both CIs set ``CI`` (GitHub Actions and GitLab each do); the other two names are
-    read as well so a runner that sets only its own is covered. An explicit negative
-    (``CI=false``, ``0``, ``no``, ``off``) counts as not CI.
-    """
-    return any(
-        os.getenv(name, "").strip().lower() not in ("", "0", "false", "no", "off")
-        for name in ("CI", "GITLAB_CI", "GITHUB_ACTIONS")
-    )
-
-
 def _basedpyright() -> str:
     """The basedpyright executable, or skip locally and fail in CI when it is absent.
 
@@ -1078,7 +1066,7 @@ def _basedpyright() -> str:
         "test_pyright_config.py cannot run (install it with `make setup-node` or "
         "`npm install -g basedpyright`)"
     )
-    if _in_ci():
+    if ci_environment.in_ci():
         pytest.fail(
             f"{reason}. CI must run these probes, so give this job basedpyright."
         )
@@ -2184,9 +2172,6 @@ def test_the_scope_check_accepts_the_live_config() -> None:
 # unnoticed on every run that has the tool.
 # --------------------------------------------------------------------------- #
 
-_CI_VARIABLES = ("CI", "GITLAB_CI", "GITHUB_ACTIONS")
-
-
 def _outcome(call) -> tuple[str, str]:
     """``("returned", value)``, ``("skipped", msg)`` or ``("failed", msg)``.
 
@@ -2203,7 +2188,7 @@ def _outcome(call) -> tuple[str, str]:
 
 
 def _off_ci(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in _CI_VARIABLES:
+    for name in ci_environment.CI_VARIABLES:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -2225,7 +2210,7 @@ def test_an_absent_basedpyright_skips_off_ci_and_says_why(monkeypatch) -> None:
     assert "basedpyright is not on PATH" in message
 
 
-@pytest.mark.parametrize("variable", _CI_VARIABLES)
+@pytest.mark.parametrize("variable", ci_environment.CI_VARIABLES)
 def test_an_absent_basedpyright_fails_in_ci(monkeypatch, variable: str) -> None:
     _off_ci(monkeypatch)
     monkeypatch.setenv(variable, "true")

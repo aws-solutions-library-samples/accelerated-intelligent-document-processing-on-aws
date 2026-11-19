@@ -22,15 +22,16 @@ import sys
 from pathlib import Path
 
 import pytest
+from ci_environment import in_ci
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Whether this is a CI run, which decides whether an absent Node toolchain is a
-#: skip or a failure in the real-tree test. Same rule as ``IN_CI`` in
-#: ``test_ui_test_discovery.py``.
-IN_CI = bool(os.getenv("CI") or os.getenv("GITLAB_CI") or os.getenv("GITHUB_ACTIONS"))
+#: skip or a failure in the real-tree test. The rule is :func:`ci_environment.in_ci`,
+#: shared by every suite here, so ``CI=false`` reads as not CI.
+IN_CI = in_ci()
 
 EXTRACT_SCRIPT = (
     "formatjs extract 'src/**/*.{ts,tsx}' --ignore 'src/**/*.test.{ts,tsx}' "
