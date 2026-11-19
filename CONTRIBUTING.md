@@ -670,8 +670,10 @@ It also resolves this repository's own packages, via `pyrightconfig.json`'s
 `extraPaths`. That matters more than it sounds: without it `idp_common` did not
 resolve, `reportMissingImports` is configured `"none"`, and so **no call into the
 shared library could produce a diagnostic** — the gate read every file and proved
-much less than that suggests. If you add a `lib/<something>` distribution, add its
-package root to `extraPaths`; the suite fails until you do.
+much less than that suggests. If you add a `lib/<something>` distribution, or a
+distribution anywhere else whose package is imported from outside its own directory
+(as `scripts/` imports `idp_tf` from `terraform/translator`), add its package root to
+`extraPaths`; the suite fails until you do.
 
 Errors fail it and warnings do not. To see today's warning split, run
 `make typecheck` and read the tally it prints rather than a list written here — it

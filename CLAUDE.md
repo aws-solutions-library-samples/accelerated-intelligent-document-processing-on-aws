@@ -158,16 +158,18 @@ and proved far less than that looks like. Eleven errors were behind it, three of
 that raise on every execution (a `Status.ERROR` that is not in the enum, a keyword
 no parameter matches, a required argument omitted). Issue #1109.
 
-`pyrightconfig.json`'s **`extraPaths`** now names the five first-party package
-roots, so resolution is a property of the configuration rather than of how the gate
-was invoked. The entries are **relative** on purpose: pyright resolves them against
+`pyrightconfig.json`'s **`extraPaths`** now names every first-party package root —
+the `lib/` distributions, plus any tracked distribution elsewhere whose package is
+imported from outside its own directory, which is how `terraform/translator`
+(`idp_tf`, imported by `scripts/`) is included — so resolution is a property of the
+configuration rather than of how the gate was invoked. The entries are **relative** on purpose: pyright resolves them against
 the directory holding the config, so they cannot name another checkout — which
 matters because this environment carries editable installs of `idp_common` and
 `idp_sdk` pointing at a sibling worktree and at a different project entirely
 (#1094), and an `extraPaths` naming one of those resolves perfectly while saying
 nothing about this tree. Confident wrong answers are worse than silent ones.
 `test_pyright_config.py` asserts both halves — the entries stay relative and inside
-the repo, and a 0.5s live basedpyright probe confirms all five actually resolve
+the repo, and a 0.5s live basedpyright probe confirms every one of them actually resolves
 through the values the config carries — and fails on the specific combination of
 `reportMissingImports: "none"` plus unresolvable first-party packages.
 
