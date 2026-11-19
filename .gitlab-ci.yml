@@ -246,12 +246,12 @@ static_checks:
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
   # seconds locally.
   variables:
-    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:2xlarge)
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_CPU_LIMIT: "16"
-    KUBERNETES_MEMORY_REQUEST: "32Gi"
-    KUBERNETES_MEMORY_LIMIT: "32Gi"
-    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "40Gi"
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
     - arch:arm64
 
@@ -321,12 +321,12 @@ static_checks:
 unit_tests:
   <<: *fast_check_job
   variables:
-    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:2xlarge)
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_CPU_LIMIT: "16"
-    KUBERNETES_MEMORY_REQUEST: "32Gi"
-    KUBERNETES_MEMORY_LIMIT: "32Gi"
-    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "40Gi"
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
     - arch:arm64
 
@@ -422,12 +422,12 @@ unit_tests:
 package_tests:
   <<: *fast_check_job
   variables:
-    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:2xlarge)
-    KUBERNETES_CPU_REQUEST: "16"
-    KUBERNETES_CPU_LIMIT: "16"
-    KUBERNETES_MEMORY_REQUEST: "32Gi"
-    KUBERNETES_MEMORY_LIMIT: "32Gi"
-    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "40Gi"
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
     - arch:arm64
 
@@ -503,12 +503,12 @@ package_tests:
 ui_tests:
   <<: *fast_check_job
   variables:
-    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
-    KUBERNETES_CPU_REQUEST: "8"
-    KUBERNETES_CPU_LIMIT: "8"
-    KUBERNETES_MEMORY_REQUEST: "16Gi"
-    KUBERNETES_MEMORY_LIMIT: "16Gi"
-    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
     - arch:amd64
 
@@ -551,12 +551,12 @@ terraform_checks:
     - arch:amd64
 
   variables:
-    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
-    KUBERNETES_CPU_REQUEST: "8"
-    KUBERNETES_CPU_LIMIT: "8"
-    KUBERNETES_MEMORY_REQUEST: "16Gi"
-    KUBERNETES_MEMORY_LIMIT: "16Gi"
-    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
     # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
     # scripts/tests/test_ci_gate_parity.py fails if this, GitHub's
     # developer-tests.yml and the Makefile disagree.
@@ -584,6 +584,13 @@ terraform_checks:
     - make terraform-check
 
 deployment_validation:
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   stage: deployment_validation
   interruptible: true
   # Pre-deploy IAM sanity check, on the same trigger as the deploy it validates:
@@ -651,6 +658,12 @@ integration_tests:
   # running.
   resource_group: integration_deploy
   variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
     IDP_ADMIN_EMAIL: ${GITLAB_USER_EMAIL}
   # variables:
   #   # In order to run tests in another account, add a AWS_CREDS_TARGET_ROLE variable to the Gitlab pipeline variables.
