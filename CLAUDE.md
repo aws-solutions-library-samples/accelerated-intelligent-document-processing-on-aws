@@ -174,12 +174,24 @@ through the values the config carries — and fails on the specific combination 
 `reportMissingImports: "none"` plus unresolvable first-party packages.
 
 `reportMissingImports` **stays** at `"none"`, measured rather than assumed: raised to
-`"warning"` with `extraPaths` live it reports 44 findings over 25 modules and **none
-is first-party**. About 38 are sibling-module imports in script and Lambda trees that
-are not packages (`from index import ...`, `processors.pdf_image_processor`), correct
-at runtime because the handler's own directory is on `sys.path`; the rest are
-genuinely uninstalled third-party distributions. So the rule is unusable above
-`"none"` here, and the gap it leaves is covered by the resolution assertions instead.
+`"warning"` with `extraPaths` live, **none of its findings is first-party**. Most are
+sibling-module imports in script and Lambda trees that are not packages
+(`from index import ...`, `processors.pdf_image_processor`), correct at runtime
+because the handler's own directory is on `sys.path`; the rest are third-party
+distributions the checkout does not install, such as `seed_data`, which only the
+generator extension's container installs and which `idp_common.synthesis.engine`
+imports lazily behind an availability probe. So the rule is unusable above `"none"`
+here, and the gap it leaves is covered by the resolution assertions instead. The
+count moves with the tree, so measure it rather than quoting one — the copy has to
+sit in the repository root, because `extraPaths` resolves against the config's
+directory:
+
+```bash
+python3 -c 'import json; c = json.load(open("pyrightconfig.json")); c["reportMissingImports"] = "warning"; json.dump(c, open("pyrightconfig.missing-imports.json", "w"))'
+basedpyright --project pyrightconfig.missing-imports.json --outputjson \
+  | python3 -c 'import json, sys; print(sum(d.get("rule") == "reportMissingImports" for d in json.load(sys.stdin)["generalDiagnostics"]))'
+rm pyrightconfig.missing-imports.json
+```
 
 ⚠️ **basedpyright has no ignore-file support**, so its walk reads gitignored build
 output — the one asymmetry with ruff, which honours the ignore file natively. `exclude`
