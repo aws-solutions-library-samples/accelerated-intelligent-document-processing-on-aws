@@ -962,6 +962,32 @@ class TestLabelingPages:
         service = _service(labeling={"pages": "first_k", "k": "5"})
         assert service._section_classification_pages(self._segment(2)) == ["1", "2"]
 
+    @pytest.mark.parametrize(
+        "labeling, sent",
+        [
+            ({"pages": "first"}, ["2"]),
+            ({"pages": "first_k", "k": "2"}, ["2", "3"]),
+            ({"pages": "all"}, ["1", "2", "3"]),
+        ],
+    )
+    def test_a_page_the_splitting_call_left_out_does_not_stand_for_the_segment(
+        self, labeling, sent
+    ):
+        """#2037: page 1 was in no range and was joined to this segment. It is
+        not one of the segment's opening pages by the model's account."""
+        from idp_common.classification.models import Segment
+
+        service = _service(labeling=labeling)
+        segment = Segment(page_ids=["1", "2", "3"], filled_page_ids=["1"])
+        assert service._section_classification_pages(segment) == sent
+
+    def test_a_segment_of_only_placed_pages_still_sends_one(self):
+        from idp_common.classification.models import Segment
+
+        service = _service(labeling={"pages": "first"})
+        segment = Segment(page_ids=["4"], filled_page_ids=["4"])
+        assert service._section_classification_pages(segment) == ["4"]
+
 
 # --------------------------------------------------------------------------
 # Class validation in section classification

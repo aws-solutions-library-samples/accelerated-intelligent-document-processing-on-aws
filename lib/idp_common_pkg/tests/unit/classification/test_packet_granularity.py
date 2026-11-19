@@ -2232,6 +2232,135 @@ class TestPagesTheModelPlacedInNoSegment:
         assert _filled_issues(result.sections[0]) == []
         assert any("bad request" in e for e in result.errors)
 
+    def test_a_page_after_a_failed_window_joins_the_document_after_it(self):
+        """Windows [1-4], [5-8], [9-12] with no overlap; the middle one fails and
+        the last reports 10-12. Page 9's predecessor, page 8, was answered by no
+        call, so the page before it in a call that saw it does not exist: it
+        joins the document after it, never the invoice across the gap."""
+        result = self._classify(
+            12,
+            [
+                _bedrock_reply([_range(1, 4, "invoice")]),
+                RuntimeError("bad request"),
+                _bedrock_reply([_range(2, 4, "receipt")]),
+            ],
+            packet={"window_pages": "4", "overlap_pages": "0"},
+        )
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["9", "10", "11", "12"], "receipt"),
+        ]
+        assert [len(_filled_issues(s)) for s in result.sections] == [0, 1]
+
+    def test_a_page_joins_only_a_document_its_own_call_showed_beside_it(self):
+        """Windows [1-4] and [5-8] with no overlap. Pages 5-6 were shown only to
+        the second call, so the first call's invoice is no neighbour of theirs."""
+        result = self._classify(
+            8,
+            [
+                _bedrock_reply([_range(1, 2, "invoice")]),
+                _bedrock_reply([_range(3, 4, "receipt")]),
+            ],
+            packet={"window_pages": "4", "overlap_pages": "0"},
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["5", "6", "7", "8"], "receipt"),
+        ]
+        assert [_filled_issues(s)[0].details for s in result.sections] == [
+            {"page_ids": ["3", "4"]},
+            {"page_ids": ["5", "6"]},
+        ]
+
+    def test_an_overlap_page_both_windows_left_out_follows_the_earlier_window(
+        self,
+    ):
+        """Windows [1-4] and [4-7]; neither reports page 4. It is the first page
+        of the second window, which has nothing before it there, but the first
+        window saw page 3 beside it — and the earlier window wins for an overlap
+        page, as it does in the merge."""
+        result = self._classify(
+            7,
+            [
+                _bedrock_reply([_range(1, 3, "invoice")]),
+                _bedrock_reply([_range(2, 4, "receipt")]),
+            ],
+            packet={"window_pages": "4", "overlap_pages": "1"},
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4"], "invoice"),
+            (["5", "6", "7"], "receipt"),
+        ]
+
+    def test_each_section_lists_only_its_own_placed_pages(self):
+        result = self._classify(
+            6, [_bedrock_reply([_range(1, 2, "invoice"), _range(4, 5, "receipt")])]
+        )
+        assert [s.page_ids for s in result.sections] == [
+            ["1", "2", "3"],
+            ["4", "5", "6"],
+        ]
+        assert [_filled_issues(s)[0].details for s in result.sections] == [
+            {"page_ids": ["3"]},
+            {"page_ids": ["6"]},
+        ]
+
+    def test_leading_pages_join_their_neighbour_when_segments_are_out_of_order(
+        self,
+    ):
+        """The model listed the later document first. Page 1 joins the segment
+        holding page 2, wherever that segment sits in the list."""
+        result = self._classify(
+            6, [_bedrock_reply([_range(4, 6, "receipt"), _range(2, 3, "invoice")])]
+        )
+        self._assert_every_page_in_exactly_one_section(result)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["4", "5", "6"], "receipt"),
+            (["1", "2", "3"], "invoice"),
+        ]
+        assert _filled_issues(result.sections[1])[0].details == {"page_ids": ["1"]}
+
+    def test_several_leading_pages_keep_page_order(self):
+        result = self._classify(4, [_bedrock_reply([_range(3, 4, "invoice")])])
+        assert [s.page_ids for s in result.sections] == [["1", "2", "3", "4"]]
+        assert _filled_issues(result.sections[0])[0].details == {"page_ids": ["1", "2"]}
+
+    def test_a_window_holding_no_segment_places_nothing_of_its_own(self):
+        """Not reachable through a call — a window whose answer holds no usable
+        segment fails — but if one ever were, its pages have no neighbour in
+        their own call and are left out rather than given the other window's
+        class."""
+        segments = [Segment(page_ids=["1", "2"], doc_class="invoice")]
+        placed = ClassificationService._place_pages_no_segment_holds(
+            segments, [["1", "2"], ["3", "4"]]
+        )
+        assert [s.page_ids for s in placed] == [["1", "2"]]
+        assert [s.filled_page_ids for s in placed] == [[]]
+
+    def test_recording_twice_leaves_one_issue(self):
+        result = self._classify(3, [_bedrock_reply([_range(1, 2, "invoice")])])
+        ClassificationService._record_filled_page_issues(
+            result,
+            [Segment(page_ids=["1", "2", "3"], filled_page_ids=["3"])],
+        )
+        assert len(_filled_issues(result.sections[0])) == 1
+
+    def test_one_section_for_the_document_is_not_revoted(self):
+        """``sectionSplitting: disabled`` already puts every page in the one
+        section. Placing the left-out pages would only add them to the vote for
+        its class — here turning invoice (2 pages) into receipt (1 + 2)."""
+        result = self._classify(
+            5,
+            [_bedrock_reply([_range(1, 2, "invoice"), _range(3, 3, "receipt")])],
+            document_shape={"sectionSplitting": "disabled"},
+        )
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1", "2", "3", "4", "5"], "invoice")
+        ]
+        assert _filled_issues(result.sections[0]) == []
+
     def test_one_section_per_page_still_gets_every_page(self):
         result = self._classify(
             3,

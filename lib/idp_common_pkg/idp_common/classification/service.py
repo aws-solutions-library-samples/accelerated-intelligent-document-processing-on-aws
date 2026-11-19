@@ -5369,11 +5369,11 @@ class ClassificationService:
         # model that refuses everything, down to single pages, costs a bounded
         # number of requests rather than one per node of the split tree.
         requested: Set[tuple[str, ...]] = set()
-        # Pages shown to a call that answered. Only these can be placed when the
-        # answer leaves them out: a page whose every window failed is already
+        # The pages of every call that answered. Only these can be placed when
+        # the answer leaves them out: a page whose every window failed is already
         # reported in ``errors``, and joining it to a neighbour would give it a
         # class no call was asked about.
-        answered: Set[str] = set()
+        answered: List[List[str]] = []
         split_budget = 2 * len(sorted_page_ids)
         split_calls = 0
         while pending:
@@ -5471,7 +5471,7 @@ class ClassificationService:
                 continue
 
             window_segments.append(segments)
-            answered.update(window_page_ids)
+            answered.append(list(window_page_ids))
             metering = (
                 window_metering
                 if not metering
@@ -5482,14 +5482,17 @@ class ClassificationService:
             return [], metering, errors
 
         merged = self._merge_window_segments(window_segments, sorted_page_ids)
-        merged = self._place_pages_no_segment_holds(
-            merged, [pid for pid in sorted_page_ids if pid in answered]
-        )
+        # Under ``sectionSplitting: disabled`` every page is in the one section
+        # whatever the segments say, so no page is lost; placing one would only
+        # add it to the page-weighted vote for the document's class, as a vote
+        # for a class nobody chose for it.
+        if self._document_shape().sectionSplitting.lower() != "disabled":
+            merged = self._place_pages_no_segment_holds(merged, answered)
         return merged, metering, errors
 
     @staticmethod
     def _place_pages_no_segment_holds(
-        segments: List[Segment], shown_page_ids: List[str]
+        segments: List[Segment], answered_windows: List[List[str]]
     ) -> List[Segment]:
         """Join every page the model was shown but placed in no segment to a
         neighbouring segment, so that no page is dropped from the document (#2037).
@@ -5499,22 +5502,29 @@ class ClassificationService:
         Left out, such a page was in no section — no class, nothing extracted,
         and only a log line to show for it.
 
-        **The rule: the segment of the page before it, else the segment of the
-        page after it.** A page that does not open a document continues the one
-        in progress, and that is also the reading that fits the case that
-        actually occurs — a trailing page the model's last range stops short of.
-        Only a page before every covered page has no predecessor, and it joins
-        the first covered page's segment. A run of several missing pages goes
-        the same way as a whole, because each one's predecessor is the page just
-        placed.
+        **The rule: within a call that was shown the page, the segment of the
+        page before it, else the segment of the page after it.** A page that
+        does not open a document continues the one in progress, and that is also
+        the reading that fits the case that actually occurs — a trailing page the
+        model's last range stops short of. A page with no placed page before it
+        *in the same call* — the first page of a window, or one before every
+        range — joins the segment after it instead. Bounding the neighbour to one
+        call is what keeps a page from joining a document the call never showed
+        beside it: across a window that failed, or a window junction with no
+        overlap, "the page before it" belongs to a different call's answer. A
+        run of several missing pages goes the same way as a whole, because each
+        one's neighbour is the page just placed. The earliest answering window
+        that holds the page decides, as it does for an overlapping page in
+        :meth:`_merge_window_segments`.
 
         The joined pages are listed in each segment's ``filled_page_ids``, which
         is what :meth:`_record_filled_page_issues` reads once sections exist.
 
         Args:
             segments: The merged segments, in the order sections will be built.
-            shown_page_ids: Every page shown to a call that answered, in page
-                order. A page outside it is not placed.
+            answered_windows: The page IDs of every call that answered, each in
+                page order. A page in none of them is not placed: no call
+                decided anything about it, and its failure is already reported.
 
         Returns:
             ``segments`` itself when nothing is missing; otherwise new segments,
@@ -5524,45 +5534,65 @@ class ClassificationService:
         for index, segment in enumerate(segments):
             for page_id in segment.page_ids:
                 holder.setdefault(page_id, index)
-        missing = [pid for pid in shown_page_ids if pid not in holder]
-        if not missing or not holder:
+        shown: List[str] = []
+        window_of: Dict[str, List[str]] = {}
+        for window in answered_windows:
+            for page_id in window:
+                if page_id not in window_of:
+                    window_of[page_id] = window
+                    shown.append(page_id)
+        missing = [pid for pid in shown if pid not in holder]
+        if not missing:
             return segments
 
         page_lists = [list(segment.page_ids) for segment in segments]
         filled: List[List[str]] = [[] for _ in segments]
-        leading: List[str] = []
-        previous: Optional[str] = None
-        for page_id in shown_page_ids:
-            if page_id in holder:
-                previous = page_id
-                continue
-            if previous is None:
-                leading.append(page_id)
-                continue
-            index = holder[previous]
-            pages = page_lists[index]
-            pages.insert(pages.index(previous) + 1, page_id)
+        placed: List[str] = []
+        unplaced: List[str] = []
+        # In page order, so a page's earlier neighbours in its window are always
+        # settled before it, and a run of missing pages chains onto the page
+        # placed just before it.
+        for page_id in missing:
+            window = window_of[page_id]
+            position = window.index(page_id)
+            before = next(
+                (pid for pid in reversed(window[:position]) if pid in holder), None
+            )
+            if before is not None:
+                index = holder[before]
+                pages = page_lists[index]
+                pages.insert(pages.index(before) + 1, page_id)
+            else:
+                after = next(
+                    (pid for pid in window[position + 1 :] if pid in holder), None
+                )
+                if after is None:
+                    # Unreachable for a window that answered — its answer holds
+                    # at least one usable segment, inside the window — but left
+                    # out and logged rather than guessed at.
+                    unplaced.append(page_id)
+                    continue
+                index = holder[after]
+                pages = page_lists[index]
+                pages.insert(pages.index(after), page_id)
             filled[index].append(page_id)
             holder[page_id] = index
-            previous = page_id
-        # A covered shown page exists whenever ``holder`` is non-empty, because a
-        # parsed segment only holds pages of the window it answered for.
-        first_covered = next(
-            (pid for pid in shown_page_ids if pid not in leading), None
-        )
-        if leading and first_covered is not None:
-            index = holder[first_covered]
-            pages = page_lists[index]
-            position = pages.index(first_covered)
-            pages[position:position] = leading
-            filled[index][:0] = leading
+            placed.append(page_id)
 
+        if unplaced:
+            logger.warning(
+                "%d page(s) placed in no segment had no neighbour to join in "
+                "their window and are left out: %s",
+                len(unplaced),
+                unplaced[:20],
+            )
         logger.warning(
             "The model placed %d page(s) in no segment (%s); each was joined to "
-            "the segment of the page before it, or after it when no page precedes "
-            "it, and its section records a processing issue saying so",
-            len(missing),
-            missing[:20],
+            "the segment of the page before it in the same call, or after it when "
+            "no page precedes it there, and its section records a processing "
+            "issue saying so",
+            len(placed),
+            placed[:20],
         )
         return [
             Segment(
@@ -6598,11 +6628,18 @@ class ClassificationService:
         """Which of a segment's pages section classification sends, per
         ``labeling.pages``."""
         labeling = self.config.classification.split_then_classify.section_classification
-        if labeling.pages == "first":
-            return segment.page_ids[:1]
         if labeling.pages == "all":
             return list(segment.page_ids)
-        return segment.page_ids[: max(1, labeling.k)]
+        # A page the splitting call placed in no segment is not one of the
+        # segment's opening pages by the model's account, so it does not stand
+        # for the segment's class: a cover or separator sheet left out of every
+        # range would otherwise decide it (#2037).
+        page_ids = [
+            pid for pid in segment.page_ids if pid not in segment.filled_page_ids
+        ] or list(segment.page_ids)
+        if labeling.pages == "first":
+            return page_ids[:1]
+        return page_ids[: max(1, labeling.k)]
 
     def _invoke_with_class_validation(
         self,

@@ -139,18 +139,32 @@ segment gets that segment's list back, and one assembled from several gets none.
 **No page the model was shown is dropped (#2037).** Nothing obliges a packet
 call's ranges to cover every page it was shown, and the commonest omission is the
 last page. After the merge, `_place_pages_no_segment_holds` joins each such page to
-the segment of the page before it, or, for a page before every covered page, to
-the segment after it; a run of several missing pages goes the same way as a whole.
-This covers the single-window return as well as the fold, and the splitting call at
-packet granularity as well as the combined call, since both go through
-`_packet_segments`. The joined pages are listed in the segment's `filled_page_ids`,
-and once sections exist `_record_filled_page_issues` records a
+the segment of the page before it **in a call that was shown both**, or, when no
+page precedes it in that call, to the segment of the page after it. The neighbour is
+bounded to one call so that a page never joins a document across a window that
+failed, or across a window junction with no overlap, where "the page before it" was
+answered by a different call that never saw it. The earliest answering window
+holding the page decides, as in the merge. A run of several missing pages goes the
+same way as a whole. This covers the single-window return as well as the fold, and
+the splitting call at packet granularity as well as the combined call, since both
+go through `_packet_segments`. The joined pages are listed in the segment's
+`filled_page_ids`, and once sections exist `_record_filled_page_issues` records a
 `classification_page_assigned_to_neighbour` warning on each section that received
 one, naming the pages. A page carries its segment's class and confidence like any
-other page of it — the same reading `_single_section_from_segments` gives a page
-with no verdict of its own. A page whose every window **failed** is not placed: no
-call decided anything about it, and the failure is already in `document.errors`.
-Re-asking the model about the missing pages is the alternative; it was not chosen
+other page of it, which is the reading `_single_section_from_segments` gives a page
+with no verdict of its own. Three cases are not placed:
+
+- a page whose every window **failed**: no call decided anything about it, and the
+  failure is already in `document.errors`;
+- any page under **`sectionSplitting: disabled`**: the one section already holds
+  every page, so nothing is lost, and placing them would only add them to the
+  page-weighted vote for the document's class;
+- for section classification under split-then-classify, `labeling.pages: first` and
+  `first_k` skip a segment's filled pages when choosing which pages to send, so a
+  cover or separator sheet the splitting call left out does not decide the class
+  (`all` still sends every page).
+
+Re-asking the model about the missing pages is the alternative. It was not chosen
 because it costs another call per occurrence and can return the same omission.
 
 A window the model refuses as too long (`is_input_token_overflow`), or as carrying
