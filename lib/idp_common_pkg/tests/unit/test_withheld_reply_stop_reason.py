@@ -375,6 +375,11 @@ def test_classification_marks_the_withheld_page_unclassified(bedrock, reason, co
     assert reason in issue.root_cause
     if reason == "guardrail_intervened":
         assert "guardrail" in issue.root_cause
+        # It may have stopped the request before the model saw it.
+        assert (
+            "BedrockGuardrailVersion) blocked the request or withheld the "
+            "classification model's reply"
+        ) in issue.root_cause
         assert "different classification model" not in issue.root_cause
     else:
         assert "content filter" in issue.root_cause
