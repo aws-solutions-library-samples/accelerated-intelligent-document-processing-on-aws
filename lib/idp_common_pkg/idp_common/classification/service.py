@@ -4680,11 +4680,14 @@ class ClassificationService:
         # Synthesize the page-result list the shared section builders expect, so
         # `disabled` and `page` reuse exactly the same code (and the same page
         # sorting) as the multi-class path instead of duplicating it here.
+        empty_pages = self._short_circuit_empty_pages(document)
         page_results = [
             PageClassification(
                 page_id=page_id,
                 classification=DocumentClassification(
-                    doc_type=class_name, confidence=1.0
+                    doc_type=class_name,
+                    confidence=1.0,
+                    metadata=dict(empty_pages.get(page_id, {})),
                 ),
             )
             for page_id in document.pages
@@ -4698,7 +4701,90 @@ class ClassificationService:
         # page, `disabled` gives one section, and `llm_determined` — which only
         # reaches here for a single-page document — gives one section over that
         # page. Nothing is special-cased on the strategy any more.
-        return self._apply_section_splitting_strategy(document, page_results)
+        document = self._apply_section_splitting_strategy(document, page_results)
+        # A page with nothing to classify is reported here as it is when the
+        # model runs (see _short_circuit_empty_pages); a no-op when none is.
+        self._record_unclassified_page_issues(document, page_results)
+        return document
+
+    def _short_circuit_empty_pages(
+        self, document: Document
+    ) -> Dict[str, Dict[str, Any]]:
+        """Find the pages a zero-inference short-circuit would have found empty.
+
+        When the model runs, ``classify_page_bedrock`` gives a page whose text was
+        read and is blank, with ``modality.images`` off, a no-content result, and
+        ``_record_unclassified_page_issues`` reports it as
+        ``classification_page_no_content``. The two short-circuits that reach
+        ``_create_single_class_sections`` (a document-name regex match, or a
+        single-class configuration, under a ``sectionSplitting`` that needs no
+        boundary signal) read no page at all, so such a page was extracted with
+        the rest of its section and nothing said it had no text.
+
+        This reads each page's text only where the model path would report the
+        page: the Bedrock backend, the combined strategy at page granularity, and
+        images off. Elsewhere it returns nothing and reads nothing, so those
+        short-circuits keep their zero-read cost. Under
+        ``maxPagesForClassification`` only the sample of pages the model path would
+        classify is read. A text read that fails, or a page
+        with no text URI, is logged and not reported: on the model path that page
+        fails the document, and a short-circuit that has never failed a document
+        for it does not start here.
+
+        Returns:
+            page id -> the metadata the model path's no-content result carries,
+            with the class the page would have had (``unclassified``) under
+            ``CLASS_BEFORE_PIN_KEY`` so the issue says the page was given the
+            asserted class.
+        """
+        if (
+            self.backend != "bedrock"
+            or self.strategy != self.STRATEGY_COMBINED
+            or self.granularity != self.GRANULARITY_PAGE
+        ):
+            return {}
+        _, send_images = self._resolve_modality()
+        if send_images:
+            return {}
+
+        def is_blank(page_id: str, text_uri: Optional[str]) -> bool:
+            if not text_uri:
+                return False
+            try:
+                text = s3.get_text_content(text_uri)
+            except Exception as e:
+                logger.warning(
+                    "Page %s: could not read its text (%s) to check it for "
+                    "content; not reported as empty.",
+                    page_id,
+                    e,
+                )
+                return False
+            return not (text and text.strip())
+
+        # Under ``maxPagesForClassification`` the model path classifies only the
+        # first N pages and extrapolates, so only those are read and reported.
+        pages = list(self._limit_pages_for_classification(document).pages.items())
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            blank = list(
+                executor.map(
+                    lambda item: is_blank(item[0], item[1].parsed_text_uri), pages
+                )
+            )
+        return {
+            page_id: {
+                "error": (
+                    "No content available for classification: the page has no "
+                    "OCR text and page images are not sent (modality.images is "
+                    "off)"
+                ),
+                "unclassified_reason": UNCLASSIFIED_NO_CONTENT,
+                "page_empty": True,
+                CLASS_BEFORE_PIN_KEY: UNCLASSIFIED_CLASS,
+            }
+            for (page_id, _), empty in zip(pages, blank)
+            if empty
+        }
 
     def _sort_page_results(
         self, results: List[PageClassification]

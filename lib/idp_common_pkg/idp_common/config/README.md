@@ -40,7 +40,9 @@ model_id = idp_config.extraction.model
 
 `validate_config()` powers `idp-cli config-validate`. It merges with system
 defaults, runs Pydantic validation, and applies enhanced checks (valid model
-IDs, max-token limits, required prompt placeholders, schema-field warnings, and
+IDs, max-token limits, required prompt placeholders, schema-field warnings, a
+warning when `classification.fallback_class` is neither `unclassified` nor a
+configured class, and
 model/feature-compatibility guards). The model-ID check, `_validate_model_ids`,
 covers every model field `_CATALOG_MODEL_FIELDS` lists, each classification call
 the active strategy makes, the per-class model overrides, and the `model` a field
