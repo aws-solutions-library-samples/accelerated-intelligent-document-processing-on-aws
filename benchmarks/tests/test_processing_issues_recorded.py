@@ -120,22 +120,30 @@ STAGES_EXCLUDED_FROM_RESULT_JSON = {
 }
 
 # The same boundary one level finer, and the half that actually costs something.
-# These two are `assessment`-stage codes, so the stage list above does not reach
-# them: `assessment/degradation.py` states in its own docstring that the degrade path
-# "deliberately does not rewrite that file", and every one of
-# `skip_section_no_confidence`'s call sites in `assessment/service.py` returns before
-# the result.json write. They are ERROR severity on a document that COMPLETES, so
-# unlike the failure-path codes above there is no `status` to fall back on — a
-# section with no confidence scores at all reads as clean here.
+# These are `assessment`-stage codes, so the stage list above does not reach them.
+# The skip code is outside the file: every one of `skip_section_no_confidence`'s call
+# sites in `assessment/service.py` returns before the result.json write, and nothing
+# writes it there afterwards. It is ERROR severity on a document that COMPLETES, so
+# unlike the failure-path codes above there is no `status` to fall back on: a section
+# whose confidence pass never ran reads as clean here.
 #
 # Derived-and-equality-checked rather than listed as a judgement: the closure test
-# below compares this against the codes `degradation.py` declares AND computes the
-# premise the boundary rests on (that module performs no S3 write), so a third code
-# there fails, and the entry becoming wrong because degradation started writing
-# result.json fails too.
+# below partitions the codes `degradation.py` declares across this set and
+# CODES_THE_DEGRADE_WRITE_CARRIES, so a third code there fails, and the premises each
+# half rests on are computed below rather than restated.
 CODES_EXCLUDED_FROM_RESULT_JSON = {
-    "assessment_failed_confidence_unavailable",
     "assessment_skipped_confidence_unavailable",
+}
+
+# The degrade code DOES reach the file. After a deterministic assessment failure the
+# Assessment Lambda calls `record_no_confidence_in_result`, which merges the issue into
+# the section's extraction result.json, the file `score_processing_issues` reads. That
+# write is best effort and is not made when the result already holds the pass's
+# scores, so a `0` is still not proof the degrade never fired; but in the ordinary
+# degrade the code is recorded, and the tests below drive the real writer into the
+# real reader to show it.
+CODES_THE_DEGRADE_WRITE_CARRIES = {
+    "assessment_failed_confidence_unavailable",
 }
 
 #: Call-shaped source fragments that count as writing to S3, for the premise above.
@@ -380,56 +388,159 @@ def test_an_issue_from_any_stage_is_recorded(stage, tmp_path):
     assert out["processing_issues_by_stage"] == {stage: 1}
 
 
-def test_the_codes_outside_result_json_are_exactly_the_degradation_pair():
+def test_the_degradation_codes_are_partitioned_across_the_two_sets():
     """Closure one level finer than the stage list, on the half that costs something.
 
     ``assessment_failed_confidence_unavailable`` and
     ``assessment_skipped_confidence_unavailable`` are ``assessment``-stage codes, so
     the stage boundary does not reach them, and they are **error** severity on a
-    document that **completes** — there is no ``status`` to fall back on. Both are in
-    the discovered 24 and both are recorded correctly by the parametrised test above
-    *when injected*, which is precisely why this is needed: that green parametrisation
-    says nothing about whether the pipeline can put them where the reader looks.
+    document that **completes**: there is no ``status`` to fall back on. Both are
+    discovered and both are recorded correctly by the parametrised test above *when
+    injected*, which is why this is needed: that green parametrisation says nothing
+    about whether the pipeline puts them where the reader looks.
 
-    Equality, so a third code declared in ``degradation.py`` fails here.
+    Equality over a partition, so a third code declared in ``degradation.py`` fails
+    here, and so does a code listed on both sides.
     """
     constants = _string_constants(
         ast.parse((IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8"))
     )
     declared = {v for k, v in constants.items() if k.endswith("_CODE")}
     assert declared, "no *_CODE constants in assessment/degradation.py"
-    assert declared == CODES_EXCLUDED_FROM_RESULT_JSON, sorted(
-        declared ^ CODES_EXCLUDED_FROM_RESULT_JSON
-    )
+    assert not CODES_EXCLUDED_FROM_RESULT_JSON & CODES_THE_DEGRADE_WRITE_CARRIES
+    partition = CODES_EXCLUDED_FROM_RESULT_JSON | CODES_THE_DEGRADE_WRITE_CARRIES
+    assert declared == partition, sorted(declared ^ partition)
     # Non-vacuity: these have to be codes the discovery really finds, or the boundary
     # is describing something that does not exist.
-    assert CODES_EXCLUDED_FROM_RESULT_JSON <= CODES
+    assert partition <= CODES
+
+
+def _s3_write_calls(tree):
+    """``(innermost enclosing function, marker)`` for every S3 write call in ``tree``.
+
+    A call at module scope is reported with the enclosing name ``None``.
+    """
+    found = []
+
+    def visit(node, enclosing):
+        for child in ast.iter_child_nodes(node):
+            inner = (
+                child.name
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+                else enclosing
+            )
+            if isinstance(child, ast.Call):
+                name = getattr(child.func, "attr", None) or getattr(
+                    child.func, "id", None
+                )
+                if name and f"{name}(" in S3_WRITE_MARKERS:
+                    found.append((enclosing, name))
+            visit(child, inner)
+
+    visit(tree, None)
+    return found
 
 
 def test_the_premise_behind_that_boundary_is_computed_not_asserted():
-    """The boundary holds *because* ``degradation.py`` writes no S3 object. That is
-    computable, so it is computed: if the module ever gains a write, this entry is
-    wrong in the direction that under-reports, and the failure says to re-check it
-    rather than leaving a stale reason in place.
+    """The partition holds *because* ``degradation.py`` writes to S3 in exactly one
+    place, the function that carries a degrade issue into result.json. That is
+    computable, so it is computed: a write anywhere else in the module could carry the
+    skip code too, and this entry would then under-report.
 
-    Its own docstring says the same thing in prose — "this degrade path deliberately
-    does not rewrite that file" — and prose is what goes stale.
+    Two probes, so neither is vacuous: the raw-text marker scan must agree with the
+    AST walk (a write the walk missed would show up as a marker it cannot place), and
+    the same walk must find a write in a module that definitely has one.
     """
     source = (IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8")
-    writes = [m for m in S3_WRITE_MARKERS if m in source]
-    assert not writes, (
-        f"assessment/degradation.py now contains {writes}. If it writes the section's "
-        "result.json, CODES_EXCLUDED_FROM_RESULT_JSON is wrong and the recorder's docstring "
-        "and docs/benchmarking/index.md overstate the boundary."
+    writes = _s3_write_calls(ast.parse(source))
+    assert writes, (
+        "degradation.py has no S3 write, so the degrade code cannot reach result.json"
     )
-    # And the marker list is live rather than decorative: the same probe must find a
-    # write in a module that definitely has one.
-    assert any(
-        m in (IDP_COMMON / "extraction" / "service.py").read_text("utf-8")
-        for m in S3_WRITE_MARKERS
+    assert {fn for fn, _ in writes} == {"record_no_confidence_in_result"}, (
+        f"assessment/degradation.py writes to S3 from {sorted(set(writes))}. A write "
+        "outside record_no_confidence_in_result may carry the skip code into result.json, "
+        "so re-check CODES_EXCLUDED_FROM_RESULT_JSON, the recorder's docstring and "
+        "docs/benchmarking/index.md."
+    )
+    textual = sum(source.count(m) for m in S3_WRITE_MARKERS)
+    assert textual == len(writes), (
+        f"{textual} write markers in the text against {len(writes)} calls the AST walk "
+        "placed, so a write is reachable some way the walk does not see"
+    )
+    assert _s3_write_calls(
+        ast.parse((IDP_COMMON / "extraction" / "service.py").read_text("utf-8"))
     ), (
         "S3_WRITE_MARKERS matches nothing even where a write exists, so the check above is vacuous"
     )
+
+
+def test_only_the_degrade_handler_feeds_that_write():
+    """The other half of the write's premise: which issues reach it. The only
+    production caller must be the Assessment Lambda's degrade branch, and the skip
+    path in ``assessment/service.py`` must not call it, or the skip code would reach
+    the file through the same function."""
+    import subprocess
+
+    repo = IDP_COMMON.parents[2]
+    files = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    callers = sorted(
+        f
+        for f in files
+        if "/tests/" not in f
+        and not f.startswith(("tests/", "benchmarks/"))
+        and not f.endswith("assessment/degradation.py")
+        and "record_no_confidence_in_result(" in (repo / f).read_text("utf-8")
+    )
+    assert callers == ["patterns/unified/src/assessment_function/index.py"], callers
+    handler = (repo / callers[0]).read_text("utf-8")
+    # The issue it passes is the one the degrade built, in the same branch.
+    degrade = handler.index("degrade_section_to_no_confidence(updated_document")
+    record = handler.index("record_no_confidence_in_result(", degrade)
+    assert "skip_section_no_confidence" not in handler[degrade:record]
+    assert "issue = degrade_section_to_no_confidence(" in handler[degrade - 40 : record]
+    assert "record_no_confidence_in_result" not in (
+        IDP_COMMON / "assessment" / "service.py"
+    ).read_text("utf-8")
+
+
+def test_the_degrade_code_reaches_the_recorder_through_the_real_writer(monkeypatch):
+    """The property CODES_THE_DEGRADE_WRITE_CARRIES claims, measured end to end: the
+    issue ``degrade_section_to_no_confidence`` builds, written by
+    ``record_no_confidence_in_result`` into an extraction result.json, is counted by
+    ``score_processing_issues`` reading that file. Every code in the set must come out
+    of the real degrade, so the set cannot name a code the degrade does not build."""
+    from idp_common import s3
+    from idp_common.assessment import degradation
+    from idp_common.models import Document, Section
+
+    document = Document(id="d", sections=[Section(section_id="1", classification="X")])
+    issue = degradation.degrade_section_to_no_confidence(
+        document, "1", ValueError("Input is too long for requested model.")
+    )
+    assert {issue.code} == CODES_THE_DEGRADE_WRITE_CARRIES
+
+    extraction_result = _section(_issue("extraction_rows_below_ocr_estimate"))
+    written = []
+    monkeypatch.setattr(s3, "get_json_content", lambda uri: extraction_result)
+    monkeypatch.setattr(
+        s3, "write_content", lambda content, *a, **kw: written.append(content)
+    )
+    assert degradation.record_no_confidence_in_result(
+        "s3://bucket/d/sections/1/result.json", issue
+    )
+    (on_disk,) = written
+    scored = analyze.score_processing_issues([json.loads(json.dumps(on_disk))])
+    assert scored["processing_issues_by_code"] == {
+        "extraction_rows_below_ocr_estimate": 1,
+        "assessment_failed_confidence_unavailable": 1,
+    }
+    assert scored["processing_issues_by_severity"].get("error") == 1
 
 
 def test_every_skip_site_returns_before_the_result_json_write():
