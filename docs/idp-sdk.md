@@ -1680,7 +1680,14 @@ Upload configuration to a deployed stack.
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, `error`, and `warnings`
+
+`warnings` holds the non-fatal findings validation produced for the file, the
+same list `config.validate()` returns in `ConfigValidationResult.warnings`. It is
+filled when validation refuses the upload as well as when the upload succeeds. It
+is empty with `validate=False`, and for a refusal that comes before validation
+runs (a file that does not load, or one marked `managed: true`), because nothing
+was checked. A warning never makes `success` false.
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
