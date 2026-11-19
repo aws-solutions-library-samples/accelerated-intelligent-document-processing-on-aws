@@ -298,6 +298,91 @@ SWITCH_FLAGS_WITH_VALUE = CREATE_FLAGS | {"--conflict", "--pathspec-from-file"}
 #: the rest of the bundle as that value, which is why git rejects ``-tb x``.
 SWITCH_SHORTS_OPTIONAL_VALUE = frozenset({"-t"})
 
+#: Every long option ``git push``, ``git switch`` and ``git checkout`` list in
+#: ``-h``, by subcommand. git accepts any **unique prefix** of a long option
+#: (``--mirr`` is ``--mirror``, ``--det`` is ``--detach``), so a spelling cannot be
+#: judged without knowing every name it might abbreviate. ``option_walk`` resolves
+#: a prefix against this set the way parse-options does, and
+#: ``test_git_long_options_cover_git`` derives it from the installed git. A name
+#: missing here can only make a prefix look unique where git calls it ambiguous,
+#: and git refuses an ambiguous one, so the command does not run either way.
+GIT_LONG_OPTIONS = {
+    "push": frozenset(
+        {
+            "--all",
+            "--atomic",
+            "--branches",
+            "--delete",
+            "--dry-run",
+            "--exec",
+            "--follow-tags",
+            "--force",
+            "--force-if-includes",
+            "--force-with-lease",
+            "--ipv4",
+            "--ipv6",
+            "--mirror",
+            "--no-verify",
+            "--porcelain",
+            "--progress",
+            "--prune",
+            "--push-option",
+            "--quiet",
+            "--receive-pack",
+            "--recurse-submodules",
+            "--repo",
+            "--set-upstream",
+            "--signed",
+            "--tags",
+            "--thin",
+            "--verbose",
+            "--verify",
+        }
+    ),
+    "switch": frozenset(
+        {
+            "--conflict",
+            "--create",
+            "--detach",
+            "--discard-changes",
+            "--force",
+            "--force-create",
+            "--guess",
+            "--ignore-other-worktrees",
+            "--merge",
+            "--orphan",
+            "--overwrite-ignore",
+            "--progress",
+            "--quiet",
+            "--recurse-submodules",
+            "--track",
+        }
+    ),
+    "checkout": frozenset(
+        {
+            "--conflict",
+            "--detach",
+            "--force",
+            "--guess",
+            "--ignore-other-worktrees",
+            "--ignore-skip-worktree-bits",
+            "--merge",
+            "--orphan",
+            "--ours",
+            "--overlay",
+            "--overwrite-ignore",
+            "--patch",
+            "--pathspec-file-nul",
+            "--pathspec-from-file",
+            "--progress",
+            "--quiet",
+            "--recurse-submodules",
+            "--theirs",
+            "--track",
+        }
+    ),
+}
+
 #: Per-subprocess timeout. A single command can spend several of these -- one
 #: `git` call per reading, plus a `gh pr checks` -- so the total can exceed the
 #: 15 s the hook is given in ``.claude/settings.json``. Being killed there is not
@@ -600,12 +685,32 @@ def command_repo(tokens: list[str], base: Path) -> Path:
     return repo
 
 
+def _expand_long(name: str, long_names: frozenset[str]) -> str:
+    """The long option git reads ``name`` as: itself, or the one it abbreviates.
+
+    parse-options takes an exact name first, then a prefix matching exactly one
+    option, and a ``--no-`` form of either. A prefix matching several is an error
+    in git, so it is returned unchanged -- the command does not run.
+    """
+    if not long_names or name in long_names:
+        return name
+    matches = {option for option in long_names if option.startswith(name)}
+    if name.startswith("--no-"):
+        matches |= {
+            "--no-" + option[2:]
+            for option in long_names
+            if option.startswith("--" + name[5:])
+        }
+    return matches.pop() if len(matches) == 1 else name
+
+
 def option_walk(
     args: list[str],
     with_value: frozenset[str],
     optional_value: frozenset[str] = frozenset(),
     *,
     pflag: bool = False,
+    long_names: frozenset[str] = frozenset(),
 ) -> list[tuple[str | None, str | None]]:
     """Split ``args`` the way the program's option parser does.
 
@@ -625,7 +730,11 @@ def option_walk(
     included (``-s=true``). git's parse-options has no such rule: ``git checkout
     -b=x`` creates a branch called ``=x``. A long option is the same in both:
     ``--name=value``, or ``--name value`` when it takes a value. ``--`` ends the
-    options and a lone ``-`` is a positional.
+    options and a lone ``-`` is a positional. The one other difference is that
+    git accepts a unique prefix of a long option and pflag does not (``gh pr merge
+    --sub x`` is "unknown flag"), so ``long_names`` -- every long option the git
+    subcommand has -- is given for git only, and an abbreviation is reported under
+    the full name.
     """
     out: list[tuple[str | None, str | None]] = []
     rest = list(args)
@@ -639,6 +748,7 @@ def option_walk(
             continue
         if arg.startswith("--"):
             name, separator, attached = arg.partition("=")
+            name = _expand_long(name, long_names)
             if separator:
                 out.append((name, attached))
             elif name in with_value:
@@ -679,7 +789,12 @@ def switch_target(args: list[str]) -> tuple[bool, str | None]:
         # with nothing after it does switch branches, and is read here as a
         # restore; a bare trailing `--` is not a shape anyone types by accident.
         return False, None
-    walked = option_walk(rest, SWITCH_FLAGS_WITH_VALUE, SWITCH_SHORTS_OPTIONAL_VALUE)
+    walked = option_walk(
+        rest,
+        SWITCH_FLAGS_WITH_VALUE,
+        SWITCH_SHORTS_OPTIONAL_VALUE,
+        long_names=GIT_LONG_OPTIONS.get(args[0], frozenset()),
+    )
     options = [option for option, _ in walked if option is not None]
     if any(option in ("--detach", "-d") for option in options):
         # `git switch --detach develop` names a branch but lands on no branch, so a
@@ -733,7 +848,10 @@ def push_destinations(
     positionals: list[str] = []
     pushes_everything = False
     tags_only = False
-    for option, word in option_walk(args, PUSH_FLAGS_WITH_VALUE):
+    walked = option_walk(
+        args, PUSH_FLAGS_WITH_VALUE, long_names=GIT_LONG_OPTIONS["push"]
+    )
+    for option, word in walked:
         if option is None:
             if word is not None:
                 positionals.append(word)
@@ -885,11 +1003,31 @@ def merge_target(args: list[str]) -> str | None:
     2.105.0, ``gh pr merge -sb text <n>``, ``-sbtext`` and ``-sb=text`` all merge
     pull request ``<n>`` with ``text`` as the body -- see ``option_walk``.
     """
-    walked = option_walk(args[1:], GH_MERGE_FLAGS_WITH_VALUE, pflag=True)
-    for option, word in walked:  # args[0] is "merge"
-        if option is None:
-            return word
-    return None
+    return gh_merge(["gh", "pr", *args])[1]  # args[0] is "merge"
+
+
+def gh_merge(argv: list[str]) -> tuple[bool, str | None]:
+    """``(is_merge, pull_request)`` for a ``gh`` command line.
+
+    The words are read with the whole command walked as ``gh pr merge`` parses it,
+    because an option may sit at any level: ``gh -R x pr merge 1``, ``gh pr -R x
+    merge 1`` and ``gh pr merge -R x 1`` are the same request. Measured on gh
+    2.105.0: ``gh pr -R cli/cli merge <n>`` resolves ``<n>`` against ``cli/cli``.
+    Looking for ``merge`` straight after ``pr`` missed the middle form, which
+    then was not a merge at all and so had no checks read.
+    """
+    if not argv or argv[0] != "gh":
+        return False, None
+    words = [
+        word
+        for option, word in option_walk(
+            argv[1:], GH_MERGE_FLAGS_WITH_VALUE | GH_GLOBAL_WITH_VALUE, pflag=True
+        )
+        if option is None
+    ]
+    if words[:2] != ["pr", "merge"]:
+        return False, None
+    return True, words[2] if len(words) > 2 else None
 
 
 def repo_root(payload: dict[str, object]) -> Path:
@@ -1158,14 +1296,12 @@ def decide(payload: dict[str, object], notices: list[str] | None = None) -> str 
                     )
                 continue
 
-        gh_args = subcommand(argv, "gh", GH_GLOBAL_WITH_VALUE)
-        if gh_args and gh_args[:2] == ["pr", "merge"]:
+        is_merge, pull_request = gh_merge(argv)
+        if is_merge:
             if _allowed(ALLOW_RED_MERGE, inline):
                 note(_waived(ALLOW_RED_MERGE, "this pull request's checks"))
                 continue
-            failures = failing_checks(
-                merge_target(gh_args[1:]), base, gh_repo_selector(argv)
-            )
+            failures = failing_checks(pull_request, base, gh_repo_selector(argv))
             if not failures:
                 continue
             return (

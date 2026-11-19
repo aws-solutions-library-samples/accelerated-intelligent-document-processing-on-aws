@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -1009,6 +1010,16 @@ def test_switch_value_options_match_git() -> None:
         (["checkout", "-tdirect", "origin/develop"], (True, "develop")),
         (["checkout", "-qtdirect", "origin/develop"], (True, "develop")),
         (["switch", "--create="], (True, None)),
+        # git takes a unique prefix of a long option, measured on git 2.50.1:
+        # `--tr origin/x` tracks, `--cre=x` and `--orph x` create, `--det x`
+        # detaches.
+        (["switch", "--tr", "origin/develop"], (True, "develop")),
+        (["checkout", "--tra", "origin/develop"], (True, "develop")),
+        (["switch", "--cre", "develop"], (True, "develop")),
+        (["switch", "--cre=develop"], (True, "develop")),
+        (["checkout", "--orph", "develop"], (True, "develop")),
+        (["switch", "--det", "develop"], (True, None)),
+        (["checkout", "--confl", "diff3", "fix/x"], (True, "fix/x")),
     ],
 )
 def test_switch_target_reads_bundles_as_git_does(
@@ -1044,6 +1055,9 @@ def test_a_bundled_switch_onto_a_shared_branch_is_seen(
         "git push -fo opt origin",
         "git push -uo opt origin",
         "git push --recurse-submodules check origin",
+        # An abbreviation of it, which git accepts while it is unique.
+        "git push --recurse check origin",
+        "git push --recurse-sub check origin",
     ],
 )
 def test_a_push_whose_remote_hides_behind_an_option_is_refused(
@@ -1055,7 +1069,9 @@ def test_a_push_whose_remote_hides_behind_an_option_is_refused(
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("flag", ["--all", "--branches", "--mirror"])
+@pytest.mark.parametrize(
+    "flag", ["--all", "--branches", "--mirror", "--al", "--bra", "--mirr"]
+)
 def test_pushing_every_branch_from_a_feature_branch_is_refused(
     repo: Path, flag: str
 ) -> None:
@@ -1067,6 +1083,93 @@ def test_pushing_every_branch_from_a_feature_branch_is_refused(
     _checkout(repo, "feature/thing", "origin/feature/thing")
     result = _run_hook(_bash(f"git push {flag} origin", cwd=repo))
     assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("command", sorted(check_shared_branch.GIT_LONG_OPTIONS))
+def test_git_long_options_cover_git(command: str) -> None:
+    """Every long option the installed git lists for ``command`` is in the set.
+
+    A name missing from the set is the direction that matters: the abbreviation
+    of the option it shadows looks unique here when git calls it ambiguous, or an
+    abbreviation of the missing option is not recognised at all. The set may hold
+    names an older git lacks (``--branches`` arrived in git 2.46), so only this
+    direction is asserted.
+    """
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", command, "-h"], capture_output=True, text=True, check=False
+    )
+    derived = set()
+    for line in completed.stdout.splitlines():
+        match = GIT_HELP_OPTION_LINE.match(line)
+        if match and match.group(2):
+            derived.add(f"--{match.group(2)}")
+    assert len(derived) >= 10, completed.stdout
+    missing = derived - check_shared_branch.GIT_LONG_OPTIONS[command]
+    assert not missing, f"git {command} has long options the hook lacks: {missing}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("--mirr", "--mirror"),
+        ("--mirror", "--mirror"),
+        ("--no-verify", "--no-verify"),
+        ("--no-thi", "--no-thin"),
+        # Ambiguous in git ("could be --recurse-submodules or --receive-pack"),
+        # which refuses it, so it is left as an unknown option.
+        ("--re", "--re"),
+        ("--rec", "--rec"),
+        ("--nonsense", "--nonsense"),
+    ],
+)
+def test_a_long_abbreviation_resolves_as_git_resolves_it(
+    name: str, expected: str
+) -> None:
+    longs = check_shared_branch.GIT_LONG_OPTIONS["push"]
+    assert check_shared_branch._expand_long(name, longs) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `pr` takes `--repo` too, so it may sit between `pr` and `merge`.
+        "gh pr -R owner/name merge 1050",
+        "gh pr --repo owner/name merge -sb text 1050",
+        "gh pr -Rowner/name merge 1050",
+    ],
+)
+def test_a_repo_option_between_pr_and_merge_is_still_a_merge(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    asked: list[tuple[str | None, str | None]] = []
+
+    def _reader(
+        pr: str | None, _repo: Path, selector: str | None = None
+    ) -> list[str] | None:
+        asked.append((pr, selector))
+        return ["developer_tests"]
+
+    monkeypatch.setattr(check_shared_branch, "failing_checks", _reader)
+    assert decide(_bash(command, cwd=repo)) is not None
+    assert asked == [("1050", "owner/name")]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    ["gh pr view 1050", "gh pr list --search merge", "gh pr -R owner/name view 1"],
+)
+def test_other_gh_pr_commands_are_not_merges(command: str) -> None:
+    assert check_shared_branch.gh_merge(shlex.split(command)) == (False, None)
+
+
+@pytest.mark.unit
+def test_gh_long_options_are_not_abbreviated() -> None:
+    """pflag has no abbreviation: ``gh pr merge --sub x N`` is "unknown flag"."""
+    assert merge_target(["merge", "--sub", "x", "1050"]) == "x"
 
 
 @pytest.mark.unit
