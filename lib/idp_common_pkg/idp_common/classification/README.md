@@ -152,14 +152,15 @@ go through `_packet_segments`. The joined pages are listed in the segment's
 `classification_page_assigned_to_neighbour` warning on each section that received
 one, naming the pages. A page carries its segment's class and confidence like any
 other page of it, which is the reading `_single_section_from_segments` gives a page
-with no verdict of its own. Three cases are not placed:
+with no verdict of its own. Two cases are not placed, and one stage treats a
+placed page differently:
 
 - a page whose every window **failed**: no call decided anything about it, and the
   failure is already in `document.errors`;
 - any page under **`sectionSplitting: disabled`**: the one section already holds
   every page, so nothing is lost, and placing them would only add them to the
   page-weighted vote for the document's class;
-- for section classification under split-then-classify, `labeling.pages: first` and
+- section classification under split-then-classify: `labeling.pages: first` and
   `first_k` skip a segment's filled pages when choosing which pages to send, so a
   cover or separator sheet the splitting call left out does not decide the class
   (`all` still sends every page).
