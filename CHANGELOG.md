@@ -15,6 +15,8 @@ SPDX-License-Identifier: MIT-0
 
 - **IDP in Action, an illustrated landing page for the accelerator.** One page tours the main features beside screenshots of each, with an eight-minute narrated overview video and a grid of feature walkthroughs, linked from the docs-site home page, the README and the demo videos page. See [IDP in Action](docs/idp-in-action.md).
 
+- **Extensions can follow the web UI's language.** The Feature Platform passes the UI language to each extension as `FeatureContext.locale`, so an extension can translate its own interface; until a language other than English is enabled, every extension receives `en`. See [Follow the web UI's language](docs/feature-platform-developer-guide.md#optional-follow-the-web-uis-language) (https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1770).
+
 ### Changed
 
 - **The create-test-set wizard picks a custom "Modified after" date and time with a date picker and a time input, as the Add documents dialog does.** It had free-text fields for both, so the two file-pattern flows took the same cutoff in different ways. The date and time are still read as UTC, said so beside the time, and a date or time typed only in part is refused beside the field. See [Test Studio](docs/test-studio.md).
