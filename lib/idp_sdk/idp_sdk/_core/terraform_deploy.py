@@ -573,10 +573,18 @@ def _parse_hcl_value(text: str) -> Any:
     return json.loads(text.replace("$${", "${").replace("%%{", "%{"))
 
 
+def _aligned(pairs: List[Tuple[str, str]], indent: str = "") -> List[str]:
+    """``name = value`` lines with the ``=`` padded to one column, as
+    ``terraform fmt`` aligns consecutive single-line attributes. Written that way
+    so a directory committed to a repository with a formatting gate passes
+    ``terraform fmt -check``."""
+    width = max((len(name) for name, _ in pairs), default=0)
+    return [f"{indent}{name.ljust(width)} = {value}" for name, value in pairs]
+
+
 def render_tfvars(values: Dict[str, Any]) -> str:
     lines = [ROOT_MARKER, "# Values for the variables declared in main.tf."]
-    for name in sorted(values):
-        lines.append(f"{name} = {_hcl_value(values[name])}")
+    lines += _aligned([(name, _hcl_value(values[name])) for name in sorted(values)])
     return "\n".join(lines) + "\n"
 
 
@@ -711,16 +719,18 @@ def render_main_tf(
     names = sorted(values)
     for name in names:
         spec = specs.get(name, {"type": "string", "sensitive": False})
-        blocks.append(f'variable "{name}" {{')
-        blocks.append(f"  type = {spec['type']}")
+        attributes = [("type", str(spec["type"]))]
         if spec.get("sensitive"):
-            blocks.append("  sensitive = true")
+            attributes.append(("sensitive", "true"))
+        blocks.append(f'variable "{name}" {{')
+        blocks += _aligned(attributes, "  ")
         blocks.append("}")
         blocks.append("")
     blocks.append('module "idp" {')
-    blocks.append(f"  source = {json.dumps(source)}")
-    for name in names:
-        blocks.append(f"  {name} = var.{name}")
+    blocks += _aligned(
+        [("source", json.dumps(source))] + [(name, f"var.{name}") for name in names],
+        "  ",
+    )
     blocks.append("}")
     return "\n".join(blocks) + "\n"
 
