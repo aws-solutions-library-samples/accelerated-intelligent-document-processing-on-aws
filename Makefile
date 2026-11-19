@@ -211,11 +211,15 @@ setup-venv: lock-constraints ## Create .venv and install all packages into it, c
 	@# bare commands, and nothing here puts $(VENV_DIR)/bin on PATH. Reading the
 	@# old wording as "nothing further is needed" is how CONTRIBUTING.md came to
 	@# document a setup sequence that fails with `ruff: No such file or directory`.
+	@# The Node step runs before the activation reminder, so the reminder is the
+	@# last thing printed: printed first, it scrolled away under the npm output.
+	@# setup_node.sh exits 0 in auto mode even when the install fails.
+	@scripts/setup_node.sh auto
+	@echo ""
 	@echo -e "$(YELLOW)   'make' targets that go through \$$(PYTHON)/\$$(PIP) will use $(VENV_DIR)/bin automatically.$(NC)"
-	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 	@echo -e "$(YELLOW)   The lint gates call 'ruff' and 'cfn-lint' as bare commands, so they need$(NC)"
 	@echo -e "$(YELLOW)   $(VENV_DIR)/bin on PATH; without activation 'make ruff-lint' fails with Error 127.$(NC)"
-	@scripts/setup_node.sh auto
+	@echo -e "$(YELLOW)   ACTIVATE IT ANYWAY: source $(VENV_DIR)/bin/activate$(NC)"
 
 setup-node: ## Install src/ui and docs-site npm dependencies from their lockfiles, plus basedpyright (needs Node 22.12+; fails on any error)
 	@scripts/setup_node.sh required
