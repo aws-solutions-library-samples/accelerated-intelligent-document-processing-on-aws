@@ -114,10 +114,20 @@ def test_compare_llm_falls_back_to_the_model_defaults() -> None:
     ],
     ids=["no-model", "empty-model", "factory-empty-config"],
 )
+@pytest.mark.parametrize("region", ["us-east-1", "eu-west-1", "ca-central-1"])
 def test_comparator_model_fallback_is_the_model_default(
-    build: Callable[[], Any],
+    build: Callable[[], Any], region: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The fallback is the Region's profile, as an absent config key resolves to."""
+    monkeypatch.setenv("AWS_REGION", region)
     assert build().llm_config["model"] == EvaluationLLMMethodConfig().model
+
+
+def test_compare_llm_model_fallback_is_the_regions_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AWS_REGION", "eu-west-1")
+    assert _invoked({})["model_id"] == "eu.amazon.nova-2-lite-v1:0"
 
 
 _SENTINELS = {

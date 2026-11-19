@@ -247,8 +247,34 @@ to move a call from `nova-2-lite` to `nova-pro`, with the warning naming a model
 profile did not use. The substituted model is `DEFAULT_CLASSIFICATION_MODEL`
 translated for the stack's Region (`AWS_REGION`, then `AWS_DEFAULT_REGION`) by
 `idp_common.regional_models`, so an EU stack gets `eu.amazon.nova-2-lite-v1:0`, as
-the deploy-time swap gives the call's stored siblings. A model key absent from the
-data, rather than cleared, still takes the field default, the US id.
+the deploy-time swap gives the call's stored siblings.
+
+A model key **absent** from the data, rather than cleared, resolves the same way,
+and not for classification only. Every configuration model whose field declares a
+`us.` profile (extraction, summarization, chat, the three classification calls, the
+agents, rule validation's fact extraction, orchestrator and Z3 blocks, evaluation's
+LLM judge, and discovery) inherits `RegionalModelDefaults`, a `mode="before"`
+validator that fills each such absent key with `regional_field_default(<declared
+id>)`. That reaches a stack whenever the stored configuration does not carry the
+key: BDA mode's system defaults ship no chat, classification or extraction model,
+and the Z3 blocks ship none at all. Three properties to rely on:
+
+- A key the input carries is never translated, an explicit `us.` id included, so
+  a stored value the deploy-time swap already rewrote, or one a user chose, is
+  kept as written.
+- `model_fields[...].default` stays the US id, so the parity tests above still
+  compare the declaration with the YAML.
+- A Region with no row in `idp_common.regional_models.REGIONAL_DEFAULT_MODELS`
+  gets the US id unchanged: GovCloud (`us-gov-*`), Asia Pacific and every other
+  Region the deploy-time swap also leaves alone. The swap has no mapping for
+  those, so there is no regional profile to choose.
+
+`tests/unit/config/test_regional_field_defaults.py` finds every such field by
+reading the declarations, asserts its class inherits the mixin and its default is
+in `FALLBACK_MODEL_IDS`, and checks the resolved id per field across US, EU,
+Canada, GovCloud and Asia Pacific Regions against the regional table. The
+evaluation comparator's own fallback for a missing `model` goes through
+`regional_field_default` too.
 
 `tests/unit/config/test_classification_defaults_parity.py` asserts all three for
 classification, with its exemptions registered in

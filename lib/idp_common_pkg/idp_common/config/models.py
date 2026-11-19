@@ -53,6 +53,7 @@ from typing_extensions import Self
 from idp_common.regional_models import (
     CLASSIFICATION_MODEL_ID,
     regional_default,
+    regional_shipped_model,
     stack_region,
 )
 
@@ -205,6 +206,61 @@ def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
             raise ValueError(f"must be a whole number, got {v!r}")
         return int(v)
     raise ValueError(f"must be a whole number, got {type(v).__name__}")
+
+
+def regional_field_default(model_id: str) -> str:
+    """A configuration field's declared model, callable from the stack's Region.
+
+    A field's declared default is the US inference profile the system defaults
+    ship. The deploy-time swap in ``src/lambda/update_configuration`` rewrites a
+    stored value for the stack's Region, but nothing rewrites a value the model
+    supplies for a key the input does not carry, so without this an EU stack sent a
+    ``us.`` profile, which Bedrock rejects there. Returns what the swap would have
+    written; a Region outside the families in
+    :data:`idp_common.regional_models.REGIONAL_DEFAULT_MODELS` (GovCloud, Asia
+    Pacific, and every other Region the swap leaves alone) gets ``model_id``
+    unchanged.
+    """
+    return regional_shipped_model(model_id, stack_region())
+
+
+def _regional_model_field_names(cls: type[BaseModel]) -> tuple[str, ...]:
+    """The fields of ``cls`` whose declared default is a US inference profile."""
+    return tuple(
+        name
+        for name, field in cls.model_fields.items()
+        if isinstance(field.default, str) and field.default.startswith("us.")
+    )
+
+
+class RegionalModelDefaults(BaseModel):
+    """Resolve an ABSENT model key to the stack's Region's profile.
+
+    Mixed into every configuration model with a model field whose declared default
+    is a ``us.`` profile. A key the input carries is left exactly as given, an
+    explicit ``us.`` id included: only a value the model would otherwise supply from
+    its declaration is translated, through :func:`regional_field_default`. That is
+    the same answer a *cleared* classification model already resolved to
+    (:func:`default_classification_model`), so absent and cleared now agree.
+
+    The declared default stays the US id, so reading ``model_fields[...].default``
+    still gives the value the system defaults ship and the parity tests compare.
+    ``tests/unit/config/test_regional_field_defaults.py`` asserts every such field
+    declared in this module is on a class that inherits this.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _regional_model_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        absent = [name for name in _regional_model_field_names(cls) if name not in data]
+        if not absent:
+            return data
+        resolved = dict(data)
+        for name in absent:
+            resolved[name] = regional_field_default(cls.model_fields[name].default)
+        return resolved
 
 
 class ImageConfig(BaseModel):
@@ -1565,7 +1621,7 @@ class HITLConfig(BaseModel):
         return _parse_required_float(v, info, cls)
 
 
-class ExtractionConfig(BaseModel):
+class ExtractionConfig(RegionalModelDefaults):
     """Document extraction configuration"""
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
@@ -2267,9 +2323,10 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
 #: ``test_classification_defaults_parity.py`` pins the two together.
 #:
 #: This is the US id. A cleared model resolves to
-#: :func:`default_classification_model`, its equivalent for the stack's Region:
-#: the deploy-time swap rewrites a stored profile, but not a value substituted
-#: while one is read, so an EU stack would otherwise send a ``us.`` profile.
+#: :func:`default_classification_model`, its equivalent for the stack's Region, and
+#: an absent one to the same id through :class:`RegionalModelDefaults`: the
+#: deploy-time swap rewrites a stored profile, but not a value substituted while one
+#: is read, so an EU stack would otherwise send a ``us.`` profile.
 DEFAULT_CLASSIFICATION_MODEL = CLASSIFICATION_MODEL_ID
 
 
@@ -2355,7 +2412,7 @@ DECISION_MODEL_INPUTS = ("images", "text", "both")
 DECISION_MODEL_MAX_SECTION_PAGES = 4
 
 
-class ClassificationModelSettings(BaseModel):
+class ClassificationModelSettings(RegionalModelDefaults):
     """The settings of one LLM call. Reused by every classification call.
 
     One block, so a call's model, its parameters, what it is sent and how its page
@@ -3203,7 +3260,7 @@ def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
     )
 
 
-class SummarizationConfig(BaseModel):
+class SummarizationConfig(RegionalModelDefaults):
     """Document summarization configuration"""
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
@@ -3286,7 +3343,7 @@ class SummarizationConfig(BaseModel):
         return int(v)
 
 
-class ChatConfig(BaseModel):
+class ChatConfig(RegionalModelDefaults):
     """Chat-with-Document configuration.
 
     Controls the interactive "Chat with Document" feature available on the
@@ -3527,7 +3584,7 @@ class ErrorAnalyzerParameters(BaseModel):
         return _parse_required_int(v, info, cls)
 
 
-class ErrorAnalyzerConfig(BaseModel):
+class ErrorAnalyzerConfig(RegionalModelDefaults):
     """Error analyzer agent configuration"""
 
     model_id: str = Field(
@@ -3775,7 +3832,7 @@ COMMON MISTAKES TO AVOID:
     )
 
 
-class ChatCompanionConfig(BaseModel):
+class ChatCompanionConfig(RegionalModelDefaults):
     """Chat companion agent configuration"""
 
     model_id: str = Field(
@@ -4325,7 +4382,7 @@ class ModelConfigLimitsConfig(BaseModel):
         return self.model_dump(mode="python")
 
 
-class FactExtractionConfig(BaseModel):
+class FactExtractionConfig(RegionalModelDefaults):
     """Fact extraction configuration for rule validation"""
 
     # No config preset under config_library/ sets this field, so this default is
@@ -4366,7 +4423,7 @@ class FactExtractionConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
-class RuleValidationOrchestratorConfig(BaseModel):
+class RuleValidationOrchestratorConfig(RegionalModelDefaults):
     """Rule validation summarization configuration"""
 
     # See FactExtractionConfig.model above for why this default tracks the
@@ -4401,7 +4458,7 @@ class RuleValidationOrchestratorConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
-class Z3RuleTranslatorConfig(BaseModel):
+class Z3RuleTranslatorConfig(RegionalModelDefaults):
     """Z3 engine: translates natural language rules to SMT-LIB RuleJSON"""
 
     model: str = Field(
@@ -4423,7 +4480,7 @@ class Z3RuleTranslatorConfig(BaseModel):
     )
 
 
-class Z3ValueExtractionConfig(BaseModel):
+class Z3ValueExtractionConfig(RegionalModelDefaults):
     """Z3 engine: extracts parameter values from data"""
 
     model: str = Field(
@@ -4506,7 +4563,7 @@ class RuleValidationConfig(BaseModel):
         return _parse_required_int(v, info, cls)
 
 
-class EvaluationLLMMethodConfig(BaseModel):
+class EvaluationLLMMethodConfig(RegionalModelDefaults):
     """Evaluation LLM method configuration"""
 
     top_p: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -4590,7 +4647,7 @@ class EvaluationConfig(BaseModel):
     )
 
 
-class DiscoveryModelConfig(BaseModel):
+class DiscoveryModelConfig(RegionalModelDefaults):
     """Discovery model configuration for class extraction"""
 
     model_id: str = Field(
@@ -4637,7 +4694,7 @@ class AutoSplitModelConfig(DiscoveryModelConfig):
     )
 
 
-class MultiDocumentDiscoveryConfig(BaseModel):
+class MultiDocumentDiscoveryConfig(RegionalModelDefaults):
     """Multi-document discovery configuration for batch clustering.
 
     Settings for discovering document classes from a collection of documents
