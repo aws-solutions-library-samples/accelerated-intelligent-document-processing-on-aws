@@ -254,7 +254,10 @@ long time, which is why the coordinator's measurement uses commits as well as fi
 Other sessions may be working the same repository. Before dispatching a fixer on an
 issue, check its comments for a `Being worked by session <name>` claim and skip any
 issue another session has claimed; when you dispatch, post that comment yourself with
-this session's name. `ListAgents` shows the peer sessions on this machine; message one
+this session's name. **Also check for an open pull request that already addresses
+the issue** (`gh pr list --search "<issue number>" --state open`), including ones a
+human opened against `develop`: one run duplicated an issue author's own same-day PR
+and had to revert its merge from staging. `ListAgents` shows the peer sessions on this machine; message one
 with `SendMessage` to agree the split at the start of a run.
 
 ### `ScheduleWakeup` is the better child, and it is safe with agents in flight
