@@ -4,8 +4,8 @@
 /**
  * The Status and Review Status labels under `fr-CA`: with an `intl` for that locale they come
  * from its catalog (an id the fixture lacks falls back to the English), a stored value the UI
- * does not know is shown as it is in every language, and without `intl`, as the table cells
- * call them, both renderers show the English, which for the Status column is the stored value.
+ * does not know is shown as it is in every language, and without `intl` both renderers show
+ * the English, which for the Status column is the stored value.
  */
 
 import { render, screen } from '@testing-library/react';
@@ -51,7 +51,7 @@ describe('the document status labels under fr-CA', () => {
     expect(statusLabel('SOMETHING_NEW')).toBe('SOMETHING_NEW');
   });
 
-  it('are the stored value without intl, as the table cells call them', () => {
+  it('are the stored value without intl', () => {
     expect(statusLabel('HITL_IN_PROGRESS')).toBe('HITL_IN_PROGRESS');
     expect(statusLabel('')).toBe('Unknown');
   });
@@ -79,7 +79,7 @@ describe('the review status labels under fr-CA', () => {
     expect(screen.getByText('En révision')).toBeInTheDocument();
   });
 
-  it('are the English without intl, as the table cells call them', () => {
+  it('are the English without intl', () => {
     render(renderHitlStatus(inReview));
     expect(screen.getByText('In Review')).toBeInTheDocument();
   });

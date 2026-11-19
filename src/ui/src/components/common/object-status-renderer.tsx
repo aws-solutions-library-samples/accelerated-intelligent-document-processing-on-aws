@@ -223,7 +223,7 @@ const fallbackMessages = defineMessages<{ unknown: NoMessageValues }>({
 
 const isStatusValue = (value: string): value is StatusValue => Object.hasOwn(statusMessages, value);
 
-/** The label in the UI's language; without `intl` (table cells, tests) the English source text. */
+/** The label in the UI's language; without `intl`, the English source text. */
 const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
   intl ? intl.formatMessage(message) : String(message.defaultMessage);
 

@@ -507,7 +507,7 @@ export const listTitleMessages = defineMessages<{ title: NoMessageValues; titleT
   },
 });
 
-/** The text in the UI's language; without `intl` (table cells, tests) the English source text. */
+/** The text in the UI's language; without `intl`, the English source text. */
 const labelOf = (message: TypedMessageDescriptor<NoMessageValues>, intl?: IntlShape): string =>
   intl ? intl.formatMessage(message) : String(message.defaultMessage);
 
@@ -604,7 +604,7 @@ const testRunColumn = (intl?: IntlShape): TableProps.ColumnDefinition<MappedDocu
  * A stored timestamp as a date and time in the UI locale and the browser's time zone; a
  * column's `cell` cannot call a hook, so this is a component. An empty value (no timestamp)
  * is an invalid date too, so it stays empty, and any other value `Date` cannot parse is shown
- * as stored. Display only: the column sorts on the stored value.
+ * as stored. Display only: the column sorts, and the list's search matches, on the stored value.
  */
 const DateTimeCell = ({ value }: { value: string }): React.JSX.Element => {
   const { formatDateTime } = useFormatters();

@@ -69,12 +69,17 @@ def _backend_values() -> set[str]:
     )
     values: set[str] = set()
     for node in enum.body:
-        if (
-            isinstance(node, ast.Assign)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        ):
-            values.add(node.value.value)
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        member = ast.unparse(node.targets[0])
+        assert isinstance(value, ast.Constant) and isinstance(value.value, str), (
+            f"{BACKEND_MODULE.relative_to(REPO_ROOT)}:{node.lineno}: the value of "
+            f"`{BACKEND_ENUM}.{member}` is not a string literal. Teach this reader to "
+            "read that form rather than skip the member: a skipped member is a status "
+            "this gate never checks against the UI."
+        )
+        values.add(value.value)
     return values
 
 
