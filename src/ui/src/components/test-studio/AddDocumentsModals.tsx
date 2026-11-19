@@ -112,8 +112,10 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
 
   // Fresh form each time a dialog opens, seeded from the target set.
   useEffect(() => {
-    if (!mode) return;
+    // Closing invalidates a check still running, as opening does, so its reply
+    // cannot open the Matching Files list over the page once the dialog is gone.
     checkGuard.current.claim();
+    if (!mode) return;
     setFilePattern(mode === 'pattern' ? (testSet?.filePattern ?? '') : '');
     setSelectedBucket(BUCKET_OPTIONS[0]);
     setSelectedTimeFilter(TIME_FILTER_OPTIONS[0]);

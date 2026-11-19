@@ -64,21 +64,31 @@ const INVOICES = row('invoices', 'Invoices', '2026-10-01T00:00:00+00:00');
 const RECEIPTS = row('receipts', 'Receipts', '2026-10-02T00:00:00+00:00');
 const BUSY = "Test set 'receipts' is busy (COPYING); try again when it has finished";
 
-/** Serve the list from a queue, repeating the last listing, and reject the delete. */
-const serve = (listings: unknown[][], reason: string): void => {
+/**
+ * Serve the list from a queue, repeating the last listing (`null` makes that load
+ * fail), and answer each delete from `deletes` in turn: a string rejects with it.
+ */
+const serve = (listings: (unknown[] | null)[], ...deletes: (string | true)[]): void => {
   let call = 0;
+  let deleteCall = 0;
   graphql.mockImplementation((args: { query: string }) => {
     if (args.query === 'getTestSets') {
       const listing = listings[Math.min(call, listings.length - 1)];
       call += 1;
+      if (listing === null) return Promise.reject({ errors: [{ message: 'list unavailable', errorType: 'HttpError' }] });
       return Promise.resolve({ data: { getTestSets: listing } });
     }
-    if (args.query === 'deleteTestSets') return Promise.reject({ errors: [{ message: reason, errorType: 'BadRequest' }] });
+    if (args.query === 'deleteTestSets') {
+      const outcome = deletes[Math.min(deleteCall, deletes.length - 1)];
+      deleteCall += 1;
+      if (outcome === true) return Promise.resolve({ data: { deleteTestSets: true } });
+      return Promise.reject({ errors: [{ message: outcome, errorType: 'BadRequest' }] });
+    }
     return Promise.resolve({ data: {} });
   });
 };
 
-const deleteBoth = async (): Promise<void> => {
+const renderPage = async (): Promise<void> => {
   render(
     <IntlProvider locale="en" defaultLocale="en">
       <MemoryRouter>
@@ -87,13 +97,22 @@ const deleteBoth = async (): Promise<void> => {
     </IntlProvider>,
   );
   await screen.findByText('Invoices');
+};
+
+/** Select every listed set (or the row at `rowNumber`, 1-based) and confirm Delete. */
+const deleteSelected = (rowNumber?: number): void => {
   const table = createWrapper(document.body).findTable()!;
-  act(() => table.findSelectAllTrigger()!.click());
+  act(() => (rowNumber ? table.findRowSelectionArea(rowNumber)! : table.findSelectAllTrigger()!).click());
   const actions = createWrapper(document.body).findButtonDropdown()!;
   act(() => actions.openDropdown());
   act(() => actions.findItemById('delete')!.click());
   const confirm = screen.getAllByRole('button', { name: 'Delete' }).at(-1)!;
   act(() => confirm.click());
+};
+
+const deleteBoth = async (): Promise<void> => {
+  await renderPage();
+  deleteSelected();
 };
 
 const listedNames = (): string[] =>
@@ -131,5 +150,34 @@ describe('a delete the server partly refused', () => {
     await waitFor(() => expect(screen.getAllByText(`Failed to delete test sets: ${BUSY}`).length).toBeGreaterThan(0));
     expect(screen.queryByText(/Deleted \d+ of/)).toBeNull();
     expect(listedNames()).toHaveLength(2);
+  });
+
+  it('says the outcome is unknown when the list cannot be reloaded', async () => {
+    serve([[INVOICES, RECEIPTS], null], BUSY);
+
+    await deleteBoth();
+
+    await waitFor(() =>
+      expect(
+        screen.getAllByText(`Some test sets may not have been deleted, and the list could not be reloaded to show which: ${BUSY}`).length,
+      ).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText(/Failed to delete test sets/)).toBeNull();
+  });
+
+  it('clears an earlier success message', async () => {
+    const OTHER = row('other', 'Other', '2026-09-01T00:00:00+00:00');
+    // A successful delete updates the list locally, so the next load is the partial one's reload.
+    serve([[INVOICES, RECEIPTS, OTHER], [RECEIPTS]], true, BUSY);
+    await renderPage();
+    // The oldest set sorts last; delete it alone first, which succeeds.
+    const rows = listedNames();
+    deleteSelected(rows.findIndex((t) => t.includes('Other')) + 1);
+    await waitFor(() => expect(screen.getByText('Successfully deleted 1 test set')).toBeTruthy());
+
+    deleteSelected();
+
+    await waitFor(() => expect(screen.getAllByText(`Deleted 1 of 2 test sets. ${BUSY}`).length).toBeGreaterThan(0));
+    expect(screen.queryByText('Successfully deleted 1 test set')).toBeNull();
   });
 });

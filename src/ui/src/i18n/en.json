@@ -2075,6 +2075,10 @@
     "defaultMessage": "Failed to delete test sets: {reason}",
     "description": "Error shown on the Test Sets page when none of the selected test sets was deleted. {reason} is the server’s message."
   },
+  "testStudio.testSets.delete.outcomeUnknown": {
+    "defaultMessage": "Some test sets may not have been deleted, and the list could not be reloaded to show which: {reason}",
+    "description": "Error shown on the Test Sets page when a delete of test sets was partly refused or failed and the list then failed to reload. {reason} is the server’s message from the delete."
+  },
   "testStudio.testSets.delete.partlyDeleted": {
     "defaultMessage": "Deleted {deleted} of {total, plural, one {# test set} other {# test sets}}. {reason}",
     "description": "Error shown on the Test Sets page when a delete of several test sets removed some and not others. {reason} is the server’s message naming each test set that was refused (busy) or failed, and why."

@@ -33,6 +33,13 @@ const English = ({ children }: { children: React.ReactNode }): React.JSX.Element
 
 const target = { id: 'invoices', name: 'Invoices', filePattern: 'inv-*.pdf' };
 
+/** Headers of the Cloudscape modals currently shown; a closed one stays in the DOM. */
+const visibleModalHeaders = (): string[] =>
+  createWrapper(document.body)
+    .findAllModals()
+    .filter((m) => m.isVisible())
+    .map((m) => m.findHeader().getElement().textContent ?? '');
+
 describe('AddDocumentsModals, pattern dialog', () => {
   beforeEach(() => {
     graphql.mockReset();
@@ -234,6 +241,21 @@ describe('AddDocumentsModals, a Check Files reply that lands after an edit', () 
     await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
 
     expect(screen.queryByText('2 files to add')).toBeNull();
+  });
+
+  it('is discarded after the dialog was closed, so it opens no Matching Files list', async () => {
+    const listing = deferredPatternListing();
+    const { rerender } = render(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />, {
+      wrapper: English,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
+    rerender(<AddDocumentsModals testSet={target} mode={null} onDismiss={vi.fn()} onSubmitted={vi.fn()} />);
+
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+    expect(visibleModalHeaders()).not.toContainEqual(expect.stringMatching(/Matching Files/));
+
+    rerender(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />);
+    expect(visibleModalHeaders()).not.toContainEqual(expect.stringMatching(/Matching Files/));
   });
 
   it('still lands when nothing was edited', async () => {

@@ -10028,6 +10028,36 @@ class TestDeletingATestSet:
         assert "'my-set' is busy (COPYING)" in str(raised.value)
         assert _row(table)["status"] == "COMPLETED"
 
+    def test_a_refusal_without_the_item_on_the_error_is_still_a_refusal(
+        self, create_env
+    ):
+        # Should a failed condition ever come back without the item (a client or
+        # SDK that does not parse it), the set must still be refused, not read as
+        # "no row" with its files then deleted.
+        table, _sqs, _queue_url, s3 = create_env
+        original = _busy(_existing_set(table), "COPYING")
+        table.put_item(Item=original)
+        keys = _put_set_files(s3)
+        real_update = test_set_index.db_client.update_item
+
+        def update_without_item(*args, **kwargs):
+            try:
+                return real_update(*args, **kwargs)
+            except DynamoDBError as e:
+                e.item = None
+                raise
+
+        with (
+            patch.object(
+                test_set_index.db_client, "update_item", side_effect=update_without_item
+            ),
+            pytest.raises(ValueError, match="'my-set' is busy \\(COPYING\\)"),
+        ):
+            self._delete("my-set")
+
+        assert _row(table) == original
+        assert _set_files(s3) == sorted(keys)
+
     def test_a_claim_failure_other_than_the_condition_is_not_a_refusal(
         self, create_env
     ):

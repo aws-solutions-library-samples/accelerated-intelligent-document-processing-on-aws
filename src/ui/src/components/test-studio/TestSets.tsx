@@ -43,12 +43,19 @@ const client = generateClient();
 const deleteMessages = defineMessages<{
   partlyDeleted: { readonly deleted: number; readonly total: number; readonly reason: string };
   notDeleted: { readonly reason: string };
+  outcomeUnknown: { readonly reason: string };
 }>({
   partlyDeleted: {
     id: 'testStudio.testSets.delete.partlyDeleted',
     defaultMessage: 'Deleted {deleted} of {total, plural, one {# test set} other {# test sets}}. {reason}',
     description:
       'Error shown on the Test Sets page when a delete of several test sets removed some and not others. {reason} is the server’s message naming each test set that was refused (busy) or failed, and why.',
+  },
+  outcomeUnknown: {
+    id: 'testStudio.testSets.delete.outcomeUnknown',
+    defaultMessage: 'Some test sets may not have been deleted, and the list could not be reloaded to show which: {reason}',
+    description:
+      'Error shown on the Test Sets page when a delete of test sets was partly refused or failed and the list then failed to reload. {reason} is the server’s message from the delete.',
   },
   notDeleted: {
     id: 'testStudio.testSets.delete.notDeleted',
@@ -551,9 +558,11 @@ const TestSets = (): React.JSX.Element => {
       const deleted = listed ? testSetIds.filter((id) => !listed.has(id)).length : 0;
       setSuccessMessage('');
       setError(
-        deleted > 0
-          ? intl.formatMessage(deleteMessages.partlyDeleted, { deleted, total: deleteCount, reason })
-          : intl.formatMessage(deleteMessages.notDeleted, { reason }),
+        !listed
+          ? intl.formatMessage(deleteMessages.outcomeUnknown, { reason })
+          : deleted > 0
+            ? intl.formatMessage(deleteMessages.partlyDeleted, { deleted, total: deleteCount, reason })
+            : intl.formatMessage(deleteMessages.notDeleted, { reason }),
       );
     } finally {
       setLoading(false);

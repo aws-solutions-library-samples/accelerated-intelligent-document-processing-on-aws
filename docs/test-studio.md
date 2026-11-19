@@ -684,7 +684,9 @@ back as a new set.
 
 When only some of the selected sets go, the Test Sets list reloads at once, so the
 deleted ones disappear, and the error reads **Deleted N of M test sets** followed
-by the reason for each set that was refused or could not be finished.
+by the reason for each set that was refused or could not be finished. If the
+list cannot be reloaded either, the error says that some sets may not have been
+deleted; refresh the page to see which.
 
 ### Browsing Test Set Documents and Ground Truth
 

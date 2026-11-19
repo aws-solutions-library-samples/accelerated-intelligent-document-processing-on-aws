@@ -5514,8 +5514,11 @@ def _claim_test_set_for_deletion(test_set_id):
     except DynamoDBError as e:
         if e.error_code != "ConditionalCheckFailedException":
             raise
-        row = e.item
-    # No row comes back when the condition failed on attribute_exists(PK).
+        # The refused item normally comes back on the error. Re-read only if it
+        # did not, so a missing item can never turn a busy set into "no row" and
+        # let its files be deleted.
+        row = e.item or db_client.get_item(key)
+    # No row exists when the condition failed on attribute_exists(PK).
     if not row:
         return False
     raise ValueError(
