@@ -889,6 +889,23 @@ class TestAbsentModelKeysResolveForTheStacksRegion:
         assert self._round_trip(client, tmp_path) == self._expected()
 
     @mock_aws
+    def test_with_no_region_given_the_bridge_names_the_lookups_region(
+        self, aws_credentials, config_env, monkeypatch
+    ):
+        """The bridged Region is the resolved one, whichever Region that is.
+
+        A stack outside the EU, so that an answer fixed to the Region the other
+        tests use cannot pass.
+        """
+        monkeypatch.setenv("AWS_REGION", EU_STACK_REGION)
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+        _create_stack("us-west-2")
+
+        IDPClient(stack_name=STACK).config._configure_config_env(STACK)
+
+        assert os.environ["AWS_REGION"] == "us-west-2"
+
+    @mock_aws
     def test_with_no_region_given_and_the_region_from_the_profile(
         self, aws_credentials, config_env, monkeypatch, tmp_path
     ):
