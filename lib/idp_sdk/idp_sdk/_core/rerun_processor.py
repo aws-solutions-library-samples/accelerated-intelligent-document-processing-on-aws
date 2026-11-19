@@ -99,14 +99,18 @@ class RerunProcessor:
         """
         self.stack_name = stack_name
 
-        # Auto-detect region if not provided
-        if not region:
-            session = boto3.session.Session()
-            region = session.region_name
-            if not region:
-                raise ValueError(
-                    "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
-                )
+        # The Region a client built with no Region reaches (honouring
+        # `boto3.setup_default_session`), else `AWS_REGION`; passed explicitly to
+        # every client below, since boto3 itself does not read `AWS_REGION`.
+        from idp_sdk._core.region import resolve_region
+
+        resolved = resolve_region(region)
+        if not resolved:
+            raise ValueError(
+                "Region could not be determined. Please specify --region, or set "
+                "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
+            )
+        region = resolved
 
         self.region = region
         self.lambda_client = boto3.client("lambda", region_name=region)

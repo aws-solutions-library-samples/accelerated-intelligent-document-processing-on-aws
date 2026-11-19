@@ -14,7 +14,7 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from idp_common.dynamodb.client import DynamoDBClient as RealDynamoDBClient
-from idp_common.dynamodb.client import DynamoDBError
+from idp_common.dynamodb.client import DynamoDBError, _condition_failure_item
 from idp_common.forced_sections import decode_forced_sections
 from idp_common.review_queues.testset_docs import (
     SUMMARY_BUILDING,
@@ -28,6 +28,7 @@ from idp_common.review_queues.testset_docs import (
     TestSetDocStore as DocStore,  # aliased: pytest would try to collect "Test*"
 )
 from idp_common.review_queues.testset_labels import LabelEditor
+from tests.unit.notifications._cfn_yaml import load_cfn_yaml
 from tests.unit.review_queues._table import create_review_table
 
 #: The resolver's per-set check: the shared `assert_can_access_test_set`, given its
@@ -246,12 +247,17 @@ def _db_client_on(table):
         expression_attribute_values=None,
         return_values="ALL_NEW",
         condition_expression=None,
+        return_values_on_condition_check_failure=None,
     ):
         kwargs = {
             "Key": key,
             "UpdateExpression": update_expression,
             "ReturnValues": return_values,
         }
+        if return_values_on_condition_check_failure:
+            kwargs["ReturnValuesOnConditionCheckFailure"] = (
+                return_values_on_condition_check_failure
+            )
         if expression_attribute_names:
             kwargs["ExpressionAttributeNames"] = expression_attribute_names
         if expression_attribute_values:
@@ -271,10 +277,34 @@ def _db_client_on(table):
             raise DynamoDBError(
                 f"Update item failed: {exc.response['Error']['Message']}",
                 exc.response["Error"]["Code"],
+                item=_condition_failure_item(exc),
             ) from exc
 
-    def _delete_item(key):
-        return table.delete_item(Key=key)
+    def _delete_item(
+        key,
+        *,
+        condition_expression=None,
+        expression_attribute_names=None,
+        expression_attribute_values=None,
+        return_values=None,
+    ):
+        kwargs = {"Key": key}
+        # Evaluated by moto, as in `_update_item`, never dropped.
+        if condition_expression:
+            kwargs["ConditionExpression"] = condition_expression
+        if expression_attribute_names:
+            kwargs["ExpressionAttributeNames"] = expression_attribute_names
+        if expression_attribute_values:
+            kwargs["ExpressionAttributeValues"] = expression_attribute_values
+        if return_values:
+            kwargs["ReturnValues"] = return_values
+        try:
+            return table.delete_item(**kwargs)
+        except ClientError as exc:
+            raise DynamoDBError(
+                f"Delete item failed: {exc.response['Error']['Message']}",
+                exc.response["Error"]["Code"],
+            ) from exc
 
     def _query(
         key_condition_expression,
@@ -627,16 +657,6 @@ class TestTestSetResolver:
             assert "createdAt" in result
 
     @patch.dict(os.environ, {"TEST_SET_BUCKET": "test-set-bucket"})
-    def test_delete_test_sets_calls_client(self):
-        """Test delete_test_sets uses DynamoDB client"""
-        with patch.object(test_set_index.db_client, "delete_item") as mock_delete:
-            args = {"testSetIds": ["id1", "id2"]}
-            result = test_set_index.delete_test_sets(args)
-
-            assert mock_delete.call_count == 2
-            assert result is True
-
-    @patch.dict(os.environ, {"TEST_SET_BUCKET": "test-set-bucket"})
     def test_delete_test_sets_paginates_beyond_1000_objects(self):
         """Every object is deleted, not just the first list page.
 
@@ -670,7 +690,10 @@ class TestTestSetResolver:
             deleted.extend(o["Key"] for o in batch)
             return {}
 
-        with patch.object(test_set_index.db_client, "delete_item"):
+        with (
+            patch.object(test_set_index.db_client, "update_item"),
+            patch.object(test_set_index.db_client, "delete_item"),
+        ):
             with patch.object(
                 test_set_index.s3_client, "list_objects_v2", side_effect=fake_list
             ):
@@ -690,7 +713,11 @@ class TestTestSetResolver:
 
     @patch.dict(os.environ, {"TEST_SET_BUCKET": "test-set-bucket"})
     def test_delete_test_sets_stops_on_truncated_page_without_token(self):
-        """A truncated response with no continuation token must not loop forever."""
+        """A truncated response with no continuation token must not loop forever.
+
+        It stops, and reports the set as not deleted: the objects past that page
+        were never listed, so the row must stay.
+        """
         responses = [
             {
                 "Contents": [{"Key": "s/input/a.pdf"}],
@@ -699,14 +726,22 @@ class TestTestSetResolver:
             }
         ]
 
-        with patch.object(test_set_index.db_client, "delete_item"):
+        with (
+            patch.object(test_set_index.db_client, "update_item"),
+            patch.object(test_set_index.db_client, "delete_item") as row_delete,
+        ):
             with patch.object(
                 test_set_index.s3_client, "list_objects_v2", side_effect=responses * 5
             ):
-                with patch.object(test_set_index.s3_client, "delete_objects"):
-                    result = test_set_index.delete_test_sets({"testSetIds": ["s"]})
+                with patch.object(
+                    test_set_index.s3_client, "delete_objects", return_value={}
+                ):
+                    with pytest.raises(
+                        test_set_index.ReportedServerError, match="truncated"
+                    ):
+                        test_set_index.delete_test_sets({"testSetIds": ["s"]})
 
-        assert result is True
+        row_delete.assert_not_called()
 
     @patch.dict(os.environ, _GET_TEST_SETS_ENV)
     def test_get_test_sets_uses_gsi_and_batch(self):
@@ -9364,13 +9399,14 @@ class TestStatusUpdatedAtIsWritten:
             ),
             encoding="utf-8",
         ).read()
-        # Both UPDATING writes in this resolver must stamp it, or the UPDATING window
-        # in STALE_STATUS_HOURS is unreachable.
-        updating_writes = source.count('":status": "UPDATING"')
-        stamped = source.count("statusUpdatedAt = :now")
-        assert updating_writes == stamped == 2, (
-            f"{updating_writes} UPDATING writes but {stamped} stamped"
-        )
+        # Both append paths write UPDATING through one helper, which must stamp it,
+        # or the UPDATING window in STALE_STATUS_HOURS is unreachable.
+        helper = source.split("def _mark_test_set_updating(", 1)[1].split("\ndef ", 1)[
+            0
+        ]
+        assert '":status": "UPDATING"' in helper
+        assert "statusUpdatedAt = :now" in helper
+        assert source.count("    _mark_test_set_updating(table, test_set_id)\n") == 2
 
     def test_the_copier_stamps_the_status_time(self):
         source = open(
@@ -9613,6 +9649,1062 @@ class TestMembershipEditing:
         assert "Item" not in publish_table.get_item(
             Key={"PK": "testset#ts1", "SK": "version#000001"}
         )
+
+
+def _tracking_table_definition():
+    """The parent template's TrackingTable keys and indexes, as create_table takes them."""
+    template = load_cfn_yaml(
+        pathlib.Path(__file__).resolve().parents[4] / "template.yaml"
+    )
+    props = template["Resources"]["TrackingTable"]["Properties"]
+    definition = {
+        key: props[key]
+        for key in ("AttributeDefinitions", "KeySchema", "GlobalSecondaryIndexes")
+    }
+    # Non-empty, or a renamed resource would build a table with no key at all.
+    assert {k["AttributeName"] for k in definition["KeySchema"]} == {"PK", "SK"}
+    return definition
+
+
+@pytest.fixture
+def create_env():
+    """The resolver's real DynamoDBClient over a moto table shaped like TrackingTable.
+
+    Real client rather than the module's mock or ``_db_client_on``: the refusal
+    depends on the error code the real client raises for a failed condition, so
+    a double translating that error would be testing itself.
+    """
+    region_env = {
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_REGION": "us-east-1",
+        "TRACKING_TABLE": "tracking-for-create",
+        "TEST_SET_BUCKET": "test-set-bucket",
+        "TEST_SET_COPY_QUEUE_URL": (
+            "https://sqs.us-east-1.amazonaws.com/123456789012/create-copy-queue"
+        ),
+    }
+    with mock_aws(), patch.dict(os.environ, region_env):
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.create_table(
+            TableName="tracking-for-create",
+            BillingMode="PAY_PER_REQUEST",
+            **_tracking_table_definition(),
+        )
+        sqs = boto3.client("sqs", region_name="us-east-1")
+        queue_url = sqs.create_queue(QueueName="create-copy-queue")["QueueUrl"]
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-set-bucket")
+        client = RealDynamoDBClient(
+            table_name="tracking-for-create", region="us-east-1"
+        )
+        with (
+            patch.object(test_set_index, "db_client", client),
+            patch.object(test_set_index, "s3_client", s3),
+        ):
+            yield table, sqs, queue_url, s3
+
+
+def _existing_set(table, test_set_id="my-set"):
+    row = {
+        "PK": f"testset#{test_set_id}",
+        "SK": "metadata",
+        "ItemType": "testset",
+        "InitialEventTime": "2026-01-01T00:00:00Z",
+        "id": test_set_id,
+        "name": "My Set",
+        "description": "the original",
+        "filePattern": "orig/*",
+        "fileCount": 7,
+        "source": "uploaded",
+        "status": "COMPLETED",
+        "labelState": "labeled",
+        "createdAt": "2026-01-01T00:00:00Z",
+    }
+    table.put_item(Item=row)
+    return row
+
+
+def _row(table, test_set_id="my-set"):
+    return table.get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"}).get(
+        "Item"
+    )
+
+
+def _queued_messages(sqs, queue_url):
+    return sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get(
+        "Messages", []
+    )
+
+
+@pytest.mark.unit
+class TestCreatingATestSetNeverReplacesAnExistingOne:
+    """Every create path refuses an id that already has a row.
+
+    The id is the slugged name, so "my-set" and "My Set" are the same set. Only
+    ``createEmptyTestSet`` used to refuse; the bucket-pattern and zip paths wrote
+    unconditionally and replaced the existing set's record.
+    """
+
+    def _add(self, name):
+        return test_set_index.add_test_set(
+            {
+                "name": name,
+                "filePattern": "new/*",
+                "fileCount": 1,
+                "bucketType": "input",
+            }
+        )
+
+    def _upload(self, name):
+        return test_set_index.add_test_set_from_upload(
+            {"input": {"fileName": "Archive.zip", "fileSize": 1, "name": name}}
+        )
+
+    @pytest.mark.parametrize("name", ["my-set", "My Set"])
+    def test_a_bucket_pattern_create_is_refused_and_queues_no_copy(
+        self, create_env, name
+    ):
+        table, sqs, queue_url, _s3 = create_env
+        original = _existing_set(table)
+
+        with pytest.raises(ValueError, match="'my-set' already exists"):
+            self._add(name)
+
+        assert _row(table) == original
+        assert _queued_messages(sqs, queue_url) == []
+
+    @pytest.mark.parametrize("name", ["my-set", "My Set"])
+    def test_a_zip_upload_create_is_refused(self, create_env, name):
+        table, _sqs, _queue_url, _s3 = create_env
+        original = _existing_set(table)
+
+        with pytest.raises(ValueError, match="'my-set' already exists"):
+            self._upload(name)
+
+        assert _row(table) == original
+
+    def test_an_empty_create_is_refused_and_writes_no_marker(self, create_env):
+        table, _sqs, _queue_url, s3 = create_env
+        original = _existing_set(table)
+
+        with pytest.raises(ValueError, match="'my-set' already exists"):
+            test_set_index.create_empty_test_set({"name": "My Set"})
+
+        assert _row(table) == original
+        assert "Contents" not in s3.list_objects_v2(
+            Bucket="test-set-bucket", Prefix="my-set/"
+        )
+
+    def test_each_path_still_creates_a_new_id(self, create_env):
+        # The other half: a condition that refused everything would pass the
+        # three tests above.
+        table, sqs, queue_url, _s3 = create_env
+
+        self._add("from pattern")
+        self._upload("from zip")
+        test_set_index.create_empty_test_set({"name": "from empty"})
+
+        assert _row(table, "from-pattern")["status"] == "QUEUED"
+        assert _row(table, "from-zip")["status"] == "QUEUED"
+        assert _row(table, "from-empty")["status"] == "COMPLETED"
+        assert len(_queued_messages(sqs, queue_url)) == 1
+
+    def test_the_refusal_reaches_the_caller_as_a_bad_argument(self, create_env):
+        # ValueError is what the dispatcher maps to 400; anything else is a 500.
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+        event = {
+            "info": {"fieldName": "addTestSet"},
+            "arguments": {
+                "name": "my-set",
+                "filePattern": "new/*",
+                "fileCount": 1,
+                "bucketType": "input",
+            },
+            "identity": _ADMIN_IDENTITY,
+        }
+
+        with pytest.raises(ValueError, match="already exists"):
+            test_set_index.handler(event, {})
+
+    def test_a_failure_other_than_the_condition_is_not_reported_as_a_duplicate(
+        self, create_env
+    ):
+        table, _sqs, _queue_url, _s3 = create_env
+        table.delete()
+
+        with pytest.raises(DynamoDBError) as raised:
+            self._add("my-set")
+
+        assert raised.value.error_code == "ResourceNotFoundException"
+
+    def test_discovery_keeps_a_row_created_since_the_scan_read_the_table(
+        self, create_env
+    ):
+        # getTestSets registers a folder it found with no row. A create landing
+        # between that read and this write owns the row; discovery must not
+        # replace it with a description-less, discovery-shaped one.
+        table, _sqs, _queue_url, _s3 = create_env
+        original = _existing_set(table)
+
+        registered = test_set_index._create_test_set_tracking_entry(
+            "my-set", "my-set", 3, "COMPLETED", source="uploaded"
+        )
+
+        assert registered is False
+        assert _row(table) == original
+
+    def test_a_scan_that_loses_the_race_does_not_list_its_own_copy(self, create_env):
+        # End to end through getTestSets: the folder has no row when the scan
+        # reads the table, and a create takes the id before discovery writes.
+        table, _sqs, _queue_url, s3 = create_env
+        s3.put_object(Bucket="test-set-bucket", Key="my-set/input/a.pdf", Body=b"x")
+        real_check = test_set_index._is_valid_test_set_structure
+
+        def create_lands_mid_scan(client, bucket, prefix):
+            if prefix == "my-set":
+                _existing_set(table)
+            return real_check(client, bucket, prefix)
+
+        with patch.object(
+            test_set_index, "_is_valid_test_set_structure", create_lands_mid_scan
+        ):
+            listed = test_set_index.get_test_sets()
+
+        assert _row(table)["description"] == "the original"
+        assert [
+            s for s in listed if s["id"] == "my-set" and s["name"] == "my-set"
+        ] == []
+
+    def test_discovery_still_registers_a_folder_with_no_row(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+
+        registered = test_set_index._create_test_set_tracking_entry(
+            "found", "found", 3, "COMPLETED", source="uploaded"
+        )
+
+        assert registered is True
+        assert _row(table, "found")["fileCount"] == 3
+
+
+@pytest.mark.unit
+class TestTheNamePreCheckDoesNotFailOpen:
+    """``validateTestFileName`` is the wizard's check before it creates a set."""
+
+    def _event(self, name):
+        return {
+            "info": {"fieldName": "validateTestFileName"},
+            "arguments": {"fileName": name},
+            "identity": _ADMIN_IDENTITY,
+        }
+
+    def test_a_taken_id_is_reported_under_either_spelling(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+
+        for name in ("my-set", "My Set"):
+            assert test_set_index.handler(self._event(name), {}) == {
+                "exists": True,
+                "testSetId": "my-set",
+            }
+
+    def test_a_free_id_is_reported_free(self, create_env):
+        assert test_set_index.handler(self._event("Other Set"), {}) == {
+            "exists": False,
+            "testSetId": None,
+        }
+
+    def test_a_failed_lookup_is_an_error_not_a_free_name(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+        table.delete()
+
+        with pytest.raises(DynamoDBError) as raised:
+            test_set_index.handler(self._event("My Set"), {})
+
+        assert raised.value.error_code == "ResourceNotFoundException"
+
+
+def _set_files(s3, test_set_id="my-set"):
+    listed = s3.list_objects_v2(Bucket="test-set-bucket", Prefix=f"{test_set_id}/")
+    return sorted(o["Key"] for o in listed.get("Contents", []))
+
+
+def _put_set_files(s3, test_set_id="my-set", count=3):
+    keys = [f"{test_set_id}/input/doc{i}.pdf" for i in range(count)]
+    for key in keys:
+        s3.put_object(Bucket="test-set-bucket", Key=key, Body=b"x")
+    return keys
+
+
+def _busy(row, status):
+    """``row`` as a job that is still running holds it: in ``status``, stamped now."""
+    return {
+        **row,
+        "status": status,
+        "statusUpdatedAt": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def _in_progress_statuses():
+    statuses = sorted(test_set_index.IN_FLUX_TEST_SET_STATUSES)
+    # Non-empty, or the parametrised refusal below collects as a skip.
+    assert statuses
+    return statuses
+
+
+@pytest.mark.unit
+class TestDeletingATestSet:
+    """``deleteTestSets`` refuses a set a job is writing, and keeps the row until
+    every file is gone.
+
+    Both halves protect the same thing: a folder left with no row is what
+    ``getTestSets`` registers as a user upload, after which a dataset deployer
+    finds its id taken and stops refreshing it.
+    """
+
+    def _delete(self, *ids):
+        return test_set_index.delete_test_sets({"testSetIds": list(ids)})
+
+    @pytest.mark.parametrize("status", _in_progress_statuses())
+    def test_a_set_in_progress_is_refused_and_left_whole(self, create_env, status):
+        table, _sqs, _queue_url, s3 = create_env
+        original = _busy(_existing_set(table), status)
+        table.put_item(Item=original)
+        keys = _put_set_files(s3)
+
+        with pytest.raises(ValueError, match=f"'my-set' is busy \\({status}\\)"):
+            self._delete("my-set")
+
+        assert _row(table) == original
+        assert _set_files(s3) == sorted(keys)
+
+    def test_the_refusal_is_the_write_condition_not_a_read(self, create_env):
+        # The read that names the status in the message can be stale; the decision
+        # must come from the conditional write, or a copier starting between a read
+        # and the delete would have its files deleted underneath it.
+        table, _sqs, _queue_url, s3 = create_env
+        original = _busy(_existing_set(table), "COPYING")
+        table.put_item(Item=original)
+        keys = _put_set_files(s3)
+        stale = {**original, "status": "COMPLETED"}
+
+        with (
+            patch.object(test_set_index.db_client, "get_item", return_value=stale),
+            pytest.raises(ValueError),
+        ):
+            self._delete("my-set")
+
+        assert _row(table) == original
+        assert _set_files(s3) == sorted(keys)
+
+    def test_the_refusal_names_the_status_the_condition_saw(self, create_env):
+        # The job finishes between the refused claim and the message: the row is
+        # COMPLETED by then, and a re-read would report "busy (COMPLETED)", a
+        # contradiction. The message must name the status that was refused.
+        table, _sqs, _queue_url, s3 = create_env
+        original = _busy(_existing_set(table), "COPYING")
+        table.put_item(Item=original)
+        _put_set_files(s3)
+        real_update = test_set_index.db_client.table.update_item
+
+        def update_then_finish(**kwargs):
+            try:
+                return real_update(**kwargs)
+            except ClientError:
+                table.put_item(Item={**original, "status": "COMPLETED"})
+                raise
+
+        with (
+            patch.object(
+                test_set_index.db_client.table,
+                "update_item",
+                side_effect=update_then_finish,
+            ),
+            pytest.raises(ValueError) as raised,
+        ):
+            self._delete("my-set")
+
+        assert "'my-set' is busy (COPYING)" in str(raised.value)
+        assert _row(table)["status"] == "COMPLETED"
+
+    def test_a_refusal_without_the_item_on_the_error_is_still_a_refusal(
+        self, create_env
+    ):
+        # Should a failed condition ever come back without the item (a client or
+        # SDK that does not parse it), the set must still be refused, not read as
+        # "no row" with its files then deleted.
+        table, _sqs, _queue_url, s3 = create_env
+        original = _busy(_existing_set(table), "COPYING")
+        table.put_item(Item=original)
+        keys = _put_set_files(s3)
+        real_update = test_set_index.db_client.update_item
+
+        def update_without_item(*args, **kwargs):
+            try:
+                return real_update(*args, **kwargs)
+            except DynamoDBError as e:
+                e.item = None
+                raise
+
+        with (
+            patch.object(
+                test_set_index.db_client, "update_item", side_effect=update_without_item
+            ),
+            pytest.raises(ValueError, match="'my-set' is busy \\(COPYING\\)"),
+        ):
+            self._delete("my-set")
+
+        assert _row(table) == original
+        assert _set_files(s3) == sorted(keys)
+
+    def test_a_claim_failure_other_than_the_condition_is_not_a_refusal(
+        self, create_env
+    ):
+        # A throttled claim is a fault to surface, not "busy" and not "no row";
+        # and no file may be deleted without the claim.
+        table, _sqs, _queue_url, s3 = create_env
+        original = _existing_set(table)
+        keys = _put_set_files(s3)
+        throttled = DynamoDBError("slow down", "ProvisionedThroughputExceededException")
+
+        with (
+            patch.object(
+                test_set_index.db_client, "update_item", side_effect=throttled
+            ),
+            pytest.raises(DynamoDBError) as raised,
+        ):
+            self._delete("my-set")
+
+        assert raised.value.error_code == "ProvisionedThroughputExceededException"
+        assert _row(table) == original
+        assert _set_files(s3) == sorted(keys)
+
+    def test_the_refusal_reaches_the_caller_as_a_bad_argument(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        table.put_item(Item=_busy(_existing_set(table), "UPDATING"))
+        event = {
+            "info": {"fieldName": "deleteTestSets"},
+            "arguments": {"testSetIds": ["my-set"]},
+            "identity": _ADMIN_IDENTITY,
+        }
+
+        with pytest.raises(ValueError, match="busy"):
+            test_set_index.handler(event, {})
+
+    @pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "DELETING"])
+    def test_a_finished_set_is_deleted_with_its_files(self, create_env, status):
+        # DELETING too: a delete that stopped partway must be retryable.
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": status})
+        _put_set_files(s3)
+
+        assert self._delete("my-set") is True
+
+        assert _row(table) is None
+        assert _set_files(s3) == []
+
+    def test_a_folder_with_no_row_is_still_emptied_and_no_row_appears(self, create_env):
+        _table, _sqs, _queue_url, s3 = create_env
+        _put_set_files(s3, "stray")
+
+        assert self._delete("stray") is True
+
+        assert _set_files(s3, "stray") == []
+        assert _row(_table, "stray") is None
+
+    def test_keys_delete_objects_reports_failing_keep_the_row(self, create_env):
+        # DeleteObjects answers 200 with per-key failures in Errors; reading only
+        # exceptions takes that for a complete delete and drops the row.
+        table, _sqs, _queue_url, s3 = create_env
+        _existing_set(table)
+        keys = _put_set_files(s3)
+        real_delete = s3.delete_objects
+        stuck = keys[1]
+
+        def delete_all_but_one(**kwargs):
+            batch = [o for o in kwargs["Delete"]["Objects"] if o["Key"] != stuck]
+            result = real_delete(Bucket=kwargs["Bucket"], Delete={"Objects": batch})
+            result["Errors"] = [
+                {"Key": stuck, "Code": "AccessDenied", "Message": "Access Denied"}
+            ]
+            return result
+
+        with (
+            patch.object(s3, "delete_objects", side_effect=delete_all_but_one),
+            pytest.raises(
+                test_set_index.ReportedServerError, match="1 object\\(s\\) could not"
+            ),
+        ):
+            self._delete("my-set")
+
+        row = _row(table)
+        assert row is not None
+        assert row["status"] == "FAILED"
+        assert stuck in row["error"]
+        assert _set_files(s3) == [stuck]
+
+        # The row that stays is the original set's, not a folder re-registered as a
+        # new upload, and deleting again finishes the job.
+        assert row["description"] == "the original"
+        assert self._delete("my-set") is True
+        assert _row(table) is None
+        assert _set_files(s3) == []
+
+    def test_an_s3_exception_keeps_the_row_and_does_not_echo_aws_text(self, create_env):
+        table, _sqs, _queue_url, s3 = create_env
+        _existing_set(table)
+        keys = _put_set_files(s3)
+        failure = ClientError(
+            {
+                "Error": {
+                    "Code": "AccessDenied",
+                    "Message": "arn:aws:iam::123456789012:role/secret-role",
+                }
+            },
+            "DeleteObjects",
+        )
+
+        with (
+            patch.object(s3, "delete_objects", side_effect=failure),
+            pytest.raises(test_set_index.ReportedServerError) as raised,
+        ):
+            self._delete("my-set")
+
+        assert "arn:" not in str(raised.value)
+        assert "a storage request failed" in str(raised.value)
+        assert _row(table)["status"] == "FAILED"
+        assert _set_files(s3) == sorted(keys)
+
+    def test_a_truncated_listing_without_a_token_is_a_failure(self, create_env):
+        table, _sqs, _queue_url, s3 = create_env
+        _existing_set(table)
+        page = {"Contents": [{"Key": "my-set/input/a.pdf"}], "IsTruncated": True}
+
+        with (
+            patch.object(s3, "list_objects_v2", return_value=page),
+            pytest.raises(test_set_index.ReportedServerError, match="truncated"),
+        ):
+            self._delete("my-set")
+
+        assert _row(table)["status"] == "FAILED"
+
+    @pytest.mark.parametrize(
+        "status", [s for s in _in_progress_statuses() if s != "QUEUED"]
+    )
+    def test_a_busy_row_the_reaper_can_never_age_is_still_deletable(
+        self, create_env, status
+    ):
+        # No statusUpdatedAt: written before the stamp existed, so the reaper
+        # leaves it alone forever. Refusing it would make the set undeletable.
+        table, _sqs, _queue_url, s3 = create_env
+        row = {**_existing_set(table), "status": status}
+        assert "statusUpdatedAt" not in row
+        table.put_item(Item=row)
+        _put_set_files(s3)
+
+        test_set_index.get_test_sets()
+        assert _row(table)["status"] == status  # the reaper did not move it
+
+        assert self._delete("my-set") is True
+        assert _row(table) is None
+        assert _set_files(s3) == []
+
+    def test_an_unstamped_queued_row_is_still_refused(self, create_env):
+        # QUEUED is aged by createdAt, so it does not need the way through.
+        table, _sqs, _queue_url, s3 = create_env
+        row = {**_existing_set(table), "status": "QUEUED"}
+        table.put_item(Item=row)
+        keys = _put_set_files(s3)
+
+        with pytest.raises(ValueError, match="busy \\(QUEUED\\)"):
+            self._delete("my-set")
+
+        assert _row(table) == row
+        assert _set_files(s3) == sorted(keys)
+
+    def test_a_batch_with_a_failure_and_a_refusal_is_a_server_error(self, create_env):
+        # The fault outranks the bad argument, and both are reported.
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item=_busy(_existing_set(table), "COPYING"))
+        _existing_set(table, "other")
+        _put_set_files(s3, "other")
+        failure = ClientError({"Error": {"Code": "InternalError"}}, "DeleteObjects")
+
+        with (
+            patch.object(s3, "delete_objects", side_effect=failure),
+            pytest.raises(test_set_index.ReportedServerError) as raised,
+        ):
+            self._delete("my-set", "other")
+
+        assert "'other'" in str(raised.value)
+        assert "'my-set' is busy" in str(raised.value)
+
+    def test_one_busy_set_does_not_stop_the_others(self, create_env):
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item=_busy(_existing_set(table), "GENERATING"))
+        _existing_set(table, "other")
+        _put_set_files(s3, "other")
+
+        with pytest.raises(ValueError, match="'my-set' is busy"):
+            self._delete("my-set", "other")
+
+        assert _row(table)["status"] == "GENERATING"
+        assert _row(table, "other") is None
+        assert _set_files(s3, "other") == []
+
+    def test_a_row_rewritten_during_the_delete_is_kept(self, create_env):
+        # A dataset deployer may reclaim its own id while the files go; deleting
+        # its fresh row with ours would leave its folder rowless again.
+        table, _sqs, _queue_url, s3 = create_env
+        _existing_set(table)
+        _put_set_files(s3)
+        real_delete = s3.delete_objects
+
+        def deployer_reclaims(**kwargs):
+            result = real_delete(**kwargs)
+            table.put_item(
+                Item={
+                    "PK": "testset#my-set",
+                    "SK": "metadata",
+                    "status": "UPDATING",
+                    "source": "huggingface:example",
+                }
+            )
+            return result
+
+        with patch.object(s3, "delete_objects", side_effect=deployer_reclaims):
+            assert self._delete("my-set") is True
+
+        assert _row(table)["status"] == "UPDATING"
+
+    def test_getTestSets_does_not_reregister_a_set_being_deleted(self, create_env):
+        # The claim is what keeps the scan off the folder while files remain.
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": "DELETING"})
+        s3.put_object(Bucket="test-set-bucket", Key="my-set/input/a.pdf", Body=b"x")
+
+        test_set_index.get_test_sets()
+
+        assert _row(table)["description"] == "the original"
+
+    def test_getTestSets_does_not_probe_labels_of_a_set_being_deleted(self, create_env):
+        # Reconciliation writes labelState unconditionally; on a set mid-delete
+        # that write could recreate a stub row once the delete finishes.
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": "DELETING"})
+        s3.put_object(Bucket="test-set-bucket", Key="my-set/input/a.pdf", Body=b"x")
+        _existing_set(table, "other")
+        s3.put_object(Bucket="test-set-bucket", Key="other/input/a.pdf", Body=b"x")
+
+        test_set_index.get_test_sets()
+
+        # Non-vacuous: the set not being deleted is probed.
+        assert "labelProbedFileCount" in _row(table, "other")
+        assert "labelProbedFileCount" not in _row(table)
+
+    def test_getTestSets_removes_a_deleting_row_whose_folder_is_gone(self, create_env):
+        # A delete that died after its files went and before the row did.
+        table, _sqs, _queue_url, _s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": "DELETING"})
+        _existing_set(table, "kept")
+
+        test_set_index.get_test_sets()
+
+        assert _row(table) is None
+
+
+def _stamp_forms(moment):
+    """``moment`` (aware, UTC) spelled the way each writer of a test-set row spells it."""
+    naive = moment.replace(tzinfo=None)
+    return {
+        # The resolver and the dataset deployers: utcnow().isoformat() + "Z".
+        "utcnow_z": naive.isoformat() + "Z",
+        # The extensions: now(timezone.utc).isoformat().replace("+00:00", "Z").
+        "aware_z": moment.isoformat().replace("+00:00", "Z"),
+        # A folder found in S3: LastModified.isoformat(), and the generator runtime.
+        "aware_offset": moment.isoformat(),
+        # strftime(...%f) + "Z", as the resolver writes users.
+        "strftime_z": moment.strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
+        # Whole seconds, as a stamp with no microseconds renders.
+        "seconds_z": moment.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        # The same instant in another zone.
+        "other_offset": moment.astimezone(
+            timezone(timedelta(hours=5, minutes=30))
+        ).isoformat(),
+        # No offset at all: a legacy or hand-written row, meant as UTC.
+        "naive": naive.isoformat(),
+    }
+
+
+_STAMP_FORM_NAMES = sorted(_stamp_forms(datetime.now(timezone.utc)))
+
+
+@pytest.mark.unit
+class TestOrphanCleanupReadsEveryTimestampForm:
+    """getTestSets removes rows whose S3 folder is gone, and one row cannot stop it.
+
+    A FAILED row is removed once its ``createdAt`` is an hour old. That age was a naive
+    ``utcnow()`` compared with an aware parse of a ``Z`` stamp, which raises, and the
+    raise ended the whole cleanup pass: no orphan on the stack was removed again.
+    """
+
+    @staticmethod
+    def _orphan(table, test_set_id, status, created_at):
+        table.put_item(
+            Item={
+                **_existing_set(table, test_set_id),
+                "status": status,
+                "createdAt": created_at,
+            }
+        )
+
+    @pytest.mark.parametrize("form", _STAMP_FORM_NAMES)
+    def test_an_old_failed_orphan_is_removed_and_does_not_stop_the_rest(
+        self, create_env, form
+    ):
+        table, _sqs, _queue_url, _s3 = create_env
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        self._orphan(table, "old-failed", "FAILED", _stamp_forms(old)[form])
+        _existing_set(table, "completed-orphan")
+
+        listed = test_set_index.get_test_sets()
+
+        assert _row(table, "old-failed") is None
+        assert _row(table, "completed-orphan") is None
+        assert {entry["id"] for entry in listed} == set()
+
+    @pytest.mark.parametrize("form", _STAMP_FORM_NAMES)
+    def test_a_recent_failed_orphan_is_kept(self, create_env, form):
+        # Non-vacuous for the age check: the same forms, inside the hour, stay.
+        table, _sqs, _queue_url, _s3 = create_env
+        recent = datetime.now(timezone.utc) - timedelta(minutes=10)
+        self._orphan(table, "new-failed", "FAILED", _stamp_forms(recent)[form])
+        _existing_set(table, "completed-orphan")
+
+        listed = test_set_index.get_test_sets()
+
+        assert _row(table, "new-failed")["status"] == "FAILED"
+        assert _row(table, "completed-orphan") is None
+        assert [entry["id"] for entry in listed] == ["new-failed"]
+
+    @pytest.mark.parametrize("created_at", ["", "not a date", "2026-13-45T00:00:00Z"])
+    def test_a_failed_orphan_of_unknown_age_is_kept_and_the_rest_cleaned(
+        self, create_env, created_at
+    ):
+        table, _sqs, _queue_url, _s3 = create_env
+        self._orphan(table, "undated-failed", "FAILED", created_at)
+        _existing_set(table, "completed-orphan")
+
+        test_set_index.get_test_sets()
+
+        assert _row(table, "undated-failed")["status"] == "FAILED"
+        assert _row(table, "completed-orphan") is None
+
+    def test_a_row_the_check_cannot_read_does_not_stop_the_rest(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        self._orphan(table, "unreadable", "FAILED", old)
+        self._orphan(table, "old-failed", "FAILED", old)
+        _existing_set(table, "completed-orphan")
+        real_parse = test_set_index._parse_utc_timestamp
+        seen = []
+
+        def fail_once(value):
+            seen.append(value)
+            if len(seen) == 1:
+                raise RuntimeError("unreadable row")
+            return real_parse(value)
+
+        with patch.object(test_set_index, "_parse_utc_timestamp", fail_once):
+            test_set_index.get_test_sets()
+
+        assert len(seen) == 2  # both FAILED rows were examined
+        remaining = {
+            test_set_id
+            for test_set_id in ("unreadable", "old-failed")
+            if _row(table, test_set_id) is not None
+        }
+        assert len(remaining) == 1  # the one that raised is kept, the other removed
+        assert _row(table, "completed-orphan") is None
+
+    @pytest.mark.parametrize("status", ["UPDATING", "GENERATING", "COPYING", None])
+    def test_an_old_orphan_in_any_other_status_is_kept(self, create_env, status):
+        # Only COMPLETED, DELETING and aged FAILED rows are cleanup's to remove.
+        table, _sqs, _queue_url, _s3 = create_env
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        self._orphan(table, "busy", status, _stamp_forms(old)["utcnow_z"])
+        _existing_set(table, "completed-orphan")
+
+        test_set_index.get_test_sets()
+
+        assert _row(table, "busy") is not None
+        assert _row(table, "completed-orphan") is None
+
+    def test_a_set_whose_folder_exists_is_never_removed(self, create_env):
+        table, _sqs, _queue_url, s3 = create_env
+        old = datetime.now(timezone.utc) - timedelta(hours=3)
+        self._orphan(table, "my-set", "FAILED", _stamp_forms(old)["utcnow_z"])
+        _put_set_files(s3)
+
+        test_set_index.get_test_sets()
+
+        assert _row(table) is not None
+
+
+@pytest.mark.unit
+class TestTimestampParsing:
+    @pytest.mark.parametrize("form", _STAMP_FORM_NAMES)
+    def test_every_writer_form_reads_as_the_same_aware_utc_instant(self, form):
+        moment = datetime(2026, 3, 4, 5, 6, 7, 891011, tzinfo=timezone.utc)
+        expected = moment.replace(microsecond=0) if form == "seconds_z" else moment
+
+        parsed = test_set_index._parse_utc_timestamp(_stamp_forms(moment)[form])
+
+        assert parsed == expected
+        assert parsed.utcoffset() == timedelta(0)
+
+    @pytest.mark.parametrize(
+        "value",
+        [None, "", "garbage", "2026-02-30T00:00:00Z", "9999-12-31T23:00:00-05:00"],
+    )
+    def test_a_missing_or_unreadable_stamp_is_none(self, value):
+        assert test_set_index._parse_utc_timestamp(value) is None
+
+    @pytest.mark.parametrize("value", ["", "garbage", "9999-12-31T23:00:00-05:00"])
+    def test_an_unreadable_claim_has_no_age(self, value):
+        # None means abandoned: a claim nothing can age would lock its token out.
+        assert test_set_index._claim_age_seconds(value) is None
+
+    def test_a_claim_is_aged_from_any_writer_form(self):
+        moment = datetime.now(timezone.utc) - timedelta(minutes=30)
+        for form, stamp in _stamp_forms(moment).items():
+            age = test_set_index._claim_age_seconds(stamp)
+            assert 1790 <= age <= 1900, form
+
+    def test_the_reaper_survives_a_stamp_past_the_end_of_time(self):
+        items = [
+            {
+                "id": "ts1",
+                "status": "GENERATING",
+                "statusUpdatedAt": "9999-12-31T23:00:00-05:00",
+            }
+        ]
+        with patch.object(test_set_index.boto3, "resource") as resource:
+            test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "GENERATING"
+        resource.assert_not_called()
+
+    def test_the_reaper_ages_a_stamp_with_no_offset(self):
+        # Aware now minus a naive parse raises; the reaper runs inside getTestSets.
+        stamp = (datetime.now(timezone.utc) - timedelta(hours=30)).replace(tzinfo=None)
+        items = [
+            {"id": "ts1", "status": "GENERATING", "statusUpdatedAt": stamp.isoformat()}
+        ]
+        table = MagicMock()
+        with (
+            patch.object(test_set_index.boto3, "resource") as resource,
+            patch.dict(os.environ, {"TRACKING_TABLE": "t"}),
+        ):
+            resource.return_value.Table.return_value = table
+            test_set_index._reap_abandoned_test_sets(items)
+
+        assert items[0]["status"] == "FAILED"
+        table.update_item.assert_called_once()
+
+
+# Cutoffs the copier's matcher cannot read: a date in the wrong order, a word, a
+# time with no date, and a number where a string belongs. Each is checked against
+# find_matching_files itself below, so the list cannot hold one the copier accepts.
+_UNREADABLE_CUTOFFS = ["09/01/2026", "yesterday", "12:00", 1756684800]
+# What the UI sends (Date.toISOString), and the no-offset form the matcher reads as UTC.
+_READABLE_CUTOFFS = ["2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00"]
+
+
+@pytest.mark.unit
+class TestAnUnreadableCutoffIsRefusedAtTheApi:
+    """addTestSet and addDocumentsToTestSet refuse a modifiedAfter the copier
+    cannot parse, before any row is written or claimed and before a copy is
+    queued. They used to queue it, so the set went QUEUED or UPDATING and then
+    FAILED in the copier with nothing to say the cutoff was the cause."""
+
+    @pytest.mark.parametrize("cutoff", _UNREADABLE_CUTOFFS)
+    def test_the_matcher_itself_refuses_each_value(self, create_env, cutoff):
+        _table, _sqs, _queue_url, s3 = create_env
+        import idp_common.s3 as s3_module
+
+        # The module's client is a process-wide singleton another test may have
+        # built outside moto, so this one is handed the fixture's.
+        with (
+            patch.object(s3_module, "get_s3_client", return_value=s3),
+            pytest.raises((ValueError, AttributeError)),
+        ):
+            s3_module.find_matching_files(
+                "test-set-bucket", "x/*", modified_after=cutoff
+            )
+
+    @pytest.mark.parametrize("cutoff", _UNREADABLE_CUTOFFS)
+    def test_a_create_is_refused_and_writes_nothing(self, create_env, cutoff):
+        table, sqs, queue_url, _s3 = create_env
+        with pytest.raises(ValueError, match="modifiedAfter"):
+            test_set_index.add_test_set(
+                {
+                    "name": "New Set",
+                    "filePattern": "x/*",
+                    "fileCount": 1,
+                    "bucketType": "input",
+                    "modifiedAfter": cutoff,
+                }
+            )
+        assert _row(table, "new-set") is None
+        assert _queued_messages(sqs, queue_url) == []
+
+    @pytest.mark.parametrize("cutoff", _UNREADABLE_CUTOFFS)
+    def test_an_append_is_refused_and_leaves_the_set_completed(
+        self, create_env, cutoff
+    ):
+        table, sqs, queue_url, _s3 = create_env
+        original = _existing_set(table)
+        with pytest.raises(ValueError, match="modifiedAfter"):
+            test_set_index.add_documents_to_test_set(
+                {
+                    "testSetId": "my-set",
+                    "filePattern": "x/*",
+                    "bucketType": "input",
+                    "fileCount": 1,
+                    "modifiedAfter": cutoff,
+                }
+            )
+        assert _row(table) == original
+        assert _queued_messages(sqs, queue_url) == []
+
+    def test_the_refusal_is_a_bad_request_through_the_handler(self, create_env):
+        with pytest.raises(ValueError, match="not an ISO 8601"):
+            test_set_index.handler(
+                {
+                    "info": {"fieldName": "addTestSet"},
+                    "arguments": {
+                        "name": "New Set",
+                        "filePattern": "x/*",
+                        "fileCount": 1,
+                        "bucketType": "input",
+                        "modifiedAfter": "yesterday",
+                    },
+                },
+                {},
+            )
+
+    @pytest.mark.parametrize("cutoff", ["", None])
+    def test_an_empty_cutoff_still_means_no_cutoff(self, create_env, cutoff):
+        """The UI's "any time" choice sends no cutoff; an empty one is the same."""
+        table, sqs, queue_url, _s3 = create_env
+        test_set_index.add_test_set(
+            {
+                "name": "New Set",
+                "filePattern": "x/*",
+                "fileCount": 1,
+                "bucketType": "input",
+                "modifiedAfter": cutoff,
+            }
+        )
+        (message,) = _queued_messages(sqs, queue_url)
+        assert "modifiedAfter" not in json.loads(message["Body"])
+        assert _row(table, "new-set")["status"] == "QUEUED"
+
+    @pytest.mark.parametrize("cutoff", _READABLE_CUTOFFS)
+    def test_a_readable_cutoff_is_queued_unchanged(self, create_env, cutoff):
+        table, sqs, queue_url, s3 = create_env
+        import idp_common.s3 as s3_module
+
+        # Written now, so after every cutoff above: the matcher reads the value
+        # and keeps the object.
+        s3.put_object(Bucket="test-set-bucket", Key="x/a.pdf", Body=b"%PDF")
+        with patch.object(s3_module, "get_s3_client", return_value=s3):
+            matched = s3_module.find_matching_files("test-set-bucket", "x/*", cutoff)
+        assert matched == ["x/a.pdf"]
+        _existing_set(table)
+        test_set_index.add_test_set(
+            {
+                "name": "New Set",
+                "filePattern": "x/*",
+                "fileCount": 1,
+                "bucketType": "input",
+                "modifiedAfter": cutoff,
+            }
+        )
+        test_set_index.add_documents_to_test_set(
+            {
+                "testSetId": "my-set",
+                "filePattern": "x/*",
+                "bucketType": "input",
+                "fileCount": 1,
+                "modifiedAfter": cutoff,
+            }
+        )
+        bodies = [json.loads(m["Body"]) for m in _queued_messages(sqs, queue_url)]
+        assert [b["modifiedAfter"] for b in bodies] == [cutoff, cutoff]
+        assert _row(table, "new-set")["status"] == "QUEUED"
+        assert _row(table)["status"] == "UPDATING"
+
+
+@pytest.mark.unit
+class TestAppendingRefusesASetThatIsNoLongerCompleted:
+    """Both append paths read COMPLETED and then write UPDATING; the write is
+    conditional so a delete that claimed the set in between keeps it."""
+
+    def _stale_read(self, table):
+        row = _row(table)
+        return {**row, "status": "COMPLETED"}
+
+    def test_add_documents_is_refused(self, create_env):
+        table, _sqs, queue_url, _s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": "DELETING"})
+        stale = self._stale_read(table)
+
+        with (
+            patch.object(test_set_index.db_client, "get_item", return_value=stale),
+            pytest.raises(ValueError, match="no longer in COMPLETED"),
+        ):
+            test_set_index.add_documents_to_test_set(
+                {"testSetId": "my-set", "filePattern": "x/*", "bucketType": "input"}
+            )
+
+        assert _row(table)["status"] == "DELETING"
+        assert _queued_messages(_sqs, queue_url) == []
+
+    def test_add_documents_from_upload_is_refused(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": "DELETING"})
+        stale = self._stale_read(table)
+
+        with (
+            patch.object(test_set_index.db_client, "get_item", return_value=stale),
+            pytest.raises(ValueError, match="no longer in COMPLETED"),
+        ):
+            test_set_index.add_documents_to_test_set_from_upload(
+                {"input": {"testSetId": "my-set", "fileName": "more.zip"}}
+            )
+
+        assert _row(table)["status"] == "DELETING"
+
+    def test_a_completed_set_still_moves_to_updating(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+
+        test_set_index.add_documents_to_test_set_from_upload(
+            {"input": {"testSetId": "my-set", "fileName": "more.zip"}}
+        )
+
+        assert _row(table)["status"] == "UPDATING"
+
+
+@pytest.mark.unit
+def test_every_in_progress_status_can_be_aged_out():
+    # Deletion refuses these, so one the reaper cannot fail would leave a set whose
+    # job died undeletable for good.
+    statuses = set(_in_progress_statuses())
+    assert statuses <= set(test_set_index.STALE_STATUS_HOURS)
 
 
 @pytest.mark.unit

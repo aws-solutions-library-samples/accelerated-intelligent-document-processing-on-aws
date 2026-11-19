@@ -2467,6 +2467,7 @@ def assess_results_batched(
     page_images: list[Any],
     batch_size: int,
     ocr_text_confidence: str = "",
+    page_texts: list[str] | None = None,
     max_retries: int = 2,
     confidence_model_id: str | None = None,
     geometry_mode: str | None = None,
@@ -2507,7 +2508,9 @@ def assess_results_batched(
 
     ``assessment_service`` must expose the pure inference core
     ``assess_results(class_label, extraction_results, document_text, page_images,
-    ocr_text_confidence) -> AssessmentCoreResult``.
+    ocr_text_confidence, page_texts) -> AssessmentCoreResult``. ``page_texts`` (the
+    OCR text per page) is passed through for the decision model, which reads one
+    page at a time.
 
     If a batch's response is TRUNCATED at the model's max-output-token ceiling
     (e.g. ``geometry.mode: llm`` makes per-row output too large for a small-cap
@@ -2598,6 +2601,10 @@ def assess_results_batched(
         if isinstance(v, list) and len(v) > effective_batch_size
     }
 
+    # Passed only when given, so a service whose assess_results predates the
+    # argument keeps working.
+    per_page = {"page_texts": page_texts} if page_texts is not None else {}
+
     def _one_call(results: dict[str, Any]) -> Any:
         return assessment_service.assess_results(
             class_label=class_label,
@@ -2605,6 +2612,7 @@ def assess_results_batched(
             document_text=document_text,
             page_images=page_images,
             ocr_text_confidence=ocr_text_confidence,
+            **per_page,
         )
 
     # 1.2 Escalation call closure + token-aware batch size for the STRONGER model
@@ -2622,6 +2630,7 @@ def assess_results_batched(
                 page_images=page_images,
                 ocr_text_confidence=ocr_text_confidence,
                 model_id_override=ladder_escalation_model,
+                **per_page,
             )
 
         escalation_one_call = _escalation_call

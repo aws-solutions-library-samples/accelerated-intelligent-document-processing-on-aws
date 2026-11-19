@@ -620,6 +620,151 @@ class TestExponentialBackoffRetry:
         assert call_count == 1
 
 
+def _http_error(code: str, status: int) -> botocore.exceptions.ClientError:
+    """A ClientError carrying the reply's HTTP status, as botocore builds it."""
+    return botocore.exceptions.ClientError(
+        {
+            "Error": {"Code": code, "Message": "Internal Server Error"},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
+        "ConverseStream",
+    )
+
+
+class EventLoopException(Exception):
+    """Stands in for Strands' wrapper, raised ``from`` the Bedrock error."""
+
+
+#: (code, status) pairs both decorators retry: the bare statuses botocore uses as the
+#: code when a reply names no error type (#2036), and a named code in neither
+#: vocabulary that is retried for its 500 status alone.
+_RETRIED_SERVER_ERRORS = [
+    ("500", 500),
+    ("502", 502),
+    ("503", 503),
+    ("504", 504),
+    ("InternalFailure", 500),
+]
+
+#: A 501 fails the same way every time; a bare 4xx is a request error.
+_NOT_RETRIED_STATUS_ERRORS = [("501", 501), ("400", 400), ("AccessDenied", 403)]
+
+
+@pytest.mark.unit
+class TestHttpServerErrorsAreRetried:
+    """#2036: an HTTP 500, 502, 503 or 504 is retried whatever code it carries, on
+    both decorators, as on the Converse ladder in ``bedrock/client.py``."""
+
+    @staticmethod
+    def _flaky_sync(error: Exception):
+        calls = []
+
+        @exponential_backoff_retry(max_retries=3, initial_delay=0.01)
+        def call():
+            calls.append(1)
+            if len(calls) == 1:
+                raise error
+            return "ok"
+
+        return call, calls
+
+    @staticmethod
+    def _flaky_async(error: Exception, **decorator_kwargs):
+        calls = []
+
+        @async_exponential_backoff_retry(
+            max_retries=3, initial_delay=0.01, **decorator_kwargs
+        )
+        async def call():
+            calls.append(1)
+            if len(calls) == 1:
+                raise error
+            return "ok"
+
+        return call, calls
+
+    @staticmethod
+    def _wrapped(error: Exception) -> Exception:
+        try:
+            raise EventLoopException(str(error)) from error
+        except EventLoopException as wrapped:
+            return wrapped
+
+    @pytest.mark.parametrize("code,status", _RETRIED_SERVER_ERRORS)
+    def test_sync_retries_a_server_error(self, code, status):
+        call, calls = self._flaky_sync(_http_error(code, status))
+        assert call() == "ok"
+        assert len(calls) == 2
+
+    @pytest.mark.parametrize("code,status", _NOT_RETRIED_STATUS_ERRORS)
+    def test_sync_does_not_retry_other_statuses(self, code, status):
+        call, calls = self._flaky_sync(_http_error(code, status))
+        with pytest.raises(botocore.exceptions.ClientError):
+            call()
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
+    @pytest.mark.parametrize("code,status", _RETRIED_SERVER_ERRORS)
+    async def test_async_retries_a_server_error(self, code, status, wrapped):
+        error = _http_error(code, status)
+        call, calls = self._flaky_async(self._wrapped(error) if wrapped else error)
+        assert await call() == "ok"
+        assert len(calls) == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
+    @pytest.mark.parametrize("code,status", _NOT_RETRIED_STATUS_ERRORS)
+    async def test_async_does_not_retry_other_statuses(self, code, status, wrapped):
+        error = _http_error(code, status)
+        raised = self._wrapped(error) if wrapped else error
+        call, calls = self._flaky_async(raised)
+        with pytest.raises(type(raised)):
+            await call()
+        assert len(calls) == 1
+
+    @staticmethod
+    def _lambda_502() -> botocore.exceptions.ClientError:
+        """Lambda answers ``KMSAccessDeniedException`` with a 502, and a retry
+        fails the same way: the 5xx rule is for Bedrock replies only."""
+        return botocore.exceptions.ClientError(
+            {
+                "Error": {"Code": "KMSAccessDeniedException", "Message": "denied"},
+                "ResponseMetadata": {"HTTPStatusCode": 502},
+            },
+            "Invoke",
+        )
+
+    def test_sync_does_not_retry_another_services_5xx(self):
+        call, calls = self._flaky_sync(self._lambda_502())
+        with pytest.raises(botocore.exceptions.ClientError):
+            call()
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
+    async def test_async_does_not_retry_another_services_5xx(self, wrapped):
+        error = self._lambda_502()
+        raised = self._wrapped(error) if wrapped else error
+        call, calls = self._flaky_async(raised)
+        with pytest.raises(type(raised)):
+            await call()
+        assert len(calls) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("wrapped", [False, True], ids=["raw", "wrapped"])
+    async def test_a_narrowed_vocabulary_has_no_5xx_rule(self, wrapped):
+        """A caller that names its own codes gets exactly those codes."""
+        error = _http_error("500", 500)
+        raised = self._wrapped(error) if wrapped else error
+        call, calls = self._flaky_async(
+            raised, retryable_errors={"ThrottlingException"}
+        )
+        with pytest.raises(type(raised)):
+            await call()
+        assert len(calls) == 1
+
+
 @pytest.mark.unit
 class TestEventStreamErrorHandling:
     """Specific tests for EventStreamError handling from ConverseStream API."""

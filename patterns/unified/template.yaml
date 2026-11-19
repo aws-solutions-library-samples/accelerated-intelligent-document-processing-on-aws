@@ -1166,7 +1166,7 @@ Resources:
                       model:
                         type: string
                         title: "Model ID"
-                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                         enum:
                           - "LambdaHook"
                           - !If
@@ -1547,7 +1547,7 @@ Resources:
                           model:
                             type: string
                             title: "Model ID"
-                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1791,7 +1791,7 @@ Resources:
                           model:
                             type: string
                             title: "Model ID"
-                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -2070,6 +2070,13 @@ Resources:
                             maximum: 4
                             default: 1
                             order: 2
+                          max_input_tokens:
+                            type: integer
+                            title: Maximum input tokens per request
+                            description: "The most tokens one request may hold: the section's OCR text, its page images and the class question with every class description together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', the section's text beyond the limit is cut from the end and never read by the decision model, so a class cue that appears only in the cut part is not seen. The first page is kept whole when it fits. Default 3584: the model's 4,096-token window less 512 for its own prompt."
+                            minimum: 256
+                            default: 3584
+                            order: 2.5
                           instructions:
                             type: string
                             title: Question
@@ -2772,7 +2779,7 @@ Resources:
                   method:
                     type: string
                     title: Confidence method
-                    description: "Who scores each extracted value in a separate pass. 'LLM' (default): the confidence model and prompts below. 'Decision model': one yes/no question per value to a decision model, per page, and the value's confidence is its highest probability across pages ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Needs mode 'separate'."
+                    description: "Who scores each extracted value in a separate pass. 'LLM' (default): the confidence model and prompts below. 'Decision model': one yes/no question per value to a decision model, per page, and the value's confidence is its highest probability across pages; an empty value's is one minus the highest probability that a page shows a value ([Decision models](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/docs/decision-models.md)). Needs mode 'separate'."
                     enum: ["llm", "decision_model"]
                     enumLabels: { "llm": "LLM (default)", "decision_model": "Decision model" }
                     default: "llm"
@@ -2794,7 +2801,7 @@ Resources:
                       input:
                         type: string
                         title: Input
-                        description: "What each request reads. 'Page images' (default): one page image per request, which measured best. 'OCR text': one request with the section's text. 'Both': each page image plus the section's text, which can exceed the model's window on long sections."
+                        description: "What each request reads; every mode is one request per page. 'Page images' (default): the page image, which measured best. 'OCR text': that page's text. 'Both': the page image with that page's text. Text beyond 'Maximum input tokens per request' is cut and never read."
                         enum: ["images", "text", "both"]
                         enumLabels: { images: "Page images (default)", text: "OCR text", both: "Page images and OCR text" }
                         default: "images"
@@ -2811,9 +2818,16 @@ Resources:
                         type: string
                         title: Question
                         format: textarea
-                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default."
+                        description: "Each value's yes/no question. {FIELD} is the field's path (for example LineItems[2].Amount), {DESCRIPTION} its schema description, {VALUE} the extracted value. Empty uses this default. A value the extraction left empty is asked the question below instead."
                         default: 'The system says the field "{FIELD}" ({DESCRIPTION}) is "{VALUE}". Is that the correct value?'
                         order: 3
+                      empty_value_instructions:
+                        type: string
+                        title: Question for an empty value
+                        format: textarea
+                        description: "The yes/no question for a value the extraction left empty, asking whether the page shows a value for the field. {FIELD} is the field's path, {DESCRIPTION} its schema description. The empty value's confidence is 1 minus the highest answer over the pages, so yes must mean a value is shown. Empty uses this default."
+                        default: 'The system found no value for the field "{FIELD}" ({DESCRIPTION}). Does the page show a value for it?'
+                        order: 3.5
                       max_questions_per_request:
                         type: integer
                         title: Maximum questions per request
@@ -2822,6 +2836,13 @@ Resources:
                         maximum: 250
                         default: 100
                         order: 4
+                      max_input_tokens:
+                        type: integer
+                        title: Maximum input tokens per request
+                        description: "The most tokens one request may hold: a page's OCR text, its image and the longest question together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', a page's text beyond the limit is cut from the end and never read by the decision model, so a value that appears only in the cut part is not seen. Default 3584: the model's 4,096-token window less 512 for its own prompt."
+                        minimum: 256
+                        default: 3584
+                        order: 4.5
                       timeout_ms:
                         type: integer
                         title: Timeout (ms)

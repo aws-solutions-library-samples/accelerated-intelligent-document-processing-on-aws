@@ -13,13 +13,14 @@ import random
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from functools import wraps
 from typing import TYPE_CHECKING, Unpack
 
 import botocore.exceptions
 import urllib3.exceptions
 
+from idp_common.bedrock.model_utils import http_server_error_status
 from idp_common.failed_attempt import drop_failed_attempt
 
 # The invocation deadline, the sleep clamp and the pre-attempt budget gate. They live
@@ -347,6 +348,73 @@ def is_input_token_overflow(error: BaseException) -> bool:
     return False
 
 
+#: The text of the ``ValidationException`` Bedrock returns when a model's own
+#: output filter withholds its reply. The retry decorators below retry that one
+#: ``ValidationException`` (a regenerated reply can pass), so this is the same
+#: string they match; it is the reply being refused, not the request being
+#: malformed.
+CONTENT_FILTER_BLOCK_MESSAGE = "Output blocked by content filtering policy"
+
+
+def is_content_filter_block(error: BaseException) -> bool:
+    """True if ``error``, or one it was raised ``from``, is a content-filter block.
+
+    Walks the explicit ``__cause__`` chain because the agentic path delivers the
+    Bedrock ``ClientError`` wrapped (Strands' ``EventLoopException``), and a node
+    carrying a definite error code other than ``ValidationException`` is not a
+    block whatever its message says, as for :func:`is_image_request_rejection`.
+    The code is compared case-insensitively: an error raised inside a
+    ``ConverseStream`` reply carries the event-stream member name,
+    ``validationException``, as its code.
+
+    The agentic retry decorator regenerates a blocked reply before giving up;
+    ``BedrockClient``'s own ladder does not retry a ``ValidationException``, so on
+    that path one block is final. Either way the caller treats it as a verdict
+    on this content rather than as a transient fault.
+    """
+    marker = CONTENT_FILTER_BLOCK_MESSAGE.lower()
+    for node in _cause_chain(error):
+        code = ""
+        response = getattr(node, "response", None)
+        if isinstance(response, dict):
+            code = str((response.get("Error") or {}).get("Code") or "")
+        if code and code.lower() != "validationexception":
+            continue
+        if marker in str(node).lower():
+            return True
+    return False
+
+
+def _client_error_code(error: BaseException) -> str:
+    """The error code ``error``'s botocore response carries, or ``""``."""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        return str((response.get("Error") or {}).get("Code") or "")
+    return ""
+
+
+def is_unretryable_validation_error(error: BaseException) -> bool:
+    """True if ``error``, or one it was raised ``from``, is a ``ValidationException``
+    other than a content-filter block.
+
+    The retry decorators' one rule for ``ValidationException``: Bedrock rejected
+    the request itself, so sending it again is refused identically, and the only
+    ``ValidationException`` worth retrying is a reply the content filter withheld
+    (:func:`is_content_filter_block`), because a regenerated reply can pass.
+
+    The code is compared case-insensitively, because an error raised inside a
+    ``ConverseStream`` reply carries the event-stream member name,
+    ``validationException``; compared case-sensitively, such an error missed this
+    rule and was retried by the case-folded retryable vocabulary instead. The
+    explicit ``__cause__`` chain is walked because Strands delivers a Bedrock
+    error wrapped in ``EventLoopException`` from every cycle after a tool use.
+    """
+    for node in _cause_chain(error):
+        if _client_error_code(node).lower() == "validationexception":
+            return not is_content_filter_block(error)
+    return False
+
+
 #: ``stopReason`` values that mean the model stopped because it ran out of OUTPUT
 #: budget rather than because it finished answering.
 #:
@@ -522,14 +590,50 @@ def _raised_from(error: BaseException, types: tuple[type[BaseException], ...]) -
     caller was handling. ``transient_errors`` follows the same rule for the same
     reason. Cycle-safe and bounded.
     """
+    return any(isinstance(node, types) for node in _cause_chain(error))
+
+
+#: The ``bedrock-runtime`` operations these decorators wrap. A 5xx is retried only
+#: from one of them: ``http_server_error_status`` is a Bedrock rule, and another
+#: service can answer a request that will fail again with a 5xx (Lambda answers
+#: several such errors with a 502).
+_BEDROCK_MODEL_OPERATIONS = frozenset(
+    {"Converse", "ConverseStream", "InvokeModel", "InvokeModelWithResponseStream"}
+)
+
+
+def _is_bedrock_server_error(error: BaseException) -> bool:
+    """Whether ``error`` is a Bedrock model call's ``ClientError`` for an HTTP 500,
+    502, 503 or 504 reply, whatever its code (#2036)."""
+    return (
+        isinstance(error, botocore.exceptions.ClientError)
+        and getattr(error, "operation_name", None) in _BEDROCK_MODEL_OPERATIONS
+        and http_server_error_status(error.response) is not None
+    )
+
+
+def _raised_from_server_error(error: BaseException) -> bool:
+    """Whether ``error``, or an exception it was explicitly raised ``from``, is a
+    Bedrock server error (:func:`_is_bedrock_server_error`).
+
+    Strands delivers a Bedrock ``ClientError`` raw from the first model call and
+    wrapped in ``EventLoopException`` from later cycles (see
+    ``_RETRYABLE_TRANSPORT_EXCEPTION_TYPES``). A bare-status code (``"500"``)
+    matches nothing in the substring vocabulary, so without this the wrapped form
+    failed on its first attempt (#2036).
+    """
+    return any(_is_bedrock_server_error(node) for node in _cause_chain(error))
+
+
+def _cause_chain(error: BaseException) -> Iterator[BaseException]:
+    """``error`` and its explicit ``raise ... from`` ancestors, cycle-safe and
+    bounded; see :func:`_raised_from` for why ``__context__`` is not followed."""
     seen: set[int] = set()
     node: BaseException | None = error
     while node is not None and id(node) not in seen and len(seen) < _MAX_CAUSE_CHAIN:
-        if isinstance(node, types):
-            return True
+        yield node
         seen.add(id(node))
         node = node.__cause__
-    return False
 
 
 def async_exponential_backoff_retry[T, **P](
@@ -548,7 +652,13 @@ def async_exponential_backoff_retry[T, **P](
     ``max_total_delay`` **stops** the ladder and re-raises, because every further
     attempt would carry no delay at all; the deadline only **shortens** sleeps and
     keeps trying, because there is no burst to suppress that close to the wall and
-    an attempt may still succeed. See :func:`_backoff_or_none`."""
+    an attempt may still succeed. See :func:`_backoff_or_none`.
+
+    An HTTP 500, 502, 503 or 504 from a Bedrock model call is part of the default
+    code vocabulary: a caller that passes its own ``retryable_errors`` gets exactly
+    those codes and no 5xx rule (#2036)."""
+    # A narrowed vocabulary turns the 5xx rule off with it.
+    retries_server_errors = retryable_errors is None
     # Use defaults if not provided
     if retryable_errors is None:
         retryable_errors = DEFAULT_RETRYABLE_ERRORS
@@ -608,17 +718,17 @@ def async_exponential_backoff_retry[T, **P](
                     # Log bedrock invocation details for all errors
                     log_bedrock_invocation_error(e, attempt + 1)
 
-                    if (
-                        error_code == "ValidationException"
-                        and "Output blocked by content filtering policy"
-                        not in e.response.get("Error", {}).get("Message", "")
-                    ):
+                    # One rule for ValidationException in both decorators: only
+                    # a content-filter block is retried.
+                    if is_unretryable_validation_error(e):
                         raise
-                    if (
-                        error_code is None
-                        or error_code.lower() not in retryable_lower
-                        or attempt == max_retries - 1
-                    ):
+                    # Any HTTP 500/502/503/504 from Bedrock is retried whatever
+                    # its code, as on the Converse ladder in bedrock/client.py
+                    # (#2036), unless the caller narrowed the vocabulary.
+                    is_retryable_code = (
+                        error_code is not None and error_code.lower() in retryable_lower
+                    ) or (retries_server_errors and _is_bedrock_server_error(e))
+                    if not is_retryable_code or attempt == max_retries - 1:
                         raise
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter
@@ -655,9 +765,19 @@ def async_exponential_backoff_retry[T, **P](
                     if is_image_request_rejection(e):
                         log_bedrock_invocation_error(e, attempt + 1)
                         raise
+                    # The same rule as the ClientError branch, for the wrapped
+                    # form: "ValidationException" is in the retryable vocabulary
+                    # this branch matches by substring, so without it a wrapped
+                    # ValidationException was retried whatever it said.
+                    if is_unretryable_validation_error(e):
+                        log_bedrock_invocation_error(e, attempt + 1)
+                        raise
                     # A retryable exception type (Strands' ModelThrottledException,
-                    # botocore's transport failures), raw or raised ``from`` one.
-                    is_retryable_type = _raised_from(e, retryable_exception_types)
+                    # botocore's transport failures) or an HTTP 5xx ClientError,
+                    # raw or raised ``from`` one.
+                    is_retryable_type = _raised_from(e, retryable_exception_types) or (
+                        retries_server_errors and _raised_from_server_error(e)
+                    )
 
                     # Also check if exception name or message contains retryable error patterns
                     exception_name = type(e).__name__
@@ -831,21 +951,19 @@ def exponential_backoff_retry[T, **P](
                     # Log bedrock invocation details for all errors
                     log_bedrock_invocation_error(e, attempt + 1)
 
-                    if (
-                        error_code == "ValidationException"
-                        and "Output blocked by content filtering policy"
-                        not in e.response.get("Error", {}).get("Message", "")
-                    ):
+                    # One rule for ValidationException in both decorators: only
+                    # a content-filter block is retried.
+                    if is_unretryable_validation_error(e):
                         raise
                     # Shares DEFAULT_RETRYABLE_ERRORS with the async decorator so
                     # both paths retry the same conditions; converse_stream is
                     # wrapped here, so any streaming-only spelling omitted from
                     # that set fails the caller on the first attempt.
-                    if (
-                        error_code is None
-                        or error_code.lower() not in _DEFAULT_RETRYABLE_ERRORS_LOWER
-                        or attempt == max_retries - 1
-                    ):
+                    is_retryable_code = (
+                        error_code is not None
+                        and error_code.lower() in _DEFAULT_RETRYABLE_ERRORS_LOWER
+                    ) or _is_bedrock_server_error(e)
+                    if not is_retryable_code or attempt == max_retries - 1:
                         raise
 
                     jitter_value = random.uniform(-jitter, jitter)  # nosec B311 - retry jitter

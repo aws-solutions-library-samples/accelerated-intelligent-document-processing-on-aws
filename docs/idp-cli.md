@@ -198,13 +198,25 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
 The resolution order is:
 
 1. `--region` on the subcommand, if given.
-2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
-   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
-   instance metadata.
+2. Otherwise boto3's own chain: `AWS_DEFAULT_REGION`, then the `region`
+   configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
+   read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
+3. Otherwise `AWS_REGION`, for a shell that sets only that variable, as many
+   environments and other AWS SDKs do. This step applies to the commands that
+   work out the Region before calling AWS and pass it on: the configuration
+   commands that read a stack, `test-result`, `test-compare`, `abort-test-run`,
+   `discover-multidoc`, `deploy` (including the upload of a local
+   `--custom-config` and the `--terraform --from-code` build), `publish`, and
+   `rerun-inference` (and its alias `reprocess`). Other commands rely on boto3
+   alone, so in such a shell they need `--region` or `AWS_DEFAULT_REGION`.
 
-Nothing substitutes a hardcoded region for the configuration commands, so a
-command run with no `--region` and no region resolvable from the environment fails
-with boto3's `NoRegionError` rather than guessing.
+No command substitutes a hardcoded Region. A command run with no `--region` and
+no Region resolvable from the environment fails rather than guessing: the Test
+Studio commands, `discover-multidoc`, `deploy`, `publish` and `rerun-inference`
+say the Region could not be determined (`publish` says a Region is required), and
+the others fail with boto3's `NoRegionError` ("You must specify
+a region"). `remove-deleted-stack-resources` is the exception: it sweeps several
+Regions, and its `--region` defaults to `us-west-2`.
 
 `--region` applies to every AWS call a command makes, not only to the
 CloudFormation lookup that resolves a resource's name. That distinction is the
@@ -225,6 +237,15 @@ report success. It therefore covers
 A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
 no code outside a Lambda builds a configuration client without a region, so a new
 command cannot reintroduce the gap.
+
+The configuration commands that read a stack (`config-download`, `config-upload`,
+`config-activate` and the rest) also set both `AWS_REGION` and
+`AWS_DEFAULT_REGION` to the Region the stack was found in, for the rest of the
+command. A model setting the configuration leaves out resolves to that Region's
+inference profile (see [EU Region Model Support](eu-region-model-support.md)), and
+that lookup reads `AWS_REGION` first, so a shell whose `AWS_REGION` names another
+Region would otherwise get that Region's profiles, such as `us.` ids in a file
+downloaded from an EU stack.
 
 Three commands take no `--region` because they make no AWS calls at all:
 `config-create`, `config-validate` and `validate-manifest`.
@@ -893,13 +914,13 @@ idp-cli deploy --terraform --from-code . --stack-name my-idp \
 
 With `--from-code`, `deploy --terraform` first builds and publishes the templates and the Terraform module from that checkout (as `publish --source-dir <dir> --terraform` does, honouring `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template`), then deploys that module. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url`.
 
-`deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. CloudFormation-only options (`--from-code`, `--template-url`, `--template-file`, `--tags`, `--custom-config` and the like) are refused with `--terraform`.
+`deploy --terraform` options: `--stack-name` (at most 25 characters; it names the deployment's CloudFormation label stack, so no CloudFormation stack may already use it), `--admin-email` (required on the first deploy), `--parameters` (CloudFormation parameter names, mapped to module variables through the module's `idp-terraform.json`; an unknown name is an error, `Number` values become numbers and list-typed values are split on commas), `--terraform-module-url` (default: the `moduleUrl` in `<prefix>/terraform/idp-terraform-latest.json` beside the region's default template), `--terraform-dir` (default `./idp-terraform/<stack-name>`), `--terraform-bin`, `--terraform-assume-role-arn` (an IAM role both the `aws` and `awscc` providers assume, written into each provider block of `main.tf` in that provider's own `assume_role` syntax; the resources are then created as that role, and you need `sts:AssumeRole` on it), `--terraform-allow-replace-stateful` (see below; `--terraform-allow-replace-retained` is the earlier name), `--headless` or `--govcloud` (deploy the latest module of that variant, from `idp-terraform-<variant>-latest.json`; the two cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless`, whose module has no Cognito), and `--region`. `--wait` is accepted and always implied. The CloudFormation-only options `--template-url`, `--template-file`, `--custom-config`, `--tags`, `--role-arn`, `--no-rollback`, `--log-level` and a non-default `--max-concurrent` are refused with `--terraform`; pass the settings they stand for with `--parameters`. `--from-code` is not among them (see above).
 
 When the module comes from the pointer, idp-cli downloads the zip to read its `idp-terraform.json` and refuses it if its SHA-256 differs from the pointer's `sha256`. That is a consistency check of the copy idp-cli reads, against the manifest beside it: Terraform downloads the module again itself, and that download is not checked. A module named with `--terraform-module-url` is not checked at all, because there is no pointer to compare it with; to verify an archive, see [Verifying the archive](./terraform.md#verifying-the-archive).
 
-The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, the values of the earlier deploy, remembered by CloudFormation parameter name in `idp-cli-parameters.json`, are kept and the new `--parameters` applied over them, as a CloudFormation update keeps parameters it is not given. An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
+The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, the values of the earlier deploy, remembered by CloudFormation parameter name in `idp-cli-parameters.json`, are kept and the new `--parameters` applied over them. Only values that were passed are remembered, not the defaults in effect, so a parameter never passed takes the new module's default: unlike a CloudFormation update, which keeps the previous value of every parameter it is not given, an upgrade to a release that changed a default applies the new one. Pass the old value explicitly to keep it (see [Upgrading](./terraform.md#upgrading)). An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
 
-`delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained. `--force-delete-all` does not apply.
+`delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained, plus the log groups AWS services created for the deployment's resources, which the destroy leaves (see [Deleting](./terraform.md#deleting)). `--force-delete-all` does not apply.
 
 Plain `deploy` and `delete` (without `--terraform`) refuse a Terraform deployment's label stack.
 
@@ -928,21 +949,29 @@ changes something only lists the changes unless given `--apply`, and every phase
 | `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
 | `check-retention` | Nothing (lists every object, and every object version of a versioned bucket, in each kept bucket) | `--accept-expiry KIND` (repeatable) |
 | `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800), `--ignore-document KEY` (repeatable) |
-| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
+| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>`, `--restore-after-apply` (with `--restore`, once the first apply has run) |
 | `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
 | `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
-| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset | `--apply` |
+| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset. Without a `fix-config` backup in the migration directory it checks every profile in the configuration table against its revision history | `--apply` |
 | `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
 | `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
 
 ```bash
 idp-cli terraform migrate-from-genai-idp-terraform plan --stack-name my-idp \
     --region us-west-2 --old-state old-idp.tfstate --admin-email admin@example.com
+# Turn off the old agent-jobs table's time-to-live at least an hour before `apply`
+# (see step 1a of the migration guide for finding the table's name):
+aws dynamodb update-time-to-live --region us-west-2 --table-name <agent jobs table> \
+    --time-to-live-specification Enabled=false,AttributeName=expiresAfter
 idp-cli terraform migrate-from-genai-idp-terraform check-retention --stack-name my-idp --region us-west-2
 idp-cli terraform migrate-from-genai-idp-terraform freeze --stack-name my-idp --region us-west-2 --apply --wait
 idp-cli terraform migrate-from-genai-idp-terraform fix-config --stack-name my-idp --region us-west-2 --apply
 idp-cli terraform migrate-from-genai-idp-terraform adopt-user-pool --stack-name my-idp --region us-west-2 --apply
-idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 --apply
+# An hour or more after the time-to-live disable; without an agent jobs table, omit
+# --accept-change:
+idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 \
+    --accept-change module.idp.aws_dynamodb_table.agent_table:ttl-changed --apply
+idp-cli terraform migrate-from-genai-idp-terraform restore-config --stack-name my-idp --region us-west-2 --apply
 idp-cli terraform migrate-from-genai-idp-terraform detach --stack-name my-idp --region us-west-2 \
     --old-terraform-dir ./old-idp --apply
 idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my-idp \
@@ -2665,8 +2694,8 @@ Validate a configuration file against system defaults and Pydantic models. Catch
 - **Model IDs** - Verifies every Bedrock model ID the configuration names is in `config_library/pricing.yaml`: each section's model, the confidence, escalation, review-agent, chat, agent, discovery, rule-validation and evaluation models, the per-class `x-aws-idp-extraction-model`, `x-aws-idp-extraction-escalation-model` and `x-aws-idp-confidence-escalation-model` overrides, and the `model` in the `x-aws-idp-evaluation-method-config` of any field evaluated with `LLM`. `config-upload` runs the same check unless given `--no-validate`. An ID is compared as written, so one with surrounding spaces or in upper case is reported like any other typo. Embedding-model fields are not checked, because `pricing.yaml` prices no embedding model. A model named by an ARN whose underlying model cannot be determined offline is a warning rather than an error
 - **Placeholder Validation** - Ensures required placeholders are present in custom task_prompts:
   - `ocr.task_prompt` (bedrock only): Requires `{DOCUMENT_IMAGE}`
-  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
-  - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`
+  - The task prompt of each classification call the strategy makes (for example `classification.combined.page.task_prompt`): Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` may appear at most once (comments removed), because classification refuses the prompt otherwise. The prompt is checked as classification builds it: after the placeholder removal `modality.images: false` applies (every `{DOCUMENT_IMAGE}` is removed), and with the class-confidence block (`task_prompt_topk`, `task_prompt_verbalized` and their packet variants) added, so a `{DOCUMENT_IMAGE}` inside that block is counted as classification counts it. An empty prompt is checked as the shipped prompt classification sends in its place. The section-classification prompt is not checked under `method: decision_model` unless `low_confidence.on_low_confidence` is `llm`, because it is not sent otherwise
+  - `extraction.task_prompt`: Requires `{DOCUMENT_TEXT}` OR `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` may appear at most once, because extraction refuses the prompt otherwise. The same limit is checked on the integrated-confidence extraction prompt when `extraction.confidence.mode` is `integrated`, and on each class's `x-aws-idp-extraction-task-prompt`
   - `extraction.confidence.task_prompt` (unless `extraction.confidence.mode` is `off`): Requires `{EXTRACTION_RESULTS}`, and at least one of `{DOCUMENT_TEXT}`, `{OCR_TEXT_CONFIDENCE}` or `{DOCUMENT_IMAGE}`. `{DOCUMENT_IMAGE}` is not required on its own, because leaving it out is how the confidence pass is made text-only. A pre-0.6 `assessment.task_prompt` is checked at this path, where the migration moves it. `{DOCUMENT_IMAGE}` may appear at most once in the prompt the confidence pass sends — this prompt with comments removed, plus `extraction.geometry.task_prompt_bbox` when `extraction.geometry.mode` is `llm` or `llm_grounded` — because the pass refuses the document otherwise. An explicit empty prompt (`task_prompt: ""`, or one holding only a comment) is refused for the same reason. Both checks run in `integrated` mode too, where the separate pass still runs for some sections; leave the key out to use the system default
   - `summarization.task_prompt`: Requires `{DOCUMENT_TEXT}`, `{EXTRACTION_RESULTS}`
 - **JSON Schema Fields** - Warns about non-standard fields (e.g., `data_type`)
@@ -2810,6 +2839,15 @@ Process under it with: --config-profile lending --config-revision 7
 Nothing is printed when the stack has no revision history. A save that changes
 nothing records no new revision, so the number printed is then the revision
 already current — which is still the correct one to pin.
+
+**Warnings:** when validation runs (the default), the command prints the same
+warnings [`config-validate`](#config-validate) reports for the file, under a
+`Warnings:` heading: for example an unread key, with the field it was probably
+meant to be, or a class whose prompt is too short for prompt caching to engage.
+They are non-fatal. The configuration is stored and the exit code stays 0. When
+validation refuses the upload, the warnings are printed beside the error,
+because an unread key is often the reason a value did not take. With
+`--no-validate`, nothing is checked and no warnings are printed. Both commands print each warning exactly as written, so a key or value containing square brackets is shown verbatim.
 
 ---
 

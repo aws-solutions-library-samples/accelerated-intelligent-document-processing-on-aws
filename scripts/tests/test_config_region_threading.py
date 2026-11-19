@@ -315,6 +315,57 @@ def test_model_utils_allowance_premise_holds():
 
 
 @pytest.mark.unit
+def test_the_bridge_sets_the_variable_idp_common_reads_first(monkeypatch):
+    """The SDK bridges the Region into whichever variable ``stack_region`` prefers.
+
+    ``idp_common.regional_models.stack_region`` picks the inference profile for every
+    model key a configuration leaves out, and it reads one environment variable
+    before the other. Which one is measured here rather than restated, by setting
+    both to different Regions. The bridge in ``_configure_config_env`` must write
+    that variable as well as ``AWS_DEFAULT_REGION`` (which the model-limits read
+    above needs); writing only ``AWS_DEFAULT_REGION`` left a shell whose
+    ``AWS_REGION`` named another Region resolving those keys for that Region.
+    ``lib/idp_sdk/tests/unit/test_config_operations_extended.py`` drives the
+    behaviour end to end.
+    """
+    from idp_common.regional_models import stack_region
+
+    monkeypatch.setenv("AWS_REGION", "eu-central-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ca-central-1")
+    preferred = {
+        "eu-central-1": "AWS_REGION",
+        "ca-central-1": "AWS_DEFAULT_REGION",
+    }[stack_region()]
+
+    tree = ast.parse(
+        (REPO_ROOT / "lib/idp_sdk/idp_sdk/operations/config.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    bridge = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_configure_config_env"
+    )
+    written = {
+        target.slice.value
+        for node in ast.walk(bridge)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Subscript)
+        and ast.unparse(target.value) == "os.environ"
+        and isinstance(target.slice, ast.Constant)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "region"
+    }
+    assert {preferred, "AWS_DEFAULT_REGION"} <= written, (
+        f"_configure_config_env writes the region into {sorted(written)}; "
+        f"stack_region() reads {preferred} first, so both it and "
+        "AWS_DEFAULT_REGION must be bridged"
+    )
+
+
+@pytest.mark.unit
 def test_bootstrap_tools_allowance_premise_holds():
     """``bootstrap_tools``'s premise: not reachable from a CLI command.
 

@@ -69,10 +69,28 @@ was.
 
 `modality` flags are tri-state. `None` — the default — means *infer from this
 call's own task prompt placeholders*. Setting one explicitly rewrites that
-prompt to match: `_apply_modality_to_prompt` removes a placeholder together with
-its wrapping element when that element held nothing else, or appends a wrapped
-placeholder when the prompt has none. Both directions are logged with the
-call's path.
+prompt to match: `_apply_modality_to_prompt` removes every occurrence of the
+placeholder, taking a wrapping element with it when that element held nothing else
+(`strip_placeholder`), or appends a wrapped placeholder when the prompt has none.
+Both directions are logged with the call's path.
+
+Every call's task prompt is assembled by the module-level
+`classification_task_prompt_as_sent`: the modality rewrite
+(`apply_modality_to_prompt`), then the class-confidence splice
+(`compose_class_confidence_prompt`). `validate_config` calls the same function, so
+it counts `{DOCUMENT_IMAGE}` in the prompt the service sends, including one written
+inside the confidence block.
+
+`{DOCUMENT_IMAGE}` may appear at most once in a prompt. The three content builders
+(`_build_content`, `_build_context_content`, `_build_packet_content`) refuse a
+repeat with `DocumentImagePlaceholderError` before splitting on
+`{FEW_SHOT_EXAMPLES}`, so one placeholder either side of the examples counts as
+two. Section classification checks its prompt once, in `_classify_segments`,
+before the per-segment calls, because a refusal inside one of them would be
+recorded as that segment's failure and the document would carry on unclassified.
+The rule is `check_document_image_placeholder` in
+`idp_common/document_image_placeholder.py`, shared with extraction, the confidence
+pass and `validate_config`.
 
 A model that does not accept images refuses the request without naming the
 setting that sent them, so `_invoke_bedrock_model` appends a sentence naming the
@@ -125,8 +143,14 @@ same fold page-level classification uses, so the two granularities cannot
 disagree about how verdicts become segments. **The earlier window wins for an
 overlapping page**: it is the one that saw the pages before them, which is what a
 boundary decision mostly rests on. A single window is used directly rather than
-folded, so the common case is byte-identical to the unwindowed path — unless its
-segments overlap. **Within one call the segment reported first wins**, which is the
+folded, so the common case keeps the model's own segments (their scores and
+candidates) — unless its segments overlap. They are put in page order, by first
+page, because a reply may list documents in any order and sections are numbered
+in segment order; the fold produces page order by construction, so without the
+sort a packet that fits one window was numbered differently from the same packet
+windowed, and evaluation pairs a section with the baseline's by `section_id`. The
+tie-break under `sectionSplitting: disabled` (earliest segment) reads that order
+too. **Within one call the segment reported first wins**, which is the
 order the per-page claim already walks for a windowed packet, so a single call whose
 segments share pages goes through the same claim and fold and every page lands in
 exactly one segment (#1654). A segment that lost pages to an earlier segment of the
@@ -135,6 +159,38 @@ documents that share a page stay two sections; a page lost to an **earlier windo
 is the leading overlap, and the pages after it continue that window's document. The
 fold carries no `candidates`, so a merged segment built entirely from one reported
 segment gets that segment's list back, and one assembled from several gets none.
+
+**No page the model was shown is dropped (#2037).** Nothing obliges a packet
+call's ranges to cover every page it was shown, and the commonest omission is the
+last page. After the merge, `_place_pages_no_segment_holds` joins each such page to
+the segment of the page before it **in a call that was shown both**, or, when no
+page precedes it in that call, to the segment of the page after it. The neighbour is
+bounded to one call so that a page never joins a document across a window that
+failed, or across a window junction with no overlap, where "the page before it" was
+answered by a different call that never saw it. The earliest answering window
+holding the page decides, as in the merge. A run of several missing pages goes the
+same way as a whole. This covers the single-window return as well as the fold, and
+the splitting call at packet granularity as well as the combined call, since both
+go through `_packet_segments`. The joined pages are listed in the segment's
+`filled_page_ids`, and once sections exist `_record_filled_page_issues` records a
+`classification_page_assigned_to_neighbour` warning on each section that received
+one, naming the pages. A page carries its segment's class and confidence like any
+other page of it, which is the reading `_single_section_from_segments` gives a page
+with no verdict of its own. Two cases are not placed, and one stage treats a
+placed page differently:
+
+- a page whose every window **failed**: no call decided anything about it, and the
+  failure is already in `document.errors`;
+- any page under **`sectionSplitting: disabled`**: the one section already holds
+  every page, so nothing is lost, and placing them would only add them to the
+  page-weighted vote for the document's class;
+- section classification under split-then-classify: `labeling.pages: first` and
+  `first_k` skip a segment's filled pages when choosing which pages to send, so a
+  cover or separator sheet the splitting call left out does not decide the class
+  (`all` still sends every page).
+
+Re-asking the model about the missing pages is the alternative. It was not chosen
+because it costs another call per occurrence and can return the same omission.
 
 A window the model refuses as too long (`is_input_token_overflow`), or as carrying
 too many images (`is_image_count_rejection`: the per-request image cap, and the
@@ -164,6 +220,18 @@ a reply naming an invalid class re-prompts the window up to
 `validation.maxValidationRetries` times, and a segment still invalid afterwards is
 given `fallback_class`.
 
+A packet call's reply that is not JSON — combined, or the splitting call at packet
+granularity — is re-prompted once on the same loop: the request is re-sent with a
+line asking for the JSON only, whatever the validation settings. A second reply that
+is not JSON fails the window with an error naming the document and saying the reply
+could not be parsed, so a one-window document fails with it. A reply cut off at
+`max_tokens` is not re-prompted, because the re-prompt would be cut off too: the
+window fails with an error saying so. A reply to a class re-prompt that cannot be
+used (not JSON, no segments, or no usable segment) keeps the answer already
+received, as an overflowing re-prompt does. Every reply a window received is
+metered, including those of a window that then failed (#2035). The page and section classification paths are unchanged: an
+unparseable reply there is read as text, or handled as an invalid class.
+
 ### The segments contract
 
 Every path produces `list[Segment]` and one builder reads it:
@@ -174,6 +242,8 @@ class Segment:
     page_ids: List[str]
     doc_class: Optional[str] = None   # None until section classification fills it
     confidence: Optional[float] = None
+    candidates: List[Dict[str, Any]] = field(default_factory=list)
+    filled_page_ids: List[str] = field(default_factory=list)  # placed by the service, not the model
 ```
 
 `_sections_from_segments(document, segments, page_results=None)` is the only
@@ -203,6 +273,42 @@ into extraction as though it had been decided. An out-of-vocabulary answer that
 exhausts its retries gets `fallback_class` (which may be a real class), and
 `_invoke_with_class_validation` returns the validation error so the section records
 `classification_invalid_class_fallback`, as the page-level path does.
+
+A call that fails with a throttle or another transient error (`is_transient_error`)
+is not recorded on its section. This holds for a section classification call, for a
+splitting call at page granularity, and for a packet window at either stage. For the
+decision-model method the client decides instead: only a failure it reports as
+`retry_later` (a request that never ran) is transient, so a read timeout or a dropped
+connection still fails the section. In a pool of calls, the first transient failure cancels the calls not
+yet started, and once the running ones finish it is raised as `TransientError`. A
+packet window raises at once, so the windows after it are never sent. The
+classification Lambda reports it under that name, which `ClassificationStep` retries
+(#2034). Recorded on the section, it would instead fail the whole document in
+ProcessResults with an error no retrier matches.
+
+#### Section classification by a decision model
+
+With `section_classification.method: decision_model`,
+`DecisionModelSectionLabeler` (`decision_model_labeler.py`) asks each section one
+`choice` question whose options are the classes and their descriptions. With
+`decision_model.input` `text` or `both` it joins the section's first `max_pages`
+pages into one state (`Page 1:` and its text, then `Page 2:`, and so on).
+
+**That text is cut from the end to fit `decision_model.max_input_tokens`** (#2032),
+which counts the text, the page images and the question with every class
+description together (default 3584: the 4,096-token window less 512 for the
+model's own prompt). Cutting from the end keeps the first page whole whenever it
+fits, the cut falls at a line break where it can, and each cut is logged at info
+with the pages and the characters dropped. **Text beyond the limit is cut and never
+read by the decision model**, so a class cue that appears only in the cut part is
+not seen. The counts are estimates from characters
+(`idp_common.decision_model.estimate_tokens`); see the
+[decision_model README](../decision_model/README.md#fitting-the-window-max_input_tokens).
+With `input: images` there is no text and nothing is cut. A section whose text would
+be cut to nothing, because the question and images already fill the limit, is not
+sent: `fit_text` raises `DecisionModelRefused`, and the section fails like any
+refused call, so it is labelled `unclassified` rather than classified from no
+evidence.
 
 #### Which placeholders a stage is allowed to render
 
@@ -467,7 +573,19 @@ class *and* confidence, so silence does not count as disagreement.
 `document_shape.maxPagesForClassification` applies only under `disabled`. There,
 `_limit_pages_for_classification` classifies the first N pages and the whole document
 takes the class that vote returns; a document at or under the limit is classified in
-full. Under `llm_determined` or `page` the limit is ignored with a warning at
+full. `_apply_limited_classification_to_all_pages` then rebuilds the one section
+over every page and carries the sample's `errors`, metering, metadata and the
+processing issues on the sample's section onto it, so a warning recorded on the
+sample (an out-of-vocabulary class coerced to the fallback, a page with nothing to
+classify) is on the document's section rather than dropped with the sample. A
+content-filter block on the sample still fails the document rather than being
+soft-failed, because the sample's class is extrapolated to pages the model never
+saw: soft-failed, a blocked first page under a limit of 1 completes the whole
+document as `unclassified` with no error and an issue naming only that page.
+Without a limit every page is sent, so a blocked page is outvoted by the pages that
+were classified.
+
+Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only documents longer than N while
 sectioning shorter ones normally.
 
@@ -776,7 +894,10 @@ classification:
   resulting `PageClassification.classification.metadata` then carries a
   `validation_error` string, and a warning-severity
   `classification_invalid_class_fallback` issue is recorded on the section (see
-  below). The document is **not** failed.
+  below). The document is **not** failed. `validate_config` warns when the
+  fallback is neither `unclassified` nor a configured class
+  (`_validate_fallback_class` in `config/merge_utils.py`), because such a page has
+  no extraction schema.
 
 > At **packet granularity** a reply naming an invalid class for any segment
 > re-prompts the whole window, and a segment still invalid after the retries gets
@@ -796,13 +917,14 @@ page-granularity path, immediately after section splitting, and
 turns each page classification that carries an `error` or a `validation_error` into
 a `ProcessingIssue` on the section holding that page.
 
-⚠️ **It has one call site, in `_classify_pages_multimodal`.**
-`packet_classify_document` does not call it and records none of these: it decides
+⚠️ **It is called from `_classify_pages_multimodal` and from
+`split_then_classify_document`** (for the segments whose section classification
+failed). `packet_classify_document` does not call it and records none of these: it decides
 per *segment* rather than per page and never builds the `List[PageClassification]`
 this takes, so covering it is real work rather than an extra call. A page that
-falls inside no segment's range is appended to no section either, producing
-neither data nor a record; the range is now *logged* when it covers no page of
-the document, but the per-page issue is still follow-up work.
+falls inside no segment's range is not lost: it joins a neighbouring segment and
+its section records `classification_page_assigned_to_neighbour` (see
+[Windowing and merging](#windowing-and-merging)).
 
 **Why it exists.** Nothing in this service produced a `ProcessingIssue` before, and
 neither of the two places the reason was written reaches a user:
@@ -828,20 +950,64 @@ document-level issue would raise that count and then have no text to show for it
 | `error` | `no_content`, `page_empty` true or absent | `classification_page_no_content` | warning | `classify_page_bedrock` |
 | `error` | `no_content`, `page_empty` false | `classification_failed` | error | `classify_page_bedrock` (a read failed or an artifact is missing) |
 | `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` |
+| `error` (a content-filter block) | `failed` | `classification_failed` | error | `_classify_pages_multimodal`, for a page whose Bedrock reply a content filter withheld (`_content_filtered_page_result`) |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
+
+The message is chosen per section after the sections are built. When the class the
+page's own result carried (`unclassified`, or the fallback class) is not the class
+its section ended up with, it says the page took the section's class and names it,
+because that page is extracted against the section's schema; when the section's
+class is not in `valid_doc_types` it says instead that there was no schema and
+nothing was extracted, and when the section's class is excluded from processing it
+says that and that nothing was extracted (this runs before `_mark_excluded_sections`,
+so it reads the class's `excluded` flag itself; the ordinary fallback wording, which
+says extraction ran against the fallback's schema, is replaced the same way). Relabelling happens under `sectionSplitting: disabled`, whose
+one section gives every page the winning class, and on a document-name regex match,
+where `_pin_page_class` overwrites every page's class before splitting and keeps the
+class it had in `metadata["class_before_pin"]` (`CLASS_BEFORE_PIN_KEY`), which the
+comparison reads. It is the comparison, not the setting, that picks the wording, so a
+disabled document whose pages all failed, or whose fallback class won the vote, gets
+the ordinary wording.
+
+**The zero-inference short-circuits report an empty page too.** A document-name
+regex match, or a single-class configuration, under a `sectionSplitting` that needs
+no boundary signal goes to `_create_single_class_sections` and calls no model. There
+`_short_circuit_empty_pages` reads each page's text, but only where
+`classify_page_bedrock` would have reported the page (Bedrock backend, combined
+strategy, page granularity, images resolved off; under `maxPagesForClassification`, only the sample `_limit_pages_for_classification` picks), and gives a blank page the same
+`no_content` metadata with `class_before_pin` set to `unclassified`, so the
+recorder words it as a page given the asserted class. A failed read or a missing
+text URI is logged and not reported, and does not fail the document. Everywhere
+else the short-circuits still read nothing.
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
 
-**On the Bedrock backend `classification_failed` comes only from a page that could
-not be read.** A no-content result whose `page_empty` is false gets the error code,
-because the page may have content nobody looked at. All four default-reason call
-sites are in `classify_page_sagemaker`; `classify_page_bedrock`
-re-raises from its `except`, and the thread-pool handler that catches it does not
-append the page to `all_page_results`, so this function never sees it. No signal is
-lost — that path marks the document `FAILED`, and `document.errors` *is* read on a
-failed document — so apart from read failures the error-severity code is a
-UDOP-backend code in practice.
+**On the Bedrock backend's page path `classification_failed` comes from two
+cases: a page that could not be read, and a content-filter block.** A no-content
+result whose `page_empty` is false gets the error code, because the page may have
+content nobody looked at. The four default-reason call sites of
+`_create_unclassified_result` are in `classify_page_sagemaker`. `classify_page_bedrock` re-raises from its `except`, and
+for any error but one the thread-pool handler that catches it does not append the
+page to `all_page_results`, so this function never sees it. No signal is lost — that
+path marks the document `FAILED`, and `document.errors` *is* read on a failed
+document. The one exception is a reply Amazon Bedrock's content filter withheld
+(`bedrock_utils.is_content_filter_block`): the handler builds an unclassified result
+for that page with the block as its `error`,
+appends it to `all_page_results`, and keeps it out of `document.errors` and
+`failed_page_exceptions`, so the page's section carries the error and the rest of the
+document completes. Retrying the step would send the same page to the same filter.
+Two cases keep failing the document instead: a document-name class pin
+(`forced_class`), where `unclassified` would split the asserted document around
+the page, and a page-limited sample (`content_filter_fails_document=True` from
+`classify_document`), because `_apply_limited_classification_to_all_pages` rebuilds
+the sections and carries only `document.errors` across, so an issue on the sample
+would be lost and the block recorded nowhere.
+Split-then-classify treats a blocked section classification call the same way in
+`_classify_segments`: the segment is labelled `unclassified` and gets the issue, and
+the block is not added to the errors that fail the document. A blocked packet window
+or splitting call is not covered: its pages belong to no segment, so there is no unit
+to mark, and the failure still fails the document.
 Note that a test mocking `classify_page`'s **return value** cannot surface this,
 since a returned unclassified result is SageMaker-shaped by construction.
 

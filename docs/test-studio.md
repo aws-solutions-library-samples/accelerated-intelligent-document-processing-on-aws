@@ -64,6 +64,8 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 
 All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration profile** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles) for details.
 
+Each dataset's test set id is fixed: `realkie-fcc-verified`, `ocr-benchmark`, `docsplit` and `fake-w2`. A stack create or update refreshes the stack's own set under that id, but if you created a set with one of those ids yourself, the deployment leaves your set and its folder untouched and does not deploy that dataset; the stack still updates, and the custom resource's response reports `ID_IN_USE`. To get the dataset, delete your set; the deployer runs again only on a stack update that changes it, such as an upgrade to a release with a changed deployer, and deploys the dataset then.
+
 ---
 
 ### RealKIE-FCC-Verified
@@ -622,16 +624,22 @@ documents and is immediately usable as a destination for any of the sources unde
 Every source shares three optional fields:
 
 - **Name** — letters, numbers, spaces, hyphens and underscores (max 50). Becomes
-  the test set id.
+  the test set id, lowercased with spaces replaced by hyphens, so `My Set` and
+  `my-set` are the same id. Uploading, starting from bucket files and starting
+  empty all refuse a name whose id is already taken rather than replacing that
+  set; to grow an existing set, use
+  [Adding Documents](#adding-documents-to-existing-test-sets).
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
   (packets that split into several sections).
 
 The **From files already in a bucket** step adds a **Modified after** filter —
-a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
+a preset (last hour, 24 hours, 7 days, …) or a custom date and time, read as UTC, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
-files** button that reports the match count before you commit. When reading from
+files** button that reports the match count before you commit. Changing the
+bucket, the pattern or the time filter clears that count, and a check still
+running when you change one of them is discarded rather than shown. When reading from
 the input bucket, a matching document with no ground truth in the evaluation baseline
 bucket is added **unlabeled**, as it is from every other source: its input is copied
 and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
@@ -640,7 +648,7 @@ one unlabeled document makes the whole set read as `unlabeled` until it is
 draft-labeled. A pattern re-applied when adding documents leaves every document
 already in the set as it is, labeled or not, so labels drafted or reviewed in the set
 are never replaced by the copy in the bucket. A set whose every match is unlabeled is created as an unlabeled set.
-From the input bucket a `.zip` the pattern matches is left out, because a `.zip`
+From either bucket a `.zip` the pattern matches is left out, because a `.zip`
 written into a set's folder is read as a test-set upload; a pattern that matches
 only `.zip` files fails with that reason. Every other matching file is copied.
 Patterns match the full
@@ -655,6 +663,30 @@ Once a set exists, select it and use **Actions** to browse its documents, annota
 its ground truth, add more documents, edit its details, or delete it. Opening the
 set — by clicking its name, or **Actions** → **Browse documents** — is where you
 generate draft labels, annotate, prune documents and publish a version.
+
+#### Deleting test sets
+
+Deleting a set removes every file under its folder and then its record. A set that
+a job is still writing — status `QUEUED`, `COPYING`, `UPDATING` (adding documents,
+or a pre-deployed dataset being refreshed) or `GENERATING` — cannot be deleted
+until that job finishes; the delete is refused with the set's status, and any
+other selected sets are still deleted. A set whose job died is moved to `FAILED`
+after a while (two hours for a copy, twelve for a generation) and can then be
+deleted. A set left in one of those statuses by an older release, which recorded
+no time for the status and so is never moved to `FAILED`, can be deleted
+directly.
+
+While its files are being removed a set shows `DELETING`. If some files cannot be
+removed, the set is kept, marked `FAILED` with the reason, and the delete reports
+an error; delete it again to finish. The record is kept on purpose: a folder with
+no record is picked up as a [direct upload](#creating-test-sets) and would come
+back as a new set.
+
+When only some of the selected sets go, the Test Sets list reloads at once, so the
+deleted ones disappear, and the error reads **Deleted N of M test sets** followed
+by the reason for each set that was refused or could not be finished. If the
+list cannot be reloaded either, the error says that some sets may not have been
+deleted; refresh the page to see which.
 
 ### Browsing Test Set Documents and Ground Truth
 
@@ -743,7 +775,7 @@ On the table, the set shows an "Updating..." status while files are being added 
 - **Documents without ground truth arrive unlabeled**: From the Input Bucket, by pattern or **From processed documents**, a file with no matching baseline data in the evaluation bucket is added without labels rather than skipped. Adding one to a labeled or draft-labeled set makes the set read as `unlabeled` until you run **Generate draft labels**; its existing labels are kept. From the Test Set Bucket, every matching file must still have a baseline folder, or the add fails.
 - **Existing documents are kept**: Adding from a bucket or from processed documents skips a document already in the set, so labels drafted or reviewed in the set are never overwritten by the copy in the bucket. A zip upload still writes over the input and baseline files it contains. To take a newer copy of a document's ground truth from the evaluation baseline bucket, remove the document from the set and add it again. File counts are always recounted from S3 for accuracy.
 - **Prepopulated file pattern**: The file pattern field is pre-filled with the pattern used to create the test set, so you can reuse or adjust it.
-- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
+- **Time filter**: Use the "Modified after" filter — choose a preset (Last 1 hour, 4 hours, 24 hours, 7 days, 30 days) or select "Custom date/time" with a date picker to specify an exact cutoff, read as UTC; a date or time that is not real is refused beside the field. **Add Documents** copies against the cutoff **Check Files** counted with, so a file counted under a window such as "Last 24 hours" is not left out because it aged out of the window before you pressed **Add Documents**. This makes it easy to pick up recently reviewed documents without crafting complex patterns. It picks up documents new to the set only: a document already in the set keeps its copy even if its ground truth was reviewed again since.
 
 ### File Structure Requirements
 ```

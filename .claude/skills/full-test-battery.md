@@ -187,7 +187,7 @@ Two invocation corrections for the CI-equivalent gates:
   [#1152](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1152).
 - **Do not reach for `PYTHONPATH` to make `make typecheck` resolve first-party
   imports, and do not conclude from that that the tool ignores the environment.**
-  `pyrightconfig.json`'s `extraPaths` names the five first-party roots, so resolution
+  `pyrightconfig.json`'s `extraPaths` names every first-party root, so resolution
   is a property of the configuration rather than of the invocation. Measured on the
   current tree the two agree exactly — same error count, same warning count, same exit
   status — both with `PYTHONPATH` exported and under `env -u PYTHONPATH`. The point is

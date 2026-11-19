@@ -33,8 +33,14 @@ _REPO = Path(__file__).resolve().parents[4]
 #: detection.
 LOCAL_DISCOVERY_SECTIONS = ("with_ground_truth", "without_ground_truth", "auto_split")
 
-#: Every module that calls ``regional_shipped_model``, and how many times.
-CALLERS = {"lib/idp_sdk/idp_sdk/operations/discovery.py": 2}
+#: Every module that calls ``regional_shipped_model``, and how many times. The
+#: ``config/models.py`` call translates a configuration field's declared default for
+#: an absent key; ``tests/unit/config/test_regional_field_defaults.py`` holds every
+#: such default to :data:`~idp_common.regional_models.FALLBACK_MODEL_IDS`.
+CALLERS = {
+    "lib/idp_sdk/idp_sdk/operations/discovery.py": 2,
+    "lib/idp_common_pkg/idp_common/config/models.py": 1,
+}
 
 
 @pytest.mark.parametrize("section", LOCAL_DISCOVERY_SECTIONS)

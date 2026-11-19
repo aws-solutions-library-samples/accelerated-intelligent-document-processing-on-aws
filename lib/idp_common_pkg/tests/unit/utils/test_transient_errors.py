@@ -269,6 +269,41 @@ class TestProducersInThisCodebase:
         )
 
 
+@pytest.mark.unit
+class TestBareHttpServerStatus:
+    """#2036: botocore uses the bare HTTP status as the code when a reply names no
+    error type (``"500"``, ``"Internal Server Error"``). A 500, 502, 503 or 504 there
+    is the server failing, so it is transient; nothing else about the status is."""
+
+    @pytest.mark.parametrize("code", ["500", "502", "503", "504"])
+    def test_a_bare_server_error_status_is_transient(self, code):
+        assert is_transient_error(_client_error(code, "Internal Server Error")) is True
+
+    @pytest.mark.parametrize("code", ["400", "404", "501", "505"])
+    def test_any_other_bare_status_is_not(self, code):
+        assert is_transient_error(_client_error(code)) is False
+
+    def test_a_named_code_is_judged_by_its_name_not_its_status(self):
+        """Lambda answers ``KMSAccessDeniedException`` with a 502, and it is
+        deterministic, so rule 1 holds: a named code decides on its own."""
+        denied = botocore.exceptions.ClientError(
+            {
+                "Error": {"Code": "KMSAccessDeniedException", "Message": "x"},
+                "ResponseMetadata": {"HTTPStatusCode": 502},
+            },
+            "Invoke",
+        )
+        assert is_transient_error(denied) is False
+
+    def test_a_bare_server_error_status_is_found_through_a_wrapper(self):
+        try:
+            raise RuntimeError("model call failed") from _client_error("500")
+        except RuntimeError as wrapped:
+            assert is_transient_error(wrapped) is True
+            with pytest.raises(TransientError):
+                raise_if_transient(wrapped, where="classification")
+
+
 class TestInvalidToolUseSequenceIsNotTransient:
     """#895: ``modelStreamErrorException`` stays transient as a CODE; only the
     "Model produced invalid sequence as part of ToolUse" OUTCOME is deterministic."""

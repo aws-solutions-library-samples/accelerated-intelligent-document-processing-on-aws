@@ -220,7 +220,7 @@ Where each coefficient is `1` if the corresponding trigger is enabled and `0` ot
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `CircuitBreakerEnabled` | `false` | Master switch. Set to `true` to provision the alarm, SNS topic, manager Lambda, and traffic gate. |
-| `CircuitBreakerTriggerServiceUnavailable` | `true` | Count 503 `ServiceUnavailableException` errors toward threshold. |
+| `CircuitBreakerTriggerServiceUnavailable` | `true` | Count `BedrockServiceUnavailable` errors (see [Error categories](#error-categories)) toward threshold. |
 | `CircuitBreakerTriggerThrottling` | `false` | Count `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded`. |
 | `CircuitBreakerTriggerQuotaLimit` | `false` | Count `ServiceQuotaExceededException`. |
 | `CircuitBreakerFailureThreshold` | `3` | Combined error count per 5-minute period to breach. |
@@ -228,7 +228,7 @@ Where each coefficient is `1` if the corresponding trigger is enabled and `0` ot
 | `CircuitBreakerRecoveryTimeoutSeconds` | `300` | Seconds before automatic OPEN → HALF_OPEN transition. |
 | `CircuitBreakerErrorHandlerArn` | (empty) | Optional Lambda ARN invoked on state changes for custom handling. |
 
-**Default behavior when enabled**: 3 or more `ServiceUnavailableException` errors in a single 5-minute window open the breaker. Throttling and quota-limit errors are not counted by default because those usually indicate client-side load issues, not a Bedrock outage. Enable additional triggers to protect against sustained throttling or quota exhaustion.
+**Default behavior when enabled**: 3 or more `BedrockServiceUnavailable` errors in a single 5-minute window open the breaker. Throttling and quota-limit errors are not counted by default because those usually indicate client-side load issues, not a Bedrock outage. Enable additional triggers to protect against sustained throttling or quota exhaustion.
 
 ## Error categories
 
@@ -236,7 +236,7 @@ The Bedrock client in `idp_common` emits category-specific CloudWatch metrics un
 
 | Metric | Bedrock exception code(s) | Typical cause |
 |--------|---------------------------|---------------|
-| `BedrockServiceUnavailable` | `ServiceUnavailableException` (503) | Bedrock service degradation or regional outage |
+| `BedrockServiceUnavailable` | `ServiceUnavailableException`, or an HTTP 503 whose code names no other category. On the bedrock-mantle path (OpenAI models), any HTTP 500 or above | Bedrock service degradation or regional outage |
 | `BedrockThrottling` | `ThrottlingException`, `TooManyRequestsException`, `RequestLimitExceeded` | Client-side throughput limits reached |
 | `BedrockQuotaLimit` | `ServiceQuotaExceededException` | Account quota exhausted for the model |
 

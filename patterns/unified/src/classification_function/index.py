@@ -16,6 +16,7 @@ from idp_common.classification import apply_forced_document_class
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import raise_if_transient
 from aws_xray_sdk.core import xray_recorder, patch_all
 
 patch_all()
@@ -30,6 +31,24 @@ logging.getLogger('idp_common.bedrock.client').setLevel(os.environ.get("BEDROCK_
 
 @xray_recorder.capture('classification_function')  # pyright: ignore[reportCallIssue] - aws-xray-sdk types capture() as the wrapped function, not the decorator factory
 def handler(event, context):
+    """Classify one document. See ``_handle``.
+
+    Transient causes are re-raised as ``TransientError``, the name
+    ClassificationStep's retrier lists alongside the modeled throttling codes, so a
+    read timeout or a bare ``ClientError`` throttle is retried as a modeled
+    ``ThrottlingException`` already was. The classification service raises one
+    itself when a split-then-classify section or splitting call fails transiently,
+    rather than recording it on the section (#2034). Hard errors keep their own
+    name and are not retried.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="classification")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda handler for document classification.
     """

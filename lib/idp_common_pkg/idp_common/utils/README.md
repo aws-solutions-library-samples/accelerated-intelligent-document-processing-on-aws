@@ -74,6 +74,13 @@ a retry loop's chained attempts or a swallowed transient error cannot make an
 unrelated deterministic failure look transient); message markers are limited to
 transport text (`Read timed out`, `Connection reset`, ...).
 
+A `ClientError` whose code is a bare HTTP status — botocore's code when a reply names
+no error type, such as `"500"` with the message `"Internal Server Error"` — is
+transient for 500, 502, 503 and 504 (#2036). The status of a *named* code is not
+consulted: Lambda answers several deterministic errors with a 502, so the name still
+decides. The Bedrock ladders go further and retry any 5xx of those four by status
+(see the [bedrock README](../bedrock/README.md#resilience-features)).
+
 ⚠️ **The throttling half of the vocabulary is read from botocore, not listed here.**
 AWS has at least six spellings meaning "you are being rate limited" — `Throttling`,
 `ThrottlingException`, `ThrottledException`, `RequestThrottled`,
@@ -217,6 +224,27 @@ Only `__cause__`, the explicit
 another is being handled, so following it would make a deterministic failure raised
 inside an `except` inherit the transience of what was being handled.
 `transient_errors` follows the same rule for the same reason.
+
+### The one `ValidationException` the retry decorators retry
+
+Both `exponential_backoff_retry` and `async_exponential_backoff_retry` retry a
+`ValidationException` only when it is a content-filter block
+(`is_content_filter_block`: the model's reply was withheld, and a regenerated reply
+can pass). Every other `ValidationException` is a refusal of the request itself and is
+raised on the first attempt. Both decorators decide that through one function,
+`is_unretryable_validation_error`, in the `ClientError` branch and, in the async
+decorator, in the branch that sees a Strands-wrapped error too. It compares the code
+case-insensitively and walks the `__cause__` chain, because an error raised inside a
+`ConverseStream` reply carries the event-stream member name, `validationException`,
+as its code, and Strands wraps the Bedrock error in `EventLoopException` from every
+model call after a tool use. Compared case-sensitively, as it was, the in-stream form
+fell through to the case-folded retryable vocabulary, which lists
+`ValidationException`, so an in-stream refusal was retried; on agentic extraction a
+persistent one was sent six times, until the 90-second backoff allowance ran out
+(measured with the harness below, raw and Strands-wrapped alike). The wrapped form was
+retried by substring whatever it said.
+`tests/unit/utils/test_validation_exception_retry_rule.py` measures both forms with a
+real Strands agent over a real botocore client and hand-framed event streams.
 
 ### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
 

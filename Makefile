@@ -854,8 +854,8 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
 #
-# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
-# first-party package roots on the import path, so `idp_common` resolves whatever
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts every
+# first-party package root on the import path, so `idp_common` resolves whatever
 # PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
 # machine carries editable installs pointing at a sibling worktree and another
 # project (#1094), so an environment-level answer can type-check somebody else's

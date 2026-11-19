@@ -61,6 +61,32 @@ The state is encoded once per request, and every question reads that encoding, s
 asking many questions about one state costs little more than asking one. Batch the
 questions about one page into one request.
 
+## Fitting the window: `max_input_tokens`
+
+The state, the request's images and the longest question must fit the model's
+window together: `CONTEXT_WINDOW_TOKENS`, 4,096 in the decider's v1 release. The
+decider refuses a longer request and never shortens the state, so both call sites
+cut the state before sending, against their `decision_model.max_input_tokens`
+setting (#2032). `budget.py` holds the pieces:
+
+| Name | What it is |
+|---|---|
+| `estimate_tokens(text)` | An **estimate** from characters, since this package has no tokenizer: one token per digit or non-ASCII character, one per two other characters. It errs high. |
+| `PROMPT_RESERVE_TOKENS` | 512, left in the window for the decider's own prompt |
+| `DEFAULT_MAX_INPUT_TOKENS` | the window less that reserve, 3584: the setting's default |
+| `IMAGE_TOKENS` | 256 counted per image (196 for a square page at 448 px) |
+| `state_budget(max_input_tokens, question_tokens, images)` | the text a request can carry beside its question and images |
+| `truncate_to_tokens(text, budget)` | `(kept, characters dropped)`: the text cut from the end, at its last line break where it has one; unchanged when it fits |
+| `fit_text(text, budget, what)` | what both call sites send: the text cut by `truncate_to_tokens`, each cut logged at info naming `what`. Text with content that would be cut to nothing raises `DecisionModelRefused` (logged at warning) instead of being sent empty |
+
+**Text beyond the limit is cut and never read by the decision model**, so a value
+or class cue that appears only in the cut part is not seen. Extraction confidence
+cuts each page's text on its own
+([assessment README](../assessment/README.md#confidence-by-a-decision-model-assessmentdecision_model_confidencepy));
+section classification cuts the section's joined text from the end, so its first
+page stays whole when it fits (`classification/decision_model_labeler.py`). Both
+go through `fit_text`.
+
 ## Backends
 
 `backend: lambda` (or empty) invokes a Lambda function directly, with the request as
@@ -78,11 +104,16 @@ model without one is refused when it is loaded.
 | Exception | Meaning | Retried |
 |---|---|---|
 | `DecisionModelRefused` | the model refused the request: over its context window or request limit, too many images, malformed | never: the same request gets the same answer |
-| `DecisionModelUnavailable` | the call did not complete: throttling past the retries, a timeout, a bad response | throttling and a crashed execution environment are retried, with bounded backoff that stays inside the calling Lambda's deadline; a read timeout is not, because the invocation may still be running and billing |
+| `DecisionModelUnavailable` | the call did not complete: throttling past the retries, a timeout, a bad response | throttling and a crashed execution environment are retried, with bounded backoff that stays inside the calling Lambda's deadline; a read timeout is not, because the invocation may still be running and billing. When throttling, a capacity refusal or a connection that never opened outlasts the retries, the error carries `retry_later=True` and keeps that failure as its `__cause__`: the request never ran, so a caller may retry its whole step. A read timeout, a closed connection, a crashed environment and a malformed response are never `retry_later` |
 
 Neither is ever converted into a call to another model. A configuration that selects
 a decision model uses only the decision model. What a caller does with the error is
 its own decision, and each call site documents its own.
+
+`decide_many` sends several requests, at most `max_concurrency` at once, and raises
+the first failure once every request has finished. `decide_each` sends them the
+same way and puts each failed request's `DecisionModelError` in that request's slot
+instead, so a caller can say which request failed.
 
 The decider's Lambda engine **refuses** a prompt over its window, and the error names
 the token counts. It never truncates the state, so a decision is never made from part

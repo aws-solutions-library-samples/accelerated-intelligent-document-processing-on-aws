@@ -1012,6 +1012,22 @@ The BedrockClient automatically handles common failure scenarios:
   `tests/unit/bedrock/test_retry_ladder_bounds.py` drives a real `bedrock-runtime`
   client with only urllib3's `urlopen` replaced, so the exception is the one botocore
   itself raises (#1706).
+- An HTTP 500, 502, 503 or 504 reply is retried whatever error code it carries, on
+  both `_invoke_with_retry` and `_generate_embedding_with_retry`. That includes the
+  bare status botocore uses as the code when a reply names no error type (`"500"`,
+  message `"Internal Server Error"`), which used to be logged as "Non-retryable
+  Bedrock error" and fail the call on its first attempt (#2036). A 501 or a 4xx is
+  still not retried on these two ladders; the bedrock-mantle path keeps its own rule
+  and retries any status of 500 or above. Each retry is logged as a server error and
+  counts in `BedrockThrottles` (or `BedrockEmbeddingThrottles`) like any retryable
+  error. The category metric goes by the code first: a 503 counts in
+  `BedrockServiceUnavailable`, the circuit breaker's default trigger, unless its code
+  names another category (a throttle carrying a 503 counts as `BedrockThrottling`).
+  The rule is `model_utils.http_server_error_status`. The agentic retry decorators
+  in `utils/bedrock_utils.py` apply it to Bedrock model calls only, and only under
+  their default vocabulary; `utils.transient_errors` uses only its bare-status half
+  (see the [utils README](../utils/README.md)). The Z3 rule translator has its own
+  retry list and does not use it.
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
 - A retry frees the attempt it replaces before it starts. Every ladder here

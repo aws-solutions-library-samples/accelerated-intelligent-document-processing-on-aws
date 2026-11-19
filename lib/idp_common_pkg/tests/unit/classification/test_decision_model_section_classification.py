@@ -15,12 +15,15 @@ Lambda. Four properties are the ones a refactor could lose quietly:
 - **A failed call fails its section** and never becomes an LLM call.
 - **``low_confidence`` routes only answers below the threshold**, and only when
   it is set.
+- **The section's text is cut from the end to fit ``max_input_tokens``** (#2032),
+  so the first page stays whole when it fits; a request with no text is unchanged.
 """
 
 from __future__ import annotations
 
 import io
 import json
+import logging
 from typing import Any, Dict, List
 from unittest.mock import patch
 
@@ -256,3 +259,133 @@ def test_an_empty_question_is_the_shipped_one():
     )
     dm = cfg.classification.split_then_classify.section_classification.decision_model
     assert dm.instructions == "Which type of document is this?"
+
+
+# --- The section's text is cut to fit max_input_tokens (#2032) -----------------
+
+
+def _run_with_texts(service, document, decider, bedrock, texts: List[str]):
+    """``_run`` with each page's own OCR text instead of one shared string."""
+    by_uri = {f"s3://b/{n}.txt": text for n, text in enumerate(texts, start=1)}
+    with (
+        patch("idp_common.s3.get_text_content", side_effect=by_uri.__getitem__),
+        patch("idp_common.image.prepare_image", return_value=_png()),
+        patch.object(service, "_invoke_bedrock_model", side_effect=bedrock),
+        patch("idp_common.decision_model.invoker.boto3.client", return_value=decider),
+    ):
+        return service.split_then_classify_document(document)
+
+
+def _request_tokens(request: Dict[str, Any]) -> float:
+    """What the request holds, by the estimate the labeler cuts against."""
+    from idp_common.decision_model import IMAGE_TOKENS, estimate_tokens
+
+    return (
+        estimate_tokens(request["state"])
+        + estimate_tokens(json.dumps(request["questions"]["doc_class"]))
+        + IMAGE_TOKENS * len(request["images"])
+    )
+
+
+def test_the_first_page_stays_whole_when_the_section_text_is_cut(caplog):
+    from idp_common.decision_model import DEFAULT_MAX_INPUT_TOKENS
+
+    first = "INVOICE 7\nBill to: Acme Corp"
+    second = "\n".join(f"Line {i:04d} widget {i:03d}.00 USD" for i in range(800))
+    third = "Thank you for your business"
+    service = _service(decision_model={"max_pages": 3, "input": "text"})
+    decider = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
+    bedrock, _ = _split((1, 3))
+    with caplog.at_level(logging.INFO):
+        _run_with_texts(service, _document(3), decider, bedrock, [first, second, third])
+
+    (request,) = decider.requests
+    state = request["state"]
+    assert state.startswith(f"Page 1:\n{first}\n\nPage 2:\n")
+    assert third not in state
+    assert _request_tokens(request) <= DEFAULT_MAX_INPUT_TOKENS
+    dropped = [r.getMessage() for r in caplog.records if "Dropped" in r.getMessage()]
+    assert len(dropped) == 1 and "pages 1, 2, 3" in dropped[0]
+
+
+def test_a_lowered_max_input_tokens_is_honoured_for_a_section():
+    texts = ["\n".join(f"Row {i} of page {p}" for i in range(60)) for p in (1, 2)]
+    settings = {"max_pages": 2, "input": "both"}
+    lowered = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
+    default = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
+    for decider, extra in ((lowered, {"max_input_tokens": 900}), (default, {})):
+        bedrock, _ = _split((1, 2))
+        service = _service(decision_model={**settings, **extra})
+        _run_with_texts(service, _document(2), decider, bedrock, texts)
+
+    (cut,) = lowered.requests
+    (whole,) = default.requests
+    assert _request_tokens(whole) > 900
+    assert _request_tokens(cut) <= 900
+    assert whole["state"].startswith(cut["state"]) and cut["state"] != whole["state"]
+    assert whole["state"] == f"Page 1:\n{texts[0]}\n\nPage 2:\n{texts[1]}"
+
+
+def test_a_section_request_with_no_text_or_text_that_fits_is_untouched(caplog):
+    images_only = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
+    short_text = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
+    with caplog.at_level(logging.INFO):
+        bedrock, _ = _split((1, 1))
+        _run_with_texts(
+            _service(decision_model={"max_input_tokens": 256}),
+            _document(1),
+            images_only,
+            bedrock,
+            ["A short page.\n"],
+        )
+        bedrock, _ = _split((1, 1))
+        _run_with_texts(
+            _service(decision_model={"input": "text"}),
+            _document(1),
+            short_text,
+            bedrock,
+            ["A short page.\n"],
+        )
+    assert images_only.requests[0]["state"] == ""
+    assert len(images_only.requests[0]["images"]) == 1
+    assert short_text.requests[0]["state"] == "Page 1:\nA short page.\n"
+    assert not any("Dropped" in r.getMessage() for r in caplog.records)
+
+
+def test_a_section_whose_text_has_no_room_is_failed_rather_than_sent_empty():
+    """Twelve class descriptions fill max_input_tokens, so the section's text
+    would be cut to nothing and a class picked from no evidence. The request is
+    not sent, and the section fails as a refused call does."""
+    classes = tuple(f"class{i:02d}" for i in range(12))
+    service = _service(
+        decision_model={"input": "text", "max_input_tokens": 256}, classes=classes
+    )
+    decider = FakeDecider([])
+    bedrock, _ = _split((1, 1))
+    result = _run_with_texts(
+        service, _document(1), decider, bedrock, ["INVOICE 7, Bill to: Acme"]
+    )
+
+    assert decider.requests == []
+    assert result.sections[0].classification == UNCLASSIFIED_CLASS
+
+
+def test_a_limit_with_no_room_for_section_text_is_refused_at_load():
+    from idp_common.config.models import IDPConfig
+
+    def section(**decision_model):
+        return IDPConfig.model_validate(
+            {
+                "classification": {
+                    "split_then_classify": {
+                        "section_classification": {"decision_model": decision_model}
+                    }
+                }
+            }
+        )
+
+    # 'both' at two pages carries two images, 512 tokens before any text.
+    with pytest.raises(Exception, match="max_input_tokens"):
+        section(input="both", max_pages=2, max_input_tokens=512)
+    assert section(input="both", max_pages=1, max_input_tokens=512)
+    assert section(input="images", max_pages=2, max_input_tokens=256)

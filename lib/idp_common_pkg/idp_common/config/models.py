@@ -53,6 +53,7 @@ from typing_extensions import Self
 from idp_common.regional_models import (
     CLASSIFICATION_MODEL_ID,
     regional_default,
+    regional_shipped_model,
     stack_region,
 )
 
@@ -205,6 +206,61 @@ def _parse_whole_number(v: Any, info: ValidationInfo, cls: type) -> int:
             raise ValueError(f"must be a whole number, got {v!r}")
         return int(v)
     raise ValueError(f"must be a whole number, got {type(v).__name__}")
+
+
+def regional_field_default(model_id: str) -> str:
+    """A configuration field's declared model, callable from the stack's Region.
+
+    A field's declared default is the US inference profile the system defaults
+    ship. The deploy-time swap in ``src/lambda/update_configuration`` rewrites a
+    stored value for the stack's Region, but nothing rewrites a value the model
+    supplies for a key the input does not carry, so without this an EU stack sent a
+    ``us.`` profile, which Bedrock rejects there. Returns what the swap would have
+    written; a Region outside the families in
+    :data:`idp_common.regional_models.REGIONAL_DEFAULT_MODELS` (GovCloud, Asia
+    Pacific, and every other Region the swap leaves alone) gets ``model_id``
+    unchanged.
+    """
+    return regional_shipped_model(model_id, stack_region())
+
+
+def _regional_model_field_names(cls: type[BaseModel]) -> tuple[str, ...]:
+    """The fields of ``cls`` whose declared default is a US inference profile."""
+    return tuple(
+        name
+        for name, field in cls.model_fields.items()
+        if isinstance(field.default, str) and field.default.startswith("us.")
+    )
+
+
+class RegionalModelDefaults(BaseModel):
+    """Resolve an ABSENT model key to the stack's Region's profile.
+
+    Mixed into every configuration model with a model field whose declared default
+    is a ``us.`` profile. A key the input carries is left exactly as given, an
+    explicit ``us.`` id included: only a value the model would otherwise supply from
+    its declaration is translated, through :func:`regional_field_default`. That is
+    the same answer a *cleared* classification model already resolved to
+    (:func:`default_classification_model`), so absent and cleared now agree.
+
+    The declared default stays the US id, so reading ``model_fields[...].default``
+    still gives the value the system defaults ship and the parity tests compare.
+    ``tests/unit/config/test_regional_field_defaults.py`` asserts every such field
+    declared in this module is on a class that inherits this.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _regional_model_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        absent = [name for name in _regional_model_field_names(cls) if name not in data]
+        if not absent:
+            return data
+        resolved = dict(data)
+        for name in absent:
+            resolved[name] = regional_field_default(cls.model_fields[name].default)
+        return resolved
 
 
 class ImageConfig(BaseModel):
@@ -1023,13 +1079,53 @@ class ExternalModelConfig(BaseModel):
 #: is a request, so this bounds how many one section fans out to.
 DECISION_MODEL_MAX_CONFIDENCE_PAGES = 50
 
+#: The default ``decision_model.max_input_tokens``: the decider's 4,096-token window
+#: less the 512 reserved for its own prompt. Stated here rather than imported,
+#: because ``idp_common.decision_model`` imports this module; a test keeps it equal
+#: to ``idp_common.decision_model.DEFAULT_MAX_INPUT_TOKENS``.
+DECISION_MODEL_MAX_INPUT_TOKENS = 3584
+
+#: The least ``max_input_tokens`` accepted, so a request keeps room for a question.
+DECISION_MODEL_MIN_INPUT_TOKENS = 256
+
+#: The placeholders a decision-model question template is filled with per request.
+_QUESTION_PLACEHOLDERS = re.compile(r"\{(?:FIELD|DESCRIPTION|VALUE)\}")
+
+
+def _require_room_for_text(
+    max_input_tokens: int, templates: List[str], images: int, path: str
+) -> None:
+    """Refuse a ``max_input_tokens`` that the question and images fill on their own.
+
+    Only a template's fixed words are known when a configuration loads, not the
+    field names, descriptions, values or class descriptions it is filled with, so
+    this catches the limits that can never work. A request that still runs out of
+    room at run time is refused there instead of being sent with no text.
+    """
+    # Imported here: idp_common.decision_model imports this module.
+    from idp_common.decision_model.budget import IMAGE_TOKENS, estimate_tokens
+
+    question = max(
+        estimate_tokens(_QUESTION_PLACEHOLDERS.sub("", t)) for t in templates
+    )
+    reserved = question + images * IMAGE_TOKENS
+    if max_input_tokens <= reserved:
+        raise ValueError(
+            f"{path}.max_input_tokens is {max_input_tokens}, but its question and "
+            f"{images} page image(s) alone take about {math.ceil(reserved)} tokens, "
+            "which leaves no room for page text with input 'text' or 'both'. Raise "
+            "max_input_tokens or set input to 'images'."
+        )
+
 
 class ConfidenceDecisionModelConfig(ExternalModelConfig):
     """Extraction confidence by a decision model: one ``noul`` question per field.
 
-    Each page of the section is one request, with that page as the state and one
+    Each page of the section is one request, with that page as the state (its
+    image, its OCR text cut to ``max_input_tokens``, or both, per ``input``) and one
     question per extracted value; a value's confidence is its highest P(yes) over
-    the pages. See ``idp_common.assessment.decision_model_confidence``.
+    the pages, and an empty value's is 1 minus the highest P(a page shows a
+    value). See ``idp_common.assessment.decision_model_confidence``.
     """
 
     backend: str = Field(
@@ -1062,6 +1158,19 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             "{DESCRIPTION} its schema description, {VALUE} the extracted value."
         ),
     )
+    empty_value_instructions: str = Field(
+        default=(
+            'The system found no value for the field "{FIELD}" ({DESCRIPTION}). '
+            "Does the page show a value for it?"
+        ),
+        description=(
+            "The yes/no question for a value the extraction left empty, asking "
+            "whether the page shows a value for the field. {FIELD} is the field's "
+            "path, {DESCRIPTION} its schema description. The empty value's "
+            "confidence is 1 minus the highest answer over the pages, so phrase it "
+            "so that yes means a value is shown."
+        ),
+    )
     max_pages: int = Field(
         default=20,
         ge=1,
@@ -1082,14 +1191,40 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             "request limit."
         ),
     )
+    max_input_tokens: int = Field(
+        default=DECISION_MODEL_MAX_INPUT_TOKENS,
+        ge=DECISION_MODEL_MIN_INPUT_TOKENS,
+        description=(
+            "The most tokens one request may hold: a page's OCR text, its image and "
+            "the longest question together. An estimate from characters, not the "
+            "model's own count. With input text or both, a page's text beyond the "
+            "limit is cut from the end and never read by the decision model, so a "
+            "value that appears only in the cut part is not seen: it scores low, "
+            "and an empty field is not checked against that part. Default "
+            f"{DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's 4,096-token "
+            "window less 512 for its own prompt."
+        ),
+    )
 
-    @field_validator("instructions", mode="before")
+    @field_validator("instructions", "empty_value_instructions", mode="before")
     @classmethod
     def empty_instructions_is_the_default(cls, v: Any, info: ValidationInfo) -> str:
         """An empty question is the shipped one, never an empty question sent."""
         if v is None or (isinstance(v, str) and not v.strip()):
             return cls.model_fields[info.field_name].default
         return str(v)
+
+    @model_validator(mode="after")
+    def max_input_tokens_leaves_room_for_text(self) -> Self:
+        """A limit the question and page image fill alone could never send text."""
+        if self.input in ("text", "both"):
+            _require_room_for_text(
+                self.max_input_tokens,
+                [self.instructions, self.empty_value_instructions],
+                1 if self.input == "both" else 0,
+                "extraction.confidence.decision_model",
+            )
+        return self
 
     @field_validator("price_per_request", mode="before")
     @classmethod
@@ -1130,7 +1265,9 @@ class ConfidenceDecisionModelConfig(ExternalModelConfig):
             )
         return v_str
 
-    @field_validator("max_pages", "max_questions_per_request", mode="before")
+    @field_validator(
+        "max_pages", "max_questions_per_request", "max_input_tokens", mode="before"
+    )
     @classmethod
     def parse_ints(cls, v: Any, info: ValidationInfo) -> int:
         return _parse_required_int(v, info, cls)
@@ -1484,7 +1621,7 @@ class HITLConfig(BaseModel):
         return _parse_required_float(v, info, cls)
 
 
-class ExtractionConfig(BaseModel):
+class ExtractionConfig(RegionalModelDefaults):
     """Document extraction configuration"""
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
@@ -2186,9 +2323,10 @@ def normalise_reasoning_effort(v: Any, path: str) -> str:
 #: ``test_classification_defaults_parity.py`` pins the two together.
 #:
 #: This is the US id. A cleared model resolves to
-#: :func:`default_classification_model`, its equivalent for the stack's Region:
-#: the deploy-time swap rewrites a stored profile, but not a value substituted
-#: while one is read, so an EU stack would otherwise send a ``us.`` profile.
+#: :func:`default_classification_model`, its equivalent for the stack's Region, and
+#: an absent one to the same id through :class:`RegionalModelDefaults`: the
+#: deploy-time swap rewrites a stored profile, but not a value substituted while one
+#: is read, so an EU stack would otherwise send a ``us.`` profile.
 DEFAULT_CLASSIFICATION_MODEL = CLASSIFICATION_MODEL_ID
 
 
@@ -2274,7 +2412,7 @@ DECISION_MODEL_INPUTS = ("images", "text", "both")
 DECISION_MODEL_MAX_SECTION_PAGES = 4
 
 
-class ClassificationModelSettings(BaseModel):
+class ClassificationModelSettings(RegionalModelDefaults):
     """The settings of one LLM call. Reused by every classification call.
 
     One block, so a call's model, its parameters, what it is sent and how its page
@@ -2610,6 +2748,20 @@ class DecisionModelConfig(ExternalModelConfig):
             "confidence."
         ),
     )
+    max_input_tokens: int = Field(
+        default=DECISION_MODEL_MAX_INPUT_TOKENS,
+        ge=DECISION_MODEL_MIN_INPUT_TOKENS,
+        description=(
+            "The most tokens one request may hold: the section's OCR text, its page "
+            "images and the class question with every class description together. "
+            "An estimate from characters, not the model's own count. With input "
+            "text or both, the section's text beyond the limit is cut from the end "
+            "and never read by the decision model, so a class cue that appears only "
+            "in the cut part is not seen. The first page is kept whole when it "
+            f"fits. Default {DECISION_MODEL_MAX_INPUT_TOKENS}: the decision model's "
+            "4,096-token window less 512 for its own prompt."
+        ),
+    )
     label_map: Dict[str, str] = Field(
         default_factory=dict,
         description="Model label → configured class (or 'unclassified').",
@@ -2674,6 +2826,11 @@ class DecisionModelConfig(ExternalModelConfig):
     def parse_max_pages(cls, v: Any) -> int:
         return _parse_int_param(v, 1) or 1
 
+    @field_validator("max_input_tokens", mode="before")
+    @classmethod
+    def parse_max_input_tokens(cls, v: Any, info: ValidationInfo) -> int:
+        return _parse_required_int(v, info, cls)
+
     @field_validator("score_calibration", mode="before")
     @classmethod
     def validate_score_calibration(cls, v: Any) -> str:
@@ -2687,6 +2844,24 @@ class DecisionModelConfig(ExternalModelConfig):
                 "not yet implemented"
             )
         return v_str
+
+    @model_validator(mode="after")
+    def max_input_tokens_leaves_room_for_text(self) -> Self:
+        """A limit the question and page images fill alone could never send text.
+
+        The class descriptions also count against the limit, but they live in
+        ``classes``, not here; a section they leave no room for is refused when
+        it is classified.
+        """
+        if self.input in ("text", "both"):
+            _require_room_for_text(
+                self.max_input_tokens,
+                [self.instructions],
+                self.max_pages if self.input == "both" else 0,
+                "classification.split_then_classify.section_classification."
+                "decision_model",
+            )
+        return self
 
 
 class LowConfidenceConfig(BaseModel):
@@ -3085,7 +3260,7 @@ def class_assigning_llm_path(classification: Any) -> Tuple[str, ...]:
     )
 
 
-class SummarizationConfig(BaseModel):
+class SummarizationConfig(RegionalModelDefaults):
     """Document summarization configuration"""
 
     postHook: List[PipelineHook] = Field(  # noqa: N815 — matches stored config key
@@ -3168,7 +3343,7 @@ class SummarizationConfig(BaseModel):
         return int(v)
 
 
-class ChatConfig(BaseModel):
+class ChatConfig(RegionalModelDefaults):
     """Chat-with-Document configuration.
 
     Controls the interactive "Chat with Document" feature available on the
@@ -3409,7 +3584,7 @@ class ErrorAnalyzerParameters(BaseModel):
         return _parse_required_int(v, info, cls)
 
 
-class ErrorAnalyzerConfig(BaseModel):
+class ErrorAnalyzerConfig(RegionalModelDefaults):
     """Error analyzer agent configuration"""
 
     model_id: str = Field(
@@ -3657,7 +3832,7 @@ COMMON MISTAKES TO AVOID:
     )
 
 
-class ChatCompanionConfig(BaseModel):
+class ChatCompanionConfig(RegionalModelDefaults):
     """Chat companion agent configuration"""
 
     model_id: str = Field(
@@ -4207,7 +4382,7 @@ class ModelConfigLimitsConfig(BaseModel):
         return self.model_dump(mode="python")
 
 
-class FactExtractionConfig(BaseModel):
+class FactExtractionConfig(RegionalModelDefaults):
     """Fact extraction configuration for rule validation"""
 
     # No config preset under config_library/ sets this field, so this default is
@@ -4248,7 +4423,7 @@ class FactExtractionConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
-class RuleValidationOrchestratorConfig(BaseModel):
+class RuleValidationOrchestratorConfig(RegionalModelDefaults):
     """Rule validation summarization configuration"""
 
     # See FactExtractionConfig.model above for why this default tracks the
@@ -4283,7 +4458,7 @@ class RuleValidationOrchestratorConfig(BaseModel):
         return _parse_optional_max_tokens(v)
 
 
-class Z3RuleTranslatorConfig(BaseModel):
+class Z3RuleTranslatorConfig(RegionalModelDefaults):
     """Z3 engine: translates natural language rules to SMT-LIB RuleJSON"""
 
     model: str = Field(
@@ -4305,7 +4480,7 @@ class Z3RuleTranslatorConfig(BaseModel):
     )
 
 
-class Z3ValueExtractionConfig(BaseModel):
+class Z3ValueExtractionConfig(RegionalModelDefaults):
     """Z3 engine: extracts parameter values from data"""
 
     model: str = Field(
@@ -4388,7 +4563,7 @@ class RuleValidationConfig(BaseModel):
         return _parse_required_int(v, info, cls)
 
 
-class EvaluationLLMMethodConfig(BaseModel):
+class EvaluationLLMMethodConfig(RegionalModelDefaults):
     """Evaluation LLM method configuration"""
 
     top_p: float = Field(default=0.0, ge=0.0, le=1.0)
@@ -4472,7 +4647,7 @@ class EvaluationConfig(BaseModel):
     )
 
 
-class DiscoveryModelConfig(BaseModel):
+class DiscoveryModelConfig(RegionalModelDefaults):
     """Discovery model configuration for class extraction"""
 
     model_id: str = Field(
@@ -4519,7 +4694,7 @@ class AutoSplitModelConfig(DiscoveryModelConfig):
     )
 
 
-class MultiDocumentDiscoveryConfig(BaseModel):
+class MultiDocumentDiscoveryConfig(RegionalModelDefaults):
     """Multi-document discovery configuration for batch clustering.
 
     Settings for discovering document classes from a collection of documents

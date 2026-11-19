@@ -628,6 +628,27 @@ class TestAnAuditThatDidNotRunIsNotAPass:
         assert out.index("the stdout") < out.index("the stderr")
         assert "exit 3" in out
 
+    def test_the_generator_writes_where_the_audit_reads(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """An inherited DEP_MANIFEST_DIR must not divert the fresh manifests.
+
+        Otherwise the audit reads whatever an earlier run left in its own
+        directory, which is not empty and so passes the empty-manifest guard.
+        """
+        _manifests(tmp_path, monkeypatch)
+        monkeypatch.setattr(dep_audit, "missing_tools", lambda: [])
+        monkeypatch.setenv("DEP_MANIFEST_DIR", str(tmp_path / "elsewhere"))
+        seen = {}
+
+        def fake_run(*a, **k):
+            seen.update(k)
+            return subprocess_result(3, "", "")
+
+        monkeypatch.setattr(dep_audit.subprocess, "run", fake_run)
+        assert dep_audit.main([]) == 2
+        assert seen["env"]["DEP_MANIFEST_DIR"] == str(dep_audit.MANIFEST_DIR)
+
     def test_osv_being_unreachable_exits_2_rather_than_reporting_clean(
         self, tmp_path, monkeypatch, capsys
     ):

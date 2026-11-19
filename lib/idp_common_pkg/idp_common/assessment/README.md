@@ -196,17 +196,65 @@ extraction:
 
 With `extraction.confidence.method: decision_model`, `assess_results` does not call
 Bedrock. `DecisionModelConfidenceScorer` walks the extracted values along the class
-schema and asks one `noul` question per leaf, with the field's path, schema
-description and value substituted into `decision_model.instructions`. Each page of
-the section (up to `decision_model.max_pages`) is one request carrying every
-question, split into chunks of `max_questions_per_request`; a leaf's confidence is
-its highest P(yes) over the pages. The result has the LLM path's parsed shape and
-goes through the same `_finalize_assessment`, so thresholds, alerts and
-explainability are unchanged; each leaf adds `confidence_source: decision_model`.
-The batcher still slices large lists, and a decider call reports `truncated=False`
-and `parsing_succeeded=True`, so no truncation retry or escalation to an LLM runs.
-Errors propagate. See [`idp_common/decision_model`](../decision_model/README.md) for
-the client and its failure contract.
+schema and asks one `noul` question per leaf. Each page of the section (up to
+`decision_model.max_pages`) is one request carrying every question, split into
+chunks of `max_questions_per_request`.
+
+- **A value** is asked `decision_model.instructions`, with the field's path, schema
+  description and value substituted. Its confidence is its highest P(yes) over the
+  pages.
+- **An empty value** (absent by `presence.has_extracted_value`: null, blank, or an
+  empty container) is asked `decision_model.empty_value_instructions`, whether the
+  page shows a value for the field. Its confidence is 1 − the highest P(yes) over the pages, so a
+  value the extraction missed scores low. Its reason says no value was extracted
+  and names the page most likely to show one. Like any absent value it raises no
+  confidence alert
+  ([below](#absent-values-raise-no-alert-missing-required-fields-are-counted)); the
+  score is in `explainability_info`, and a required field is still listed in
+  `missing_required_fields`.
+
+`decision_model.input` sets what each request reads, and every mode is per page:
+
+| `input` | State of one request |
+|---|---|
+| `images` | the page image |
+| `text` | that page's OCR text; a page with no text is skipped |
+| `both` | the page image with that page's OCR text |
+
+Pages keep their position in the section, so a page with no image or no text does
+not renumber the pages after it. The page texts come from `assess_results(...,
+page_texts=...)`, which `process_document_section` and the agentic in-shard path
+pass beside the joined `document_text`. Without `page_texts`, `text` reads the
+joined text as one text and `both` is refused, because it cannot pair an image with
+its own text.
+
+**A page's text is cut to fit `decision_model.max_input_tokens`** (#2032), which
+counts the page's text, its image and the longest question together (default 3584:
+the 4,096-token window less 512 for the model's own prompt). The text is cut from
+the end, at a line break where it can, by `decision_model.fit_text`, and each
+cut is logged at info with the page and the characters dropped. **Text beyond
+the limit is cut and never read by the decision model**, so a value that appears
+only in the cut part is not seen: it scores low, and an empty field is not checked
+against that part. The counts are estimates: the package has no tokenizer, so
+`decision_model.estimate_tokens` counts one token per digit or non-ASCII character
+and one per two other characters, which errs high. A request with no text is sent
+unchanged. A page whose text would be cut to nothing, because the question and
+image already fill the limit, is not sent: `fit_text` raises `DecisionModelRefused`,
+so the section degrades like any refusal instead of an empty field scoring about
+1.0 from no evidence.
+
+The result has the LLM path's parsed shape and goes through the same
+`_finalize_assessment`, so thresholds, alerts and explainability are unchanged;
+each leaf adds `confidence_source: decision_model`. The batcher still slices large
+lists, and a decider call reports `truncated=False` and `parsing_succeeded=True`, so
+no truncation retry or escalation to an LLM runs.
+
+Errors propagate. A refused request is logged at warning with its page, and the
+`DecisionModelRefused` raised names every refused page; `process_document_section`
+logs a warning naming the section. The Assessment Lambda then degrades the section
+(see [below](#what-to-alarm-on-when-a-section-ends-up-with-no-confidence-at-all)).
+See [`idp_common/decision_model`](../decision_model/README.md) for the client and
+its failure contract.
 
 ## Large-list batching (`assessment/batching.py`)
 
@@ -964,13 +1012,23 @@ trace, by construction rather than by convention:
 
 | Cause | Entry point | Issue code |
 |---|---|---|
-| The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901) | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
+| The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901), or Amazon Bedrock's content filter withholding its reply, in which case the issue's remedy names the block rather than the input size | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
 | The pass **never ran**: the section had no `extraction_result_uri`, no `page_ids`, an extraction result whose `inference_result` was empty, or none of its pages present in the document (#1006) | `skip_section_no_confidence`, called from `process_document_section`'s early returns | `assessment_skipped_confidence_unavailable` |
 
 Neither fails the document. For the first that is #901's deliberate trade — the
 extraction already succeeded and was already paid for, so losing the advisory
 half must not discard it. For the second there is nothing to fail *over*: the
 confidence model was never called.
+
+After a degrade the Assessment Lambda also calls `record_no_confidence_in_result`,
+because the section's Processing Report reads the extraction `result.json`, which
+extraction wrote before the pass and which still shows a Confidence stage as if it
+had run. That call writes the issue into `metadata.processing_issues` and the text
+report (through `merge_assessment_issues_into_result`, as a successful pass writes
+its own issues), and marks the processing flow's Confidence stage `warning` with
+*no confidence scores*. It is best effort: if the write fails, the issue is on the
+section record only. When the confidence method is `decision_model`, the issue's
+message gives the decision-model remedy rather than the LLM one.
 
 That has an observability consequence worth knowing when reading this module's
 behaviour operationally. Because such a document **completes**, a systemic

@@ -78,6 +78,7 @@ from .model_utils import (
     LONG_CONTEXT_SUFFIX,
     REGION_PREFIXES,
     get_model_max_output_tokens,
+    http_server_error_status,
     metering_model_id,
     parse_max_tokens_limit_from_error,
     parse_model_id,
@@ -147,6 +148,22 @@ logger = logging.getLogger(__name__)
 
 # Default retry settings
 DEFAULT_MAX_RETRIES = 7
+
+#: Retryable codes counted as ``BedrockThrottling`` (the circuit breaker's throttling
+#: trigger) and logged as throttling, on both retry ladders.
+_THROTTLING_CODES = (
+    "ThrottlingException",
+    "TooManyRequestsException",
+    "RequestLimitExceeded",
+)
+
+
+def _retry_kind(error_code: str, server_error_status: Optional[int]) -> str:
+    """What a retry log line calls the error: a 5xx is a server error, unless its
+    code says throttling (#2036)."""
+    if server_error_status is not None and error_code not in _THROTTLING_CODES:
+        return f"server error (HTTP {server_error_status})"
+    return "throttling"
 DEFAULT_INITIAL_BACKOFF = 2  # seconds
 DEFAULT_MAX_BACKOFF = 300  # 5 minutes
 
@@ -2210,8 +2227,13 @@ class BedrockClient:
                 "RequestTimeout",
                 "RequestTimeoutException",
             ]
+            # An HTTP 500, 502, 503 or 504 is retried whatever code it carries,
+            # including the bare status botocore uses as the code when the reply
+            # names no error ("500", "Internal Server Error"). Matched by name
+            # alone, that one failed the call on its first attempt (#2036).
+            server_error_status = http_server_error_status(e.response)
 
-            if error_code in retryable_errors:
+            if error_code in retryable_errors or server_error_status is not None:
                 self._put_metric("BedrockThrottles", 1)
 
                 # Emit circuit-breaker specific metrics by error category.
@@ -2219,16 +2241,17 @@ class BedrockClient:
                 # that feeds BedrockServiceOutageAlarm (the circuit breaker
                 # trigger). For per-path counts use BedrockThrottles
                 # (generation, above) or BedrockEmbeddingThrottles (embedding).
+                # The code decides first. A 503 whose code names no category
+                # counts as service unavailable; a 500, 502 or 504 has no
+                # category, like InternalServerException (#2036).
                 if error_code == "ServiceUnavailableException":
                     self._put_metric("BedrockServiceUnavailable", 1)
-                elif error_code in (
-                    "ThrottlingException",
-                    "TooManyRequestsException",
-                    "RequestLimitExceeded",
-                ):
+                elif error_code in _THROTTLING_CODES:
                     self._put_metric("BedrockThrottling", 1)
                 elif error_code == "ServiceQuotaExceededException":
                     self._put_metric("BedrockQuotaLimit", 1)
+                elif server_error_status == 503:
+                    self._put_metric("BedrockServiceUnavailable", 1)
 
                 # Check if we've reached max retries
                 if retry_count >= max_retries:
@@ -2254,7 +2277,8 @@ class BedrockClient:
                     raise
 
                 logger.warning(
-                    f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
+                    f"Bedrock {_retry_kind(error_code, server_error_status)} occurred "
+                    f"(attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
                     f"Backing off for {backoff:.2f}s"
                 )
@@ -2699,8 +2723,11 @@ class BedrockClient:
                 "TimeoutError",
                 "RequestTimeoutException",
             ]
+            # The same rule as the generation ladder: any HTTP 500, 502, 503 or
+            # 504 is retried, whatever its code (#2036).
+            server_error_status = http_server_error_status(e.response)
 
-            if error_code in retryable_errors:
+            if error_code in retryable_errors or server_error_status is not None:
                 self._put_metric("BedrockEmbeddingThrottles", 1)
 
                 # Emit circuit-breaker specific metrics by error category.
@@ -2710,14 +2737,12 @@ class BedrockClient:
                 # (embedding, above) or BedrockThrottles (generation).
                 if error_code == "ServiceUnavailableException":
                     self._put_metric("BedrockServiceUnavailable", 1)
-                elif error_code in (
-                    "ThrottlingException",
-                    "TooManyRequestsException",
-                    "RequestLimitExceeded",
-                ):
+                elif error_code in _THROTTLING_CODES:
                     self._put_metric("BedrockThrottling", 1)
                 elif error_code == "ServiceQuotaExceededException":
                     self._put_metric("BedrockQuotaLimit", 1)
+                elif server_error_status == 503:
+                    self._put_metric("BedrockServiceUnavailable", 1)
 
                 # Check if we've reached max retries
                 if retry_count >= max_retries:
@@ -2746,7 +2771,8 @@ class BedrockClient:
                     raise
 
                 logger.warning(
-                    f"Bedrock throttling occurred (attempt {retry_count + 1}/{max_retries}). "
+                    f"Bedrock {_retry_kind(error_code, server_error_status)} occurred "
+                    f"(attempt {retry_count + 1}/{max_retries}). "
                     f"Error: {error_message}. "
                     f"Backing off for {backoff:.2f}s"
                 )

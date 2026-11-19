@@ -2811,6 +2811,46 @@
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
   },
+  "testStudio.modifiedAfter.customTimeIsUtc": {
+    "defaultMessage": "Date and time are in UTC.",
+    "description": "Help text beside the custom date and time of the \"Modified after\" filter when picking files for a test set: the entered date and time are read as UTC, not as the browser's local time."
+  },
+  "testStudio.modifiedAfter.invalidCustomDateTime": {
+    "defaultMessage": "Enter a real date and a time as HH:mm:ss.",
+    "description": "Error beside the custom date and time of the \"Modified after\" filter when they are not a real date and time, for example 30 February or 24:00:00. Keep HH:mm:ss as it is."
+  },
+  "testStudio.patternPreview.alreadyInSet": {
+    "defaultMessage": "{count, number} already in the set",
+    "description": "Part of the Check Files result: matching files the set already holds, which the add leaves as they are."
+  },
+  "testStudio.patternPreview.archivesLeftOut": {
+    "defaultMessage": "{count, plural, one {# .zip archive} other {# .zip archives}} left out",
+    "description": "Part of the Check Files result: matching .zip files, which the add does not copy."
+  },
+  "testStudio.patternPreview.filesToAdd": {
+    "defaultMessage": "{count, plural, one {# file} other {# files}} to add",
+    "description": "Test Studio Check Files result: how many files matching the pattern the add will copy into the set."
+  },
+  "testStudio.patternPreview.leftOutNote": {
+    "defaultMessage": "({leftOut})",
+    "description": "Shown after the Check Files count. {leftOut} lists the matching files the add leaves out, e.g. \"1 already in the set\"."
+  },
+  "testStudio.patternPreview.noneToAdd": {
+    "defaultMessage": "None of the {count, plural, one {# matching file} other {# matching files}} would be added ({leftOut}).",
+    "description": "Warning when Check Files matched files but the add would copy none of them. {leftOut} says why, e.g. \"1 already in the set\"."
+  },
+  "testStudio.testSets.delete.notDeleted": {
+    "defaultMessage": "Failed to delete test sets: {reason}",
+    "description": "Error shown on the Test Sets page when none of the selected test sets was deleted. {reason} is the server’s message."
+  },
+  "testStudio.testSets.delete.outcomeUnknown": {
+    "defaultMessage": "Some test sets may not have been deleted, and the list could not be reloaded to show which: {reason}",
+    "description": "Error shown on the Test Sets page when a delete of test sets was partly refused or failed and the list then failed to reload. {reason} is the server’s message from the delete."
+  },
+  "testStudio.testSets.delete.partlyDeleted": {
+    "defaultMessage": "Deleted {deleted} of {total, plural, one {# test set} other {# test sets}}. {reason}",
+    "description": "Error shown on the Test Sets page when a delete of several test sets removed some and not others. {reason} is the server’s message naming each test set that was refused (busy) or failed, and why."
+  },
   "topNavigation.feedback.ariaLabel": {
     "defaultMessage": "Feedback and issue reporting",
     "description": "Screen-reader label of the feedback menu button in the top navigation."

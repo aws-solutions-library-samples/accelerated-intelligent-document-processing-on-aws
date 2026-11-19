@@ -21,6 +21,7 @@ from idp_common.decision_model import (
     DecisionModelClient,
     DecisionModelRefused,
     DecisionModelUnavailable,
+    NoulAnswer,
     NoulQuestion,
     SystemOneRequest,
     client_from_config,
@@ -174,6 +175,44 @@ def test_decide_many_keeps_order_and_merges_metering():
     assert merged["Ctx/decision_model/GENAIIDP-decider"]["requests"] == 3
 
 
+class StateKeyedLambda:
+    """Answers each request with the outcome named by its state, so a result can
+    be traced to its request whatever order worker threads send them in."""
+
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+
+    def invoke(self, **kwargs):
+        outcome = self.outcomes[json.loads(kwargs["Payload"])["state"]]()
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+@pytest.mark.parametrize("concurrency", [1, 3])
+def test_decide_each_puts_each_failure_in_its_requests_slot(concurrency):
+    """A caller can say WHICH request failed, and the others still answer."""
+    fake = StateKeyedLambda(
+        {
+            "a": _ok,
+            "b": lambda: _function_error(
+                "ValueError", "prompt of 5000 tokens exceeds 4096"
+            ),
+            "c": lambda: _client_error("AccessDeniedException"),
+        }
+    )
+    requests = [
+        SystemOneRequest(state=s, questions={"ok": NoulQuestion(instructions="Ok?")})
+        for s in ("a", "b", "c")
+    ]
+    results = _client(fake, max_concurrency=concurrency).decide_each(requests, "Ctx")
+
+    assert isinstance(results[0].response.answers["ok"], NoulAnswer)
+    assert isinstance(results[1], DecisionModelRefused)
+    assert "5000 tokens" in str(results[1])
+    assert isinstance(results[2], DecisionModelUnavailable)
+
+
 def test_function_name_forms():
     assert function_name(ARN) == "GENAIIDP-decider"
     assert function_name("GENAIIDP-decider:live") == "GENAIIDP-decider"
@@ -296,3 +335,110 @@ def test_the_input_modes_are_the_configs():
     from idp_common.decision_model import INPUT_MODES
 
     assert INPUT_MODES is DECISION_MODEL_INPUTS
+
+
+# A failure that outlasts the retries keeps what made it retryable as its
+# ``__cause__``, so ``is_transient_error`` can tell a throttle from a refusal and the
+# classification step is retried rather than the section failed (#2034).
+
+
+def test_a_throttle_past_the_retries_is_transient():
+    from idp_common.utils.transient_errors import is_transient_error
+
+    last = _client_error("TooManyRequestsException")
+    fake = FakeLambda([_client_error("TooManyRequestsException"), last])
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert caught.value.__cause__ is last
+    assert is_transient_error(caught.value)
+
+
+def test_a_connection_that_never_opened_past_the_retries_is_transient():
+    from botocore.exceptions import ConnectTimeoutError
+
+    from idp_common.utils.transient_errors import is_transient_error
+
+    fake = FakeLambda([ConnectTimeoutError(endpoint_url="x")] * 2)
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert isinstance(caught.value.__cause__, ConnectTimeoutError)
+    assert is_transient_error(caught.value)
+
+
+def test_no_time_left_for_a_throttle_retry_is_transient(monkeypatch):
+    from idp_common.utils.transient_errors import is_transient_error
+
+    monkeypatch.setattr(
+        "idp_common.decision_model.invoker.attempt_cannot_finish", lambda *a: True
+    )
+    fake = FakeLambda([_client_error("TooManyRequestsException")])
+    with pytest.raises(DecisionModelUnavailable, match="no time left") as caught:
+        _client(fake).decide(_request(), "Ctx")
+    assert is_transient_error(caught.value)
+
+
+def test_a_crashed_environment_past_the_retries_is_not_transient():
+    """The control: a function error carries no exception, so nothing is chained, and
+    an environment that keeps crashing on one request is not retried as a step."""
+    from idp_common.utils.transient_errors import is_transient_error
+
+    fake = FakeLambda(
+        [_function_error("Runtime.ExitError", "exited") for _ in range(2)]
+    )
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert caught.value.__cause__ is None
+    assert not is_transient_error(caught.value)
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "TooManyRequestsException",
+        "ServiceException",
+        "EC2ThrottledException",
+        "ResourceConflictException",
+        "ResourceNotReadyException",
+        "connect-timeout",
+    ],
+)
+def test_a_request_that_never_ran_is_retry_later_once_retries_run_out(outcome):
+    """#2034: the caller may retry its whole step, because nothing ran."""
+    from botocore.exceptions import ConnectTimeoutError
+
+    def fail():
+        if outcome == "connect-timeout":
+            return ConnectTimeoutError(endpoint_url="x")
+        return _client_error(outcome)
+
+    fake = FakeLambda([fail() for _ in range(2)])
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert caught.value.retry_later is True
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    [
+        [_function_error("Runtime.ExitError", "exited") for _ in range(2)],
+        [ReadTimeoutError(endpoint_url="x")],
+        [_client_error("AccessDeniedException")],
+        [_ok({"output": "not system one"})],
+    ],
+    ids=["crashed-environment", "read-timeout", "non-retryable", "malformed"],
+)
+def test_a_call_that_may_have_run_is_never_retry_later(outcomes):
+    """The invocation may have run, or may still be running and billing."""
+    fake = FakeLambda(outcomes)
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake, max_retries=1).decide(_request(), "Ctx")
+    assert caught.value.retry_later is False
+
+
+def test_a_closed_connection_is_never_retry_later():
+    from botocore.exceptions import ConnectionClosedError
+
+    fake = FakeLambda([ConnectionClosedError(endpoint_url="x")])
+    with pytest.raises(DecisionModelUnavailable) as caught:
+        _client(fake).decide(_request(), "Ctx")
+    assert caught.value.retry_later is False

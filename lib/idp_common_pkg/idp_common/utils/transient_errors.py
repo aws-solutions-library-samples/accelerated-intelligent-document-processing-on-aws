@@ -39,9 +39,11 @@ Classification rules, in order:
    (``DEFAULT_RETRYABLE_ERRORS``) **and the retryable codes botocore's own standard
    retry mode recognises**, minus the entries that are deterministic at the task
    level, plus the S3 spellings (``SlowDown``, ``ServiceUnavailable``,
-   ``InternalError``), the streaming error, and the standard-library / botocore /
-   urllib3 network and timeout exception TYPES. Message markers are limited to
-   network-transport text that carries no error code of its own.
+   ``InternalError``), the streaming error, the bare HTTP statuses botocore uses as
+   the code when a reply names no error (``"500"``, ``"502"``, ``"503"``,
+   ``"504"``; #2036), and the standard-library / botocore / urllib3 network and
+   timeout exception TYPES. Message markers are limited to network-transport text
+   that carries no error code of its own.
 
    The botocore half is **read from botocore** rather than transcribed, because a
    hand-kept list of throttling spellings is a list that goes stale one service at a
@@ -71,6 +73,7 @@ from typing import Iterable
 
 import botocore.exceptions
 
+from idp_common.bedrock.model_utils import bare_http_server_status
 from idp_common.utils.bedrock_utils import DEFAULT_RETRYABLE_ERRORS
 
 try:  # urllib3 is a botocore dependency, but keep the import defensive
@@ -306,7 +309,14 @@ def _verdict(node: BaseException) -> bool | None:
     if code is not None:
         # A definite service code is the verdict for this node AND its chain: a
         # ValidationException raised after a swallowed throttle is still hard.
-        return code.lower() in TRANSIENT_ERROR_NAMES
+        # A bare HTTP 500/502/503/504 in place of a code is botocore saying the
+        # reply named no error, only that the server failed (#2036). The status
+        # of a NAMED code is not consulted: Lambda answers several deterministic
+        # errors with a 502, and rule 1 lets the name decide.
+        return (
+            code.lower() in TRANSIENT_ERROR_NAMES
+            or bare_http_server_status(code) is not None
+        )
     if type(node).__name__.lower() in TRANSIENT_ERROR_NAMES:
         return True
     if any(marker in text for marker in TRANSIENT_MESSAGE_MARKERS):

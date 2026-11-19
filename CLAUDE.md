@@ -158,26 +158,40 @@ and proved far less than that looks like. Eleven errors were behind it, three of
 that raise on every execution (a `Status.ERROR` that is not in the enum, a keyword
 no parameter matches, a required argument omitted). Issue #1109.
 
-`pyrightconfig.json`'s **`extraPaths`** now names the five first-party package
-roots, so resolution is a property of the configuration rather than of how the gate
-was invoked. The entries are **relative** on purpose: pyright resolves them against
+`pyrightconfig.json`'s **`extraPaths`** now names every first-party package root —
+the `lib/` distributions, plus any tracked distribution elsewhere whose package is
+imported from outside its own directory, which is how `terraform/translator`
+(`idp_tf`, imported by `scripts/`) is included — so resolution is a property of the
+configuration rather than of how the gate was invoked. The entries are **relative** on purpose: pyright resolves them against
 the directory holding the config, so they cannot name another checkout — which
 matters because this environment carries editable installs of `idp_common` and
 `idp_sdk` pointing at a sibling worktree and at a different project entirely
 (#1094), and an `extraPaths` naming one of those resolves perfectly while saying
 nothing about this tree. Confident wrong answers are worse than silent ones.
 `test_pyright_config.py` asserts both halves — the entries stay relative and inside
-the repo, and a 0.5s live basedpyright probe confirms all five actually resolve
+the repo, and a 0.5s live basedpyright probe confirms every one of them actually resolves
 through the values the config carries — and fails on the specific combination of
 `reportMissingImports: "none"` plus unresolvable first-party packages.
 
 `reportMissingImports` **stays** at `"none"`, measured rather than assumed: raised to
-`"warning"` with `extraPaths` live it reports 44 findings over 25 modules and **none
-is first-party**. About 38 are sibling-module imports in script and Lambda trees that
-are not packages (`from index import ...`, `processors.pdf_image_processor`), correct
-at runtime because the handler's own directory is on `sys.path`; the rest are
-genuinely uninstalled third-party distributions. So the rule is unusable above
-`"none"` here, and the gap it leaves is covered by the resolution assertions instead.
+`"warning"` with `extraPaths` live, **none of its findings is first-party**. Most are
+sibling-module imports in script and Lambda trees that are not packages
+(`from index import ...`, `processors.pdf_image_processor`), correct at runtime
+because the handler's own directory is on `sys.path`; the rest are third-party
+distributions the checkout does not install, such as `seed_data`, which only the
+generator extension's container installs and which `idp_common.synthesis.engine`
+imports lazily behind an availability probe. So the rule is unusable above `"none"`
+here, and the gap it leaves is covered by the resolution assertions instead. The
+count moves with the tree, so measure it rather than quoting one — the copy has to
+sit in the repository root, because `extraPaths` resolves against the config's
+directory:
+
+```bash
+python3 -c 'import json; c = json.load(open("pyrightconfig.json")); c["reportMissingImports"] = "warning"; json.dump(c, open("pyrightconfig.missing-imports.json", "w"))'
+basedpyright --project pyrightconfig.missing-imports.json --outputjson \
+  | python3 -c 'import json, sys; print(sum(d.get("rule") == "reportMissingImports" for d in json.load(sys.stdin)["generalDiagnostics"]))'
+rm pyrightconfig.missing-imports.json
+```
 
 ⚠️ **basedpyright has no ignore-file support**, so its walk reads gitignored build
 output — the one asymmetry with ruff, which honours the ignore file natively. `exclude`

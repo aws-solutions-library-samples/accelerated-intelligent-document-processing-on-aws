@@ -690,7 +690,7 @@ down, but it is a real trade.
 the way to check is to read the suites rather than the `script:` line.**
 `package_tests` was first written without Node, on the reasoning that pytest does
 not need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyright
-**live** — the probe that confirms `pyrightconfig.json`'s five `extraPaths` really
+**live** — the probe that confirms `pyrightconfig.json`'s `extraPaths` really
 resolve the first-party packages instead of merely looking right — so a suite whose
 name says nothing about types reaches an npm package. The fix is to give the job
 the tool, not to let the probe skip when it is missing, which is the whole reason
