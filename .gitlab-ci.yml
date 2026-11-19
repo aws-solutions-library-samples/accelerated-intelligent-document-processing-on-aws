@@ -56,6 +56,19 @@ default:
 # that module's literals ran on developer machines and in neither CI (#1390). A
 # missing toolchain is the cheap failure; a toolchain whose absence is answered
 # with a skip is the expensive one.
+variables:
+  # code.aws.dev runs jobs as EKS pods (default 1 CPU / 1Gi). Baseline for untagged jobs; bigger jobs set their own KUBERNETES_* below. See sites.aws.dev/gitlab/Documentation/Amazon%20Customizations/cicd.html
+  KUBERNETES_CPU_REQUEST: "4"
+  KUBERNETES_CPU_LIMIT: "4"
+  KUBERNETES_MEMORY_REQUEST: "8Gi"
+  KUBERNETES_MEMORY_LIMIT: "8Gi"
+  KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
+  # The helper container (credential vendor setup, artifact/cache upload) defaults
+  # to 256Mi on code.aws.dev and was OOMKilled uploading static_checks' reports.
+  KUBERNETES_HELPER_MEMORY_REQUEST: "2Gi"
+  KUBERNETES_HELPER_MEMORY_LIMIT: "2Gi"
+  KUBERNETES_HELPER_CPU_REQUEST: "1"
+  KUBERNETES_HELPER_CPU_LIMIT: "2"
 stages:
   - fast_checks
   - deployment_validation
@@ -238,8 +251,14 @@ static_checks:
   # Larger runner (16 vCPU / 64 GB, size:2xlarge): the Vite production build
   # tsc/eslint are CPU-bound and ran ~6 min on the default small runner vs
   # seconds locally.
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:2xlarge
     - arch:arm64
 
   # Cache the UI dependencies across runs so the single `npm ci` (in
@@ -307,8 +326,14 @@ static_checks:
 # `coverage combine` step before the ratchet below can read a complete report.
 unit_tests:
   <<: *fast_check_job
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:2xlarge
     - arch:arm64
 
   # For the UI dependencies the `scripts` suite needs — see the npm line in
@@ -402,8 +427,14 @@ unit_tests:
 # to all of them.
 package_tests:
   <<: *fast_check_job
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:2xlarge
     - arch:arm64
 
   # Same key and same path as `static_checks` and `ui_tests`, so the `npm ci` in
@@ -477,8 +508,15 @@ package_tests:
 # toolchain for nothing. ~1 min including the install.
 ui_tests:
   <<: *fast_check_job
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   tags:
-    - size:large
+    - arch:amd64
 
   cache:
     key:
@@ -516,9 +554,15 @@ ui_tests:
 terraform_checks:
   <<: *fast_check_job
   tags:
-    - size:large
+    - arch:amd64
 
   variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
     # Keep in step with TERRAFORM_*_VERSION / OPENTOFU_*_VERSION in the Makefile;
     # scripts/tests/test_ci_gate_parity.py fails if this, GitHub's
     # developer-tests.yml and the Makefile disagree.
@@ -546,6 +590,13 @@ terraform_checks:
     - make terraform-check
 
 deployment_validation:
+  variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
   stage: deployment_validation
   interruptible: true
   # Pre-deploy IAM sanity check, on the same trigger as the deploy it validates:
@@ -617,6 +668,12 @@ integration_tests:
   # running.
   resource_group: integration_deploy
   variables:
+    # code.aws.dev max pod size (32 CPU / 64Gi) for test speed
+    KUBERNETES_CPU_REQUEST: "32"
+    KUBERNETES_CPU_LIMIT: "32"
+    KUBERNETES_MEMORY_REQUEST: "64Gi"
+    KUBERNETES_MEMORY_LIMIT: "64Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "100Gi"
     IDP_ADMIN_EMAIL: ${GITLAB_USER_EMAIL}
   # variables:
   #   # In order to run tests in another account, add a AWS_CREDS_TARGET_ROLE variable to the Gitlab pipeline variables.
@@ -1177,8 +1234,15 @@ srt_security_review:
 
   # Use runner with more memory for SRT security scanning
   # saas-linux-medium-amd64: 4 vCPUs, 16 GB RAM
+  variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
   tags:
-    - size:large
+    - arch:amd64
 
   # Run on EVERY push and every MR (same as static_checks) — no AWS needed, and
   # this surfaces security regressions early on any branch (GitLab emails the
@@ -1366,7 +1430,7 @@ ai_mr_review:
   # Reviewing is read-only, but it reads the whole checkout at the MR head and a
   # large diff wants memory for the model client + git worktree.
   tags:
-    - size:large
+    - arch:amd64
 
   rules:
     # Non-Draft MRs targeting develop, automatically. Ordered before the catch-all
@@ -1384,6 +1448,12 @@ ai_mr_review:
   needs: []
 
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # Pinned for the same reason CFN_LINT_VERSION is: an unpinned tool on a
     # scheduled job changes behaviour with no commit here.
     CLAUDE_CODE_VERSION: "2.1.281"
@@ -1590,7 +1660,7 @@ ux_test_build:
   # which is the gate; this job must not add a second red mark for it.
   allow_failure: true
   tags:
-    - size:large
+    - arch:amd64
   rules: &ux_test_rules
     # Ordered before the catch-all so a Draft falls through to `never`, as in
     # ai_mr_review. `changes` is what keeps the job off non-UI MRs.
@@ -1610,6 +1680,12 @@ ux_test_build:
     name: ux-review-build
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # The merge base with develop, which ui_change.py diffs against.
     GIT_DEPTH: 0
   before_script:
@@ -1659,7 +1735,7 @@ ai_ux_test:
   allow_failure: true
   resource_group: ux_test_stack
   tags:
-    - size:large
+    - arch:amd64
   rules: *ux_test_rules
   needs:
     - job: ux_test_build
@@ -1670,6 +1746,12 @@ ai_ux_test:
     name: ux-review
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # Bedrock inference-profile id; the GitLab role grants the Opus family only.
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5"
     AWS_REGION: "us-east-1"
@@ -1810,7 +1892,7 @@ ai_ux_test_stories:
   # nothing, and a best-effort guard refuses the saves it recognises), so it runs
   # alongside ai_ux_test.
   tags:
-    - size:large
+    - arch:amd64
   rules:
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "mr"
       when: never
@@ -1837,6 +1919,12 @@ ai_ux_test_stories:
     name: ux-review
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     # Bedrock inference-profile id, inside the Opus family the GitLab role grants.
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
     AWS_REGION: "us-east-1"
@@ -2313,7 +2401,7 @@ ai_ux_test_stories_nightly:
   timeout: 60m
   allow_failure: true
   tags:
-    - size:large
+    - arch:amd64
   # ceil(nightly flows / k), where k = floor((deadline_minutes - setup_minutes
   # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
   # gate. The CI-jobs test recomputes both from the catalogue and fails when a
@@ -2352,6 +2440,12 @@ ai_ux_test_stories_nightly:
     name: ux-review
     action: prepare
   variables:
+    # code.aws.dev EKS pod size (was gitlab.aws.dev runner tag size:large)
+    KUBERNETES_CPU_REQUEST: "8"
+    KUBERNETES_CPU_LIMIT: "8"
+    KUBERNETES_MEMORY_REQUEST: "16Gi"
+    KUBERNETES_MEMORY_LIMIT: "16Gi"
+    KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
     ANTHROPIC_MODEL: "us.anthropic.claude-opus-5-5"
     AWS_REGION: "us-east-1"
     UX_HARNESS_DIR: "/tmp/ux-harness"

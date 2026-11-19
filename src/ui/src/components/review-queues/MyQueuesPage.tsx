@@ -13,6 +13,7 @@ import { ConsoleLogger } from 'aws-amplify/utils';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { TableProps } from '@cloudscape-design/components';
 import { Alert, Badge, Box, Button, ContentLayout, Header, Link, Pagination, Table, TextFilter } from '@cloudscape-design/components';
+import { useIntl } from 'react-intl';
 
 import usePolling from '../../hooks/use-polling';
 import useUserRole from '../../hooks/use-user-role';
@@ -22,8 +23,8 @@ import { useFormatters } from '../../i18n/format';
 import { formatDateTime, formatRelativeTime } from '../../utils/date-time';
 import { productionQueuePath, testSetQueuePath } from '../../routes/constants';
 import type { ReviewQueueSummary, TestSetQueueSummary } from '../../graphql/generated/operation-types';
-import { paginationLabels } from '../common/labels';
-import { TableNoMatchState, getFilterCounterText } from '../common/table';
+import { usePaginationLabels } from '../common/labels';
+import { TableNoMatchState, filterCounterText } from '../common/table';
 import { QUEUES_POLL_INTERVAL_MS } from './QueuesPage';
 import { fetchMyReviewQueues } from './review-api';
 import { listTestSetQueues } from './reviewer-assignment';
@@ -114,6 +115,8 @@ const COLUMNS: TableProps.ColumnDefinition<MyQueueRow>[] = [
 ];
 
 const MyQueuesPage = (): React.JSX.Element => {
+  const intl = useIntl();
+  const paginationLabels = usePaginationLabels();
   const reviewWork = useOptionalReviewWork();
   const { canWorkTestSetQueues, loading: roleLoading } = useUserRole();
   const [production, setProduction] = useState<ReviewQueueSummary[] | null>(null);
@@ -222,7 +225,7 @@ const MyQueuesPage = (): React.JSX.Element => {
             {...filterProps}
             filteringPlaceholder="Find queues"
             filteringAriaLabel="Find queues"
-            countText={getFilterCounterText(filteredItemsCount ?? 0)}
+            countText={filterCounterText(intl, filteredItemsCount ?? 0)}
           />
         }
         pagination={<Pagination {...paginationProps} ariaLabels={paginationLabels} />}

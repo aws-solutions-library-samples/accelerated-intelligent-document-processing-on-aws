@@ -9,7 +9,7 @@
 import React from 'react';
 import Alert from '@cloudscape-design/components/alert';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { FormattedMessage, useIntl } from 'react-intl';
+import { FormattedMessage, IntlProvider, useIntl } from 'react-intl';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DocumentsCommonHeader, type MappedDocument } from '../../components/document-list/documents-table-config';
@@ -205,7 +205,7 @@ describe('renderWithIntl', () => {
 const withoutPerRenderIds = (html: string): string =>
   html.replace(/:r[0-9a-z]+:/g, ':r:').replace(/data-analytics-performance-mark="[^"]*"/g, 'data-analytics-performance-mark=""');
 
-describe('renderWithIntl under en, against plain render', () => {
+describe('renderWithIntl under en, against a plain en IntlProvider', () => {
   afterEach(() => {
     window.localStorage.clear();
     document.documentElement.lang = '';
@@ -216,7 +216,8 @@ describe('renderWithIntl under en, against plain render', () => {
 
   it('renders the document-list header identically, apart from per-render generated ids', () => {
     // The render of DocumentsCommonHeader.test.tsx: a Cloudscape Header with its action
-    // buttons, a disabled-with-reason set, and the Download menu.
+    // buttons, a disabled-with-reason set, and the Download menu. The header calls
+    // `useIntl()`, so the plain side is an `en` IntlProvider with no catalog.
     const header = (
       <DocumentsCommonHeader
         selectedItems={[row('a.pdf'), row('b.pdf', { evaluationStatus: 'BASELINE_AVAILABLE' })]}
@@ -229,7 +230,11 @@ describe('renderWithIntl under en, against plain render', () => {
         destructiveDisabledReason="Managed by their test run"
       />
     );
-    const bare = render(header);
+    const bare = render(
+      <IntlProvider locale="en" defaultLocale="en">
+        {header}
+      </IntlProvider>,
+    );
     const bareHtml = bare.container.innerHTML;
     bare.unmount();
     expect(bareHtml).toContain('Reprocess');

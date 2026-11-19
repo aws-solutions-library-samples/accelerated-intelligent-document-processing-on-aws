@@ -10,10 +10,17 @@
 import React from 'react';
 import { render } from '@testing-library/react';
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
+import { IntlProvider } from 'react-intl';
 import { describe, expect, it } from 'vitest';
 
 import WorkItemsTable from '../WorkItemsTable';
 import type { WorkItem } from '../work-items';
+
+const English = ({ children }: { children: React.ReactNode }) => (
+  <IntlProvider locale="en" defaultLocale="en">
+    {children}
+  </IntlProvider>
+);
 
 const row = (objectKey: string): WorkItem => ({
   id: objectKey,
@@ -32,7 +39,7 @@ const row = (objectKey: string): WorkItem => ({
 });
 
 const documentCells = (keys: string[]): HTMLElement[] => {
-  const { container } = render(<WorkItemsTable items={keys.map(row)} title="Items" columns={['document']} />);
+  const { container } = render(<WorkItemsTable items={keys.map(row)} title="Items" columns={['document']} />, { wrapper: English });
   const table = createWrapper(container).findTable()!;
   return keys.map((_, i) =>
     table

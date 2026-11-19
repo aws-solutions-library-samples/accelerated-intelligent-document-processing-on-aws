@@ -290,6 +290,50 @@ whenever a paid extension is served from `auto`, `advisory` or `simulated`. Note
 the customer's CloudWatch, not the seller's — so it helps an admin notice a
 misconfigured or unsubscribed stack. It is not revenue protection.
 
+### Optional: follow the web UI's language
+
+The host passes the web UI's language as `FeatureContext.locale`, a BCP 47 tag:
+`en`, `fr-CA` once French is enabled on the stack, or `en-XA` on test builds
+with the pseudo-locale. It is always one of the languages the stack offers,
+resolved by the host from the user's choice and the browser, never read from
+the URL. When the user switches language, the host re-renders your component
+with the new value; it does not remount it, so your component keeps its state.
+
+An extension that ignores `locale` keeps working and stays English. The
+built-in labels of Cloudscape components inside it (a table's pagination
+labels, a modal's close button) follow the host language anyway, because
+extensions share the host's Cloudscape. Your extension's `displayName` and
+`description` come from `feature.yaml` and stay English.
+
+To translate your own text:
+
+- Ship the translations inside `ui-bundle.js`: the template's ui-deployer
+  copies only that file, and `idp-feature-cli build` rejects a bundle over
+  500 KiB.
+- Treat a tag you have no translation for as English; the host can add
+  languages.
+- Default to `en` when `locale` is absent: hosts older than this field do not
+  pass it.
+- For dates and numbers, pass the tag to `Intl`. The host formats `en` and
+  `en-XA` with the browser's default locale; pass `undefined` for those two to
+  match it.
+
+```tsx
+const messages: Record<string, { title: string; refresh: string }> = {
+  en: { title: 'My Feature', refresh: 'Refresh' },
+  'fr-CA': { title: 'Ma fonctionnalité', refresh: 'Actualiser' },
+};
+
+const App: React.FC<FeatureContext> = ({ locale = 'en' }) => {
+  const text = messages[locale] ?? messages.en;
+  return <Header variant="h1">{text.title}</Header>;
+};
+```
+
+A library such as react-intl works too, if you bundle it; the host's message
+catalogs are not available to extensions. Treat `locale` like any other prop:
+never build HTML or a URL from it.
+
 ### Optional: pipeline hooks
 
 A feature can run a Lambda at **extension points** in the document-processing

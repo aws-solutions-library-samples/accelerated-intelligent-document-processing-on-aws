@@ -76,15 +76,38 @@ def test_the_grant_is_the_github_review_role_s_grant(review_role: dict) -> None:
 def test_it_trusts_the_runner_fleet_and_this_stack_s_gitlab_role_only(
     vendor: dict, review_role: dict
 ) -> None:
-    """Two statements: the runner fleet gated on both project tags, and the
-    stack's own GitLabRole, from whose session the review job assumes it."""
+    """The runner fleet gated on both project tags; optionally (an !If on
+    HasSecondGitLab) a second GitLab instance's fleet gated the same way on its
+    own group/project; and the stack's own GitLabRole, from whose session the
+    review job assumes it."""
     gitlab_trust = vendor["Resources"]["GitLabRole"]["Properties"][
         "AssumeRolePolicyDocument"
     ]["Statement"]
     fleet = gitlab_trust[0]["Principal"]["AWS"]
     statements = review_role["AssumeRolePolicyDocument"]["Statement"]
-    assert len(statements) == 2, statements
-    runner, own = statements
+    assert len(statements) == 3, statements
+    runner, second, own = statements
+    assert second == {
+        "!If": [
+            "HasSecondGitLab",
+            {
+                "Effect": "Allow",
+                "Principal": {"AWS": {"!Ref": "SecondGitLabJumpRoleArn"}},
+                "Action": ["sts:AssumeRole", "sts:TagSession"],
+                "Condition": {
+                    "StringEquals": {
+                        "aws:PrincipalTag/GitLab:Group": {
+                            "!Ref": "SecondGitLabGroupName"
+                        },
+                        "aws:PrincipalTag/GitLab:Project": {
+                            "!Ref": "SecondGitLabProjectName"
+                        },
+                    }
+                },
+            },
+            {"!Ref": "AWS::NoValue"},
+        ]
+    }, second
     assert runner["Effect"] == "Allow"
     assert runner["Principal"] == {"AWS": fleet}
     assert sorted(runner["Action"]) == ["sts:AssumeRole", "sts:TagSession"]
