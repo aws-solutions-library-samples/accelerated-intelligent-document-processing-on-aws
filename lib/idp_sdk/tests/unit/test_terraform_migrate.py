@@ -492,6 +492,111 @@ class TestTypeClassification:
         assert (inv.verdict, inv.detach) == (tm.KEEP_UNMANAGED, True)
         assert "delete action" in inv.note
 
+    def test_the_api_gateway_account_settings_and_their_role_are_detached(self):
+        """The account settings are one per Region, shared by every REST API there;
+        destroying them clears the CloudWatch role, and so does destroying the role
+        they name or its policy. A policy of another role is still destroyed."""
+        role_arn = "arn:aws:iam::123456789012:role/oldidp-apigw-cloudwatch"
+        state = add_resource(
+            old_state(),
+            "aws_api_gateway_account",
+            "main",
+            {"id": "api-gateway-account", "cloudwatch_role_arn": role_arn},
+            module_path="module.apiresolverstack",
+        )
+        managed_arn = "arn:aws:iam::123456789012:policy/oldidp-apigw-managed"
+        add_resource(
+            state,
+            "aws_iam_role",
+            "apigw_cloudwatch",
+            {
+                "name": "oldidp-apigw-cloudwatch",
+                "arn": role_arn,
+                "managed_policy_arns": [managed_arn],
+            },
+        )
+        add_resource(
+            state, "aws_iam_policy", "apigw_managed", {"name": "m", "arn": managed_arn}
+        )
+        add_resource(
+            state,
+            "aws_iam_role_policy_attachment",
+            "apigw_cloudwatch",
+            {
+                "role": "oldidp-apigw-cloudwatch",
+                "policy_arn": "arn:aws:iam::aws:policy/service-role/"
+                "AmazonAPIGatewayPushToCloudWatchLogs",
+            },
+        )
+        add_resource(
+            state,
+            "aws_iam_role_policy",
+            "apigw_cloudwatch",
+            {"role": "oldidp-apigw-cloudwatch", "name": "extra"},
+        )
+        policy_arn = "arn:aws:iam::123456789012:policy/oldidp-apigw-logs"
+        add_resource(
+            state, "aws_iam_policy", "apigw_logs", {"name": "l", "arn": policy_arn}
+        )
+        add_resource(
+            state,
+            "aws_iam_role_policy_attachment",
+            "apigw_logs",
+            {"role": "oldidp-apigw-cloudwatch", "policy_arn": policy_arn},
+        )
+        add_resource(
+            state,
+            "aws_iam_policy",
+            "unrelated",
+            {"name": "u", "arn": "arn:aws:iam::aws:p"},
+        )
+        add_resource(
+            state,
+            "aws_iam_role_policy_attachment",
+            "other",
+            {"role": "oldidp-something-else", "policy_arn": "arn:aws:iam::aws:p"},
+        )
+        plan = build(state)
+        by_address = {r.old_address: r for r in plan.resources}
+        kept = [
+            "module.apiresolverstack.aws_api_gateway_account.main",
+            "aws_iam_role.apigw_cloudwatch",
+            "aws_iam_role_policy_attachment.apigw_cloudwatch",
+            "aws_iam_role_policy.apigw_cloudwatch",
+            "aws_iam_policy.apigw_logs",
+            "aws_iam_policy.apigw_managed",
+            "aws_iam_role_policy_attachment.apigw_logs",
+        ]
+        for address in kept:
+            r = by_address[address]
+            assert (r.verdict, r.detach) == (tm.KEEP_UNMANAGED, True), address
+            assert address in plan.detach_addresses
+        assert role_arn in by_address[kept[0]].note
+        other = by_address["aws_iam_role_policy_attachment.other"]
+        assert (other.verdict, other.detach) == (tm.RECREATE, False)
+        # Attached to another role only: destroyed with the old deployment.
+        unrelated = by_address["aws_iam_policy.unrelated"]
+        assert (unrelated.verdict, unrelated.detach) == (tm.RECREATE, False)
+
+    def test_api_gateway_account_settings_naming_no_role_are_detached(self):
+        state = add_resource(
+            old_state(), "aws_api_gateway_account", "main", {"id": "x"}
+        )
+        # A role another resource names the same way is not the account's.
+        arn = "arn:aws:iam::123456789012:role/oldidp-other"
+        add_resource(
+            state, "aws_iam_role", "other", {"name": "oldidp-other", "arn": arn}
+        )
+        add_resource(
+            state, "aws_ssm_parameter", "p", {"name": "p", "cloudwatch_role_arn": arn}
+        )
+        plan = {r.old_address: r for r in build(state).resources}
+        account = plan["aws_api_gateway_account.main"]
+        assert (account.verdict, account.detach) == (tm.KEEP_UNMANAGED, True)
+        assert "none recorded" in account.note
+        assert plan["aws_iam_role.other"].detach is False
+        assert plan["aws_iam_role.authenticated_role"].detach is False
+
     def test_a_create_only_invocation_is_destroyed_with_the_old_deployment(self):
         seeder = next(
             r for r in build().resources if r.old_type == "aws_lambda_invocation"
@@ -2199,6 +2304,37 @@ class TestDestroyPlanCheck:
             "detached it from the old state; run `detach --apply` first"
         ]
 
+    @pytest.mark.parametrize("recorded", [True, False], ids=["recorded", "unseen"])
+    def test_deleting_the_api_gateway_account_settings_is_a_finding(self, recorded):
+        """Also for a migration plan written before the settings were detached, in
+        which they were recorded as safe to destroy."""
+        plan = build()
+        address = "aws_api_gateway_account.main"
+        if recorded:
+            plan.resources.append(
+                tm.PlannedResource(
+                    old_address=address,
+                    old_type="aws_api_gateway_account",
+                    kind="aws_api_gateway_account",
+                    verdict=tm.RECREATE,
+                    evidence=tm.INFERRED,
+                    note=tm.GENERIC_RECREATE_NOTE,
+                )
+            )
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function"),
+                deletion(address, "aws_api_gateway_account", id="api-gateway-account"),
+            ),
+            plan,
+        )
+        assert len(findings) == 1
+        assert findings[0].startswith(f"{address} is in the destroy plan; destroying")
+        assert "CloudWatch role" in findings[0]
+        assert findings[0].endswith(
+            "Run `plan` again with this version of idp-cli, then `detach --apply`"
+        )
+
     def test_an_address_the_migration_plan_never_saw_is_a_finding(self):
         plan = build()
         findings, _ = tm.check_destroy_plan(
@@ -2617,9 +2753,15 @@ class FakeConfigManager:
 
     revisions_by_profile: dict = {}
     restored: list = []
+    profiles_in_table: list = []
 
     def __init__(self, region=None):
         self.revisions = type("R", (), {"enabled": True})()
+
+    def list_config_versions(self, raise_errors=False):
+        if not raise_errors:  # a failed read would look like an empty table
+            return []
+        return [{"versionName": p} for p in FakeConfigManager.profiles_in_table]
 
     def list_revisions(self, profile):
         return FakeConfigManager.revisions_by_profile.get(profile, [])
@@ -2635,6 +2777,9 @@ class TestRestoreConfigOperation:
         from idp_sdk.operations.config import ConfigOperation
 
         FakeConfigManager.revisions_by_profile, FakeConfigManager.restored = {}, []
+        # The table holds a profile the backup does not: with a backup, only the
+        # backed-up profiles are considered.
+        FakeConfigManager.profiles_in_table = ["bda", "default", "extra"]
         monkeypatch.setattr(
             configuration_manager, "ConfigurationManager", FakeConfigManager
         )
@@ -2670,6 +2815,74 @@ class TestRestoreConfigOperation:
         assert not [n for n in result.notes if "nothing to restore" in n]
         # The other profile's restore is independent of that finding.
         assert FakeConfigManager.restored == [("bda", 1)]
+
+    def test_with_a_backup_only_its_profiles_are_considered(self):
+        FakeConfigManager.revisions_by_profile = {
+            "extra": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+        }
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert FakeConfigManager.restored == []
+        assert not [n for n in result.notes if "extra" in n]
+
+    def test_without_a_backup_the_tables_profiles_are_checked(self):
+        """fix-config writes no backup when the old table has no revision
+        counters, so restore-config reads the profiles from the table."""
+        self.backup.unlink()
+        FakeConfigManager.revisions_by_profile = {
+            "default": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+            # Created by the new deployment: revisions, none of before.
+            "extra": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "stack-deployment"),
+            ],
+            "bda": [],
+        }
+        FakeConfigManager.profiles_in_table = ["bda", "default", "extra"]
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert (result.ok, result.applied, result.findings) == (True, True, [])
+        assert FakeConfigManager.restored == [("default", 1)]
+        assert result.changes and "revision 1 of default" in result.changes[0]
+        assert any(
+            "every profile in the configuration table" in n for n in result.notes
+        )
+        extra = next(n for n in result.notes if n.startswith("extra:"))
+        assert "nothing to restore" in extra and "starts at revision 1" in extra
+        assert any(n.startswith("bda:") for n in result.notes)
+
+    def test_without_a_backup_a_history_not_starting_at_one_is_a_finding(self):
+        """A number was spent before the earliest revision (an old counter left
+        on the row, or a backfill that failed after taking its number), so old
+        content may have been replaced."""
+        self.backup.unlink()
+        FakeConfigManager.profiles_in_table = ["default", "extra"]
+        FakeConfigManager.revisions_by_profile = {
+            # A backfill that failed after taking revision 1.
+            "default": [_rev(2, "stack-deployment", published=True)],
+            "extra": [_rev(1, "stack-deployment", published=True)],
+        }
+        result = migration().restore_config(str(self.dir), apply=True)
+        assert result.ok is False and FakeConfigManager.restored == []
+        assert len(result.findings) == 1
+        assert result.findings[0].startswith("default: its earliest revision is 2")
+        assert any(n.startswith("extra:") for n in result.notes)
+
+    def test_without_a_backup_a_dry_run_restores_nothing(self):
+        self.backup.unlink()
+        FakeConfigManager.revisions_by_profile = {
+            "default": [
+                _rev(2, "stack-deployment", published=True),
+                _rev(1, "system", tm.PRE_HISTORY_NOTES),
+            ],
+        }
+        result = migration().restore_config(str(self.dir), apply=False)
+        assert result.applied is False and FakeConfigManager.restored == []
+        assert result.changes and "default" in result.changes[0]
 
     def test_a_user_edit_after_the_first_deploy_is_reported_and_left_alone(self):
         FakeConfigManager.revisions_by_profile = {
