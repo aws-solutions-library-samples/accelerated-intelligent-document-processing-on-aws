@@ -14,7 +14,7 @@ import io
 import json
 
 import pytest
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import ReadTimeoutError
 
 from idp_common.decision_model import (
     ChoiceQuestion,
@@ -29,6 +29,7 @@ from idp_common.decision_model import (
     merge_metering,
     resolve_endpoint,
 )
+from tests.unit._botocore_errors import named_reply, service_error
 from tests.unit.decision_model.window_contract import (  # noqa: F401 - autouse
     no_oversize_requests,
     window_refusal,
@@ -68,8 +69,15 @@ def _function_error(error_type, message):
     }
 
 
+#: Lambda's model declares no ``AccessDeniedException`` for ``Invoke``; IAM answers
+#: it with a 403. Every other code here takes the status the model declares.
+_UNMODELLED_STATUS = {"AccessDeniedException": 403}
+
+
 def _client_error(code):
-    return ClientError({"Error": {"Code": code, "Message": "m"}}, "Invoke")
+    """``code`` as a real Lambda client raises it from ``Invoke`` (#2050)."""
+    reply = named_reply(code, _UNMODELLED_STATUS.get(code), service="lambda")
+    return service_error(reply, "Invoke", "lambda")
 
 
 class FakeLambda:
