@@ -69,10 +69,17 @@ was.
 
 `modality` flags are tri-state. `None` — the default — means *infer from this
 call's own task prompt placeholders*. Setting one explicitly rewrites that
-prompt to match: `_apply_modality_to_prompt` removes a placeholder together with
-its wrapping element when that element held nothing else, or appends a wrapped
-placeholder when the prompt has none. Both directions are logged with the
-call's path.
+prompt to match: `_apply_modality_to_prompt` removes every occurrence of the
+placeholder, taking a wrapping element with it when that element held nothing else
+(`strip_placeholder`), or appends a wrapped placeholder when the prompt has none.
+Both directions are logged with the call's path.
+
+Every call's task prompt is assembled by the module-level
+`classification_task_prompt_as_sent`: the modality rewrite
+(`apply_modality_to_prompt`), then the class-confidence splice
+(`compose_class_confidence_prompt`). `validate_config` calls the same function, so
+it counts `{DOCUMENT_IMAGE}` in the prompt the service sends, including one written
+inside the confidence block.
 
 `{DOCUMENT_IMAGE}` may appear at most once in a prompt. The three content builders
 (`_build_content`, `_build_context_content`, `_build_packet_content`) refuse a

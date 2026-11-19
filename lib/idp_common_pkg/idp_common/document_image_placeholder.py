@@ -4,7 +4,7 @@
 """The ``{DOCUMENT_IMAGE}`` placeholder rule shared by every prompt builder.
 
 Also the placeholder removal classification applies for an explicit
-``modality`` flag, which the validator needs too. Imports only the standard
+``modality`` flag. Imports only the standard
 library, so classification, extraction, the confidence
 pass and ``validate_config`` can all use it without importing one another.
 """
@@ -63,22 +63,19 @@ def check_document_image_placeholder(prompt: str, where: str = "") -> None:
 
 
 def strip_placeholder(template: str, placeholder: str, element: str) -> str:
-    """Remove ``placeholder``, and its wrapping ``<element>`` if that is all it held.
+    """Remove every ``placeholder``, and its wrapping ``<element>`` where that is all it held.
 
     What classification does to a prompt whose ``modality`` flag for that content is
-    explicitly off. When any wrapped occurrence is found only the wrapped ones are
-    removed, so a bare repeat beside one survives; ``validate_config`` applies this
-    same function so it judges the prompt the service sends.
+    explicitly off, so the content is neither sent nor paid for. Every occurrence
+    goes: wrapped ones together with their element, then any bare ones, so a bare
+    repeat beside a wrapped placeholder is not left behind to be sent.
     """
     wrapped = re.compile(
         rf"[ \t]*<{re.escape(element)}>\s*{re.escape(placeholder)}\s*"
         rf"</{re.escape(element)}>[ \t]*\n?",
         re.IGNORECASE,
     )
-    stripped, count = wrapped.subn("", template)
-    if count:
-        return stripped
-    return template.replace(placeholder, "")
+    return wrapped.sub("", template).replace(placeholder, "")
 
 
 def section_prompt_can_be_sent(method: str, on_low_confidence: str) -> bool:

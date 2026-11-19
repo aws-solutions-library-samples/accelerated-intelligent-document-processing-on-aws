@@ -2051,6 +2051,26 @@
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
   },
+  "testStudio.patternPreview.alreadyInSet": {
+    "defaultMessage": "{count, number} already in the set",
+    "description": "Part of the Check Files result: matching files the set already holds, which the add leaves as they are."
+  },
+  "testStudio.patternPreview.archivesLeftOut": {
+    "defaultMessage": "{count, plural, one {# .zip archive} other {# .zip archives}} left out",
+    "description": "Part of the Check Files result: matching .zip files from the Input Bucket, which the add does not copy."
+  },
+  "testStudio.patternPreview.filesToAdd": {
+    "defaultMessage": "{count, plural, one {# file} other {# files}} to add",
+    "description": "Test Studio Check Files result: how many files matching the pattern the add will copy into the set."
+  },
+  "testStudio.patternPreview.leftOutNote": {
+    "defaultMessage": "({leftOut})",
+    "description": "Shown after the Check Files count. {leftOut} lists the matching files the add leaves out, e.g. \"1 already in the set\"."
+  },
+  "testStudio.patternPreview.noneToAdd": {
+    "defaultMessage": "None of the {count, plural, one {# matching file} other {# matching files}} would be added ({leftOut}).",
+    "description": "Warning when Check Files matched files but the add would copy none of them. {leftOut} says why, e.g. \"1 already in the set\"."
+  },
   "topNavigation.feedback.ariaLabel": {
     "defaultMessage": "Feedback and issue reporting",
     "description": "Screen-reader label of the feedback menu button in the top navigation."
