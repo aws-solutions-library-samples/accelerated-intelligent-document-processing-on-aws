@@ -24,6 +24,8 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from idp_common.config.configuration_manager import ConfigurationManager
+from idp_common.config.models import IDPConfig
 from idp_sdk import IDPClient
 from idp_sdk._core import terraform_deploy as tf
 from idp_sdk._core import terraform_migrate as tm
@@ -577,6 +579,21 @@ class TestTypeClassification:
         # Attached to another role only: destroyed with the old deployment.
         unrelated = by_address["aws_iam_policy.unrelated"]
         assert (unrelated.verdict, unrelated.detach) == (tm.RECREATE, False)
+
+    def test_the_plan_and_check_destroy_select_the_same_role_resources(self):
+        """One selection serves both: what `plan` keeps is what `check-destroy`
+        refuses, including a policy attachment listing the role among others.
+        (`plan` refuses another role's `aws_iam_policy_attachment`, a type it
+        does not know to be safe to destroy, so that one is left out here.)"""
+        gateway, others = _gateway_role_resources()
+        others = [o for o in others if o[1] != tm.POLICY_ATTACHMENT_TYPE]
+        state = old_state()
+        for address, tf_type, attrs in gateway + others:
+            add_resource(state, tf_type, address.split(".")[1], attrs)
+        by_address = {r.old_address: r for r in build(state).resources}
+        added = [a for a, _, _ in gateway + others]
+        kept = sorted(a for a in added if by_address[a].detach)
+        assert kept == sorted(a for a, _, _ in gateway)
 
     def test_api_gateway_account_settings_naming_no_role_are_detached(self):
         state = add_resource(
@@ -2199,6 +2216,110 @@ def recreated(plan, tf_type):
     )
 
 
+def _gateway_role_resources():
+    """(address, type, attributes) of the API Gateway account settings with the
+    role they name and its policies, and of another role with its policies."""
+    role_arn = "arn:aws:iam::123456789012:role/oldidp-apigw-cloudwatch"
+    managed_arn = "arn:aws:iam::123456789012:policy/oldidp-apigw-managed"
+    attached_arn = "arn:aws:iam::123456789012:policy/oldidp-apigw-logs"
+    shared_arn = "arn:aws:iam::123456789012:policy/oldidp-apigw-shared"
+    gateway = [
+        (
+            "aws_api_gateway_account.main",
+            "aws_api_gateway_account",
+            {"id": "api-gateway-account", "cloudwatch_role_arn": role_arn},
+        ),
+        (
+            "aws_iam_role.apigw_cloudwatch",
+            "aws_iam_role",
+            {
+                "name": "oldidp-apigw-cloudwatch",
+                "arn": role_arn,
+                "managed_policy_arns": [managed_arn],
+            },
+        ),
+        (
+            "aws_iam_role_policy_attachment.apigw_cloudwatch",
+            "aws_iam_role_policy_attachment",
+            {"role": "oldidp-apigw-cloudwatch", "policy_arn": attached_arn},
+        ),
+        (
+            "aws_iam_role_policy.apigw_cloudwatch",
+            "aws_iam_role_policy",
+            {"role": "oldidp-apigw-cloudwatch", "name": "extra"},
+        ),
+        (
+            "aws_iam_policy.apigw_logs",
+            "aws_iam_policy",
+            {"name": "l", "arn": attached_arn},
+        ),
+        (
+            "aws_iam_policy.apigw_managed",
+            "aws_iam_policy",
+            {"name": "m", "arn": managed_arn},
+        ),
+        (
+            "aws_iam_policy_attachment.apigw_shared",
+            "aws_iam_policy_attachment",
+            {
+                "name": "shared",
+                "roles": ["oldidp-other", "oldidp-apigw-cloudwatch"],
+                "policy_arn": shared_arn,
+            },
+        ),
+        (
+            "aws_iam_policy.apigw_shared",
+            "aws_iam_policy",
+            {"name": "s", "arn": shared_arn},
+        ),
+    ]
+    other_arn = "arn:aws:iam::123456789012:policy/oldidp-other"
+    others = [
+        (
+            "aws_iam_role.other",
+            "aws_iam_role",
+            {
+                "name": "oldidp-other",
+                "arn": "arn:aws:iam::123456789012:role/oldidp-other",
+                "managed_policy_arns": [other_arn],
+            },
+        ),
+        (
+            "aws_iam_role_policy_attachment.other",
+            "aws_iam_role_policy_attachment",
+            {"role": "oldidp-other", "policy_arn": other_arn},
+        ),
+        (
+            "aws_iam_role_policy.other",
+            "aws_iam_role_policy",
+            {"role": "oldidp-other", "name": "extra"},
+        ),
+        ("aws_iam_policy.other", "aws_iam_policy", {"name": "o", "arn": other_arn}),
+        (
+            "aws_iam_policy_attachment.other",
+            "aws_iam_policy_attachment",
+            {"name": "o", "roles": ["oldidp-other"], "policy_arn": other_arn},
+        ),
+    ]
+    return gateway, others
+
+
+def _old_plan_recording(plan, resources):
+    """What an earlier idp-cli recorded for these: destroyable."""
+    for address, tf_type, _ in resources:
+        plan.resources.append(
+            tm.PlannedResource(
+                old_address=address,
+                old_type=tf_type,
+                kind=tf_type,
+                verdict=tm.RECREATE,
+                evidence=tm.INFERRED,
+                note=tm.GENERIC_RECREATE_NOTE,
+            )
+        )
+    return plan
+
+
 class TestDestroyPlanCheck:
     def test_deleting_a_kept_resource_is_a_finding(self):
         plan = build()
@@ -2335,6 +2456,52 @@ class TestDestroyPlanCheck:
             "Run `plan` again with this version of idp-cli, then `detach --apply`"
         )
 
+    def test_deleting_the_role_the_api_gateway_account_settings_name_is_a_finding(
+        self,
+    ):
+        """A migration plan written before the settings and their role were
+        detached recorded all of them as safe to destroy. The destroy plan's own
+        values name the role, so its deletion, and its policies', is a finding;
+        another role's is not."""
+        gateway, others = _gateway_role_resources()
+        plan = _old_plan_recording(build(), gateway + others)
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function"),
+                *(deletion(a, t, **before) for a, t, before in gateway + others),
+            ),
+            plan,
+        )
+        flagged = sorted(f.split(" ", 1)[0] for f in findings)
+        assert flagged == sorted(a for a, _, _ in gateway)
+        role_findings = [f for f in findings if "aws_api_gateway_account" not in f]
+        assert len(role_findings) == len(gateway) - 1
+        for finding in role_findings:
+            assert "the CloudWatch role the Region's API Gateway account" in finding
+            assert finding.endswith(
+                "Run `plan` again with this version of idp-cli, then `detach --apply`"
+            )
+
+    @pytest.mark.parametrize("with_copy", [True, False], ids=["old-state-copy", "none"])
+    def test_the_role_is_recognised_from_a_copy_of_the_old_state(self, with_copy):
+        """The account settings left the old state (removed by hand) before the
+        destroy plan was made, so only a copy of the old state, as `detach` writes
+        one, still says which role they name."""
+        gateway, others = _gateway_role_resources()
+        account, members = gateway[0], gateway[1:]
+        plan = _old_plan_recording(build(), gateway + others)
+        copy = add_resource(old_state(), account[1], "main", account[2])
+        findings, _ = tm.check_destroy_plan(
+            destroy_plan(
+                deletion(recreated(plan, "aws_lambda_function"), "aws_lambda_function"),
+                *(deletion(a, t, **before) for a, t, before in members + others),
+            ),
+            plan,
+            [copy] if with_copy else [],
+        )
+        flagged = sorted(f.split(" ", 1)[0] for f in findings)
+        assert flagged == (sorted(a for a, _, _ in members) if with_copy else [])
+
     def test_an_address_the_migration_plan_never_saw_is_a_finding(self):
         plan = build()
         findings, _ = tm.check_destroy_plan(
@@ -2368,6 +2535,65 @@ class TestDestroyPlanCheck:
         assert result.ok is True
         assert result.details["recordedNotInDestroyPlan"]
         assert "would be left behind" in result.notes[0]
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "old-state-backup-before-detach-20261119T000000Z.tfstate",
+            # What the detach commands `plan` prints write.
+            Path(
+                tm.detach_commands(["x"], "terraform")[0].split("> ")[1].strip(")'")
+            ).name,
+        ],
+        ids=["detach-apply", "printed-commands"],
+    )
+    def test_the_operation_reads_the_old_state_copies_detach_wrote(
+        self, planned_dir, name
+    ):
+        gateway, _ = _gateway_role_resources()
+        account, (role, *_) = gateway[0], gateway[1:]
+        mdir = planned_dir / tm.MIGRATION_DIR
+        mdir.mkdir(exist_ok=True)
+        (mdir / name).write_text(
+            json.dumps(add_resource(old_state(), account[1], "main", account[2]))
+        )
+        path = planned_dir / "destroy.json"
+        plan = build()
+        path.write_text(
+            json.dumps(
+                destroy_plan(
+                    deletion(
+                        recreated(plan, "aws_lambda_function"), "aws_lambda_function"
+                    ),
+                    deletion(role[0], role[1], **role[2]),
+                )
+            )
+        )
+        result = migration().check_destroy(str(path), str(planned_dir))
+        assert result.ok is False and len(result.findings) == 1
+        assert result.findings[0].startswith(f"{role[0]} is in the destroy plan; it")
+
+    @pytest.mark.parametrize("content", ["[]", '{"resources": {"a": 1}}', "{"])
+    def test_an_unreadable_old_state_copy_is_refused_by_name(
+        self, planned_dir, tmp_path, content
+    ):
+        mdir = planned_dir / tm.MIGRATION_DIR
+        mdir.mkdir(exist_ok=True)
+        backup = mdir / "old-state-backup-before-detach.tfstate"
+        backup.write_text(content)
+        path = tmp_path / "destroy.json"
+        plan = build()
+        path.write_text(
+            json.dumps(
+                destroy_plan(
+                    deletion(
+                        recreated(plan, "aws_lambda_function"), "aws_lambda_function"
+                    )
+                )
+            )
+        )
+        with pytest.raises(IDPConfigurationError, match=str(backup)):
+            migration().check_destroy(str(path), str(planned_dir))
 
     def test_the_operation_refuses_the_state_file(self, planned_dir):
         result = migration().check_destroy(
@@ -2747,6 +2973,81 @@ def test_the_pre_history_notes_are_the_ones_idp_common_writes():
     assert configuration_manager.PRE_HISTORY_NOTES is tm.PRE_HISTORY_NOTES
 
 
+def _fail_first(store, method, applied):
+    """Make the store's first call of `method` (the backfill's, since the backfill
+    is cut before the save's own revision) raise, after the real call when
+    `applied` (a response lost after DynamoDB applied the write)."""
+    real = getattr(store, method)
+    calls = []
+
+    def failing(*args, **kwargs):
+        calls.append(method)
+        if len(calls) > 1:
+            return real(*args, **kwargs)
+        if applied:
+            real(*args, **kwargs)
+        raise RuntimeError(f"injected {method} failure")
+
+    setattr(store, method, failing)
+    return calls
+
+
+def _first_deploy_revisions(monkeypatch, method, applied):
+    """The revisions the real ConfigurationManager leaves for a migrated profile
+    when the first deploy's pre-migration backfill fails in `method`: the old
+    content is saved with history off, as on the old deployment, then the first
+    deploy saves its preset as the stack deployment does. The class is the one
+    imported at module load, which the restore-config fixture does not replace."""
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+    monkeypatch.setenv("CONFIGURATION_TABLE_NAME", "migrated-config")
+    with mock_aws():
+        boto3.client("dynamodb", region_name="us-east-1").create_table(
+            TableName="migrated-config",
+            KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "Configuration", "AttributeType": "S"}
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        boto3.client("s3", region_name="us-east-1").create_bucket(
+            Bucket="migrated-config-bucket"
+        )
+        monkeypatch.delenv("CONFIGURATION_BUCKET", raising=False)
+        ConfigurationManager().save_configuration(
+            "Config", IDPConfig(notes="old"), version="default"
+        )
+        monkeypatch.setenv("CONFIGURATION_BUCKET", "migrated-config-bucket")
+        manager = ConfigurationManager()
+        calls = _fail_first(manager.revisions, method, applied)
+        manager.save_configuration(
+            "Config",
+            IDPConfig(notes="preset"),
+            version="default",
+            created_by=tm.STACK_DEPLOYMENT,
+            revision_notes="Updated by stack deployment",
+        )
+        assert calls, f"the save never called {method}"
+        return manager.list_revisions("default")
+
+
+#: Where the first deploy's backfill can fail, read from ConfigRevisionStore.cut:
+#: (store method, whether DynamoDB applied the write, revision numbers left, the
+#: outcome restore-config should reach with and without a fix-config backup).
+BACKFILL_FAILURES = {
+    # Refused before a number was taken: the save's revision is 1, which without
+    # a backup cannot be told from a profile the new deployment created.
+    "allocation-refused": ("next_number", False, [1], "finding", "note"),
+    # The counter moved but the response was lost: number 1 is spent.
+    "allocation-lost": ("next_number", True, [2], "finding", "finding"),
+    "body-write": ("put_body", False, [2], "finding", "finding"),
+    # The entry was not appended, so the body is deleted: number 1 is spent.
+    "index-refused": ("append_index", False, [2], "finding", "finding"),
+    # The entry was appended and only the response was lost: the backfill is
+    # listed, so the old content is restorable.
+    "index-lost": ("append_index", True, [2, 1], "restore", "restore"),
+}
+
+
 class FakeConfigManager:
     """Stands in for ConfigurationManager: revisions per profile, and a record of
     every restore."""
@@ -2799,22 +3100,54 @@ class TestRestoreConfigOperation:
         )
         self.dir = planned_dir
 
-    def test_a_failed_backfill_is_a_finding_naming_the_backup(self):
+    @pytest.mark.parametrize("backup", [True, False], ids=["backup", "no-backup"])
+    @pytest.mark.parametrize("failure", sorted(BACKFILL_FAILURES))
+    def test_a_failed_backfill_is_judged_by_the_revisions_it_leaves(
+        self, monkeypatch, failure, backup
+    ):
+        method, applied, numbers, with_backup, without_backup = BACKFILL_FAILURES[
+            failure
+        ]
+        revisions = _first_deploy_revisions(monkeypatch, method, applied)
+        assert [int(r["revision"]) for r in revisions] == numbers
+        # The save's own revision is the published one either way.
+        assert [
+            (int(r["revision"]), r["createdBy"]) for r in revisions if r["published"]
+        ] == [(numbers[0], tm.STACK_DEPLOYMENT)]
         FakeConfigManager.revisions_by_profile = {
-            "default": [_rev(1, "stack-deployment", published=True)],
+            "default": revisions,
             "bda": [
                 _rev(2, "stack-deployment", published=True),
                 _rev(1, "system", tm.PRE_HISTORY_NOTES),
             ],
         }
+        FakeConfigManager.profiles_in_table = ["bda", "default"]
+        if not backup:
+            self.backup.unlink()
         result = migration().restore_config(str(self.dir), apply=True)
-        assert result.ok is False
-        assert len(result.findings) == 1
-        assert "default" in result.findings[0]
-        assert str(self.backup) in result.findings[0]
-        assert not [n for n in result.notes if "nothing to restore" in n]
-        # The other profile's restore is independent of that finding.
-        assert FakeConfigManager.restored == [("bda", 1)]
+        expected = with_backup if backup else without_backup
+        default_findings = [f for f in result.findings if f.startswith("default:")]
+        default_notes = [n for n in result.notes if n.startswith("default:")]
+        if expected == "restore":
+            assert (result.ok, default_findings) == (True, [])
+            assert FakeConfigManager.restored == [("bda", 1), ("default", 1)]
+        elif expected == "finding":
+            assert result.ok is False and len(default_findings) == 1
+            assert default_notes == []
+            if backup:
+                assert str(self.backup) in default_findings[0]
+            else:
+                assert default_findings[0].startswith(
+                    f"default: its earliest revision is {numbers[-1]}"
+                )
+            # The other profile's restore is independent of that finding.
+            assert FakeConfigManager.restored == [("bda", 1)]
+        else:
+            # The residual the no-backup path states it cannot tell apart.
+            assert (result.ok, default_findings) == (True, [])
+            assert len(default_notes) == 1
+            assert "starts at revision 1" in default_notes[0]
+            assert FakeConfigManager.restored == [("bda", 1)]
 
     def test_with_a_backup_only_its_profiles_are_considered(self):
         FakeConfigManager.revisions_by_profile = {
