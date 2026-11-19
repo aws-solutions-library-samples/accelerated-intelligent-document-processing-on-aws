@@ -962,6 +962,32 @@ class TestLabelingPages:
         service = _service(labeling={"pages": "first_k", "k": "5"})
         assert service._section_classification_pages(self._segment(2)) == ["1", "2"]
 
+    @pytest.mark.parametrize(
+        "labeling, sent",
+        [
+            ({"pages": "first"}, ["2"]),
+            ({"pages": "first_k", "k": "2"}, ["2", "3"]),
+            ({"pages": "all"}, ["1", "2", "3"]),
+        ],
+    )
+    def test_a_page_the_splitting_call_left_out_does_not_stand_for_the_segment(
+        self, labeling, sent
+    ):
+        """#2037: page 1 was in no range and was joined to this segment. It is
+        not one of the segment's opening pages by the model's account."""
+        from idp_common.classification.models import Segment
+
+        service = _service(labeling=labeling)
+        segment = Segment(page_ids=["1", "2", "3"], filled_page_ids=["1"])
+        assert service._section_classification_pages(segment) == sent
+
+    def test_a_segment_of_only_placed_pages_still_sends_one(self):
+        from idp_common.classification.models import Segment
+
+        service = _service(labeling={"pages": "first"})
+        segment = Segment(page_ids=["4"], filled_page_ids=["4"])
+        assert service._section_classification_pages(segment) == ["4"]
+
 
 # --------------------------------------------------------------------------
 # Class validation in section classification
@@ -1388,3 +1414,39 @@ class TestAnUnparseableSplittingReplyIsRetried:
             (["1", "2"], "invoice")
         ]
         assert result.metering["Splitting/bedrock/nova"]["inputTokens"] == 20
+
+
+@pytest.mark.unit
+class TestASplittingAnswerThatLeavesAPageOut:
+    """#2037 at the splitting call: packet granularity shares the packet path, so
+    a page the splitting ranges leave out is placed the same way, and section
+    classification then labels the segment it joined."""
+
+    def test_the_trailing_page_is_kept_labelled_and_reported(self):
+        service = _service(granularity="packet")
+        document = _document(3)
+        router = _Router(
+            packet_segments=[
+                {"ordinal_start_page": 1, "ordinal_end_page": 1},
+                {"ordinal_start_page": 2, "ordinal_end_page": 2},
+            ],
+            labels=["invoice", "receipt"],
+        )
+        with (
+            patch("idp_common.s3.get_text_content", return_value="text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=router),
+        ):
+            result = service.split_then_classify_document(document)
+
+        placed = [pid for s in result.sections for pid in s.page_ids]
+        assert sorted(placed, key=int) == sorted(document.pages, key=int)
+        assert [(s.page_ids, s.classification) for s in result.sections] == [
+            (["1"], "invoice"),
+            (["2", "3"], "receipt"),
+        ]
+        codes = [
+            [pi.code for pi in (s.processing_issues or [])] for s in result.sections
+        ]
+        assert codes == [[], ["classification_page_assigned_to_neighbour"]]
+        assert result.sections[1].processing_issues[0].details == {"page_ids": ["3"]}
