@@ -178,17 +178,23 @@ Two consequences follow:
   your saved table holds, even if you never edited that unit, because every save
   stores the whole table. Saving once pins the defaults of that moment for every
   row in the table.
-- Deleting a default row in the editor does not stick. The saved table records no
-  deletions, so the row is back at its default rate once the table is saved and the
-  page is reloaded. To have a default model cost nothing in the reports, set its
-  rates to `0` instead.
+- A default row cannot be deleted. The saved table records no deletions, so a
+  deleted default row would be back at its default rate once the table is saved and
+  the page reloaded; the Pricing page therefore disables **Delete unit** on every
+  row from the default price list and says why. A row removed in the JSON or YAML
+  view, or left out of an imported file, comes back in the same way. To have a
+  default model cost nothing in the reports, set its rates to `0` instead. Rows you
+  added stay deletable, and every row stays editable.
+
+To put one default row back to its default rate, choose **Restore default price**
+on that row; it is available when the row's price differs from the default.
 
 To pick up the current defaults for every row, choose **Restore default (All)** on
 the Pricing page, which discards the saved table, and then re-apply your own
 changes. The button is enabled whenever the table on the page differs from the
 defaults: a price that differs by any amount (the same value in a different
 notation, such as `2.2E-6` and `0.0000022`, does not count), a row the defaults do
-not have, or a default row you have deleted and not yet saved.
+not have, or a default row removed in the JSON or YAML view or by an import and not yet saved.
 
 ### What the estimate cannot express: prices that change with request size
 

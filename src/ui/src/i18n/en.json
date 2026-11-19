@@ -1316,8 +1316,16 @@
     "description": "Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many."
   },
   "pricing.layout.defaultUnitsAlwaysApply": {
-    "defaultMessage": "Your saved prices are applied over the default prices. A default unit you delete comes back at its default price after you save and reload. To make a default unit cost nothing, set its price to 0.",
-    "description": "Note above the pricing tables on the Pricing page: deleting a default unit does not persist, because saved prices are merged over the defaults per unit."
+    "defaultMessage": "Your saved prices are applied over the default prices, so a default unit cannot be deleted. To make a default unit cost nothing, set its price to 0. To undo a change to a default unit, choose Restore default price on its row.",
+    "description": "Note above the pricing tables on the Pricing page: default units cannot be deleted because saved prices are merged over the defaults per unit; explains how to zero or restore one instead."
+  },
+  "pricing.layout.deleteDefaultUnitDisabledReason": {
+    "defaultMessage": "This unit is in the default price list, so it cannot be deleted: it would come back at its default price after you save and reload. Set its price to 0 to make it cost nothing.",
+    "description": "Tooltip on the disabled Delete unit button of a default pricing row on the Pricing page, explaining why it is disabled."
+  },
+  "pricing.layout.deleteUnit": {
+    "defaultMessage": "Delete unit",
+    "description": "Accessible label of the icon button that deletes one pricing unit row on the Pricing page."
   },
   "pricing.layout.invalidPrice": {
     "defaultMessage": "Enter a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.",
@@ -1330,6 +1338,14 @@
   "pricing.layout.invalidPricesHeader": {
     "defaultMessage": "Invalid prices",
     "description": "Header of the warning that lists every price on the Pricing page that cannot be saved."
+  },
+  "pricing.layout.restoreDefaultPrice": {
+    "defaultMessage": "Restore default price",
+    "description": "Accessible label of the icon button that sets one default pricing unit back to its default price on the Pricing page."
+  },
+  "pricing.layout.restoreDefaultPriceDisabledReason": {
+    "defaultMessage": "This unit already has its default price.",
+    "description": "Tooltip on the disabled Restore default price button of a pricing row whose price equals the default."
   },
   "reviewBulk.bulkResultsModal.close": {
     "defaultMessage": "Close",
