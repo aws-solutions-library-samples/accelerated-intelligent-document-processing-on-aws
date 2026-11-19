@@ -579,8 +579,13 @@ processing issues on the sample's section onto it, so a warning recorded on the
 sample (an out-of-vocabulary class coerced to the fallback, a page with nothing to
 classify) is on the document's section rather than dropped with the sample. A
 content-filter block on the sample still fails the document rather than being
-soft-failed, because the rebuild gives every page the sample's class and the
-blocked page's `unclassified` label would not survive it. Under `llm_determined` or `page` the limit is ignored with a warning at
+soft-failed, because the sample's class is extrapolated to pages the model never
+saw: soft-failed, a blocked first page under a limit of 1 completes the whole
+document as `unclassified` with no error and an issue naming only that page.
+Without a limit every page is sent, so a blocked page is outvoted by the pages that
+were classified.
+
+Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only documents longer than N while
 sectioning shorter ones normally.
 

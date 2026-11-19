@@ -72,7 +72,9 @@ def _document(count: int) -> Document:
 
 
 def _page_text(uri: str) -> str:
-    return f"PAGE-{uri.split('/')[-2]} text"
+    page = uri.split("/")[-2]
+    # Page 9 has whitespace only, which counts as no text at all.
+    return "   " if page == "9" else f"PAGE-{page} text"
 
 
 def _reply(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -84,7 +86,9 @@ def _reply(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _classify(service: ClassificationService, route, pages: int = 4) -> Document:
+def _classify(
+    service: ClassificationService, route, pages: int = 4, document=None
+) -> Document:
     sent: List[str] = []
 
     def invoke(content, config):
@@ -96,7 +100,7 @@ def _classify(service: ClassificationService, route, pages: int = 4) -> Document
         patch("idp_common.s3.get_text_content", side_effect=_page_text),
         patch.object(service, "_invoke_bedrock_model", side_effect=invoke),
     ):
-        result = service.classify_document(_document(pages))
+        result = service.classify_document(document or _document(pages))
     # The limit was in force: pages past the sample were never sent.
     assert not any(f"PAGE-{n} " in text for text in sent for n in range(3, pages + 1))
     return result
@@ -159,6 +163,45 @@ class TestTheSamplesIssuesAreCarried:
         )
         assert issue.details == {"page_ids": ["1", "2"]}
         assert issue.section_id == section.section_id
+
+    def test_every_issue_of_the_sample_is_carried(self):
+        """Two warnings of different codes on the sample's section: a page with
+        nothing to classify and a page coerced to the fallback."""
+        document = _document(4)
+        # The sample's first page has whitespace-only text.
+        document.pages["1"].parsed_text_uri = "s3://in/doc.pdf/pages/9/text.txt"
+        result = _classify(
+            _service(granularity="page"),
+            lambda text, _config: {
+                "class": "bank_statement" if "PAGE-2 " in text else "invoice"
+            },
+            document=document,
+        )
+        (section,) = result.sections
+        assert sorted(
+            (i.code, i.severity, tuple(i.details["page_ids"])) for i in _issues(result)
+        ) == [
+            ("classification_invalid_class_fallback", "warning", ("2",)),
+            ("classification_page_no_content", "warning", ("1",)),
+        ]
+        assert {i.section_id for i in _issues(result)} == {section.section_id}
+
+    def test_a_failed_section_classification_is_carried_with_its_error(self):
+        """An error-severity issue is carried too, beside the document error that
+        fails the document."""
+
+        def route(_text, config):
+            if config.get("stage") == "splitting":
+                return {"segments": [{"ordinal_start_page": 1, "ordinal_end_page": 2}]}
+            raise RuntimeError("model access denied")
+
+        result = _classify(
+            _service(granularity="packet", strategy="split_then_classify"), route
+        )
+        (issue,) = _issues(result)
+        assert (issue.severity, issue.code) == ("error", "classification_failed")
+        assert "model access denied" in issue.root_cause
+        assert any("model access denied" in e for e in result.errors)
 
     def test_a_clean_sample_adds_nothing(self):
         result = _classify(

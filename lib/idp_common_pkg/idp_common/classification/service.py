@@ -1383,11 +1383,11 @@ class ClassificationService:
                                 # Not under a document-name class pin, where the
                                 # page's class is asserted and 'unclassified'
                                 # would split the asserted document around it,
-                                # nor on a page-limited sample, where the
-                                # sample's one class is given to every page,
-                                # the blocked one included, so 'unclassified'
-                                # would not survive the rebuild: both keep
-                                # failing the document as before.
+                                # nor on a page-limited sample, whose class is
+                                # extrapolated to pages the model never saw, so
+                                # a blocked sample would complete the whole
+                                # document 'unclassified' with no error: both
+                                # keep failing the document as before.
                                 page_result = self._content_filtered_page_result(
                                     page_id, document.pages.get(page_id), e
                                 )
@@ -3889,11 +3889,11 @@ class ClassificationService:
                 # the result into one all-pages section is what that setting asks.
                 if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
                     # A blocked page or segment is NOT soft-failed on the sample:
-                    # _apply_limited_classification_to_all_pages gives every page
-                    # the sample's one class, the blocked pages included, so the
-                    # soft failure's 'unclassified' label would not survive it.
-                    # The sample's section issues are carried over; a block is
-                    # recorded through document.errors instead.
+                    # _apply_limited_classification_to_all_pages extrapolates the
+                    # sample's class to every page, so a blocked sample (one page,
+                    # under a limit of 1) would complete the whole document
+                    # 'unclassified' with no error and an issue naming only the
+                    # sample's pages. The block goes to document.errors instead.
                     classified_limited = self.split_then_classify_document(
                         limited_document,
                         forced_class=forced_class,

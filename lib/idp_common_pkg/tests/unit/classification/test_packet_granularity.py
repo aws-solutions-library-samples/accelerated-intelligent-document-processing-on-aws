@@ -2437,6 +2437,23 @@ class TestASingleWindowReplyIsPutInPageOrder:
         single = self._classify(4, [_bedrock_reply(self.REPLY)])
         assert self._sections(single) == self._sections(windowed)
 
+    def test_order_is_by_page_number_not_by_id_string_or_class(self):
+        """Past page 9 a string sort puts "10" before "2", and these classes in
+        page order are not alphabetical, so neither ordering passes for this one."""
+        reply = [
+            _range(10, 12, "invoice"),
+            _range(2, 9, "receipt"),
+            _range(1, 1, "invoice"),
+        ]
+        result = self._classify(12, [_bedrock_reply(reply)])
+        assert [
+            (s.section_id, s.page_ids[0], s.classification) for s in result.sections
+        ] == [
+            ("1", "1", "invoice"),
+            ("2", "2", "receipt"),
+            ("3", "10", "invoice"),
+        ]
+
     def test_a_tie_under_disabled_goes_to_the_earliest_page(self):
         """``sectionSplitting: disabled`` breaks a page-count tie by the earliest
         segment, documented as the earliest page; with the reply's order that
