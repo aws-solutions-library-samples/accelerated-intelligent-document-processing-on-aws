@@ -66,6 +66,7 @@ safe tree-wide, so a new file repeating one of them is caught wherever it is.
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import subprocess
 from collections.abc import Callable
@@ -202,6 +203,25 @@ def derive_tracked_python_files() -> int:
     return len(_tracked(".py"))
 
 
+def _lint_debt_baseline() -> dict:
+    return json.loads((REPO_ROOT / "scripts/lint_debt.json").read_text("utf-8"))
+
+
+def derive_lint_excluded_files() -> int:
+    """Files on ruff's ``[lint] exclude`` list, generated from the baseline."""
+    return len(_lint_debt_baseline()["lintDebt"])
+
+
+def derive_lint_debt_findings() -> int:
+    """Findings those files carry, as the baseline records them."""
+    return sum(sum(c.values()) for c in _lint_debt_baseline()["lintDebt"].values())
+
+
+def derive_format_excluded_files() -> int:
+    """Files on ruff's ``[format] exclude`` list, generated from the baseline."""
+    return len(_lint_debt_baseline()["formatDebt"])
+
+
 # --- The registry -------------------------------------------------------------
 
 
@@ -326,6 +346,54 @@ DOCUMENTED_COUNTS = (
             "a figure, so the correct number of live statements is zero"
         ),
     ),
+    # The three lint-debt sizes. They change on every paydown
+    # (`check_lint_debt.py --write`), so a quoted figure red-lines whichever branch
+    # inherits a correct paydown; the prose names scripts/lint_debt.json instead.
+    DocumentedCount(
+        name="files on the [lint] exclude list",
+        derive=derive_lint_excluded_files,
+        patterns=(
+            rf"`\[lint\] exclude`\s+names\s+{_NUMBER}\s+(?:individual\s+)?files\b",
+            rf"\bnamed list of\s+{_NUMBER}\s+files from the\s+linter\b",
+        ),
+        probes=(
+            "`ruff.toml`'s `[lint] exclude` names {n} files",
+            "still excludes a named list of {n} files from the\nlinter",
+        ),
+        documents=(),
+        why=(
+            "len(lintDebt) in scripts/lint_debt.json; the prose names the baseline "
+            "instead of quoting a figure, so the correct number of statements is zero"
+        ),
+    ),
+    DocumentedCount(
+        name="pre-existing lint findings",
+        derive=derive_lint_debt_findings,
+        patterns=(rf"\b{_NUMBER}\s+pre-existing\s+(?:lint\s+)?findings\b",),
+        probes=("names the files holding {n} pre-existing\nfindings",),
+        documents=(),
+        why=(
+            "the finding total under lintDebt in scripts/lint_debt.json; the correct "
+            "number of statements is zero"
+        ),
+    ),
+    DocumentedCount(
+        name="files on the [format] exclude list",
+        derive=derive_format_excluded_files,
+        patterns=(
+            rf"`\[format\] exclude`\s+names\s+{_NUMBER}\s+(?:individual\s+)?files\b",
+            rf"\band\s+{_NUMBER}\s+from the\s+formatter\b",
+        ),
+        probes=(
+            "and `[format] exclude` names {n} individual files that",
+            "from the linter and {n} from the\nformatter",
+        ),
+        documents=(),
+        why=(
+            "len(formatDebt) in scripts/lint_debt.json; the correct number of "
+            "statements is zero"
+        ),
+    ),
 )
 
 #: Suffixes scanned. Prose that states one of these counts lives in Markdown, in a
@@ -400,6 +468,30 @@ def test_every_document_making_a_count_claim_states_a_pinned_one(
         "moved away from the registered phrasings — in which case restore one or add "
         "the new phrasing to the patterns — or the claim was removed, in which case "
         "drop the document from this entry."
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "count", [c for c in DOCUMENTED_COUNTS if not c.documents], ids=lambda c: c.name
+)
+def test_a_reintroduction_guard_matches_nothing(count: DocumentedCount) -> None:
+    """An entry with no documents says the right number of statements is zero.
+
+    The comparison above lets a statement through when it happens to equal today's
+    figure, which for these counts only defers the failure to the next change that
+    moves the figure — onto whichever unrelated branch inherits that change. So any
+    statement at all fails here, at the change that writes it.
+    """
+    found = [
+        (path.relative_to(REPO_ROOT).as_posix(), text)
+        for path, text, _ in _matches(count)
+    ]
+    assert not found, (
+        f"prose states a number of {count.name}, which this tree deliberately does "
+        f"not quote ({count.why}):\n"
+        + "\n".join(f"  {path}: {text!r}" for path, text in found)
+        + "\n\nName the derivation instead of the figure."
     )
 
 
