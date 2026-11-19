@@ -675,6 +675,18 @@ Parameters:
       - ERROR
     Description: Default logging level for all logs
 
+  ManageApiGatewayAccountSettings:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: >-
+      Whether this deployment sets the Region's API Gateway CloudWatch logging
+      role, which REST API access logging (LogLevel INFO or DEBUG) requires. It
+      is one setting per account and Region, so let one deployment per Region
+      manage it and set false on the others; a deployment with false uses the
+      role the Region already has, and fails to create its API stage at INFO or
+      DEBUG if none is set. Has no effect at WARN or ERROR.
+
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -1721,6 +1733,7 @@ Metadata:
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
+          - ManageApiGatewayAccountSettings
 
     ParameterLabels:
       # --- Feature Platform ---
@@ -1794,6 +1807,8 @@ Metadata:
         default: "Queue Stalled Threshold (seconds)"
       LogLevel:
         default: "Logging Level"
+      ManageApiGatewayAccountSettings:
+        default: "Manage the Region's API Gateway Logging Role"
       LogRetentionDays:
         default: "Log Retention Period (days)"
       CloudFrontPriceClass:
@@ -3648,6 +3663,7 @@ Resources:
         StackName: !Ref AWS::StackName
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
+        ManageApiGatewayAccountSettings: !Ref ManageApiGatewayAccountSettings
         DataRetentionInDays: !Ref DataRetentionInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs

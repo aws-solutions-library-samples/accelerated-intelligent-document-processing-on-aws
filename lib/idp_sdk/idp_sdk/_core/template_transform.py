@@ -445,6 +445,9 @@ class HeadlessTemplateTransformer(_PolicyStatementRemovalReporter):
             # the headless template doesn't expose unused UI configuration.
             "PublicArtifactsBucket",
             "PublicArtifactsPrefix",
+            # Only APIRESOLVERSTACK (removed above) reads it: it decides whether
+            # the UI REST API's stack sets the Region's API Gateway logging role.
+            "ManageApiGatewayAccountSettings",
         }
 
         # ---- Outputs to remove ----

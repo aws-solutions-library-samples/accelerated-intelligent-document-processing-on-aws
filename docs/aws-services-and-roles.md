@@ -246,9 +246,9 @@ The solution creates various IAM roles to run different components of the system
   * `lambda:InvokeFunction` on the stack's resolver functions (by function-name prefix) and the main-stack resolver ARNs in its field → function map
   * `ssm:GetParameter` on the stack's field → function map parameter, read at cold start
 
-* **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG`):
+* **API Gateway CloudWatch Logging Role** (created when `LogLevel` is `INFO` or `DEBUG` and `ManageApiGatewayAccountSettings` is `true`, the default):
   * Managed policy `AmazonAPIGatewayPushToCloudWatchLogs` (assumed by `apigateway.amazonaws.com`)
-  * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working.
+  * Registered as the account-level API Gateway CloudWatch role (`AWS::ApiGateway::Account`) to enable REST API stage access logging. This setting is per account per region and is retained on stack deletion so other stacks' logging keeps working. With `ManageApiGatewayAccountSettings=false` neither the role nor the setting is created and the deployment uses the role the Region already has — see [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role).
 
 * **Configuration Resolver Role** (API resolver Lambda for configuration CRUD + Z3 RuleJSON generation):
   * `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:UpdateItem`, `dynamodb:DeleteItem`, `dynamodb:Query`
