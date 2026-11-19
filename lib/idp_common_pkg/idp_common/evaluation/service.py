@@ -50,6 +50,7 @@ from idp_common.evaluation.stickler_backend import (
     transform_stickler_result,
 )
 from idp_common.models import Document, Section, Status
+from idp_common.utils.transient_errors import is_transient_error, reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -1609,6 +1610,9 @@ class EvaluationService:
             return section_result
 
         except ValueError as ve:
+            # A ValueError explicitly raised from a transient cause is not a
+            # schema error; let it out like the branch below does (#2049).
+            reraise_if_transient(ve, where="evaluation")
             # Schema configuration error - determine specific cause for better messaging
             error_message = str(ve)
             logger.error(
@@ -1674,6 +1678,11 @@ class EvaluationService:
             )
 
         except Exception as e:
+            # A transient LLM-judge failure (the comparator raises it as
+            # TransientError) must reach the Lambda, so EvaluationStep retries the
+            # document. Recorded here as a failed section, it would score every
+            # field of the section 0.0 with no retry (#2049).
+            reraise_if_transient(e, where="evaluation")
             # Data validation error or other issues
             logger.error(
                 f"Error evaluating section {section.section_id}: {str(e)}",
@@ -2150,6 +2159,13 @@ class EvaluationService:
                             unweighted_score_count += 1
 
                     except Exception as e:
+                        if is_transient_error(e):
+                            # The whole evaluation is retried (the outer except
+                            # surfaces this as TransientError), so the sections
+                            # not yet started would be wasted judge calls.
+                            for pending in future_to_section:
+                                pending.cancel()
+                            raise
                         logger.error(
                             f"Error evaluating section {section_id}: {traceback.format_exc()}"
                         )
@@ -2295,6 +2311,9 @@ class EvaluationService:
             return actual_document
 
         except Exception as e:
+            # A transient judge failure propagates so the step is retried; any
+            # other error is recorded on the document, as before (#2049).
+            reraise_if_transient(e, where="evaluation")
             logger.error(f"Error evaluating document: {traceback.format_exc()}")
             actual_document.errors.append(f"Evaluation error: {str(e)}")
             return actual_document
