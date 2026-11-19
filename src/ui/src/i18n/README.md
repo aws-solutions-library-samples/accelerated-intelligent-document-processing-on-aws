@@ -16,8 +16,9 @@ module follows:
 
 - **English inline, stable ids.** Each message is declared next to the component that renders it,
   with an explicit dotted `id` and the English as `defaultMessage`. There is no English catalog to
-  load: `en` renders the inline text, and the markup is the one from before i18n existed (identical
-  apart from per-render generated ids, which the tests normalise before comparing).
+  load: `en` renders the inline text, and the app's `LocaleProvider` adds nothing to the markup a
+  plain `IntlProvider` renders (identical apart from per-render generated ids, which the tests
+  normalise before comparing).
 - **English fallback, never a broken screen.** A key the active catalog lacks renders its
   `defaultMessage`. [`LocaleProvider.tsx`](LocaleProvider.tsx) swallows react-intl's
   `MISSING_TRANSLATION` (the coverage report, not the console, tracks the gaps) and logs every
@@ -340,6 +341,12 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    To re-measure: remove that pattern from `WORDS` in `eslint.i18n.config.js`, run
    `npm run i18n:lint`, and count the findings it adds (then restore the pattern: the gate pins
    the configuration's hash).
+4. **Object literals keyed by enum-like names.** `LEAF_KEYS` excludes keys matching `[A-Z_-]+` and
+   the plugin skips the whole value under an excluded key, so a map keyed `CLOSED`/`HALF_OPEN`/`OPEN`
+   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing
+   (`CircuitBreakerPanel.tsx`'s state labels, `TestSets.tsx`'s type badges). To re-measure: remove
+   that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against
+   the committed run, restore it.
 
 ## Coverage
 
@@ -385,11 +392,12 @@ candidate (it is never a file). Once `fr-CA` ships, this is the figure quoted in
   ```
 
   English is inline (`defaultMessage`), so no catalog is involved. A component with no
-  react-intl calls can keep plain `render`: `LocaleProvider` under `en` adds nothing to the
-  markup of the document-list header and a set of Cloudscape built-ins, which render
-  identically with and without it apart from the per-render generated ids (React `useId`
-  values, Cloudscape's performance marks) that the assertions normalise first. A test moves to
-  `renderWithIntl` when it renders another locale or its component reads `useLocale()`.
+  react-intl calls can keep plain `render`. `LocaleProvider` under `en` adds nothing to the
+  markup: the helper's own test renders the document-list header and a set of Cloudscape
+  built-ins under it and under a plain `en` `IntlProvider`, and they render identically apart
+  from the per-render generated ids (React `useId` values, Cloudscape's performance marks)
+  that the assertions normalise first. A test moves to `renderWithIntl` when it renders
+  another locale or its component reads `useLocale()`.
 - **Hygiene**: a file that switches locales resets `localStorage`, `document.documentElement.lang`
   and Amplify's global `I18n` language in `afterEach`, as the files under `__tests__/` do. Tests
   that pass fixtures through `vi.mock` see `ENABLED_LOCALES` derived from the mocked
@@ -439,7 +447,7 @@ invitation and verification emails; Cognito service errors on the sign-in form t
 dictionary does not cover; links to the documentation site; agent and chat responses; CSV column
 headers and generated report headings; the relative-time literal "just now", the unit suffixes
 on durations and sizes (`s`, `m`, `KB`, `MB`), the English `%` placement on integer percents
-built in template strings (`${progressPct}%`) and the stored ISO timestamps the Documents list
+built in template strings (`${progressPct}%`) and the stored ISO timestamps the document page
 shows as submitted and completed times, until their screens convert; extension UIs built
 before the Feature Platform passes the locale, and feature `displayName`s; backend error texts
 until they carry stable codes; and document data, always. The remaining PRs of the series (the
