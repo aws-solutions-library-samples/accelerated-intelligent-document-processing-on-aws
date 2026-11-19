@@ -231,8 +231,11 @@ class TestDeployerLeavesAUserSetAlone:
         d = deployer
         original = _user_set(d)
 
-        with patch.object(d.module, "deploy_dataset", _deploy_writes_folder_and_row(d)):
+        deploy = MagicMock(side_effect=_deploy_writes_folder_and_row(d))
+        with patch.object(d.module, "deploy_dataset", deploy):
             d.module.handler(_event(request_type), None)
+
+        deploy.assert_not_called()
 
         assert _row(d) == original
         assert _folder_keys(d) == []
@@ -259,25 +262,24 @@ class TestDeployerLeavesAUserSetAlone:
         assert status == d.module.cfnresponse.SUCCESS
         assert data["Status"] == "DEPLOYMENT_FAILED"
 
-    def test_a_set_appearing_before_the_claim_gets_no_files(self, deployer):
-        # The up-front read saw no row; a user's set lands before the claim write.
+    def test_a_failed_claim_deploys_nothing(self, deployer):
+        # A claim failing for any reason other than the condition is not a clash;
+        # it takes the non-blocking error path and writes no files.
         d = deployer
-        original = _user_set(d)
+        deploy = MagicMock(side_effect=_deploy_writes_folder_and_row(d))
+        failure = ClientError(
+            {"Error": {"Code": "ProvisionedThroughputExceededException"}}, "PutItem"
+        )
 
         with (
-            patch.object(d.module, "id_taken_by_another_set", return_value=False),
-            patch.object(
-                d.module,
-                "deploy_dataset",
-                MagicMock(side_effect=_deploy_writes_folder_and_row(d)),
-            ) as deploy,
+            patch.object(d.module, "deploy_dataset", deploy),
+            patch.object(d.module, "_put_own_row", side_effect=failure),
         ):
             d.module.handler(_event(), None)
 
-        assert _row(d) == original
-        assert _folder_keys(d) == []
-        assert d.responses[0][1]["Status"] == "ID_IN_USE"
         deploy.assert_not_called()
+        assert _folder_keys(d) == []
+        assert d.responses[0][1]["Status"] == "DEPLOYMENT_FAILED"
 
     def test_a_create_during_the_deployment_is_refused_by_the_claim(self, deployer):
         # Test Studio's create paths write with attribute_not_exists(PK); the claim
@@ -418,7 +420,7 @@ class TestDeployerStillRefreshesItsOwnSet:
         assert _row(d)["description"] == "new words"
 
     def test_the_source_marker_is_what_the_record_writers_stamp(self, deployer):
-        # The check reads `source`; a writer stamping a different value would make
+        # The conditions compare `source`; a writer stamping a different value would make
         # the deployer treat its own row as a user's on the next update.
         d = deployer
         _create(d)
@@ -426,7 +428,6 @@ class TestDeployerStillRefreshesItsOwnSet:
         d.module.create_failed_testset_record("2.0", "boom")
 
         assert created == _row(d)["source"] == d.module.DATASET_SOURCE == d.source
-        assert d.module.id_taken_by_another_set() is False
 
 
 def test_every_test_set_deployer_is_covered():

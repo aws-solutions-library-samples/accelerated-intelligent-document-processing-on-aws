@@ -83,10 +83,6 @@ def handler(event, context):
 
         logger.info(f"Processing dataset version: {dataset_version}")
 
-        if id_taken_by_another_set():
-            _report_id_in_use(event, context)
-            return
-
         # Check if dataset already exists with this version
         if check_existing_version(dataset_version):
             logger.info(f"Dataset version {dataset_version} already deployed, updating description only")
@@ -200,21 +196,11 @@ def claim_row(version: str) -> bool:
     return True
 
 
-def id_taken_by_another_set() -> bool:
-    """True when the fixed id already has a row this deployer did not write."""
-    table = dynamodb.Table(TRACKING_TABLE)  # type: ignore[attr-defined]
-    item = table.get_item(
-        Key={'PK': f'testset#{TEST_SET_ID}', 'SK': 'metadata'},
-        ConsistentRead=True,
-    ).get('Item')
-    return item is not None and item.get('source') != DATASET_SOURCE
-
-
 def _put_own_row(table, item):
     """Write the set's row unless a set created by someone else holds the id.
 
-    Conditional, so a set created between the up-front check and this write
-    still survives; the refusal raises and takes the non-blocking error path.
+    Conditional: a refusal raises, and on the record writers it takes the
+    handler's non-blocking error path.
     """
     table.put_item(
         Item=item,
