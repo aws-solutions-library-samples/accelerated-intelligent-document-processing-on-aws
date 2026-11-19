@@ -69,10 +69,16 @@ def _backend_values() -> set[str]:
     )
     values: set[str] = set()
     for node in enum.body:
-        if not isinstance(node, ast.Assign):
+        if isinstance(node, ast.Assign):
+            target = node.targets[0]
+        elif isinstance(node, ast.AnnAssign):
+            if node.value is None:
+                continue  # A bare annotation (`FOO: str`) declares no member.
+            target = node.target
+        else:
             continue
         value = node.value
-        member = ast.unparse(node.targets[0])
+        member = ast.unparse(target)
         assert isinstance(value, ast.Constant) and isinstance(value.value, str), (
             f"{BACKEND_MODULE.relative_to(REPO_ROOT)}:{node.lineno}: the value of "
             f"`{BACKEND_ENUM}.{member}` is not a string literal. Teach this reader to "
@@ -100,7 +106,9 @@ def _ui_values() -> set[str]:
     )
     # One `  KEY: {` per entry, at the map's own indentation; the nested
     # `id`/`defaultMessage`/`description` lines sit deeper and are lower case.
-    return set(re.findall(r"^\s{2}([A-Z_]+): \{$", match.group(1), re.MULTILINE))
+    return set(
+        re.findall(r"^\s{2}([A-Z][A-Z0-9_]*): \{$", match.group(1), re.MULTILINE)
+    )
 
 
 @pytest.mark.unit

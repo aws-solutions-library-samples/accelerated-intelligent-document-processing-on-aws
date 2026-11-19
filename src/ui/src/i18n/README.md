@@ -16,8 +16,9 @@ module follows:
 
 - **English inline, stable ids.** Each message is declared next to the component that renders it,
   with an explicit dotted `id` and the English as `defaultMessage`. There is no English catalog to
-  load: `en` renders the inline text, and the markup is the one from before i18n existed (identical
-  apart from per-render generated ids, which the tests normalise before comparing).
+  load: `en` renders the inline text, and the app's `LocaleProvider` adds nothing to the markup a
+  plain `IntlProvider` renders (identical apart from per-render generated ids, which the tests
+  normalise before comparing).
 - **English fallback, never a broken screen.** A key the active catalog lacks renders its
   `defaultMessage`. [`LocaleProvider.tsx`](LocaleProvider.tsx) swallows react-intl's
   `MISSING_TRANSLATION` (the coverage report, not the console, tracks the gaps) and logs every
@@ -342,9 +343,10 @@ re-measure it, and the figures will shrink as the conversion PRs land):
    the configuration's hash).
 4. **Object literals keyed by enum-like names.** `LEAF_KEYS` excludes keys matching `[A-Z_-]+` and
    the plugin skips the whole value under an excluded key, so a map keyed `CLOSED`/`HALF_OPEN`/`OPEN`
-   never counts: **16 findings in 4 files**, 6 of them user-facing (`CircuitBreakerPanel.tsx`'s state
-   labels, `TestSets.tsx`'s type badges). To re-measure: remove that pattern from `LEAF_KEYS` in
-   `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against the committed run, restore it.
+   never counts: **16 findings in 4 files** when this entry was added, 6 of them user-facing
+   (`CircuitBreakerPanel.tsx`'s state labels, `TestSets.tsx`'s type badges). To re-measure: remove
+   that pattern from `LEAF_KEYS` in `eslint.i18n.config.js`, run `npm run i18n:lint`, diff against
+   the committed run, restore it.
 
 ## Coverage
 
