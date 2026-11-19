@@ -193,9 +193,18 @@ blueprints, and any `aws_lambda_invocation` whose `lifecycle_scope` is not
 action (upstream's BDA OCR project manager does exactly that). The Region's API
 Gateway account settings (`aws_api_gateway_account`), when the old state holds them,
 are kept too, together with the CloudWatch role they name and that role's policies:
-the setting is shared by every REST API in the Region, and destroying it would clear
-the logging role for all of them. Each is detached from the old state and left in the
-account, managed by neither deployment.
+the setting is shared by every REST API in the Region. Whether destroying it clears
+the logging role for all of them depends on the `hashicorp/aws` version that runs the
+destroy: 6.0.0 and later always clear it, 5.75.1 to 5.100 clear it only when the
+resource sets `reset_on_delete = true`, and 5.75.0 and earlier only remove it from the
+state. Upstream constrains the provider with `>= 5.0.0` and ships no lock file, so a
+directory first initialised after 6.0.0 was released (June 2025), or upgraded with
+`terraform init -upgrade` since, has a 6.x provider; `.terraform.lock.hcl` in the old
+directory names the version it uses. Destroying the role leaves the setting as it was
+under every version, but the setting then names a role that no longer exists, which
+stops logging just the same. Each is detached from the old state and left in the
+account, managed by neither deployment, which is harmless where the destroy would
+have left the setting alone.
 
 Read the printed table before going on. Each adopted resource shows its old and new
 address and whether the live run measured it.
@@ -686,7 +695,7 @@ unmanaged** means it stays in the account, managed by neither.
 | Installed-features table | Recreate; features installed on the old deployment do not carry over | | measured |
 | Test-sets table | Recreate; test-set definitions do not carry over, their documents stay in the adopted bucket | | measured |
 | BDA project | Keep unmanaged; the `bda` configuration row names it | none | measured |
-| API Gateway account settings (the Region's CloudWatch logging role), and the role they name with its policies | Keep unmanaged; destroying them would stop API Gateway logging for every API in the Region | none | inferred |
+| API Gateway account settings (the Region's CloudWatch logging role), and the role they name with its policies | Keep unmanaged; destroying the role, or the settings with `hashicorp/aws` 6.0 or later (5.75.1 to 5.100 with `reset_on_delete = true`), would stop API Gateway logging for every API in the Region | none | inferred |
 | Fine-tuning data bucket, hosted-UI domain | Not handled; `plan` refuses | | |
 
 Functions, roles, policies, log groups, the state machine, event rules and the other

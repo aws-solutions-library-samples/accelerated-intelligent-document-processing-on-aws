@@ -203,12 +203,24 @@ POOL_SETTING_TYPES = frozenset(
     }
 )
 # The Region's API Gateway account settings: one per account and Region, shared by
-# every REST API there. Destroying it resets the CloudWatch role ARN (the provider
-# sends `UpdateAccount` with an empty value), which stops execution and access
-# logging for every API in the Region, not only the old deployment's. So it is
-# detached and kept, as the module's own `awscc_apigateway_account` is retained on
-# delete; and the role it names, with the role's policies, is kept with it, because
-# a setting that points at a deleted role stops logging just the same.
+# every REST API there. What destroying `aws_api_gateway_account` does depends on the
+# hashicorp/aws version that runs the destroy, not the one that created it (read
+# from the provider's `internal/service/apigateway/account.go` at each tag):
+# - 6.0.0 and later: Delete always sends `UpdateAccount` replacing
+#   `/cloudwatchRoleArn` with an empty value, clearing the Region's role. 6.0.0
+#   removed the `reset_on_delete` argument.
+# - 5.75.1 to 5.100.x: Delete clears it only when the state holds
+#   `reset_on_delete = true`; otherwise it removes the resource from state with a
+#   warning and the setting stays.
+# - 5.75.0 and earlier: Delete is a no-op (state removal only).
+# Upstream constrains hashicorp/aws with `>= 5.0.0` and ships no lock, so a root
+# initialised since 6.0.0 resolves 6.x (the migration test's lock: 6.72.0), and a
+# cleared role stops execution and access logging for every API in the Region, not
+# only the old deployment's. So it is detached and kept, as the module's own
+# `awscc_apigateway_account` is retained on delete; keeping it is harmless where the
+# destroy would not have cleared it. The role it names, with the role's policies, is
+# kept with it under every version, because a setting that points at a deleted role
+# stops logging just the same.
 API_GATEWAY_ACCOUNT_TYPE = "aws_api_gateway_account"
 ROLE_POLICY_TYPES = frozenset({"aws_iam_role_policy_attachment", "aws_iam_role_policy"})
 POLICY_ATTACHMENT_TYPE = "aws_iam_policy_attachment"
@@ -1131,6 +1143,12 @@ def gateway_role_selection(
 
     One selection for both the migration plan, which keeps them, and
     ``check-destroy``, which refuses a destroy plan deleting them.
+
+    ``aws_iam_role_policy_attachments_exclusive`` and
+    ``aws_iam_role_policies_exclusive`` are not selected: their Delete is a no-op
+    in hashicorp/aws (``framework.WithNoOpDelete`` from their introduction in
+    5.72.0 and 5.68.0), so destroying one detaches nothing from the role. Upstream
+    declares neither, so ``plan`` refuses one in a fork's state as an unknown type.
     """
     items = list(resources)
     role_arns = {
@@ -1407,9 +1425,11 @@ def build_plan(
             pr.verdict, pr.detach = KEEP_UNMANAGED, True
             pr.note = (
                 "The Region's API Gateway account settings, shared by every API in "
-                "the Region; detached, because destroying it clears the CloudWatch "
-                f"role ({a.get('cloudwatch_role_arn') or 'none recorded'}) and stops "
-                "API Gateway logging Region-wide. Managed by neither deployment."
+                "the Region; detached, because destroying it with hashicorp/aws 6.0 "
+                "or later (or 5.75.1 to 5.100 with reset_on_delete = true) clears "
+                f"the CloudWatch role ({a.get('cloudwatch_role_arn') or 'none recorded'})"
+                " and stops API Gateway logging Region-wide. Managed by neither "
+                "deployment."
             )
         elif in_gateway_role(inst.type, a):
             pr.verdict, pr.detach = KEEP_UNMANAGED, True
@@ -3053,9 +3073,10 @@ def check_destroy_plan(
         if rc.get("type") == API_GATEWAY_ACCOUNT_TYPE:
             findings.append(
                 f"{address} is in the destroy plan; destroying it clears the "
-                "Region's API Gateway CloudWatch role and stops logging for every "
-                "API in the Region. Run `plan` again with this version of idp-cli, "
-                "then `detach --apply`"
+                "Region's API Gateway CloudWatch role (with hashicorp/aws 6.0 or "
+                "later, or 5.75.1 to 5.100 with reset_on_delete = true) and stops "
+                "logging for every API in the Region. Run `plan` again with this "
+                "version of idp-cli, then `detach --apply`"
             )
             continue
         if in_gateway_role(str(rc.get("type")), rc["change"].get("before") or {}):
