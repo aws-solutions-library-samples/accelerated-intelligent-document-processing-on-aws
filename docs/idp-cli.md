@@ -205,13 +205,16 @@ The resolution order is:
    environments and other AWS SDKs do. This step applies to the commands that
    work out the Region before calling AWS and pass it on: the configuration
    commands that read a stack, `test-result`, `test-compare`, `abort-test-run`,
-   `discover-multidoc` and `deploy`. Other commands rely on boto3 alone, so in
-   such a shell they need `--region` or `AWS_DEFAULT_REGION`.
+   `discover-multidoc`, `deploy` (including the upload of a local
+   `--custom-config` and the `--terraform --from-code` build), `publish`, and
+   `rerun-inference` (and its alias `reprocess`). Other commands rely on boto3
+   alone, so in such a shell they need `--region` or `AWS_DEFAULT_REGION`.
 
 No command substitutes a hardcoded Region. A command run with no `--region` and
 no Region resolvable from the environment fails rather than guessing: the Test
-Studio commands, `discover-multidoc` and `deploy` say the Region could not be
-determined, and the others fail with boto3's `NoRegionError` ("You must specify
+Studio commands, `discover-multidoc`, `deploy`, `publish` and `rerun-inference`
+say the Region could not be determined (`publish` says a Region is required), and
+the others fail with boto3's `NoRegionError` ("You must specify
 a region"). `remove-deleted-stack-resources` is the exception: it sweeps several
 Regions, and its `--region` defaults to `us-west-2`.
 

@@ -461,8 +461,8 @@ def _resolve_region(region: Optional[str]) -> str:
     found = resolve_region(region)
     if not found:
         raise ValueError(
-            "Region could not be determined. Please specify --region or "
-            "configure AWS_DEFAULT_REGION"
+            "Region could not be determined. Please specify --region, or set "
+            "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
         )
     return found
 
@@ -1037,17 +1037,7 @@ def deploy(
             )
             sys.exit(1)
         if from_code:
-            build_region = region
-            if not build_region:
-                import boto3
-
-                build_region = boto3.session.Session().region_name  # type: ignore
-                if not build_region:
-                    console.print(
-                        "[red]✗ Error: Region could not be determined. Please specify "
-                        "--region or configure AWS_DEFAULT_REGION.[/red]"
-                    )
-                    sys.exit(1)
+            build_region = _region_or_exit(region)
             if headless and govcloud:
                 console.print(
                     "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
@@ -1132,16 +1122,8 @@ def deploy(
             )
             sys.exit(1)
 
-        # Auto-detect region if not provided
-        if not region:
-            import boto3
-
-            session = boto3.session.Session()  # type: ignore
-            region = session.region_name
-            if not region:
-                raise ValueError(
-                    "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
-                )
+        # `--region`, else boto3's Region, else `AWS_REGION`; refuses when none.
+        region = _resolve_region(region)
 
         # Handle deployment from local code
         template_path = None

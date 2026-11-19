@@ -2673,14 +2673,16 @@ def build_parameters(
         if is_local_file_path(custom_config):
             # Local file - need to upload it
             if not region:
-                # Auto-detect region from boto3 session
-                import boto3
+                # The Region a client built with no Region reaches (honouring
+                # `boto3.setup_default_session`), else `AWS_REGION`.
+                from idp_sdk._core.region import resolve_region
 
-                session = boto3.session.Session()  # type: ignore
-                region = session.region_name
+                region = resolve_region(region)
                 if not region:
                     raise ValueError(
-                        "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
+                        "Region could not be determined. Please specify --region, "
+                        "or set AWS_DEFAULT_REGION, AWS_REGION or a region in your "
+                        "AWS profile."
                     )
 
             logger.info(f"Detected local config file: {custom_config}")
