@@ -196,10 +196,13 @@ def degrade_section_to_no_confidence(
             "permission to invoke it, and the function's own logs."
         )
     elif _is_content_filter_block(error):
+        from idp_common.utils.bedrock_utils import content_block_wording
+
+        blocker, fix = content_block_wording(error, "confidence model")
         remedy = (
-            "Amazon Bedrock's content filter withheld the confidence model's "
+            f"{blocker[0].upper()}{blocker[1:]} withheld the confidence model's "
             "reply, and a retry would send the same section to the same filter. "
-            "Review the section's pages, or use a different confidence model."
+            f"Review the section's pages, or {fix}."
         )
     else:
         remedy = (

@@ -407,10 +407,12 @@ def _is_content_filter_block(error: BaseException) -> bool:
 
 def _content_filter_detail(error: BaseException) -> str:
     """The issue text for a classification reply a content filter withheld."""
+    from idp_common.utils.bedrock_utils import content_block_wording
+
+    blocker, remedy = content_block_wording(error, "classification model")
     return (
-        "Amazon Bedrock's content filter withheld the classification model's "
-        f"reply ({type(error).__name__}: {error}). Review the page(s), or use a "
-        "different classification model"
+        f"{blocker[0].upper()}{blocker[1:]} withheld the classification model's "
+        f"reply ({type(error).__name__}: {error}). Review the page(s), or {remedy}"
     )
 
 
@@ -3274,7 +3276,7 @@ class ClassificationService:
             Dictionary with response and metering data
         """
         try:
-            return bedrock.invoke_model(
+            response = bedrock.invoke_model(
                 model_id=config["model_id"],
                 system_prompt=config["system_prompt"],
                 content=content,
@@ -3302,6 +3304,14 @@ class ClassificationService:
             # names; this is the class.
             _annotate_image_refusal(exc, content, config)
             raise
+        # A reply the content filter or a guardrail withheld arrives as a 200
+        # whose text is empty, cut short, or the guardrail's own message. Raised
+        # as a block, so every classification path handles it as it handles a
+        # blocked ValidationException rather than reading that text as a class.
+        from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+        raise_if_output_withheld(response)
+        return response
 
     def _create_unclassified_result(
         self,

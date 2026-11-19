@@ -2641,7 +2641,13 @@ section, naming the block, and writes an empty result for it. Advanced mode
 regenerates a blocked reply a few times before giving up; Simple mode does not
 retry it. The section shows as **Failed** and has no extracted fields; the other
 sections keep their results and the document completes. The confidence pass
-reports the section as unscored with the same reason. ⚠️ Because the section has
+reports the section as unscored with the same reason. Bedrock can also withhold a
+reply without an error, ending it with the stop reason `content_filtered`, or
+`guardrail_intervened` when the stack has a guardrail configured
+(`GUARDRAIL_ID_AND_VERSION`); the reply is then empty, cut short, or the
+guardrail's own message. That is handled as the same block, in every step, and the
+issue names the stop reason. For a guardrail it advises reviewing the guardrail's
+policies, since a different model meets the same guardrail. ⚠️ Because the section has
 no fields and no confidence scores, it raises no confidence alert and no
 missing-required-field reason, so it does **not** send the document to human
 review on its own; find such documents by the section's **Failed** status, and

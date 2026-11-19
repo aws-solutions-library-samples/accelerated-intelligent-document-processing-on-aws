@@ -2142,23 +2142,24 @@ class ExtractionService:
             EXTRACTION_STAGE,
         )
         from idp_common.models import ProcessingIssue
+        from idp_common.utils.bedrock_utils import content_block_wording
 
         class_label = section_info.class_label
+        blocker, remedy = content_block_wording(error, "extraction model")
         issue = ProcessingIssue(
             stage=EXTRACTION_STAGE,
             severity="error",
             code=EXTRACTION_FAILED_CODE,
             message=(
-                "No fields were extracted from this section: Amazon Bedrock's "
-                "content filter withheld the model's reply. "
+                f"No fields were extracted from this section: {blocker} "
+                "withheld the model's reply. "
                 "The rest of the document was processed normally."
             ),
             root_cause=(
                 f"{type(error).__name__}: {error}. The block applies to this "
                 f"section's content (class '{class_label}', pages "
                 f"{section_info.start_page}-{section_info.end_page}). Review the "
-                "pages, or reprocess the document with a different extraction "
-                "model."
+                f"pages, or {remedy}."
             ),
             section_id=section_id,
         )
@@ -6080,6 +6081,11 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 reasoning_effort=self.config.extraction.reasoning_effort,
             )
             metering = response.get("metering", {}) or {}
+            # A withheld reply is not a correction, however well it parses; the
+            # handler below keeps the original extraction, as for any failure.
+            from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+            raise_if_output_withheld(response)
             text = bedrock.extract_text_from_response(dict(response))
             corrected = json.loads(extract_json_from_text(text))
             corrected, ok, _count, _rec = self._normalize_list_result(
@@ -7121,6 +7127,12 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                 tool_config=tool_config,
                 tool_choice=tool_choice,
             )
+            # A reply the content filter or a guardrail withheld is a 200, not an
+            # answer: raised as a block so the section fails as it does for a
+            # blocked ValidationException (_handle_content_filtered).
+            from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+            raise_if_output_withheld(response_with_metering)
 
             # A model can accept a toolConfig and still answer in prose. That is a
             # normal outcome (stopReason end_turn rather than tool_use), so an
