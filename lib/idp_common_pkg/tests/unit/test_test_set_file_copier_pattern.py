@@ -529,3 +529,63 @@ class TestTestSetBucketPatternStaysStrict:
         assert row["status"] == "FAILED"
         assert "src/input/b.pdf" in row["error"]
         assert _keys(s3, "copy/") == []
+
+
+@pytest.mark.unit
+class TestTestSetBucketPatternLeavesOutArchives:
+    """The Test Set bucket is the bucket the extractor's notification is on, so a
+    ``.zip`` a pattern copies from it into ``<id>/input/`` is read as an upload to
+    ``<id>``. A set folder can hold one: a refused upload leaves its archive at
+    ``<id>/<name>.zip``, and an archive inside an uploaded zip's ``input/`` is
+    written out as ``<id>/input/<name>.zip``."""
+
+    def test_archives_in_a_set_folder_are_left_out_of_a_copy(self, env, caplog):
+        copier, s3 = env
+        s3.put_object(Bucket=TEST_SET, Key="src/input/a.pdf", Body=b"%PDF")
+        s3.put_object(
+            Bucket=TEST_SET, Key="src/baseline/a.pdf/sections/1/result.json", Body=b"{}"
+        )
+        # Labeled, so the strict baseline check alone would let it through.
+        s3.put_object(Bucket=TEST_SET, Key="src/input/inner.ZIP", Body=b"PK")
+        s3.put_object(
+            Bucket=TEST_SET,
+            Key="src/baseline/inner.ZIP/sections/1/result.json",
+            Body=b"{}",
+        )
+
+        with caplog.at_level("INFO"):
+            row = _run(
+                copier, set_id="copy", bucket="testset", filePattern="src/input/*"
+            )
+
+        assert row["status"] == "COMPLETED", row.get("error")
+        assert _keys(s3, "copy/") == [
+            "baseline/a.pdf/sections/1/result.json",
+            "input/a.pdf",
+        ]
+        assert "1 .zip archives left out" in caplog.text
+
+    def test_a_copy_matching_only_archives_fails_with_a_reason(self, env):
+        """A refused upload's archive, which has no baseline: the copy fails saying
+        what matched, not as a missing baseline for a file that is not a document."""
+        copier, s3 = env
+        s3.put_object(Bucket=TEST_SET, Key="src/src.zip", Body=b"PK")
+
+        row = _run(copier, set_id="copy", bucket="testset", filePattern="src/*")
+
+        assert row["status"] == "FAILED"
+        assert ".zip archives" in row["error"]
+        assert _keys(s3, "copy/") == []
+
+    def test_the_extractor_notification_is_on_the_test_set_bucket(self):
+        """The premise of the two tests above, read from the template: the
+        notification the suffix filter belongs to is installed on TestSetBucket."""
+        template = next(
+            parent / "template.yaml"
+            for parent in Path(__file__).resolve().parents
+            if (parent / "src" / "lambda" / "test_set_zip_extractor").is_dir()
+        ).read_text()
+        start = template.index("  TestSetBucketNotificationConfiguration:")
+        block = template[start : template.index("\n\n", start)]
+        assert "BucketName: !Ref TestSetBucket" in block
+        assert "FunctionArn: !GetAtt TestSetZipExtractorFunction.Arn" in block
