@@ -574,16 +574,40 @@ def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
         "other": "Other",
     }
     entries = {k: (retained or {}).get(k) or [] for k in labels}
+    service_groups = (retained or {}).get("service_log_groups") or []
     if not any(entries.values()):
         console.print("No resources were retained.")
-        return
-    console.print("[bold]Retained resources (kept, as CloudFormation would):[/bold]")
-    for key, label in labels.items():
-        if entries[key]:
-            console.print(f"  • {label}: {len(entries[key])}")
-            for r in entries[key]:
-                console.print(f"    - {r.get('physical_id') or r.get('logical_id')}")
-    console.print("Delete them manually if no longer needed.")
+    else:
+        console.print(
+            "[bold]Retained resources (kept, as CloudFormation would):[/bold]"
+        )
+        for key, label in labels.items():
+            if entries[key]:
+                console.print(f"  • {label}: {len(entries[key])}")
+                for r in entries[key]:
+                    name = r.get("physical_id") or r.get("logical_id")
+                    console.print(f"    - {r.get('display_name') or name}")
+    if service_groups:
+        console.print(
+            "[bold]Log groups AWS services created for the deployment's resources, "
+            "left behind (CloudFormation leaves them too):[/bold]"
+        )
+        for g in service_groups:
+            if g.get("shared"):
+                streams = ", ".join(g.get("log_streams") or [])
+                console.print(
+                    f"    - {g['physical_id']} (shared by every Glue crawler in "
+                    f"the Region; delete only this deployment's log streams: "
+                    f"{streams})"
+                )
+            else:
+                console.print(f"    - {g['physical_id']}")
+        console.print(
+            "    Each exists only if its resource ran at least once; the service "
+            "creates it with no retention, so it is kept until deleted."
+        )
+    if any(entries.values()) or service_groups:
+        console.print("Delete them manually if no longer needed.")
 
 
 def _delete_terraform(

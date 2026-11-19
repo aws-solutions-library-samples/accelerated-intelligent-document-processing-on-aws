@@ -540,7 +540,18 @@ resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 state means Terraform forgets it without deleting it, so the resources CloudFormation
 would retain are retained here too: the logging bucket, the data buckets and the other
 resources the templates mark that way. The command reports which retained resources
-were left, as the CloudFormation path does.
+were left, as the CloudFormation path does, naming the Region-wide API Gateway account
+setting for what it is rather than by its identifier.
+
+It also lists the log groups AWS services created on the deployment's behalf, which
+neither `terraform destroy` nor a CloudFormation stack delete removes, because neither
+created them: the `/aws/lambda/<function>` group of each function that logs to Lambda's
+default group (the custom-resource handlers), the `/aws/codebuild/<project>` group of a
+build project that logs to CodeBuild's default, and the Glue crawler's log streams.
+Each group exists only if its resource ran, and the service creates it with no
+retention. The crawler writes to `/aws-glue/crawlers`, which every crawler in the
+Region shares, so delete only the streams named after this deployment's crawler, not
+the group.
 
 If you deployed with your own root configuration, do the same steps yourself. The
 module's `idp-terraform.json` lists the retained resources in `retainedAddresses`,
