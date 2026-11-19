@@ -540,6 +540,32 @@ Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.
 
+#### When a judge call fails
+
+A judge call that fails **transiently** (a throttle that outlasted the Bedrock
+client's retries, a bare HTTP 5xx, a read timeout or dropped connection, as
+`idp_common.utils.transient_errors.is_transient_error` judges it) is raised as
+`TransientError` by `compare_llm` and `LLMComparator`, and `evaluate_section` and
+`evaluate_document` let it out instead of recording a failed section or a
+document error. The evaluation Lambda raises it too, without recording a failed
+evaluation, and `EvaluationStep` retries the document. Scoring such a field 0.0
+would have lowered the document's accuracy for a judge that never answered. Any
+other failure (a request Bedrock rejects, a reply that is not JSON, a prompt that
+cannot be formatted) still scores the field 0.0, and `compare_llm` returns
+`(False, 0.0, <reason>)` for it. Neither outcome is memoized, so the next
+comparison of the same pair calls the judge again. A caller that runs the
+service outside the state machine should catch `TransientError` and retry the
+evaluation:
+
+```python
+from idp_common.utils.transient_errors import TransientError
+
+try:
+    document = service.evaluate_document(actual, expected)
+except TransientError:
+    ...  # retry later; the document was not scored
+```
+
 #### Metering of `LLM` comparisons
 
 Every Bedrock call `compare_llm` makes is metered under the `Evaluation`

@@ -724,6 +724,116 @@ def test_rule_validation_orchestration(orchestration_module, rule_config):
     _check("RuleValidationOrchestrationFunction", run)
 
 
+def _is_validation_error(fault: BaseException) -> bool:
+    return (
+        isinstance(fault, ClientError)
+        and fault.response["Error"]["Code"] == "ValidationException"
+    )
+
+
+@pytest.fixture(scope="module")
+def evaluation_module():
+    return _load("evaluation_function/index.py", "evaluation_function_fault_matrix")
+
+
+def test_evaluation(evaluation_module, config):
+    """EvaluationStep: the LLM-judge comparator's Bedrock call, through the real
+    evaluation service and Stickler, for a document of two sections whose one field
+    each is judged by the LLM method. The fault hits one section's judge call while
+    the other answers.
+
+    The deterministic control is stricter than the matrix's: the handler must
+    return normally with the faulted field scored 0.0 and the evaluation recorded
+    COMPLETED, which is today's behaviour for a judge error that a retry cannot
+    fix. A transient fault must leave without a FAILED evaluation having been
+    written first (#2122), since the retry is about to run it again."""
+    module = evaluation_module
+    eval_config = config.model_copy(deep=True)
+    eval_config.evaluation.enabled = True
+    eval_config.classes = [
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "Letter",
+            "x-aws-idp-document-type": "Letter",
+            "type": "object",
+            "properties": {
+                "Agency": {
+                    "type": "string",
+                    "description": "The agency the letter is from.",
+                    "x-aws-idp-evaluation-method": "LLM",
+                }
+            },
+        }
+    ]
+    sides = {"actual": "Different Agency", "expected": "AnyCompany Media"}
+
+    def document(side: str) -> Document:
+        doc = _two_section_document(Status.SUMMARIZING)
+        for section in doc.sections:
+            section.extraction_result_uri = f"s3://out/{side}/{section.section_id}.json"
+        return doc
+
+    def read_json(uri: str):
+        side = uri.split("/")[3]
+        return {"inference_result": {"Agency": sides[side]}}
+
+    outcomes = []
+
+    def run(make):
+        call = make(
+            selects=_first_call_only(),
+            answer=_model_answer('{"match": true, "score": 1.0, "reason": "same"}'),
+        )
+        statuses = []
+        service = MagicMock()
+        service.update_document.side_effect = lambda doc: (
+            statuses.append(doc.evaluation_status) or doc
+        )
+        actual = document("actual")
+        outcomes.append((call, statuses, actual))
+        with (
+            patch.object(module.Document, "load_document", return_value=actual),
+            patch.object(module, "get_config", return_value=eval_config),
+            patch.object(module, "_document_service", service),
+            patch.object(
+                module, "load_baseline_document", return_value=document("expected")
+            ),
+            patch.object(module, "calculate_lambda_metering", return_value={}),
+            patch.object(module, "boto3"),
+            patch("idp_common.bedrock.invoke_model", call),
+            _offline_storage(),
+            patch("idp_common.s3.get_json_content", side_effect=read_json),
+        ):
+            module.handler({"document": {"id": "x"}}, None)
+
+    _check("EvaluationFunction", run)
+
+    wrong = []
+    for call, statuses, actual in outcomes:
+        if call.fault is not None and _is_validation_error(call.fault):
+            scores = (
+                sorted(
+                    attribute.score
+                    for section in actual.evaluation_result.section_results
+                    for attribute in section.attributes
+                )
+                if actual.evaluation_result
+                else None
+            )
+            if scores != [0.0, 1.0] or statuses[-1:] != ["COMPLETED"]:
+                wrong.append(
+                    f"deterministic: expected the faulted field scored 0.0 beside a "
+                    f"1.0 and COMPLETED recorded, got scores {scores}, statuses "
+                    f"{statuses}"
+                )
+        elif "FAILED" in statuses:
+            wrong.append(
+                f"{type(call.fault).__name__}: a FAILED evaluation was recorded "
+                f"before the retry ({statuses})"
+            )
+    assert not wrong, "EvaluationFunction: " + "; ".join(wrong)
+
+
 # ---------------------------------------------------------------------------
 # Closure: one driver per Lambda in the derived universe, in both directions
 # ---------------------------------------------------------------------------
@@ -740,6 +850,7 @@ DRIVERS = {
     "RuleValidationFunction": test_rule_validation,
     "RuleValidationOrchestrationFunction": test_rule_validation_orchestration,
     "SummarizationFunction": test_summarization,
+    "EvaluationFunction": test_evaluation,
 }
 
 
