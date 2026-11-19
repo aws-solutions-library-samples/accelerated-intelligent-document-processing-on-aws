@@ -121,22 +121,38 @@ STAGES_EXCLUDED_FROM_RESULT_JSON = {
 
 # The same boundary one level finer, and the half that actually costs something.
 # These two are `assessment`-stage codes, so the stage list above does not reach
-# them: `assessment/degradation.py` states in its own docstring that the degrade path
-# "deliberately does not rewrite that file", and every one of
-# `skip_section_no_confidence`'s call sites in `assessment/service.py` returns before
-# the result.json write. They are ERROR severity on a document that COMPLETES, so
-# unlike the failure-path codes above there is no `status` to fall back on — a
-# section with no confidence scores at all reads as clean here.
+# them, and they reach `result.json` differently:
+#
+# * the SKIP code never does: every one of `skip_section_no_confidence`'s call sites
+#   in `assessment/service.py` returns before the result.json write, and
+#   `skip_section_no_confidence` does not call the one function in
+#   `degradation.py` that writes the file.
+# * the DEGRADE code does, best effort: the assessment handler's degrade branch calls
+#   `record_no_confidence_in_result`, which merges the issue into the section's
+#   result.json. It skips a result that already holds the pass's scores, and a failed
+#   write is logged rather than raised, so a section can still carry the code only
+#   on its DynamoDB record.
+#
+# Both are ERROR severity on a document that COMPLETES, so unlike the failure-path
+# codes above there is no `status` to fall back on.
 #
 # Derived-and-equality-checked rather than listed as a judgement: the closure test
-# below compares this against the codes `degradation.py` declares AND computes the
-# premise the boundary rests on (that module performs no S3 write), so a third code
-# there fails, and the entry becoming wrong because degradation started writing
-# result.json fails too.
+# below compares the two sets against the codes `degradation.py` declares, and the
+# premise tests compute that the only S3 write in that module is the best-effort
+# writer and that the skip path never reaches it.
 CODES_EXCLUDED_FROM_RESULT_JSON = {
-    "assessment_failed_confidence_unavailable",
     "assessment_skipped_confidence_unavailable",
 }
+# Codes the recorder may under-report: excluded from result.json whenever the
+# best-effort write is skipped or fails. The write is made by the assessment
+# handler's degrade branch (patterns/unified/src/assessment_function/index.py),
+# which lib/idp_common_pkg/tests/unit/lambdas/test_assessment_function_degradation.py
+# drives end to end, asserting the result.json write.
+CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON = {
+    "assessment_failed_confidence_unavailable",
+}
+#: The one function in ``assessment/degradation.py`` allowed to write to S3.
+BEST_EFFORT_RESULT_WRITER = "record_no_confidence_in_result"
 
 #: Call-shaped source fragments that count as writing to S3, for the premise above.
 S3_WRITE_MARKERS = ("write_content(", "put_object(", "upload_file(", "upload_fileobj(")
@@ -380,47 +396,86 @@ def test_an_issue_from_any_stage_is_recorded(stage, tmp_path):
     assert out["processing_issues_by_stage"] == {stage: 1}
 
 
-def test_the_codes_outside_result_json_are_exactly_the_degradation_pair():
+def test_the_degradation_codes_are_partitioned_between_excluded_and_best_effort():
     """Closure one level finer than the stage list, on the half that costs something.
 
     ``assessment_failed_confidence_unavailable`` and
     ``assessment_skipped_confidence_unavailable`` are ``assessment``-stage codes, so
     the stage boundary does not reach them, and they are **error** severity on a
     document that **completes** — there is no ``status`` to fall back on. Both are in
-    the discovered 24 and both are recorded correctly by the parametrised test above
-    *when injected*, which is precisely why this is needed: that green parametrisation
-    says nothing about whether the pipeline can put them where the reader looks.
+    the discovered universe and both are recorded correctly by the parametrised test
+    above *when injected*, which is precisely why this is needed: that green
+    parametrisation says nothing about whether the pipeline can put them where the
+    reader looks.
 
-    Equality, so a third code declared in ``degradation.py`` fails here.
+    Equality over the union, and the two halves disjoint, so a third code declared in
+    ``degradation.py`` fails here until somebody decides which half it belongs to.
     """
     constants = _string_constants(
         ast.parse((IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8"))
     )
     declared = {v for k, v in constants.items() if k.endswith("_CODE")}
     assert declared, "no *_CODE constants in assessment/degradation.py"
-    assert declared == CODES_EXCLUDED_FROM_RESULT_JSON, sorted(
-        declared ^ CODES_EXCLUDED_FROM_RESULT_JSON
+    partitioned = (
+        CODES_EXCLUDED_FROM_RESULT_JSON | CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON
     )
+    assert not CODES_EXCLUDED_FROM_RESULT_JSON & CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON
+    assert declared == partitioned, sorted(declared ^ partitioned)
     # Non-vacuity: these have to be codes the discovery really finds, or the boundary
     # is describing something that does not exist.
-    assert CODES_EXCLUDED_FROM_RESULT_JSON <= CODES
+    assert partitioned <= CODES
+
+
+def _s3_writes_outside(source, tree, allowed):
+    """Line numbers of S3 write markers that are not inside the function ``allowed``.
+
+    Read off the whole module's source, so a write added at module level, in a class
+    method or in an ``async def`` is found as surely as one in a top-level function.
+    """
+    spans = [
+        (node.lineno, node.end_lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == allowed
+    ]
+    return [
+        number
+        for number, line in enumerate(source.splitlines(), start=1)
+        if any(m in line for m in S3_WRITE_MARKERS)
+        and not any(start <= number <= (end or start) for start, end in spans)
+    ]
 
 
 def test_the_premise_behind_that_boundary_is_computed_not_asserted():
-    """The boundary holds *because* ``degradation.py`` writes no S3 object. That is
-    computable, so it is computed: if the module ever gains a write, this entry is
-    wrong in the direction that under-reports, and the failure says to re-check it
-    rather than leaving a stale reason in place.
-
-    Its own docstring says the same thing in prose — "this degrade path deliberately
-    does not rewrite that file" — and prose is what goes stale.
+    """The partition holds *because* ``degradation.py`` writes to S3 in exactly one
+    function, the best-effort writer, and the skip path never calls it. Both halves
+    are computable, so they are computed: a second writer, or a skip path that starts
+    writing, makes the partition wrong in the direction that under-reports, and the
+    failure says to re-check it rather than leaving a stale reason in place.
     """
     source = (IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8")
-    writes = [m for m in S3_WRITE_MARKERS if m in source]
-    assert not writes, (
-        f"assessment/degradation.py now contains {writes}. If it writes the section's "
-        "result.json, CODES_EXCLUDED_FROM_RESULT_JSON is wrong and the recorder's docstring "
-        "and docs/benchmarking/index.md overstate the boundary."
+    tree = ast.parse(source)
+    outside = _s3_writes_outside(source, tree, BEST_EFFORT_RESULT_WRITER)
+    assert not outside, (
+        f"assessment/degradation.py writes to S3 outside {BEST_EFFORT_RESULT_WRITER} "
+        f"at line(s) {outside}. If that writes the section's result.json, re-check "
+        "CODES_EXCLUDED_FROM_RESULT_JSON, the recorder's docstring and "
+        "docs/benchmarking/index.md."
+    )
+    # Non-vacuity for the permitted writer: it must still exist and still write.
+    assert any(m in source for m in S3_WRITE_MARKERS), (
+        f"{BEST_EFFORT_RESULT_WRITER} no longer writes, so the degrade code no longer "
+        "reaches result.json and belongs in CODES_EXCLUDED_FROM_RESULT_JSON."
+    )
+    skip = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "skip_section_no_confidence"
+    )
+    assert BEST_EFFORT_RESULT_WRITER not in ast.unparse(skip), (
+        "skip_section_no_confidence now reaches the result.json writer, so "
+        "assessment_skipped_confidence_unavailable is no longer excluded from it."
     )
     # And the marker list is live rather than decorative: the same probe must find a
     # write in a module that definitely has one.
