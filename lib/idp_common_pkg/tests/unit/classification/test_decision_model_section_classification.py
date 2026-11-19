@@ -53,7 +53,12 @@ ARN = "arn:aws:lambda:us-west-2:123456789012:function:GENAIIDP-decider"
 
 
 class FakeDecider:
-    """A decision-model Lambda that answers each section with the next distribution."""
+    """A decision-model Lambda that answers each section with the next distribution.
+
+    The answers go out in the order the sections ask, so ``_service`` builds the
+    service with one worker: with several, the sections are labelled concurrently
+    and which section asks first is a matter of thread timing.
+    """
 
     def __init__(self, distributions: List[Dict[str, float]], error: Any = None):
         self.distributions = list(distributions)
@@ -106,7 +111,7 @@ def _service(decision_model=None, low_confidence=None, classes=("invoice", "rece
             },
         },
     }
-    return ClassificationService(region="us-west-2", config=config)
+    return ClassificationService(region="us-west-2", config=config, max_workers=1)
 
 
 def _split(*ranges):
