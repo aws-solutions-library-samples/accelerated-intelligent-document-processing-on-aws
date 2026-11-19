@@ -894,7 +894,10 @@ classification:
   resulting `PageClassification.classification.metadata` then carries a
   `validation_error` string, and a warning-severity
   `classification_invalid_class_fallback` issue is recorded on the section (see
-  below). The document is **not** failed.
+  below). The document is **not** failed. `validate_config` warns when the
+  fallback is neither `unclassified` nor a configured class
+  (`_validate_fallback_class` in `config/merge_utils.py`), because such a page has
+  no extraction schema.
 
 > At **packet granularity** a reply naming an invalid class for any segment
 > re-prompts the whole window, and a segment still invalid after the retries gets
@@ -965,6 +968,17 @@ class it had in `metadata["class_before_pin"]` (`CLASS_BEFORE_PIN_KEY`), which t
 comparison reads. It is the comparison, not the setting, that picks the wording, so a
 disabled document whose pages all failed, or whose fallback class won the vote, gets
 the ordinary wording.
+
+**The zero-inference short-circuits report an empty page too.** A document-name
+regex match, or a single-class configuration, under a `sectionSplitting` that needs
+no boundary signal goes to `_create_single_class_sections` and calls no model. There
+`_short_circuit_empty_pages` reads each page's text, but only where
+`classify_page_bedrock` would have reported the page (Bedrock backend, combined
+strategy, page granularity, images resolved off), and gives a blank page the same
+`no_content` metadata with `class_before_pin` set to `unclassified`, so the
+recorder words it as a page given the asserted class. A failed read or a missing
+text URI is logged and not reported, and does not fail the document. Everywhere
+else the short-circuits still read nothing.
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
