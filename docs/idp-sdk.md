@@ -183,6 +183,13 @@ client.stack_name = "new-stack"
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
 
+With no `region`, the client uses the Region boto3's default session resolves:
+`AWS_DEFAULT_REGION`, then the `region` of the selected profile, or a Region given
+to `boto3.setup_default_session`. boto3 does not read `AWS_REGION`, and no
+operation falls back to a hard-coded Region; one that needs a Region and finds
+none says so. `idp_sdk.resolve_region(region)` returns that answer (or `None`), so
+your code can name the Region the client's calls go to.
+
 ### Terraform deployments
 
 `stack_name` also accepts the name of a [Terraform deployment](./terraform.md)
@@ -2169,7 +2176,7 @@ Discover document classes from a collection of documents using embedding-based c
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
 - `progress_callback` (callable, optional): Callback function for pipeline progress updates
-- `region` (str, optional): AWS region
+- `region` (str, optional): AWS region. Overrides the client's for this call, for both the Bedrock calls and the stack the schemas are saved into
 
 **Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `config_version`, and `error`
 

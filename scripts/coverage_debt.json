@@ -592,6 +592,7 @@
         "idp_sdk/_core/naming.py": 100.0,
         "idp_sdk/_core/progress_monitor.py": 100.0,
         "idp_sdk/_core/publish.py": 99.51,
+        "idp_sdk/_core/region.py": 100.0,
         "idp_sdk/_core/rerun_processor.py": 98.16,
         "idp_sdk/_core/s3_security.py": 100.0,
         "idp_sdk/_core/search_processor.py": 100.0,

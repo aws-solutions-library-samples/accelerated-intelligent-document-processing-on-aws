@@ -202,9 +202,12 @@ The resolution order is:
    configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
    read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
 
-Nothing substitutes a hardcoded region for the configuration commands, so a
-command run with no `--region` and no region resolvable from the environment fails
-with boto3's `NoRegionError` rather than guessing.
+Every command that takes `--region` resolves it this one way, including
+`test-result`, `test-compare`, `abort-test-run` and `discover-multidoc`, and no
+command substitutes a hardcoded Region. A command run with no `--region` and no
+Region resolvable from the environment fails, saying the Region could not be
+determined, rather than guessing. A shell that sets only `AWS_REGION` therefore
+needs `AWS_DEFAULT_REGION` or `--region` as well.
 
 `--region` applies to every AWS call a command makes, not only to the
 CloudFormation lookup that resolves a resource's name. That distinction is the
