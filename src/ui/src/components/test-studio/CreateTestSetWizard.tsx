@@ -40,6 +40,7 @@ import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
 import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
 import { createLatestResponseGuard } from './latestResponseOnly';
+import { customCutoffIsInvalid, invalidCustomField, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -188,18 +189,17 @@ const CreateTestSetWizard = ({
     onDismiss();
   };
 
-  const getModifiedAfter = (): string | undefined => {
-    if (!timeFilter.value) return undefined;
-    if (timeFilter.value === 'custom') {
-      return customDate ? new Date(`${customDate}T${customTime}`).toISOString() : undefined;
-    }
-    const hours = parseInt(timeFilter.value, 10);
-    return new Date(Date.now() - hours * 3600 * 1000).toISOString();
-  };
+  const getModifiedAfter = (): string | undefined => resolveModifiedAfter(timeFilter.value, customDate, customTime);
+  const customDateTimeInvalid = customCutoffIsInvalid(timeFilter.value, customDate, customTime);
+  const invalidCustomDateTimeText = intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim()) {
       setError('Enter a file pattern first');
+      return;
+    }
+    if (customDateTimeInvalid) {
+      setError(invalidCustomDateTimeText);
       return;
     }
     const isCurrent = checkGuard.current.claim();
@@ -359,6 +359,10 @@ const CreateTestSetWizard = ({
     }
     if (description && !validateDescription(description.trim())) {
       setError('Description cannot exceed 500 characters');
+      return;
+    }
+    if (source === 'existing-files' && customDateTimeInvalid) {
+      setError(invalidCustomDateTimeText);
       return;
     }
     if (!(await nameIsFree())) return;
@@ -542,7 +546,10 @@ const CreateTestSetWizard = ({
           </FormField>
           {timeFilter.value === 'custom' && (
             <ColumnLayout columns={2}>
-              <FormField label="Date">
+              <FormField
+                label="Date"
+                errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'date' ? invalidCustomDateTimeText : undefined}
+              >
                 <Input
                   value={customDate}
                   onChange={({ detail }) => {
@@ -552,7 +559,11 @@ const CreateTestSetWizard = ({
                   placeholder="YYYY-MM-DD"
                 />
               </FormField>
-              <FormField label="Time">
+              <FormField
+                label="Time"
+                constraintText={intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}
+                errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'time' ? invalidCustomDateTimeText : undefined}
+              >
                 <Input
                   value={customTime}
                   onChange={({ detail }) => {
@@ -660,6 +671,10 @@ const CreateTestSetWizard = ({
               }
               if (source === 'existing-files' && !filePattern.trim()) {
                 setError('Enter a file pattern to continue');
+                return;
+              }
+              if (source === 'existing-files' && customDateTimeInvalid) {
+                setError(invalidCustomDateTimeText);
                 return;
               }
             }
