@@ -474,7 +474,8 @@ _OWNER = "lib/idp_common_pkg/idp_common/agents/utils/conversation_manager.py"
 
 #: Every word that names a way into Strands' unmetered summarization: the manager
 #: (class and module), the helper it calls, the method this package overrides, the
-#: ``Agent(context_manager=...)`` facade and the package behind it.
+#: ``Agent(context_manager=...)`` facade and the package behind it, and the
+#: attribute that selects Strands' unmetered summarization-agent path.
 _SUMMARIZER_WORDS = frozenset(
     {
         "SummarizingConversationManager",
@@ -484,6 +485,7 @@ _SUMMARIZER_WORDS = frozenset(
         "_generate_summary_with_model",
         "context_manager",
         "_context_manager",
+        "summarization_agent",
     }
 )
 
@@ -496,8 +498,8 @@ def _unmetered_summarizer_uses(source: str) -> list[int]:
     """Lines that reach Strands' summarization by any name the source spells.
 
     The rule is about the words, not about call shapes: a hit is any identifier,
-    attribute, keyword argument, definition, import (module path or name) or
-    string constant that contains one of ``_SUMMARIZER_WORDS``. So a dict of
+    attribute, keyword argument, parameter, definition, import (module path or
+    name) or string or bytes constant that contains one of ``_SUMMARIZER_WORDS``. So a dict of
     ``Agent`` keyword arguments, ``getattr``, ``importlib``, ``__dict__`` lookups,
     an import of the helper and an override of the metered method are all read,
     because each has to write one of those words somewhere. Docstrings are not
@@ -523,6 +525,10 @@ def _unmetered_summarizer_uses(source: str) -> list[int]:
             words = {node.attr}
         elif isinstance(node, ast.keyword) and node.arg:
             words = {node.arg}
+        elif isinstance(node, ast.arg):
+            words = {node.arg}
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            words = {node.name}
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             words = {node.name}
         elif isinstance(node, ast.ImportFrom):
@@ -534,6 +540,8 @@ def _unmetered_summarizer_uses(source: str) -> list[int]:
                 words |= _words(alias.name) | {alias.asname or ""}
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             words = _words(node.value)
+        elif isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+            words = _words(node.value.decode("latin-1"))
         if words & _SUMMARIZER_WORDS:
             lines.add(getattr(node, "lineno", 0))
     return sorted(lines)
@@ -577,6 +585,12 @@ def test_the_rule_reads_every_route_it_names():
         "from strands._context_manager.modes import agentic",
         "import strands._context_manager.modes.agentic as m",
         "x = 1\n'''SummarizingConversationManager''' + ''\n",
+        "def build(model, context_manager='auto'):\n"
+        "    return Agent(model=model, **locals())",
+        "f = lambda context_manager='auto': Agent(**locals())",
+        "Agent(**{b'context_manager'.decode(): 'auto'})",
+        "class X(MeteredSummarizingConversationManager):\n"
+        "    summarization_agent = helper",
         "class M(Metered):\n    def _generate_summary_with_model(self, m, a):\n"
         "        return None",
     ]

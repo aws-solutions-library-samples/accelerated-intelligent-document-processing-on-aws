@@ -1118,10 +1118,11 @@ under the same `<context>/bedrock/<model>` key, on the success path and on this 
 It refuses a `summarization_agent`, at construction or assigned later, because
 that agent would record the usage on its own metrics.
 `tests/unit/extraction/test_agentic_summarization_metering.py` scans every tracked
-production module except that one and fails on any identifier, keyword, import or
-non-docstring string that names Strands' summarizing manager, its
-`generate_summary` helper, the method the subclass overrides, or the `Agent`
-`context_manager` option, which builds an unmetered manager internally. That
+production module except that one and fails on any identifier, parameter,
+keyword, import or non-docstring string or bytes literal that names Strands'
+summarizing manager, its `generate_summary` helper, the method the subclass
+overrides, `summarization_agent`, or the `Agent` `context_manager` option, which
+builds an unmetered manager internally. That
 covers a dictionary of `Agent` arguments, `getattr` and `importlib`. It cannot see
 a name assembled at run time from pieces, or `Agent` arguments loaded from data.
 
