@@ -19,9 +19,9 @@ export const modifiedAfterMessages = defineMessages({
   },
   invalidCustomDateTime: {
     id: 'testStudio.modifiedAfter.invalidCustomDateTime',
-    defaultMessage: 'Enter a real date as YYYY-MM-DD and a time as HH:mm:ss.',
+    defaultMessage: 'Enter a real date and a time as HH:mm:ss.',
     description:
-      'Error beside the custom date and time of the "Modified after" filter when they are not a real date and time, for example 2026-02-30 or 24:00:00. Keep YYYY-MM-DD and HH:mm:ss as they are.',
+      'Error beside the custom date and time of the "Modified after" filter when they are not a real date and time, for example 30 February or 24:00:00. Keep HH:mm:ss as it is.',
   },
 });
 
@@ -46,6 +46,9 @@ export const customCutoff = (customDate: string, customTime: string): string | n
   if (parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month - 1 || parsed.getUTCDate() !== day) return null;
   return parsed.toISOString();
 };
+
+/** Which custom field is at fault: the date when it is not a real date on its own, otherwise the time. */
+export const invalidCustomField = (customDate: string): 'date' | 'time' => (customCutoff(customDate, '') === null ? 'date' : 'time');
 
 /** True when the custom filter is chosen with a date entered that is not a real date and time. */
 export const customCutoffIsInvalid = (filterValue: string | undefined, customDate: string, customTime: string): boolean =>

@@ -151,8 +151,11 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
     onDismiss();
   };
 
-  const customDateTimeInvalid = customCutoffIsInvalid(selectedTimeFilter.value, customDate, customTime);
-  const getModifiedAfterTimestamp = (): string | undefined => resolveModifiedAfter(selectedTimeFilter.value, customDate, customTime);
+  // "Modified after" is shown for the Input bucket only, so a filter left set
+  // before switching to the Test Set bucket neither applies nor blocks a check.
+  const timeFilterValue = selectedBucket.value === 'input' ? selectedTimeFilter.value : undefined;
+  const customDateTimeInvalid = customCutoffIsInvalid(timeFilterValue, customDate, customTime);
+  const getModifiedAfterTimestamp = (): string | undefined => resolveModifiedAfter(timeFilterValue, customDate, customTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim() || !testSet) return;

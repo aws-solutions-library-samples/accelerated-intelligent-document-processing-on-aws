@@ -40,7 +40,7 @@ import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
 import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
 import { createLatestResponseGuard } from './latestResponseOnly';
-import { customCutoffIsInvalid, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
+import { customCutoffIsInvalid, invalidCustomField, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -546,7 +546,10 @@ const CreateTestSetWizard = ({
           </FormField>
           {timeFilter.value === 'custom' && (
             <ColumnLayout columns={2}>
-              <FormField label="Date" errorText={customDateTimeInvalid ? invalidCustomDateTimeText : undefined}>
+              <FormField
+                label="Date"
+                errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'date' ? invalidCustomDateTimeText : undefined}
+              >
                 <Input
                   value={customDate}
                   onChange={({ detail }) => {
@@ -556,7 +559,11 @@ const CreateTestSetWizard = ({
                   placeholder="YYYY-MM-DD"
                 />
               </FormField>
-              <FormField label="Time" constraintText={intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}>
+              <FormField
+                label="Time"
+                constraintText={intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}
+                errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'time' ? invalidCustomDateTimeText : undefined}
+              >
                 <Input
                   value={customTime}
                   onChange={({ detail }) => {

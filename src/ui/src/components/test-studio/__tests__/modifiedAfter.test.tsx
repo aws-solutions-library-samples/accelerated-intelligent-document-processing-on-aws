@@ -35,7 +35,7 @@ vi.mock('../useGenerateSyntheticForm', () => ({
 // Imported after the mocks, which vitest hoists.
 import AddDocumentsModals from '../AddDocumentsModals';
 import CreateTestSetWizard from '../CreateTestSetWizard';
-import { customCutoff, customCutoffIsInvalid, resolveModifiedAfter } from '../modifiedAfter';
+import { customCutoff, customCutoffIsInvalid, invalidCustomField, resolveModifiedAfter } from '../modifiedAfter';
 
 const hour = 3600 * 1000;
 const checkedAt = Date.parse('2026-11-18T12:00:00.000Z');
@@ -61,7 +61,7 @@ const cutoffsSent = (query: string, bucketType?: string): (string | undefined)[]
     .filter((arg) => arg.query === query && (bucketType === undefined || arg.variables?.bucketType === bucketType))
     .map((arg) => arg.variables?.modifiedAfter);
 
-const invalidText = 'Enter a real date as YYYY-MM-DD and a time as HH:mm:ss.';
+const invalidText = 'Enter a real date and a time as HH:mm:ss.';
 
 /** Text of the error alerts shown, which is where a refused action says why. */
 const errorAlerts = (): string[] =>
@@ -114,6 +114,8 @@ describe('resolveModifiedAfter', () => {
       ['2026-11-18', '09:60:00'],
       ['2026-11-18', '09:30:60'],
       ['2026-11-18', '9:30'],
+      // Date.UTC reads years 0-99 as 1900-1999; a typo must not become 1926.
+      ['0026-11-18', '00:00:00'],
     ]) {
       expect(customCutoff(date, time), `${date} ${time}`).toBeNull();
       expect(customCutoffIsInvalid('custom', date, time), `${date} ${time}`).toBe(true);
@@ -125,6 +127,12 @@ describe('resolveModifiedAfter', () => {
     expect(customCutoff('2026-11-18', '23:59:59')).toBe('2026-11-18T23:59:59.000Z');
     expect(customCutoff('2028-02-29', '00:00:00')).toBe('2028-02-29T00:00:00.000Z');
     expect(customCutoff('2026-11-18', '09:30')).toBe('2026-11-18T09:30:00.000Z');
+  });
+
+  it('names the field at fault', () => {
+    expect(invalidCustomField('2026/11/18')).toBe('date');
+    expect(invalidCustomField('2026-02-30')).toBe('date');
+    expect(invalidCustomField('2026-11-18')).toBe('time');
   });
 
   it('only calls a custom filter with a date entered invalid', () => {
@@ -229,12 +237,34 @@ describe('The add-documents dialog', () => {
     const content = dialog();
     act(() => content.findDatePicker()!.setInputValue('2026/11/18'));
     act(() => content.findTimeInput()!.setInputValue('09:3'));
-    expect(screen.getByText('Enter a real date as YYYY-MM-DD and a time as HH:mm:ss.')).toBeTruthy();
+    expect(screen.getByText(invalidText)).toBeTruthy();
     expect(errorAlerts()).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
     expect(errorAlerts()).toHaveLength(1);
     expect(cutoffsSent('listBucketFiles')).toEqual([]);
     expect(screen.getByRole('button', { name: 'Add Documents' })).toHaveProperty('disabled', true);
+
+    // Fixed, the check runs and the refusal no longer shows.
+    act(() => content.findTimeInput()!.setInputValue('09:30:00'));
+    await checkFiles();
+    expect(errorAlerts()).toEqual([]);
+    expect(cutoffsSent('listBucketFiles', 'input')).toEqual(['2026-11-18T09:30:00.000Z']);
+  });
+
+  it('neither applies nor checks a custom filter hidden by switching to the Test Set bucket', async () => {
+    renderDialog();
+    chooseTimeFilter('custom');
+    act(() => dialog().findDatePicker()!.setInputValue('2026/11/18'));
+    act(() => dialog().findTimeInput()!.setInputValue('09:3'));
+    const bucket = dialog().findAllSelects()[0];
+    act(() => bucket.openDropdown());
+    act(() => bucket.selectOptionByValue('testset'));
+    expect(dialog().findDatePicker()).toBeNull();
+
+    await checkFiles();
+
+    expect(errorAlerts()).toEqual([]);
+    expect(cutoffsSent('listBucketFiles', 'testset')[0]).toBeUndefined();
   });
 });
 
@@ -278,6 +308,18 @@ describe('The create-test-set wizard', () => {
     expect(screen.getByPlaceholderText('YYYY-MM-DD')).toBeTruthy();
     expect(errorAlerts()).toHaveLength(1);
     expect(cutoffsSent('addTestSet')).toEqual([]);
+  });
+
+  it('puts a time error under the Time field when the date is fine', () => {
+    enterCustomDateTime('2026-11-18', '9:30');
+    const fields = createWrapper(document.body).findWizard()!.findContent()!.findAllFormFields();
+    const errorUnder = (label: string) =>
+      fields
+        .find((f) => f.findLabel()?.getElement().textContent === label)!
+        .findError()
+        ?.getElement().textContent;
+    expect(errorUnder('Time')).toBe(invalidText);
+    expect(errorUnder('Date')).toBeUndefined();
   });
 
   it('reads a custom date and time as UTC, as the add-documents dialog does, and says so', async () => {
