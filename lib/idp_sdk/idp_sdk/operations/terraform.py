@@ -1009,6 +1009,10 @@ class GenaiIdpTerraformMigration:
         ``terraform plan -destroy -out=<file>`` in the old deployment's directory.
         Refuses anything else: a state file, an empty or errored plan, a plan that
         does more than delete, or a plan of another deployment. Reads only.
+
+        The old-state copies ``detach --apply`` wrote to the migration directory
+        are read too, so the role the API Gateway account settings name is
+        recognised even when the settings are no longer in the destroy plan.
         """
         from idp_sdk._core import terraform_migrate as tm
 
@@ -1018,7 +1022,27 @@ class GenaiIdpTerraformMigration:
             destroy = json.loads(Path(destroy_plan_path).read_text())
         except (OSError, ValueError) as e:
             raise IDPConfigurationError(f"cannot read {destroy_plan_path}: {e}") from e
-        findings, details = tm.check_destroy_plan(destroy, plan)
+        old_states = []
+        # `detach --apply` adds a timestamp; the commands `plan` prints do not.
+        for backup in sorted(
+            self._migration_dir(directory).glob(
+                "old-state-backup-before-detach*.tfstate"
+            )
+        ):
+            try:
+                state = json.loads(backup.read_text())
+            except (OSError, ValueError) as e:
+                raise IDPConfigurationError(f"cannot read {backup}: {e}") from e
+            if not isinstance(state, dict) or not isinstance(
+                state.get("resources"), list
+            ):
+                raise IDPConfigurationError(
+                    f"{backup} is not a Terraform state (no `resources` list); "
+                    "move it out of the migration directory or replace it with "
+                    "the old deployment's state as `terraform state pull` prints it"
+                )
+            old_states.append(state)
+        findings, details = tm.check_destroy_plan(destroy, plan, old_states)
         notes = []
         if details.get("recordedNotInDestroyPlan"):
             notes.append(

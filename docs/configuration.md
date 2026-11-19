@@ -449,6 +449,14 @@ summarization:
 - No LLM API calls or S3 operations are performed
 - Document processing continues to completion
 
+**When a summary cannot be produced:** if Bedrock refuses the prompt as too long
+for the summarization model's input window, or Bedrock's content filter withholds
+the model's reply, the document still completes, with its extraction results intact.
+The affected summary (one section's, or the whole document's when it has no
+sections) is replaced by a *Summary Unavailable* note saying which of the two
+happened; the other sections are summarized normally. Any other summarization model
+error fails the document.
+
 **Note:** Prior to v0.4.0, this feature was controlled by the `IsSummarizationEnabled` CloudFormation parameter. The configuration-based approach provides runtime control without requiring stack redeployment.
 
 ## Confidence (Assessment) Configuration

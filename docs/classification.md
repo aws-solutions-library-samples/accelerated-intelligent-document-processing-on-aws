@@ -641,6 +641,11 @@ instructs the model to:
 3. Match each document segment to one of the defined document types
 4. Record the start and end pages for each identified segment
 
+The sections are numbered in page order whatever order the model's reply lists
+the documents in, so section 1 is always the document that starts first. That is
+what evaluation relies on, since it pairs each section with the baseline section of
+the same number.
+
 ⚠️ **Write a packet prompt under `combined.packet.task_prompt`, not
 `combined.page.task_prompt`.** The two are asked for different output shapes:
 the page prompt returns one class and a boundary verdict, the packet prompt a
@@ -1090,17 +1095,40 @@ severity says how much attention the case deserves:
 > fallback class replaced an out-of-vocabulary answer. Packet granularity with the
 > combined strategy records none of those three. At packet granularity, under either
 > strategy, it records `classification_page_assigned_to_neighbour` instead when the
-> model's page ranges left a page out.
+> model's page ranges left a page out. When `maxPagesForClassification` limits
+> classification to the first pages, the issues recorded on those pages are carried
+> onto the document's one section.
 
 | Issue code | Severity | What happened | What to do |
 |---|---|---|---|
-| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class and nothing was extracted from it. On the Bedrock backend it is produced in one case: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors. A throttle or another transient error is not caught that way: it fails the classification step, which the state machine retries | For a read failure, check the page's artifacts in the working bucket and reprocess. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
-| `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
-| `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
+| `classification_failed` | error | A classification attempt errored, exhausted its retries, or its required `image_uri`/`raw_text_uri` were missing, so the page has no class of its own and nothing was extracted from it, unless `sectionSplitting: disabled` gave it its section's class (see below the table). On the Bedrock backend's page path it is produced in two cases: the page's text or image could not be read from S3, or a page artifact is missing, so nothing was sent — the root cause names the read that failed, and the document also fails — or the page's reply was withheld by a content filter, described below. Otherwise it comes from `classify_page_sagemaker`, which a stack this solution deploys does not use: no template here creates a SageMaker endpoint or UDOP model, and you reach it only by pointing the classifier at your own endpoint through the `samples/lambda-hook-inference` hook. On the page-level path, a Bedrock model call that errors propagates instead and fails the document, where the error appears in the execution history rather than as an issue. Under split-then-classify, a section classification call that errors is caught per segment: the section is labelled `unclassified`, carries this issue with the call's error as its root cause, and the error is also in the document's errors. The exception on both paths is a reply Amazon Bedrock's content filter withheld (a `ValidationException` saying the output was blocked by the content filtering policy): that page or section is labelled `unclassified` and carries this issue naming the block, but the block is not added to the document's errors, so the rest of the document is classified and completes. A block still fails the document on a packet-granularity call, on a split-then-classify splitting call, when the document name matched a class's `x-aws-idp-document-name-regex` (the page's class is asserted, so labelling it `unclassified` would split the asserted document around it), and when `maxPagesForClassification` limits classification to a sample of pages (the sample's class is given to every page of the document, so a blocked sample would leave the whole document `unclassified` with no error). A throttle or another transient error is not caught that way: it fails the classification step, which the state machine retries | For a read failure, check the page's artifacts in the working bucket and reprocess. For a content-filter block, review the page, or reprocess with a different classification model. For a split-then-classify section, check the section classification model call in the ClassificationFunction log group (throttling, model access, quota) and reprocess. Otherwise check the ClassificationFunction log group for the page and, if you supplied the endpoint yourself, its health, model access and quota |
+| `classification_page_no_content` | warning | The page had nothing to classify: no usable OCR text (text that is only whitespace counts as none), and no page image either because none could be loaded or because `modality.images` is off. With images on, a blank page normally still has an image and does not land here; with text-only modality, every page without OCR text does (separator sheets, signature pages, image-only scans). Such an empty page is labelled `unclassified` (under `sectionSplitting: disabled`, usually its section's class; see below the table) and the rest of the document is classified and completes normally. A page whose text or image could not be read, or whose page artifact is missing, still fails the document, and the message names the read that failed | Check the OCR step for those pages unless they are genuinely empty. If image-only pages are expected, turn `modality.images` on so they can be classified |
+| `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema, except under `sectionSplitting: disabled` when the section's class is another one (see below the table) | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 | `classification_page_assigned_to_neighbour` | warning | Packet granularity only. The page ranges the model returned left these pages out of every document, so each was added to the document of the page before it in the same packet call (or, when nothing precedes it in that call, the document after it) and given that document's class. Under `sectionSplitting: disabled` this is not needed, because the one section already holds every page. The pages were extracted with that section; what is not the model's answer is which section they are in. A page whose packet call failed is not placed this way: no call decided anything about it, and the failure is already reported as a document error | Check that the pages belong to the section they were added to |
 
 One issue per section per cause, listing the page IDs, so a long run of
 unclassifiable pages produces one row rather than one per page.
+
+**Under `sectionSplitting: disabled` such a page usually takes its section's
+class.** The document's one section gets the configured class with the most pages
+(or, when no page has a configured class, the first page's class), and every page is
+relabelled with it, including a page whose classification failed, that had nothing
+to classify, or that was coerced to the fallback. That page is then extracted with
+the rest of the section, against the section's class's schema, not left out as
+`unclassified` and not extracted against the fallback's schema; its confidence is
+left unscored, because the class it now carries is not one it predicted. The same
+relabelling happens when the document's name matches a class's
+`x-aws-idp-document-name-regex`, which assigns that class to every page.
+
+The issue's message says which happened. When the class the page ended up with
+differs from the one classification gave it (`unclassified`, or the fallback class),
+the message names the section's class and says the page was extracted against its
+schema, or, when that class is not a configured class (with `enforceValidClasses`
+off, or a fallback the configuration does not define), that there was no schema and
+nothing was extracted. When the section's class is excluded from processing
+(`x-aws-idp-exclude-from-processing`), the message says so and that nothing was
+extracted, whichever class the page carried. When the two agree, for example when every page failed or the
+fallback class won the vote, the message reads as it does under the other settings.
 
 **Why two of them are warnings and not errors.** An error-severity issue puts a red
 indicator on the section in the UI, and an indicator that appears on most documents
@@ -1373,7 +1401,9 @@ Four things worth knowing:
 A segment whose section classification call fails is labelled `unclassified`:
 its section and its pages all read `unclassified`, the failure is in the
 document's errors, and the section carries a `classification_failed` processing
-issue in the Sections panel. Its boundaries are still good, and a real class
+issue in the Sections panel. When the failure is Amazon Bedrock's content filter
+withholding the reply, the section is labelled and flagged the same way but the
+block is not in the document's errors, so the document completes. Its boundaries are still good, and a real class
 guessed in its place would propagate into extraction as though it had been
 decided. A segment whose answer was outside the vocabulary after every retry gets
 the configured `fallback_class` instead, as on the page-level path, and its section
@@ -1828,9 +1858,12 @@ call fails with `found N occurrences, but exactly 1 is required`, and
 page, context-pages and packet prompts and to both calls of split-then-classify; a
 repeat in the section-classification prompt fails the document before any section
 is labelled, except under `method: decision_model` with an `on_low_confidence` other
-than `llm`, where that prompt is never sent. `modality.images: false` removes the placeholder wrapped in
-`<document-image>` tags, or every placeholder when none is wrapped, so a bare
-repeat beside a wrapped one is still sent and still refused.
+than `llm`, where that prompt is never sent. `modality.images: false` removes every `{DOCUMENT_IMAGE}` from the prompt (a
+`<document-image>` element that held only the placeholder goes with it), so nothing
+is refused and no image is sent. A placeholder written inside the class-confidence
+block (`confidence.task_prompt_topk`, `task_prompt_verbalized` and their packet
+variants) counts too, because the block is added to the prompt before the count, and
+after the modality removal, so the removal does not reach it.
 
 ### Usage Examples
 

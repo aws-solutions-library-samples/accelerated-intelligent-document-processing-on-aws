@@ -90,6 +90,10 @@ logger = logging.getLogger(__name__)
 UNCLASSIFIED_FAILED = "failed"
 UNCLASSIFIED_NO_CONTENT = "no_content"
 
+# ``metadata`` key on a page classification pinned to a document-name regex
+# class: the class the page had before the pin (see ``_pin_page_class``).
+CLASS_BEFORE_PIN_KEY = "class_before_pin"
+
 # Which call's configuration is being resolved. These are not three
 # classification *methods* — they are the one call of the combined strategy, and
 # the two calls of the split-then-classify strategy, which need different prompts,
@@ -110,6 +114,188 @@ STAGE_CALL_PATH = {
     STAGE_SPLITTING: "split_then_classify.splitting.llm",
     STAGE_SECTION_CLASSIFICATION: "split_then_classify.section_classification.llm",
 }
+
+
+def _stage_llm(classification: Any, stage: str) -> Any:
+    """The model-settings block for ``stage`` under ``classification``."""
+    if stage == STAGE_SECTION_CLASSIFICATION:
+        return classification.split_then_classify.section_classification.llm
+    if stage == STAGE_SPLITTING:
+        return classification.split_then_classify.splitting.llm
+    return classification.combined.llm
+
+
+def apply_modality_to_prompt(task_prompt: str, classification: Any, stage: str) -> str:
+    """Rewrite a prompt template so its placeholders match the call's modality.
+
+    Only an **explicitly set** flag causes a rewrite; an inferred one agrees
+    with the template by construction, so the overwhelmingly common path
+    returns the operator's prompt untouched.
+
+    Removal takes out every occurrence of the placeholder, so the content is
+    neither sent nor paid for. A placeholder's wrapping element goes with it when
+    the element contains nothing else — ``<document-image>{DOCUMENT_IMAGE}
+    </document-image>`` becomes nothing rather than an empty tag pair, because an
+    empty element announcing a modality that is switched off is a misleading
+    thing to put in a prompt (``strip_placeholder``).
+
+    Addition appends a wrapped placeholder at the end of the template. The
+    position is a guess — the operator's prompt said nothing about where the
+    content goes — so it is both the least surprising choice (the content is
+    the last thing the model reads) and logged, since a prompt the operator
+    did not write is something they need to be able to see.
+    """
+    modality = _stage_llm(classification, stage).modality
+    result = task_prompt
+
+    for flag, placeholder, element in (
+        (modality.text, "{DOCUMENT_TEXT}", "document-ocr-data"),
+        (modality.images, "{DOCUMENT_IMAGE}", "document-image"),
+    ):
+        if flag is None:
+            continue
+        present = placeholder in result
+        if flag and not present:
+            result = f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
+            logger.info(
+                "classification.%s.modality turned %s on but the task prompt "
+                "had no %s placeholder; appended one.",
+                STAGE_CALL_PATH[stage],
+                element,
+                placeholder,
+            )
+        elif not flag and present:
+            result = strip_placeholder(result, placeholder, element)
+            logger.info(
+                "classification.%s.modality turned %s off; removed %s from the "
+                "task prompt so the content is neither sent nor paid for.",
+                STAGE_CALL_PATH[stage],
+                element,
+                placeholder,
+            )
+
+    return result
+
+
+def compose_class_confidence_prompt(
+    task_prompt: str, classification: Any, stage: str, num_classes: int
+) -> str:
+    """Splice the class-confidence instruction block in, when enabled.
+
+    No-op when the mode is ``off``; the shipped default is ``topk``. A custom prompt that already carries a ``<class-confidence>``
+    block is left alone (the splice is idempotent), and the response parser
+    honours a ``confidence``/``candidates`` key regardless of this setting —
+    the mode composes the *instruction*, it does not gate the *parsing*.
+    """
+    confidence_cfg = _stage_llm(
+        classification,
+        STAGE_SECTION_CLASSIFICATION
+        if stage == STAGE_SECTION_CLASSIFICATION
+        else STAGE_CLASSIFICATION,
+    ).confidence
+    mode = confidence_cfg.mode
+    if mode == "off":
+        return task_prompt
+
+    if stage == STAGE_SPLITTING:
+        # The splitting call reports no class, so there is no class to be
+        # confident about. Scoring belongs to section classification, which
+        # is where the class is
+        # decided — and spending output tokens here would buy a number
+        # describing nothing.
+        return task_prompt
+
+    # Section classification is always one call about one segment, so it
+    # takes the PAGE block shape (one class, one score) regardless of how
+    # the boundaries were found. The packet block describes a `segments`
+    # array section classification does not return.
+    packet = (
+        classification.page_input_call().granularity
+        == ClassificationService.GRANULARITY_PACKET
+        and stage != STAGE_SECTION_CLASSIFICATION
+    )
+
+    if mode == "topk":
+        top_k = resolve_top_k(confidence_cfg.top_k_candidates, num_classes)
+        # The packet variant names the key it goes in and scopes the
+        # instruction per segment; the page one speaks about "this page".
+        # Falling back to the page block keeps a custom configuration
+        # written before packet granularity working rather than silently
+        # dropping the request.
+        block = (
+            confidence_cfg.task_prompt_topk_packet or confidence_cfg.task_prompt_topk
+            if packet
+            else confidence_cfg.task_prompt_topk
+        )
+    else:  # verbalized
+        top_k = None
+        block = (
+            confidence_cfg.task_prompt_verbalized_packet
+            or confidence_cfg.task_prompt_verbalized
+            if packet
+            else confidence_cfg.task_prompt_verbalized
+        )
+
+    if not block:
+        logger.warning(
+            "classification.%s.confidence.mode=%s but its prompt block is "
+            "empty; no confidence will be requested. Restore it from the "
+            "system defaults (base-classification.yaml).",
+            "split_then_classify.section_classification.llm"
+            if stage == STAGE_SECTION_CLASSIFICATION
+            else "combined.llm",
+            mode,
+        )
+        return task_prompt
+
+    composed = append_class_confidence_block(
+        task_prompt, strip_prompt_comments(block), top_k
+    )
+    if composed is not task_prompt:
+        logger.info(
+            "Requesting class confidence in %s mode%s",
+            mode,
+            f" (top {top_k} candidates)" if top_k else "",
+        )
+    return composed
+
+
+def shipped_classification_prompt(*path: str) -> str:
+    """One prompt from the shipped ``classification`` defaults, by path, or ``""``.
+
+    What the service sends for a stage prompt left empty (``_stage_prompt``), so
+    ``validate_config`` reads the same text for one.
+    """
+    node: Any = ClassificationService._shipped_classification_defaults()
+    for key in path:
+        if not isinstance(node, dict):
+            return ""
+        node = node.get(key)
+    # The shipped defaults carry their contract as prompt comments, and this
+    # read bypasses the runtime config reader that removes them elsewhere.
+    return strip_prompt_comments(node) if isinstance(node, str) else ""
+
+
+def classification_task_prompt_as_sent(
+    task_prompt: str, classification: Any, stage: str, num_classes: int
+) -> str:
+    """The task prompt template a classification call sends, from the configured one.
+
+    ``task_prompt`` is the configured template with prompt comments removed.
+    Modality normalisation runs BEFORE the class-confidence splice: the splice
+    positions its block relative to the document/cache-point marker, and
+    rewriting placeholders afterwards could move content across it. The service
+    builds every call's prompt through this, and ``validate_config`` judges the
+    ``{DOCUMENT_IMAGE}`` rule on its result, so the two count the same
+    placeholders — including one written inside a confidence block.
+    """
+    return compose_class_confidence_prompt(
+        apply_modality_to_prompt(task_prompt, classification, stage),
+        classification,
+        stage,
+        num_classes,
+    )
+
 
 # Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
 # text comes from model output or a service error message, and the issue rides to
@@ -212,6 +398,23 @@ def _looks_like_an_image_refusal(exc: Exception) -> bool:
             "malformed",
             "invalid image",
         )
+    )
+
+
+def _is_content_filter_block(error: BaseException) -> bool:
+    """``bedrock_utils.is_content_filter_block``, imported where it is used as the
+    other ``bedrock_utils`` matchers in this module are."""
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
+
+
+def _content_filter_detail(error: BaseException) -> str:
+    """The issue text for a classification reply a content filter withheld."""
+    return (
+        "Amazon Bedrock's content filter withheld the classification model's "
+        f"reply ({type(error).__name__}: {error}). Review the page(s), or use a "
+        "different classification model"
     )
 
 
@@ -724,6 +927,13 @@ class ClassificationService:
         """
         if not classified_document.sections:
             logger.warning("No sections found in classified document")
+            # The sample's failures still belong to the document: returned
+            # without them, a sample whose every page failed completed with
+            # no error recorded anywhere.
+            original_document.errors.extend(classified_document.errors)
+            if classified_document.metadata:
+                original_document.metadata = original_document.metadata or {}
+                original_document.metadata.update(classified_document.metadata)
             return original_document
 
         # Get the most common classification from the limited pages
@@ -769,6 +979,16 @@ class ClassificationService:
                     page_ids=[page.page_id for page in section.pages],
                 )
             ]
+        # Carry the sample sections' processing issues onto the rebuilt section,
+        # as the sample's errors are carried onto the document below. The sample
+        # pages are pages of the rebuilt section, so an issue naming them still
+        # describes it; dropped, a warning such as an out-of-vocabulary class
+        # coerced to the fallback vanished, and the document read as clean. The
+        # section id needs no rewrite: a page limit applies only under
+        # sectionSplitting "disabled", whose one section is always "1".
+        rebuilt = original_document.sections[0]
+        for sample_section in classified_document.sections:
+            rebuilt.processing_issues.extend(sample_section.processing_issues or [])
         # Transfer metering data from classified document to original document
         if classified_document.metering:
             original_document.metering = utils.merge_metering_data(
@@ -948,6 +1168,16 @@ class ClassificationService:
                 page_result.classification.doc_type,
                 class_name,
             )
+        if page_result.classification.doc_type != class_name:
+            # Kept so _record_unclassified_page_issues can tell a page that had
+            # no class, or the fallback, from one whose class was asserted: it
+            # compares this with the section's class to word the issue. Only
+            # the first pin records it; a cached result pinned again keeps it.
+            metadata = page_result.classification.metadata
+            if metadata is not None:
+                metadata.setdefault(
+                    CLASS_BEFORE_PIN_KEY, page_result.classification.doc_type
+                )
         page_result.classification.doc_type = class_name
         page_result.classification.confidence = 1.0
         return page_result
@@ -981,7 +1211,10 @@ class ClassificationService:
             page.document_boundary = str(boundary).lower()
 
     def _classify_pages_multimodal(
-        self, document: Document, forced_class: Optional[str] = None
+        self,
+        document: Document,
+        forced_class: Optional[str] = None,
+        content_filter_fails_document: bool = False,
     ) -> Document:
         """
         Classify pages using multimodal page-level classification.
@@ -1150,6 +1383,38 @@ class ClassificationService:
                                 combined_metering, page_metering
                             )
                         except Exception as e:
+                            if (
+                                _is_content_filter_block(e)
+                                and not forced_class
+                                and not content_filter_fails_document
+                            ):
+                                # Fails this page only, the way an empty page is
+                                # handled above: unclassified, an error-severity
+                                # classification_failed issue on its section, and
+                                # NOT in document.errors, which ProcessResults
+                                # fails the whole document on. Retrying the step
+                                # would send the same page to the same filter.
+                                # Not under a document-name class pin, where the
+                                # page's class is asserted and 'unclassified'
+                                # would split the asserted document around it,
+                                # nor on a page-limited sample, whose class is
+                                # extrapolated to pages the model never saw, so
+                                # a blocked sample would complete the whole
+                                # document 'unclassified' with no error: both
+                                # keep failing the document as before.
+                                page_result = self._content_filtered_page_result(
+                                    page_id, document.pages.get(page_id), e
+                                )
+                                all_page_results.append(page_result)
+                                # The section builder writes the page's
+                                # declared fields from all_page_results.
+                                if page_id in document.pages:
+                                    setattr(
+                                        document.pages[page_id],
+                                        "metadata",
+                                        page_result.classification.metadata,
+                                    )
+                                continue
                             # Capture exception details in the document object instead of raising
                             error_msg = f"Error classifying page {page_id}: {str(e)}"
                             logger.error(error_msg)
@@ -1564,12 +1829,8 @@ class ClassificationService:
             raise ValueError(
                 f"No task_prompt found for the {stage} stage of classification"
             )
-        # Modality normalisation runs BEFORE the class-confidence splice: the
-        # splice positions its block relative to the document/cache-point marker,
-        # and rewriting placeholders afterwards could move content across it.
-        task_prompt = self._apply_modality_to_prompt(task_prompt, stage)
-        config["task_prompt"] = self._compose_class_confidence_prompt(
-            task_prompt, stage
+        config["task_prompt"] = classification_task_prompt_as_sent(
+            task_prompt, self.config.classification, stage, len(self.valid_doc_types)
         )
 
         return config
@@ -1583,89 +1844,6 @@ class ClassificationService:
         problem that a cheaper model answers just as well.
         """
         return self._call(stage).model
-
-    def _compose_class_confidence_prompt(
-        self, task_prompt: str, stage: str = STAGE_CLASSIFICATION
-    ) -> str:
-        """Splice the class-confidence instruction block in, when enabled.
-
-        No-op when the mode is ``off``; the shipped default is ``topk``. A custom prompt that already carries a ``<class-confidence>``
-        block is left alone (the splice is idempotent), and the response parser
-        honours a ``confidence``/``candidates`` key regardless of this setting —
-        the mode composes the *instruction*, it does not gate the *parsing*.
-        """
-        confidence_cfg = self._call(
-            self.STAGE_SECTION_CLASSIFICATION
-            if stage == self.STAGE_SECTION_CLASSIFICATION
-            else self.STAGE_CLASSIFICATION
-        ).confidence
-        mode = confidence_cfg.mode
-        if mode == "off":
-            return task_prompt
-
-        if stage == self.STAGE_SPLITTING:
-            # The splitting call reports no class, so there is no class to be
-            # confident about. Scoring belongs to section classification, which
-            # is where the class is
-            # decided — and spending output tokens here would buy a number
-            # describing nothing.
-            return task_prompt
-
-        # Section classification is always one call about one segment, so it
-        # takes the PAGE block shape (one class, one score) regardless of how
-        # the boundaries were found. The packet block describes a `segments`
-        # array section classification does not return.
-        packet = (
-            self.granularity == self.GRANULARITY_PACKET
-            and stage != self.STAGE_SECTION_CLASSIFICATION
-        )
-
-        if mode == "topk":
-            top_k = resolve_top_k(
-                confidence_cfg.top_k_candidates, len(self.valid_doc_types)
-            )
-            # The packet variant names the key it goes in and scopes the
-            # instruction per segment; the page one speaks about "this page".
-            # Falling back to the page block keeps a custom configuration
-            # written before packet granularity working rather than silently
-            # dropping the request.
-            block = (
-                confidence_cfg.task_prompt_topk_packet
-                or confidence_cfg.task_prompt_topk
-                if packet
-                else confidence_cfg.task_prompt_topk
-            )
-        else:  # verbalized
-            top_k = None
-            block = (
-                confidence_cfg.task_prompt_verbalized_packet
-                or confidence_cfg.task_prompt_verbalized
-                if packet
-                else confidence_cfg.task_prompt_verbalized
-            )
-
-        if not block:
-            logger.warning(
-                "classification.%s.confidence.mode=%s but its prompt block is "
-                "empty; no confidence will be requested. Restore it from the "
-                "system defaults (base-classification.yaml).",
-                "split_then_classify.section_classification.llm"
-                if stage == self.STAGE_SECTION_CLASSIFICATION
-                else "combined.llm",
-                mode,
-            )
-            return task_prompt
-
-        composed = append_class_confidence_block(
-            task_prompt, strip_prompt_comments(block), top_k
-        )
-        if composed is not task_prompt:
-            logger.info(
-                "Requesting class confidence in %s mode%s",
-                mode,
-                f" (top {top_k} candidates)" if top_k else "",
-            )
-        return composed
 
     def _raw_task_prompt(self, stage: str = STAGE_CLASSIFICATION) -> str:
         """The configured task prompt for a stage and granularity, un-normalised.
@@ -1738,14 +1916,7 @@ class ClassificationService:
         to this service directly, a revision pinned to pre-upgrade content, and a
         field cleared to empty by hand.
         """
-        node: Any = self._shipped_classification_defaults()
-        for key in path:
-            if not isinstance(node, dict):
-                return ""
-            node = node.get(key)
-        # The shipped defaults carry their contract as prompt comments, and this
-        # read bypasses the runtime config reader that removes them elsewhere.
-        return strip_prompt_comments(node) if isinstance(node, str) else ""
+        return shipped_classification_prompt(*path)
 
     # ── Which block a call reads its settings from ──────────────────────────
     # Config format 0.9 nests every setting inside the call that uses it. These
@@ -1938,61 +2109,14 @@ class ClassificationService:
     def _apply_modality_to_prompt(
         self, task_prompt: str, stage: Optional[str] = None
     ) -> str:
-        """Rewrite a prompt template so its placeholders match the modality.
-
-        Only an **explicitly set** flag causes a rewrite; an inferred one agrees
-        with the template by construction, so the overwhelmingly common path
-        returns the operator's prompt untouched.
-
-        Removal takes the placeholder's wrapping element with it when the
-        element contains nothing else — ``<document-image>{DOCUMENT_IMAGE}
-        </document-image>`` becomes nothing rather than an empty tag pair,
-        because an empty element announcing a modality that is switched off is a
-        misleading thing to put in a prompt. A placeholder that is not wrapped
-        that way is simply deleted.
-
-        Addition appends a wrapped placeholder at the end of the template. The
-        position is a guess — the operator's prompt said nothing about where the
-        content goes — so it is both the least surprising choice (the content is
-        the last thing the model reads) and logged, since a prompt the operator
-        did not write is something they need to be able to see.
-        """
-        modality = self._call(stage).modality
-        result = task_prompt
-
-        for flag, placeholder, element in (
-            (modality.text, "{DOCUMENT_TEXT}", "document-ocr-data"),
-            (modality.images, "{DOCUMENT_IMAGE}", "document-image"),
-        ):
-            if flag is None:
-                continue
-            present = placeholder in result
-            if flag and not present:
-                result = (
-                    f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
-                )
-                logger.info(
-                    "classification.%s.modality turned %s on but the task prompt "
-                    "had no %s placeholder; appended one.",
-                    STAGE_CALL_PATH[stage or self._reader_stage()],
-                    element,
-                    placeholder,
-                )
-            elif not flag and present:
-                result = self._strip_placeholder(result, placeholder, element)
-                logger.info(
-                    "classification.%s.modality turned %s off; removed %s from the "
-                    "task prompt so the content is neither sent nor paid for.",
-                    STAGE_CALL_PATH[stage or self._reader_stage()],
-                    element,
-                    placeholder,
-                )
-
-        return result
+        """Rewrite a prompt to match the call's modality; see ``apply_modality_to_prompt``."""
+        return apply_modality_to_prompt(
+            task_prompt, self.config.classification, stage or self._reader_stage()
+        )
 
     @staticmethod
     def _strip_placeholder(template: str, placeholder: str, element: str) -> str:
-        """Remove ``placeholder``, and its wrapping ``<element>`` if that is all it held."""
+        """Remove every ``placeholder``; see ``strip_placeholder``."""
         return strip_placeholder(template, placeholder, element)
 
     def _prepare_prompt_from_template(
@@ -3249,6 +3373,30 @@ class ClassificationService:
             raw_text_uri=raw_text_uri,
         )
 
+    def _content_filtered_page_result(
+        self, page_id: str, page: Any, error: BaseException
+    ) -> PageClassification:
+        """The result for a page whose classification reply a content filter withheld.
+
+        Unclassified, with the block as the error ``_record_unclassified_page_issues``
+        reports. The caller keeps it out of ``document.errors``.
+        """
+        logger.error(
+            "Content filter blocked classification of page %s; labelling it '%s' "
+            "and continuing with the rest of the document: %s",
+            page_id,
+            UNCLASSIFIED_CLASS,
+            error,
+        )
+        return self._create_unclassified_result(
+            page_id=page_id,
+            image_uri=getattr(page, "image_uri", None),
+            text_uri=getattr(page, "parsed_text_uri", None),
+            raw_text_uri=getattr(page, "raw_text_uri", None),
+            error_message=_content_filter_detail(error),
+            reason=UNCLASSIFIED_FAILED,
+        )
+
     def _record_unclassified_page_issues(
         self, document: Document, all_page_results: List[PageClassification]
     ) -> None:
@@ -3273,6 +3421,17 @@ class ClassificationService:
         then have no text to show. One issue per (section, reason) with the page
         ids listed, rather than one per page, so a 50-page section cannot produce
         50 identical rows.
+
+        The message describes the page's outcome, not the setting that produced
+        it. A page can end up with a class its own result did not have — under
+        ``sectionSplitting: disabled`` every page takes the one section's winning
+        class, and a document-name regex match pins every page to the matched
+        class — and such a page is extracted against that class's schema (when it
+        has one), not left ``unclassified`` and not extracted against the
+        fallback's. So the
+        wording is chosen per section by comparing the class classification gave
+        the page with the class its section ended up with, which is known here
+        because this runs after the sections are built.
 
         Severity follows what happened, which is also what keeps this usable:
 
@@ -3331,6 +3490,14 @@ class ClassificationService:
         # one of them for all of them — which listing the page ids beside it turns
         # from a vague message into an actively wrong one.
         by_reason: Dict[str, Dict[str, str]] = {}
+        # page_id -> the class classification itself gave the page. The page may
+        # then carry another class: ``sectionSplitting: disabled`` gives every
+        # page the one section's winning class, and a document-name regex match
+        # pins every page to the matched class before splitting (the class it
+        # had is kept under CLASS_BEFORE_PIN_KEY). The message has to say which
+        # of the two the page ended up with, so it is compared with the section
+        # below.
+        own_class: Dict[str, str] = {}
         for result in all_page_results:
             metadata = result.classification.metadata or {}
             error_message = metadata.get("error")
@@ -3363,6 +3530,11 @@ class ClassificationService:
             by_reason.setdefault(code, {})[str(result.page_id)] = detail[
                 :_MAX_ISSUE_DETAIL_CHARS
             ]
+            own_class[str(result.page_id)] = str(
+                metadata.get(CLASS_BEFORE_PIN_KEY)
+                or result.classification.doc_type
+                or ""
+            )
 
         if not by_reason:
             return
@@ -3372,6 +3544,12 @@ class ClassificationService:
             "classification_page_no_content": "warning",
             "classification_invalid_class_fallback": "warning",
         }
+        # Two wordings per code, chosen per section from what actually happened
+        # rather than from the configured mode: the page kept the class
+        # classification gave it (its own section, or a section of that class),
+        # or it sits in a section of another class and was relabelled with it.
+        # Only the second is extracted against the section's schema, so a
+        # message written for the first is false there.
         messages = {
             "classification_failed": (
                 "Classification did not produce a class for {count} page(s) "
@@ -3394,6 +3572,56 @@ class ClassificationService:
                 "model's answer, and extraction ran against the fallback's schema."
             ),
         }
+        # The relabelled wording: what classification found, then which class
+        # the page was given, then what that meant for extraction. The section's
+        # class has a schema only when it is a configured class; with
+        # ``enforceValidClasses`` off, or a fallback that is not configured, the
+        # one section can carry a class extraction has no schema for.
+        found = {
+            "classification_failed": (
+                "Classification did not produce a class for {count} page(s) ({pages})."
+            ),
+            "classification_page_no_content": (
+                "{count} page(s) ({pages}) had nothing to classify — no usable "
+                "OCR text, and no page image was loaded or images are not sent."
+            ),
+            "classification_invalid_class_fallback": (
+                "The model returned a class outside the configured vocabulary for "
+                "{count} page(s) ({pages}) after every retry, so the configured "
+                "fallback class was assigned."
+            ),
+        }
+        given = (
+            " They are in a section whose class is '{section_class}', so they "
+            "were given that class"
+        )
+        extracted = {
+            "classification_failed": (
+                " and extracted against its schema with the rest of the section, "
+                "although classification never established that they belong to it."
+            ),
+            "classification_page_no_content": (
+                " and extracted with the rest of the section, with no OCR text of "
+                "their own. Check the OCR step for those pages unless they are "
+                "genuinely empty."
+            ),
+            "classification_invalid_class_fallback": (
+                " instead and extraction ran against its schema, not the "
+                "fallback's. Neither class is the model's answer for them."
+            ),
+        }
+        no_schema = (
+            ". '{section_class}' is not a configured class, so there is no "
+            "extraction schema for it and nothing was extracted from the section."
+        )
+        # A class configured with ``x-aws-idp-exclude-from-processing`` is
+        # skipped by extraction (``_mark_excluded_sections`` flags the section
+        # after this runs), so neither wording that says the pages were
+        # extracted is true for it.
+        excluded = (
+            " '{section_class}' is excluded from processing by its configuration, "
+            "so nothing was extracted from the section."
+        )
 
         for code, detail_by_page in by_reason.items():
             for section in document.sections:
@@ -3418,14 +3646,38 @@ class ClassificationService:
                 root_cause = "; ".join(shown)
                 if len(seen_details) > len(shown):
                     root_cause += f"; and {len(seen_details) - len(shown)} more"
+                relabelled = any(
+                    own_class[pid] != str(section.classification or "")
+                    for pid in section_pages
+                )
+                section_type = self.get_doc_type(section.classification)
+                is_excluded = bool(section_type and section_type.excluded)
+                if not relabelled:
+                    if is_excluded and code == "classification_invalid_class_fallback":
+                        # The ordinary wording says extraction ran against the
+                        # fallback's schema; for an excluded fallback it did not.
+                        template = (
+                            found[code]
+                            + " The stored class is not the model's answer."
+                            + excluded
+                        )
+                    else:
+                        template = messages[code]
+                elif is_excluded:
+                    template = found[code] + given + "." + excluded
+                elif section.classification in self.valid_doc_types:
+                    template = found[code] + given + extracted[code]
+                else:
+                    template = found[code] + given + no_schema
                 issue = ProcessingIssue(
                     stage="classification",
                     severity=severities[code],
                     code=code,
-                    message=messages[code].format(
+                    message=template.format(
                         count=len(section_pages),
                         pages=", ".join(section_pages),
                         unclassified=UNCLASSIFIED_CLASS,
+                        section_class=section.classification,
                     ),
                     root_cause=f"{root_cause} (pages {', '.join(section_pages)})",
                     section_id=section.section_id,
@@ -3754,8 +4006,16 @@ class ClassificationService:
                 # under sectionSplitting "disabled" (see __init__), so collapsing
                 # the result into one all-pages section is what that setting asks.
                 if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
+                    # A blocked page or segment is NOT soft-failed on the sample:
+                    # _apply_limited_classification_to_all_pages extrapolates the
+                    # sample's class to every page, so a blocked sample (one page,
+                    # under a limit of 1) would complete the whole document
+                    # 'unclassified' with no error and an issue naming only the
+                    # sample's pages. The block goes to document.errors instead.
                     classified_limited = self.split_then_classify_document(
-                        limited_document, forced_class=forced_class
+                        limited_document,
+                        forced_class=forced_class,
+                        content_filter_fails_document=True,
                     )
                 elif self.granularity == self.GRANULARITY_PACKET:
                     logger.info(
@@ -3768,7 +4028,9 @@ class ClassificationService:
                     )
                 else:
                     classified_limited = self._classify_pages_multimodal(
-                        limited_document, forced_class=forced_class
+                        limited_document,
+                        forced_class=forced_class,
+                        content_filter_fails_document=True,
                     )
 
                 # Apply results to all pages in original document
@@ -4976,6 +5238,11 @@ class ClassificationService:
         document cannot disagree about how verdicts become segments, and a
         boundary the model reported inside a window survives as a ``start``.
 
+        **The result is in page order** on every path, including a single
+        well-formed window whose reply listed documents out of order: sections
+        are numbered in segment order, and evaluation pairs a section with the
+        baseline's by that number.
+
         **Within one call, the segment reported first wins.** That is the order
         the per-page claim below walks, so it already held for a windowed packet;
         it now holds for an unwindowed one too. A model can return segments that
@@ -4987,9 +5254,20 @@ class ClassificationService:
         if len(window_segments) == 1:
             overlapping = self._pages_claimed_twice(window_segments[0])
             if not overlapping:
-                # Unwindowed and well-formed: use the model's segments directly,
-                # exactly as the unwindowed packet path always has.
-                return window_segments[0]
+                # Unwindowed and well-formed: the model's segments, put in page
+                # order. Nothing obliges a reply to list documents in the order
+                # they occur, and sections are numbered in segment order — the
+                # merge below sorts by construction, so without this a packet
+                # small enough for one window numbered its sections differently
+                # from the same packet windowed, and evaluation pairs sections
+                # with the baseline's by section id.
+                position = {pid: index for index, pid in enumerate(sorted_page_ids)}
+                return sorted(
+                    window_segments[0],
+                    key=lambda segment: position.get(
+                        segment.page_ids[0], len(position)
+                    ),
+                )
             logger.warning(
                 "The model returned overlapping segments: %d page(s) appear in "
                 "more than one segment (%s). Each page is kept in the first "
@@ -6082,7 +6360,10 @@ class ClassificationService:
         )
 
     def split_then_classify_document(
-        self, document: Document, forced_class: Optional[str] = None
+        self,
+        document: Document,
+        forced_class: Optional[str] = None,
+        content_filter_fails_document: bool = False,
     ) -> Document:
         """Classify by finding boundaries first, then labeling each segment.
 
@@ -6197,7 +6478,11 @@ class ClassificationService:
                     segment.confidence = None
             else:
                 segments, label_metering, label_errors, label_issues = (
-                    self._classify_segments(document, segments)
+                    self._classify_segments(
+                        document,
+                        segments,
+                        content_filter_fails_document=content_filter_fails_document,
+                    )
                 )
                 document.metering = utils.merge_metering_data(
                     document.metering, label_metering
@@ -6448,7 +6733,10 @@ class ClassificationService:
         return segments, metering, errors
 
     def _classify_segments(
-        self, document: Document, segments: List[Segment]
+        self,
+        document: Document,
+        segments: List[Segment],
+        content_filter_fails_document: bool = False,
     ) -> tuple[List[Segment], Dict[str, Any], List[str], Dict[int, Dict[str, str]]]:
         """Section classification: one call per segment to decide its class.
 
@@ -6579,6 +6867,27 @@ class ClassificationService:
                     if is_transient_error(e) and not isinstance(e, DecisionModelError):
                         # Raised after the pool, so the step is retried (#2034).
                         transient.record(where, e)
+                        continue
+                    if (
+                        _is_content_filter_block(e)
+                        and not content_filter_fails_document
+                    ):
+                        # The segment is labelled unclassified with an
+                        # error-severity classification_failed issue, as a
+                        # failed call is, but the document is not failed: the
+                        # other segments' classes stand, and a retry would send
+                        # the same pages to the same filter.
+                        logger.error(
+                            "%s was withheld by a content filter; labelling the "
+                            "segment '%s': %s",
+                            where,
+                            UNCLASSIFIED_CLASS,
+                            e,
+                        )
+                        with lock:
+                            issues[index] = {
+                                "error": f"{where}: {_content_filter_detail(e)}"
+                            }
                         continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "

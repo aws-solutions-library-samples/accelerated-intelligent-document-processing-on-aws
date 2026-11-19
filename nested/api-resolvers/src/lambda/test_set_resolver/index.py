@@ -1434,20 +1434,42 @@ def _claim_publish_attempt(test_set_id, client_token):
     return existing, None
 
 
+def _parse_utc_timestamp(value):
+    """An ISO-8601 timestamp read from a record, as an aware UTC datetime, or ``None``.
+
+    Writers of these records do not agree on a form. The resolver and the dataset
+    deployers write ``utcnow().isoformat() + "Z"``; the extensions write
+    ``now(timezone.utc).isoformat()``, with or without ``+00:00`` swapped for ``Z``; a
+    folder discovered in S3 takes its object's ``LastModified.isoformat()``, which
+    carries ``+00:00``. A stamp with no offset at all is read as UTC, which is what
+    every naive writer here meant. Comparing an aware value with a naive one raises
+    ``TypeError``, so every age check goes through this helper rather than
+    ``fromisoformat`` directly. (``fromisoformat`` reads a trailing ``Z`` itself from
+    Python 3.11; this function runs on 3.12.) ``None`` for anything missing or unreadable; what that
+    means is the caller's decision.
+    """
+    if not value:
+        return None
+    try:
+        stamped = datetime.fromisoformat(str(value).strip())
+        if stamped.tzinfo is None:
+            return stamped.replace(tzinfo=timezone.utc)
+        # Inside the try: an offset that carries the instant past year 9999 in UTC
+        # raises OverflowError here.
+        return stamped.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        return None
+
+
 def _claim_age_seconds(claimed_at):
     """Seconds since a claim was taken, or ``None`` if that cannot be determined.
 
     ``None`` means "treat as abandoned": an unparseable or missing timestamp is a claim
     nothing can reason about, and leaving it in place would lock the token out permanently.
     """
-    if not claimed_at:
+    stamped = _parse_utc_timestamp(claimed_at)
+    if stamped is None:
         return None
-    try:
-        stamped = datetime.fromisoformat(str(claimed_at).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if stamped.tzinfo is None:
-        stamped = stamped.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - stamped).total_seconds()
 
 
@@ -4297,14 +4319,10 @@ def _label_job_is_stale(job):
     aged" as "fresh" let that record (which names no documents, so covers the whole
     set) block re-grouping every document for good (#1746).
     """
-    created = str(job.get("createdAt") or "")
-    if not created:
+    started = _parse_utc_timestamp(job.get("createdAt"))
+    if started is None:
         return True
-    try:
-        started = datetime.fromisoformat(created.replace("Z", "+00:00"))
-    except ValueError:
-        return True
-    age_hours = (datetime.now(started.tzinfo) - started).total_seconds() / 3600.0
+    age_hours = (datetime.now(timezone.utc) - started).total_seconds() / 3600.0
     return age_hours >= STALE_LABEL_JOB_HOURS
 
 
@@ -5498,6 +5516,9 @@ def _claim_test_set_for_deletion(test_set_id):
             expression_attribute_names={"#st": "status"},
             expression_attribute_values=values,
             return_values="NONE",
+            # The row the condition refused, so the message names the status that
+            # decided it rather than one a re-read sees after the job has moved on.
+            return_values_on_condition_check_failure="ALL_OLD",
             # A busy row with no statusUpdatedAt (other than QUEUED, which is aged
             # by createdAt) is one the reaper can never fail, written before the
             # stamp existed; refusing it would make that set undeletable for good,
@@ -5511,8 +5532,11 @@ def _claim_test_set_for_deletion(test_set_id):
     except DynamoDBError as e:
         if e.error_code != "ConditionalCheckFailedException":
             raise
-    # This read only chooses the message; the write above made the decision.
-    row = db_client.get_item(key)
+        # The refused item normally comes back on the error. Re-read only if it
+        # did not, so a missing item can never turn a busy set into "no row" and
+        # let its files be deleted.
+        row = e.item or db_client.get_item(key)
+    # No row exists when the condition failed on attribute_exists(PK).
     if not row:
         return False
     raise ValueError(
@@ -6305,36 +6329,12 @@ def get_test_sets():
 
         # Check for deleted test sets (exist in DynamoDB but not in S3)
         # Only delete old FAILED test sets or any COMPLETED test sets
-        from datetime import datetime, timedelta
-
-        deleted_test_sets = []
-        cutoff_time = datetime.utcnow() - timedelta(
-            hours=1
-        )  # Only delete FAILED if older than 1 hour
-
-        for test_set_id in existing_test_sets:
-            test_set_item = existing_test_sets[test_set_id]
-            test_set_status = test_set_item.get("status")
-            created_at_str = test_set_item.get("createdAt", "")
-
-            # Parse creation time
-            try:
-                created_at = datetime.fromisoformat(
-                    created_at_str.replace("Z", "+00:00")
-                )
-            except:
-                continue  # Skip if can't parse date
-
-            # Only delete if S3 folder missing AND:
-            # - Status is COMPLETED (any time), OR
-            # - Status is FAILED and older than cutoff time
-            # - Status is DELETING: a delete that stopped after its files were
-            #   gone, and so before it could remove the row
-            if test_set_id not in s3_test_sets and (
-                test_set_status in ("COMPLETED", DELETING_TEST_SET_STATUS)
-                or (test_set_status == "FAILED" and created_at < cutoff_time)
-            ):
-                deleted_test_sets.append(test_set_id)
+        deleted_test_sets = [
+            test_set_id
+            for test_set_id, test_set_item in existing_test_sets.items()
+            if test_set_id not in s3_test_sets
+            and _is_orphan_to_remove(test_set_id, test_set_item)
+        ]
 
         # Delete orphaned test sets from DynamoDB
         for test_set_id in deleted_test_sets:
@@ -6363,6 +6363,42 @@ def get_test_sets():
 
     logger.info(f"Returning {len(result)} test sets")
     return result
+
+
+# A FAILED set whose folder is missing is removed only once it is this old, so a set
+# that failed moments ago stays listed long enough for its error to be read.
+FAILED_ORPHAN_MIN_AGE_HOURS = 1
+
+
+def _is_orphan_to_remove(test_set_id, item):
+    """Whether a row whose S3 folder is gone should be deleted by getTestSets.
+
+    COMPLETED rows go at any age, as do DELETING ones (a delete that stopped after its
+    files were gone, and so before it could remove the row). FAILED rows go once their
+    ``createdAt`` is older than FAILED_ORPHAN_MIN_AGE_HOURS; a FAILED row whose
+    ``createdAt`` cannot be read is kept, because its age is unknown.
+
+    Never raises: this runs over every row on the stack, and one record it cannot read
+    must not stop the rows after it from being cleaned up.
+    """
+    try:
+        status = item.get("status")
+        if status in ("COMPLETED", DELETING_TEST_SET_STATUS):
+            return True
+        if status != "FAILED":
+            return False
+        created_at = _parse_utc_timestamp(item.get("createdAt"))
+        if created_at is None:
+            logger.warning(
+                f"Keeping orphaned FAILED test set {test_set_id}: its createdAt "
+                f"{item.get('createdAt')!r} cannot be read, so its age is unknown"
+            )
+            return False
+        age = datetime.now(timezone.utc) - created_at
+        return age.total_seconds() >= FAILED_ORPHAN_MIN_AGE_HOURS * 3600
+    except Exception as e:  # noqa: BLE001 — one unreadable row must not stop the rest
+        logger.warning(f"Skipping orphan check for test set {test_set_id}: {e}")
+        return False
 
 
 def get_test_set_documents(args, deadline=None):
@@ -6748,11 +6784,8 @@ def _reap_abandoned_test_sets(items):
         stamp = item.get("statusUpdatedAt") or (
             item.get("createdAt") if status == "QUEUED" else None
         )
-        if not stamp:
-            continue
-        try:
-            since = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        except ValueError:
+        since = _parse_utc_timestamp(stamp)
+        if since is None:
             continue
         idle_hours = (now - since).total_seconds() / 3600
         if idle_hours < max_hours:

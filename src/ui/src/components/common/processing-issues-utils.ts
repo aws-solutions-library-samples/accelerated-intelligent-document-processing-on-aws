@@ -21,10 +21,13 @@ export interface SectionWithIssues {
 }
 
 /**
- * Codes that mean the stage RAISED, as opposed to flagging a result the pipeline
- * still accepted. Both are error severity, so severity alone cannot tell them
- * apart, and the difference is the one an operator acts on first: a failed
- * section has no trustworthy result, while a flagged one does and was kept.
+ * Codes that mean the stage FAILED for the section, as opposed to flagging a
+ * result the pipeline still accepted. Most of them are recorded as the stage
+ * raises; `extraction_failed` is also recorded without raising when Amazon
+ * Bedrock's content filter withheld the extraction reply, and the section then
+ * holds an empty result. Both kinds are error severity, so severity alone cannot
+ * tell them apart, and the difference is the one an operator acts on first: a
+ * failed section has no trustworthy result, while a flagged one does and was kept.
  *
  * This list is a literal in a different language from the backend that produces
  * the codes, so nothing about adding a code there would make it appear here. The

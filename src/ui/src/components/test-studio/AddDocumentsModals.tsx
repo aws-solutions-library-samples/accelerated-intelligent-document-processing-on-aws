@@ -29,6 +29,7 @@ import { addDocumentsToTestSet, addDocumentsToTestSetFromUpload, listBucketFiles
 import { getErrorMessage } from '../../utils/errorUtils';
 import { BUCKET_OPTIONS, TIME_FILTER_OPTIONS } from './testSetOptions';
 import AddProcessedDocumentsModal from './AddProcessedDocumentsModal';
+import { createLatestResponseGuard } from './latestResponseOnly';
 import { useFormatters } from '../../i18n/format';
 import { useIntl } from 'react-intl';
 import {
@@ -105,9 +106,15 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
   const [showFileStructure, setShowFileStructure] = useState(() => localStorage.getItem('testset-show-file-structure') !== 'false');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Check Files' reply is about the inputs it was sent with; one landing after an
+  // edit (or after the dialog reopened) describes a source the form no longer shows.
+  const checkGuard = useRef(createLatestResponseGuard());
 
   // Fresh form each time a dialog opens, seeded from the target set.
   useEffect(() => {
+    // Closing invalidates a check still running, as opening does, so its reply
+    // cannot open the Matching Files list over the page once the dialog is gone.
+    checkGuard.current.claim();
     if (!mode) return;
     setFilePattern(mode === 'pattern' ? (testSet?.filePattern ?? '') : '');
     setSelectedBucket(BUCKET_OPTIONS[0]);
@@ -126,7 +133,10 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
   const leftOut = preview ? formatLeftOut(intl, preview) : '';
 
   /** A changed source, pattern or time filter makes the last check's result stale. */
-  const clearCheck = () => setPreview(null);
+  const clearCheck = () => {
+    checkGuard.current.claim();
+    setPreview(null);
+  };
 
   const close = () => {
     setError('');
@@ -147,6 +157,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
   const handleCheckFiles = async () => {
     if (!filePattern.trim() || !testSet) return;
     const bucketType = selectedBucket.value ?? '';
+    const isCurrent = checkGuard.current.claim();
     setLoading(true);
     try {
       // The set's own input/ folder is listed alongside the pattern, because the
@@ -166,12 +177,13 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
         testSet.id,
         (existing.data.listBucketFiles || []).filter((f): f is string => f !== null),
       );
+      if (!isCurrent()) return;
       const split = splitPatternMatches(bucketType, files, members);
       setMatchingFiles(files);
       setPreview(split);
       setShowFilesModal(true);
     } catch (err) {
-      setError(`Failed to check files: ${getErrorMessage(err)}`);
+      if (isCurrent()) setError(`Failed to check files: ${getErrorMessage(err)}`);
     } finally {
       setLoading(false);
     }
