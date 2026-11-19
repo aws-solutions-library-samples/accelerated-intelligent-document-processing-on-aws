@@ -239,7 +239,8 @@ def validate_capacity_input(input_data: Dict[str, Any]) -> None:
 
             # Validate numeric fields
             numeric_fields = ['avgPages', 'ocrTokens', 'classificationTokens',
-                            'extractionTokens', 'assessmentTokens', 'summarizationTokens']
+                            'extractionTokens', 'assessmentTokens', 'summarizationTokens',
+                            'evaluationTokens', 'evaluationComparisons']
             for field in numeric_fields:
                 if field in config and config[field] != '':
                     try:
@@ -248,6 +249,16 @@ def validate_capacity_input(input_data: Dict[str, Any]) -> None:
                             errors.append(f'documentConfigs[{idx}].{field} cannot be negative')
                     except (ValueError, TypeError):
                         errors.append(f'documentConfigs[{idx}].{field} must be a number')
+
+    # Validate escalationRate if present: a share of documents, so 0 to 1.
+    escalation_rate = input_data.get('escalationRate')
+    if escalation_rate is not None and escalation_rate != '':
+        try:
+            rate = float(escalation_rate)
+            if not 0 <= rate <= 1:
+                errors.append('escalationRate must be between 0 and 1')
+        except (ValueError, TypeError):
+            errors.append(f'escalationRate must be a number, got: {escalation_rate}')
 
     # Validate timeSlots if present
     time_slots = input_data.get('timeSlots', [])
