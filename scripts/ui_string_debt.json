@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 234,
-    "findings": 6030
+    "files": 233,
+    "findings": 6009
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -46,7 +46,6 @@
     "src/ui/src/components/capacity-planning/CapacityPlanningLayout.tsx": 443,
     "src/ui/src/components/capacity-planning/DocumentPickerModal.tsx": 24,
     "src/ui/src/components/capacity-planning/tools-panel.tsx": 12,
-    "src/ui/src/components/chat-panel/ChatPanel.tsx": 21,
     "src/ui/src/components/common/AbortWorkflowModal.tsx": 19,
     "src/ui/src/components/common/CircuitBreakerPanel.tsx": 15,
     "src/ui/src/components/common/ClassConfidence.tsx": 4,
