@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
 
-"""Tests for the Python half of `scripts/generate-dep-manifest.sh`.
+"""Tests for `scripts/generate-dep-manifest.sh`, both halves.
 
 `make dep-audit` audits exactly the `name==version` lines this generator writes,
 so what the generator reads and what it keeps decide what the gate can see. Two
@@ -17,15 +17,21 @@ properties are pinned here:
   audited at that version even when a lockfile carries another version of the
   same package, and even when no lockfile carries the package at all.
 
+- **Every Node lockfile is read.** The Node half discovers `package-lock.json`
+  files the same way, so the lockfiles the audit reads are exactly the ones the
+  repository has, with no list to fall behind (`TestNodeLockfileDiscovery`).
+
 The generator's Python lives in a heredoc inside the shell script, so the tests
 lift it out and run that exact text against a throwaway git repository. The
 shell half (`uv pip compile` over the loose names) is not run: it needs the
 network, and the names it is handed are asserted directly instead.
 """
 
+import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -399,3 +405,181 @@ class TestShellMerge:
         self.run_script(repo, tmp_path, "loose-pkg==2.0\n")
         left = {p.name for p in (repo / "dist" / "manifests").iterdir()}
         assert left == {"python-packages.txt", "node-packages.txt"}
+
+
+# Stand-in for jq: prints one `<lockfile>@read` line per lockfile it is handed,
+# so the Node manifest becomes the list of lockfiles the script read. That is
+# the property under test, and it keeps these tests independent of whether the
+# host has jq (GitLab's test image does not).
+FAKE_JQ = """#!/usr/bin/env bash
+for last; do :; done
+printf '%s@read\\n' "$last"
+"""
+
+
+def lockfile_universe(root: pathlib.Path) -> set:
+    """Every package-lock.json git reports, tracked or untracked-not-ignored."""
+    out = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            ":(glob)**/package-lock.json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return {rel for rel in out.split("\0") if rel and (root / rel).is_file()}
+
+
+def run_whole_script(script, tmp_path, env_extra=None, real_jq=False):
+    """Run the generator with `uv` (and, unless asked, `jq`) replaced."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir(exist_ok=True)
+    (fake_bin / "uv").write_text(FAKE_UV)
+    (fake_bin / "uv").chmod(0o755)
+    if not real_jq:
+        (fake_bin / "jq").write_text(FAKE_JQ)
+        (fake_bin / "jq").chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "REAL_PYTHON": sys.executable,
+        "FAKE_RESOLVED": "",
+        "FAKE_SEEN": str(tmp_path / "seen.txt"),
+        **(env_extra or {}),
+    }
+    return subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, env=env
+    )
+
+
+def files_read(node_manifest: pathlib.Path, root: pathlib.Path) -> set:
+    prefix = f"{root}/"
+    return {
+        line.removesuffix("@read").removeprefix(prefix)
+        for line in node_manifest.read_text().splitlines()
+        if line
+    }
+
+
+class TestNodeLockfileDiscovery:
+    @pytest.fixture
+    def node_repo(self, tmp_path):
+        root = tmp_path / "repo"
+        root.mkdir()
+        git(root, "init", "-q")
+        write(root, ".gitignore", "staged/\nnode_modules/\n")
+        for rel in (
+            "package-lock.json",
+            "ui/package-lock.json",
+            "plugins/a/deep/ui/package-lock.json",
+            "gone/package-lock.json",
+            # Same basename suffix, different file: must not be read.
+            "ui/not-a-package-lock.json.bak",
+        ):
+            write(root, rel, "{}")
+        git(root, "add", ".")
+        (root / "gone" / "package-lock.json").unlink()
+        # Untracked but not ignored: part of the developer's change.
+        write(root, "new/package-lock.json", "{}")
+        # Gitignored copies: never audited.
+        write(root, "staged/package-lock.json", "{}")
+        write(root, "ui/node_modules/x/package-lock.json", "{}")
+        write(root, "node_modules/y/package-lock.json", "{}")
+        (root / "scripts").mkdir()
+        script = root / "scripts" / GENERATOR.name
+        script.write_text(GENERATOR.read_text())
+        return root, script
+
+    def test_every_lockfile_git_reports_is_read_and_nothing_else(
+        self, node_repo, tmp_path
+    ):
+        root, script = node_repo
+        proc = run_whole_script(script, tmp_path)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        read = files_read(root / "dist" / "manifests" / "node-packages.txt", root)
+        assert read == {
+            "package-lock.json",
+            "ui/package-lock.json",
+            "plugins/a/deep/ui/package-lock.json",
+            "new/package-lock.json",
+        }
+        assert read == lockfile_universe(root)
+
+    def test_outside_a_git_checkout_the_node_half_fails(self, tmp_path):
+        root = tmp_path / "not-a-repo"
+        (root / "scripts").mkdir(parents=True)
+        script = root / "scripts" / GENERATOR.name
+        # Only the Node half: the Python half already fails outside a checkout,
+        # which would mask whether this one does.
+        text = GENERATOR.read_text()
+        start = text.index("# ===== NODE MANIFEST =====")
+        script.write_text(
+            text[: text.index("# ===== PYTHON MANIFEST =====")] + text[start:]
+        )
+        write(root, "ui/package-lock.json", "{}")
+        proc = run_whole_script(
+            script, tmp_path, {"GIT_CEILING_DIRECTORIES": str(tmp_path)}
+        )
+        assert proc.returncode != 0
+        assert "git ls-files" in proc.stderr
+
+    def test_the_real_manifest_reads_exactly_the_repositorys_lockfiles(self, tmp_path):
+        """Universe closure on this checkout: no lockfile is left unaudited."""
+        out = tmp_path / "manifests"
+        proc = run_whole_script(GENERATOR, tmp_path, {"DEP_MANIFEST_DIR": str(out)})
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        read = files_read(out / "node-packages.txt", REPO_ROOT)
+        tracked = set(
+            subprocess.run(
+                ["git", "-C", str(REPO_ROOT), "ls-files", "*package-lock.json"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.split()
+        )
+        assert tracked, "no tracked package-lock.json: the probe is broken"
+        assert tracked <= read, sorted(tracked - read)
+        assert read == lockfile_universe(REPO_ROOT)
+
+    @pytest.mark.skipif(shutil.which("jq") is None, reason="needs the real jq")
+    def test_package_versions_from_a_nested_lockfile_reach_the_manifest(
+        self, node_repo, tmp_path
+    ):
+        root, script = node_repo
+        write(
+            root,
+            "plugins/a/deep/ui/package-lock.json",
+            json.dumps(
+                {
+                    "packages": {
+                        "": {"name": "deep-ui"},
+                        "node_modules/picomatch": {"version": "4.0.4"},
+                        "node_modules/@scope/pkg": {"version": "1.2.3"},
+                        "node_modules/a/node_modules/b": {"version": "0.1.0"},
+                    }
+                }
+            ),
+        )
+        for rel in (
+            "package-lock.json",
+            "ui/package-lock.json",
+            "new/package-lock.json",
+        ):
+            write(root, rel, json.dumps({"packages": {}}))
+        proc = run_whole_script(script, tmp_path, real_jq=True)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        manifest = root / "dist" / "manifests" / "node-packages.txt"
+        assert manifest.read_text().split() == [
+            "@scope/pkg@1.2.3",
+            "b@0.1.0",
+            "picomatch@4.0.4",
+        ]
