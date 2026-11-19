@@ -9,7 +9,7 @@
  */
 
 import createWrapper from '@cloudscape-design/components/test-utils/dom';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { IntlProvider } from 'react-intl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -172,6 +172,78 @@ describe('AddDocumentsModals, Check Files counts what the copy adds', () => {
     source.selectOptionByValue('testset');
     expect(screen.queryByText('2 files to add')).toBeNull();
     expect(screen.getByRole('button', { name: 'Add Documents' })).toHaveProperty('disabled', true);
+  });
+});
+
+describe('AddDocumentsModals, a Check Files reply that lands after an edit', () => {
+  beforeEach(() => {
+    graphql.mockReset();
+  });
+
+  /** Hold the pattern listing until the test releases it; the member listing answers at once. */
+  const deferredPatternListing = (): { resolve: (files: string[]) => void; fail: (message: string) => void } => {
+    let settle: { resolve: (files: string[]) => void; fail: (message: string) => void } = {
+      resolve: () => undefined,
+      fail: () => undefined,
+    };
+    graphql.mockImplementation(({ query, variables }: { query: string; variables: { bucketType: string } }) => {
+      if (query !== 'listBucketFiles') throw new Error(`unexpected ${query}`);
+      if (variables.bucketType === 'testset') return Promise.resolve({ data: { listBucketFiles: [] } });
+      return new Promise((resolve, reject) => {
+        settle = {
+          resolve: (files) => resolve({ data: { listBucketFiles: files } }),
+          fail: (message) => reject(new Error(message)),
+        };
+      });
+    });
+    return { resolve: (files) => settle.resolve(files), fail: (message) => settle.fail(message) };
+  };
+
+  it('is discarded, so the edited pattern shows no count and cannot be submitted', async () => {
+    const listing = deferredPatternListing();
+    render(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />, { wrapper: English });
+    fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
+    fireEvent.change(screen.getByDisplayValue('inv-*.pdf'), { target: { value: 'inv-2*.pdf' } });
+
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+
+    expect(screen.queryByText('2 files to add')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add Documents' })).toHaveProperty('disabled', true);
+  });
+
+  it('is discarded when it is a failure, too', async () => {
+    const listing = deferredPatternListing();
+    render(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />, { wrapper: English });
+    fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
+    fireEvent.change(screen.getByDisplayValue('inv-*.pdf'), { target: { value: 'inv-2*.pdf' } });
+
+    await act(async () => listing.fail('throttled'));
+
+    expect(screen.queryByText(/Failed to check files/)).toBeNull();
+  });
+
+  it('is discarded after the dialog was closed and reopened', async () => {
+    const listing = deferredPatternListing();
+    const { rerender } = render(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />, {
+      wrapper: English,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
+    rerender(<AddDocumentsModals testSet={target} mode={null} onDismiss={vi.fn()} onSubmitted={vi.fn()} />);
+    rerender(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />);
+
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+
+    expect(screen.queryByText('2 files to add')).toBeNull();
+  });
+
+  it('still lands when nothing was edited', async () => {
+    const listing = deferredPatternListing();
+    render(<AddDocumentsModals testSet={target} mode="pattern" onDismiss={vi.fn()} onSubmitted={vi.fn()} />, { wrapper: English });
+    fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
+
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+
+    await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
   });
 });
 

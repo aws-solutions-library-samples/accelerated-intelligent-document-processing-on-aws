@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import React, { useState, useCallback } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { defineMessages, useIntl } from 'react-intl';
 import { useCollection } from '@cloudscape-design/collection-hooks';
 import type { SelectProps } from '@cloudscape-design/components';
 import {
@@ -38,6 +39,23 @@ import ReviewEffortModal from './ReviewEffortModal';
 import { useFormatters } from '../../i18n/format';
 
 const client = generateClient();
+
+const deleteMessages = defineMessages<{
+  partlyDeleted: { readonly deleted: number; readonly total: number; readonly reason: string };
+  notDeleted: { readonly reason: string };
+}>({
+  partlyDeleted: {
+    id: 'testStudio.testSets.delete.partlyDeleted',
+    defaultMessage: 'Deleted {deleted} of {total, plural, one {# test set} other {# test sets}}. {reason}',
+    description:
+      'Error shown on the Test Sets page when a delete of several test sets removed some and not others. {reason} is the server’s message naming each test set that was refused (busy) or failed, and why.',
+  },
+  notDeleted: {
+    id: 'testStudio.testSets.delete.notDeleted',
+    defaultMessage: 'Failed to delete test sets: {reason}',
+    description: 'Error shown on the Test Sets page when none of the selected test sets was deleted. {reason} is the server’s message.',
+  },
+});
 
 const DOCUMENT_CLASS_TYPE_OPTIONS: SelectProps.Option[] = [
   { label: 'Unspecified', value: '' },
@@ -99,6 +117,7 @@ export const isInFlux = (status?: string | null): boolean => IN_FLUX_TEST_SET_ST
 const labelStateKey = (ts: TestSetItem): string => `${ts.labelState ?? ''}:${ts.labelJobStatus ?? ''}`;
 
 const TestSets = (): React.JSX.Element => {
+  const intl = useIntl();
   const [testSets, setTestSets] = useState<TestSetItem[]>([]);
   const [selectedItems, setSelectedItems] = useState<TestSetItem[]>([]);
   // Importing by file pattern searches a whole bucket, so it is Admin-only.
@@ -205,7 +224,8 @@ const TestSets = (): React.JSX.Element => {
     );
   }, []);
 
-  const loadTestSets = async () => {
+  /** Refresh the list; resolves to the ids the server listed, or null when the load failed. */
+  const loadTestSets = async (): Promise<Set<string> | null> => {
     try {
       console.log('TestSets: Loading test sets...');
       const result = await client.graphql({ query: getTestSets });
@@ -239,9 +259,11 @@ const TestSets = (): React.JSX.Element => {
         // Combine backend test sets (always win) with UI-only active test sets
         return [...nonNullBackendTestSets, ...uiOnlyTestSets];
       });
+      return new Set(backendTestSets.flatMap((ts) => (ts ? [ts.id] : [])));
     } catch (err) {
       console.error('TestSets: Failed to load test sets:', err);
       setError(`Failed to load test sets: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      return null;
     } finally {
       setInitialLoading(false);
     }
@@ -515,14 +537,24 @@ const TestSets = (): React.JSX.Element => {
         query: deleteTestSets,
         variables: { testSetIds },
       });
-      setTestSets(testSets.filter((testSet) => !testSetIds.includes(testSet.id)));
+      setTestSets((prev) => prev.filter((testSet) => !testSetIds.includes(testSet.id)));
       setSelectedItems([]);
       setSuccessMessage(`Successfully deleted ${deleteCount} test set${deleteCount > 1 ? 's' : ''}`);
       setError('');
     } catch (err) {
       console.error('Error deleting test sets:', err);
-      const errorMessage = getErrorMessage(err);
-      setError(`Failed to delete test sets: ${errorMessage}`);
+      const reason = getErrorMessage(err);
+      // The server deletes each set it can and reports only the ones it refused
+      // (busy) or could not finish, so the rest are already gone. Reload rather
+      // than wait for a poll, which may not be running, and count what went.
+      const listed = await loadTestSets();
+      const deleted = listed ? testSetIds.filter((id) => !listed.has(id)).length : 0;
+      setSuccessMessage('');
+      setError(
+        deleted > 0
+          ? intl.formatMessage(deleteMessages.partlyDeleted, { deleted, total: deleteCount, reason })
+          : intl.formatMessage(deleteMessages.notDeleted, { reason }),
+      );
     } finally {
       setLoading(false);
     }
