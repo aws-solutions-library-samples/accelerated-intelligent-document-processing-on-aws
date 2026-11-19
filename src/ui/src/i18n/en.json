@@ -2057,7 +2057,7 @@
   },
   "testStudio.patternPreview.archivesLeftOut": {
     "defaultMessage": "{count, plural, one {# .zip archive} other {# .zip archives}} left out",
-    "description": "Part of the Check Files result: matching .zip files from the Input Bucket, which the add does not copy."
+    "description": "Part of the Check Files result: matching .zip files, which the add does not copy."
   },
   "testStudio.patternPreview.filesToAdd": {
     "defaultMessage": "{count, plural, one {# file} other {# files}} to add",

@@ -92,14 +92,16 @@ def handler(event, context):
 
                 if not matching_files:
                     raise ValueError(f"No files found matching pattern: {file_pattern}")
-                if bucket_type == "input":
-                    matching_files, not_documents = _split_documents(matching_files)
-                    if not matching_files:
-                        raise ValueError(
-                            f"No documents found matching pattern: {file_pattern} "
-                            f"({len(not_documents)} matching files are .zip "
-                            "archives, which are not added)"
-                        )
+                # From either bucket: the Test Set bucket is the one the extractor
+                # watches, and a set folder can hold a .zip (a refused upload's
+                # archive, or one extracted from inside another).
+                matching_files, not_documents = _split_documents(matching_files)
+                if not matching_files:
+                    raise ValueError(
+                        f"No documents found matching pattern: {file_pattern} "
+                        f"({len(not_documents)} matching files are .zip "
+                        "archives, which are not added)"
+                    )
 
                 # As on the by-key path, a document already in the set is never
                 # copied again, from either bucket and labeled or not: the append
@@ -312,11 +314,12 @@ ZIP_EXTRACTOR_SUFFIX = ".zip"
 
 
 def _split_documents(matching_files):
-    """Split Input-bucket matches into documents and archives.
+    """Split a pattern's matches, from either bucket, into documents and archives.
 
     A pattern searches the whole bucket. A ``.zip`` copied into the set's ``input/``
-    folder starts the test-set zip extractor, which reads it as a test-set upload and
-    fails the set, so archives are counted and left out. Nothing else is: the
+    folder starts the test-set zip extractor, which reads it as an upload to the
+    destination set: it either fails that set or unpacks the archive's contents
+    into it. So archives are counted and left out. Nothing else is: the
     pipeline processes any other object it is given (including types the upload
     dialog does not offer, such as ``.webp``), and the by-key add has no filter.
     """

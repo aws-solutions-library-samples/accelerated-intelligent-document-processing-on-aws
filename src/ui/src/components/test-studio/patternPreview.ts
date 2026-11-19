@@ -6,7 +6,7 @@
  *
  * `listBucketFiles` returns every key the pattern matches, but the copier that adds
  * them (`src/lambda/test_set_file_copier/index.py`) leaves two kinds out: a `.zip`
- * from the Input bucket (`_split_documents`, because one copied into a set's
+ * from either bucket (`_split_documents`, because one copied into a set's
  * `input/` folder starts the zip extractor), and a file the set already holds
  * (`_split_pattern_members`). The preview counts what is left, so the number shown
  * before Add Documents is the number the copy can add.
@@ -20,7 +20,7 @@ export const ARCHIVE_SUFFIX = '.zip';
 export interface PatternPreview {
   /** Matches the copy would add. */
   documents: string[];
-  /** Input-bucket `.zip` matches, which are left out. */
+  /** `.zip` matches, which are left out. */
   archives: string[];
   /** Matches the set already holds, which are left as they are. */
   alreadyInSet: string[];
@@ -56,7 +56,7 @@ export const splitPatternMatches = (bucketType: string, matches: string[], membe
   const archives: string[] = [];
   const alreadyInSet: string[] = [];
   matches.forEach((key) => {
-    if (bucketType === 'input' && key.toLowerCase().endsWith(ARCHIVE_SUFFIX)) {
+    if (key.toLowerCase().endsWith(ARCHIVE_SUFFIX)) {
       archives.push(key);
     } else if (members.has(setMemberName(bucketType, key))) {
       alreadyInSet.push(key);
@@ -88,7 +88,7 @@ export const patternPreviewMessages = defineMessages<{
   archivesLeftOut: {
     id: 'testStudio.patternPreview.archivesLeftOut',
     defaultMessage: '{count, plural, one {# .zip archive} other {# .zip archives}} left out',
-    description: 'Part of the Check Files result: matching .zip files from the Input Bucket, which the add does not copy.',
+    description: 'Part of the Check Files result: matching .zip files, which the add does not copy.',
   },
   leftOutNote: {
     id: 'testStudio.patternPreview.leftOutNote',

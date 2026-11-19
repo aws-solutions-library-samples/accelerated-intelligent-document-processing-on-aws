@@ -207,7 +207,7 @@ const CreateTestSetWizard = ({
       });
       if (!isCurrent()) return;
       const matched = (result.data?.listBucketFiles ?? []).filter((f): f is string => f !== null);
-      // A new set holds nothing yet, so only the Input bucket's .zip matches are left out.
+      // A new set holds nothing yet, so only the .zip matches are left out.
       const split = splitPatternMatches(bucket.value ?? '', matched);
       setFileCount(split.documents.length);
       const leftOutText = formatLeftOut(intl, split);
