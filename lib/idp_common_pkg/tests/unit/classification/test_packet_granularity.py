@@ -407,11 +407,24 @@ class TestWindowing:
 @pytest.mark.unit
 class TestMergeWindowSegments:
     def test_a_single_window_is_used_directly(self):
-        """Identical to the unwindowed path that preceded this, which is the
-        common case and the one with years of behaviour behind it."""
+        """The model's own segments, not a re-fold of them: their scores and
+        candidates are kept, as on the unwindowed path that preceded this."""
         service = _service()
         segments = [Segment(page_ids=["1", "2"], doc_class="invoice", confidence=0.7)]
-        assert service._merge_window_segments([segments], ["1", "2"]) is segments
+        merged = service._merge_window_segments([segments], ["1", "2"])
+        assert len(merged) == 1 and merged[0] is segments[0]
+
+    def test_a_single_window_reply_is_put_in_page_order(self):
+        """A reply may list the later document first. The segments are the
+        model's own objects, reordered, never re-folded."""
+        service = _service()
+        later = Segment(page_ids=["3", "4"], doc_class="receipt", confidence=0.6)
+        earlier = Segment(page_ids=["1", "2"], doc_class="invoice", confidence=0.7)
+        merged = service._merge_window_segments(
+            [[later, earlier]], ["1", "2", "3", "4"]
+        )
+        assert merged == [earlier, later]
+        assert merged[0] is earlier and merged[1] is later
 
     def test_the_earlier_window_wins_for_an_overlapping_page(self):
         """The overlap pages are window k's trailing pages and window k+1's
@@ -2311,16 +2324,17 @@ class TestPagesTheModelPlacedInNoSegment:
         self,
     ):
         """The model listed the later document first. Page 1 joins the segment
-        holding page 2, wherever that segment sits in the list."""
+        holding page 2, and the sections come out in page order."""
         result = self._classify(
             6, [_bedrock_reply([_range(4, 6, "receipt"), _range(2, 3, "invoice")])]
         )
         self._assert_every_page_in_exactly_one_section(result)
         assert [(s.page_ids, s.classification) for s in result.sections] == [
-            (["4", "5", "6"], "receipt"),
             (["1", "2", "3"], "invoice"),
+            (["4", "5", "6"], "receipt"),
         ]
-        assert _filled_issues(result.sections[1])[0].details == {"page_ids": ["1"]}
+        assert _filled_issues(result.sections[0])[0].details == {"page_ids": ["1"]}
+        assert _filled_issues(result.sections[1]) == []
 
     def test_several_leading_pages_keep_page_order(self):
         result = self._classify(4, [_bedrock_reply([_range(3, 4, "invoice")])])
@@ -2373,3 +2387,63 @@ class TestPagesTheModelPlacedInNoSegment:
             (["3"], "invoice"),
         ]
         assert [len(_filled_issues(s)) for s in result.sections] == [0, 0, 1]
+
+
+# --------------------------------------------------------------------------
+# A one-window reply that lists documents out of page order
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestASingleWindowReplyIsPutInPageOrder:
+    """Sections are numbered in segment order, and evaluation pairs each section
+    with the baseline's of the same ``section_id``. The multi-window merge folds
+    per-page verdicts in page order, so it always produced page order; a packet
+    small enough for one window used the reply's order as given, so the same
+    packet was numbered differently depending on whether it was windowed."""
+
+    REPLY = [_range(3, 4, "receipt"), _range(1, 2, "invoice")]
+
+    def _classify(self, page_count: int, replies, **service_kwargs) -> Document:
+        service = _service(**service_kwargs)
+        with (
+            patch("idp_common.s3.get_text_content", return_value="page text"),
+            patch("idp_common.image.prepare_image", return_value=_png()),
+            patch.object(service, "_invoke_bedrock_model", side_effect=replies),
+        ):
+            return service.packet_classify_document(_document(page_count))
+
+    @staticmethod
+    def _sections(document: Document):
+        return [(s.section_id, s.page_ids, s.classification) for s in document.sections]
+
+    def test_sections_are_numbered_in_page_order(self):
+        result = self._classify(4, [_bedrock_reply(self.REPLY)])
+        assert self._sections(result) == [
+            ("1", ["1", "2"], "invoice"),
+            ("2", ["3", "4"], "receipt"),
+        ]
+
+    def test_one_window_and_two_windows_agree(self):
+        """The windowed run is the reference: its merge sorts by construction."""
+        windowed = self._classify(
+            4,
+            [
+                _bedrock_reply([_range(1, 2, "invoice")]),
+                _bedrock_reply([_range(1, 2, "receipt")]),
+            ],
+            packet={"window_pages": "2", "overlap_pages": "0"},
+        )
+        single = self._classify(4, [_bedrock_reply(self.REPLY)])
+        assert self._sections(single) == self._sections(windowed)
+
+    def test_a_tie_under_disabled_goes_to_the_earliest_page(self):
+        """``sectionSplitting: disabled`` breaks a page-count tie by the earliest
+        segment, documented as the earliest page; with the reply's order that
+        was whichever document the model happened to list first."""
+        result = self._classify(
+            4,
+            [_bedrock_reply(self.REPLY)],
+            document_shape={"sectionSplitting": "disabled"},
+        )
+        assert self._sections(result) == [("1", ["1", "2", "3", "4"], "invoice")]

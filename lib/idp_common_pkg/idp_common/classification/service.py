@@ -975,6 +975,16 @@ class ClassificationService:
                     page_ids=[page.page_id for page in section.pages],
                 )
             ]
+        # Carry the sample sections' processing issues onto the rebuilt section,
+        # as the sample's errors are carried onto the document below. The sample
+        # pages are pages of the rebuilt section, so an issue naming them still
+        # describes it; dropped, a warning such as an out-of-vocabulary class
+        # coerced to the fallback vanished, and the document read as clean. The
+        # section id needs no rewrite: a page limit applies only under
+        # sectionSplitting "disabled", whose one section is always "1".
+        rebuilt = original_document.sections[0]
+        for sample_section in classified_document.sections:
+            rebuilt.processing_issues.extend(sample_section.processing_issues or [])
         # Transfer metering data from classified document to original document
         if classified_document.metering:
             original_document.metering = utils.merge_metering_data(
@@ -1373,9 +1383,11 @@ class ClassificationService:
                                 # Not under a document-name class pin, where the
                                 # page's class is asserted and 'unclassified'
                                 # would split the asserted document around it,
-                                # nor on a page-limited sample, whose section
-                                # issues are not carried to the full document:
-                                # both keep failing the document as before.
+                                # nor on a page-limited sample, where the
+                                # sample's one class is given to every page,
+                                # the blocked one included, so 'unclassified'
+                                # would not survive the rebuild: both keep
+                                # failing the document as before.
                                 page_result = self._content_filtered_page_result(
                                     page_id, document.pages.get(page_id), e
                                 )
@@ -3877,10 +3889,11 @@ class ClassificationService:
                 # the result into one all-pages section is what that setting asks.
                 if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
                     # A blocked page or segment is NOT soft-failed on the sample:
-                    # _apply_limited_classification_to_all_pages rebuilds the
-                    # sections and keeps only document.errors, so an issue on the
-                    # sample would be dropped and the document complete with the
-                    # block recorded nowhere.
+                    # _apply_limited_classification_to_all_pages gives every page
+                    # the sample's one class, the blocked pages included, so the
+                    # soft failure's 'unclassified' label would not survive it.
+                    # The sample's section issues are carried over; a block is
+                    # recorded through document.errors instead.
                     classified_limited = self.split_then_classify_document(
                         limited_document,
                         forced_class=forced_class,
@@ -5107,6 +5120,11 @@ class ClassificationService:
         document cannot disagree about how verdicts become segments, and a
         boundary the model reported inside a window survives as a ``start``.
 
+        **The result is in page order** on every path, including a single
+        well-formed window whose reply listed documents out of order: sections
+        are numbered in segment order, and evaluation pairs a section with the
+        baseline's by that number.
+
         **Within one call, the segment reported first wins.** That is the order
         the per-page claim below walks, so it already held for a windowed packet;
         it now holds for an unwindowed one too. A model can return segments that
@@ -5118,9 +5136,20 @@ class ClassificationService:
         if len(window_segments) == 1:
             overlapping = self._pages_claimed_twice(window_segments[0])
             if not overlapping:
-                # Unwindowed and well-formed: use the model's segments directly,
-                # exactly as the unwindowed packet path always has.
-                return window_segments[0]
+                # Unwindowed and well-formed: the model's segments, put in page
+                # order. Nothing obliges a reply to list documents in the order
+                # they occur, and sections are numbered in segment order — the
+                # merge below sorts by construction, so without this a packet
+                # small enough for one window numbered its sections differently
+                # from the same packet windowed, and evaluation pairs sections
+                # with the baseline's by section id.
+                position = {pid: index for index, pid in enumerate(sorted_page_ids)}
+                return sorted(
+                    window_segments[0],
+                    key=lambda segment: position.get(
+                        segment.page_ids[0], len(position)
+                    ),
+                )
             logger.warning(
                 "The model returned overlapping segments: %d page(s) appear in "
                 "more than one segment (%s). Each page is kept in the first "
