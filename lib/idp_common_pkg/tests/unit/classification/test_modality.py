@@ -265,6 +265,28 @@ class TestApplyModalityToPrompt:
             == "before  after"
         )
 
+    @pytest.mark.parametrize(
+        "flag,placeholder,element",
+        [
+            ("images", "{DOCUMENT_IMAGE}", "document-image"),
+            ("text", "{DOCUMENT_TEXT}", "document-ocr-data"),
+        ],
+    )
+    def test_bare_placeholders_beside_a_wrapped_one_are_removed_too(
+        self, flag, placeholder, element
+    ):
+        """Turning a modality off removes every placeholder for it, not only the
+        wrapped one, so none is left for the builder to treat as a content slot."""
+        prompt = (
+            f"a {placeholder}\n<{element}>\n{placeholder}\n</{element}>\n"
+            f"b {placeholder} c"
+        )
+        service = _service(task_prompt=prompt, modality={flag: False})
+        result = service._apply_modality_to_prompt(prompt)
+        assert placeholder not in result
+        assert f"<{element}>" not in result
+        assert result.startswith("a ") and result.endswith(" c")
+
     def test_turning_images_on_appends_a_placeholder_when_there_is_none(self):
         service = _service(task_prompt="{DOCUMENT_TEXT}", modality={"images": True})
         result = service._apply_modality_to_prompt("{DOCUMENT_TEXT}")

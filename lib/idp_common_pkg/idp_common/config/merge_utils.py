@@ -1723,19 +1723,28 @@ def _validate_document_image_placeholders(
     The prompts judged are the ones sent, with prompt comments removed:
 
     - classification: each prompt the active strategy sends
-      (``_classification_task_prompts``). When a call's ``modality.images`` is
-      explicitly off, the prompt is judged after ``strip_placeholder``, which is
-      what the service applies to it first. The class-confidence block the
-      service splices in is not included. The section-classification prompt is
-      skipped when the decision model labels every section
-      (``section_prompt_can_be_sent``), because it is then never sent.
+      (``_classification_task_prompts``), judged as
+      ``classification_task_prompt_as_sent`` returns it — the function the service
+      builds the prompt with, so the modality rewrite and the class-confidence
+      block it splices in are counted exactly as the service counts them. The
+      section-classification prompt is skipped when the decision model labels
+      every section (``section_prompt_can_be_sent``), because it is then never
+      sent. An empty prompt is judged as the shipped one the service sends in its
+      place (``shipped_classification_prompt``), except the combined page prompt,
+      which has no such fallback.
     - extraction: the prompt ``select_extraction_task_prompt`` chooses, both with
       and without integrated confidence (a Simple section on a class with list
       fields falls back to the plain prompt), and each class's
       ``x-aws-idp-extraction-task-prompt``, which replaces it for that class.
     """
+    from idp_common.classification.service import (
+        STAGE_CLASSIFICATION,
+        STAGE_SECTION_CLASSIFICATION,
+        STAGE_SPLITTING,
+        classification_task_prompt_as_sent,
+        shipped_classification_prompt,
+    )
     from idp_common.config import without_prompt_comments
-    from idp_common.config.models import _parse_tristate_bool
     from idp_common.config.schema_constants import (
         ID_FIELD,
         X_AWS_IDP_DOCUMENT_TYPE,
@@ -1745,7 +1754,6 @@ def _validate_document_image_placeholders(
         DOCUMENT_IMAGE_PLACEHOLDER,
         document_image_placeholder_error,
         section_prompt_can_be_sent,
-        strip_placeholder,
     )
     from idp_common.extraction.prompt_assembly import select_extraction_task_prompt
 
@@ -1753,16 +1761,27 @@ def _validate_document_image_placeholders(
     section_sent = section_prompt_can_be_sent(
         section.method, section.low_confidence.on_low_confidence
     )
+    num_classes = len(sent_prompts.get("classes") or [])
     judged: List[tuple] = []
-    for path, prompt, modality in _classification_task_prompts(sent_prompts):
-        if not section_sent and path.startswith(
+    for path, prompt, _ in _classification_task_prompts(sent_prompts):
+        if path.startswith(
             "classification.split_then_classify.section_classification."
         ):
-            continue  # the decision model labels every section; never sent
-        if _parse_tristate_bool(modality.get("images"), "images") is False:
-            # What the service does to the prompt before building it.
-            prompt = strip_placeholder(
-                prompt or "", DOCUMENT_IMAGE_PLACEHOLDER, "document-image"
+            if not section_sent:
+                continue  # the decision model labels every section; never sent
+            stage = STAGE_SECTION_CLASSIFICATION
+        elif path.startswith("classification.split_then_classify.splitting."):
+            stage = STAGE_SPLITTING
+        else:
+            stage = STAGE_CLASSIFICATION
+        if not prompt and not path.startswith("classification.combined.page."):
+            # An empty stage prompt is sent as the shipped one (``_stage_prompt``);
+            # only the combined page prompt has no fallback.
+            prompt = shipped_classification_prompt(*path.split(".")[1:])
+        if prompt:
+            # What the service builds from the prompt before sending it.
+            prompt = classification_task_prompt_as_sent(
+                prompt, validated.classification, stage, num_classes
             )
         judged.append((path, prompt, "classification"))
 
