@@ -201,17 +201,19 @@ The resolution order is:
 2. Otherwise boto3's own chain: `AWS_DEFAULT_REGION`, then the `region`
    configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
    read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
+3. Otherwise `AWS_REGION`, for a shell that sets only that variable, as many
+   environments and other AWS SDKs do. This step applies to the commands that
+   work out the Region before calling AWS and pass it on: the configuration
+   commands that read a stack, `test-result`, `test-compare`, `abort-test-run`,
+   `discover-multidoc` and `deploy`. Other commands rely on boto3 alone, so in
+   such a shell they need `--region` or `AWS_DEFAULT_REGION`.
 
-Every command that works against a stack resolves `--region` this one way,
-including `test-result`, `test-compare`, `abort-test-run` and
-`discover-multidoc`, and none substitutes a hardcoded Region. A command run with
-no `--region` and no Region resolvable from the environment fails rather than
-guessing: the Test Studio commands, `discover-multidoc` and `deploy` say the
-Region could not be determined, and the others fail with boto3's
-`NoRegionError` ("You must specify a region"). A shell that sets only
-`AWS_REGION` therefore needs `AWS_DEFAULT_REGION` or `--region` as well.
-`remove-deleted-stack-resources` is the exception: it sweeps several Regions, and
-its `--region` defaults to `us-west-2`.
+No command substitutes a hardcoded Region. A command run with no `--region` and
+no Region resolvable from the environment fails rather than guessing: the Test
+Studio commands, `discover-multidoc` and `deploy` say the Region could not be
+determined, and the others fail with boto3's `NoRegionError` ("You must specify
+a region"). `remove-deleted-stack-resources` is the exception: it sweeps several
+Regions, and its `--region` defaults to `us-west-2`.
 
 `--region` applies to every AWS call a command makes, not only to the
 CloudFormation lookup that resolves a resource's name. That distinction is the

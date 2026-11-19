@@ -136,7 +136,8 @@ class StackOperation:
                 if not publish_region:
                     raise IDPConfigurationError(
                         "Region could not be determined. Pass a region, or set "
-                        "AWS_DEFAULT_REGION or a region in your AWS profile."
+                        "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS "
+                        "profile."
                     )
                 sts = boto3.client("sts", region_name=publish_region)
                 account_id = sts.get_caller_identity()["Account"]

@@ -185,10 +185,13 @@ client.stack_name = "new-stack"
 
 With no `region`, the client uses the Region boto3's default session resolves:
 `AWS_DEFAULT_REGION`, then the `region` of the selected profile, or a Region given
-to `boto3.setup_default_session`. boto3 does not read `AWS_REGION`, and no
-operation falls back to a hard-coded Region; one that needs a Region and finds
-none says so. `idp_sdk.resolve_region(region)` returns that answer (or `None`), so
-your code can name the Region the client's calls go to.
+to `boto3.setup_default_session`. Operations that work out the Region before
+calling AWS (configuration operations that read a stack, discovery,
+`stack.deploy(from_code=...)`) then fall back to `AWS_REGION`, which boto3 itself
+does not read, and pass the Region to every client they build. No operation falls
+back to a hard-coded Region; one that needs a Region and finds none says so.
+`idp_sdk.resolve_region(region)` returns that answer (explicit Region, then
+boto3's, then `AWS_REGION`, else `None`).
 
 ### Terraform deployments
 

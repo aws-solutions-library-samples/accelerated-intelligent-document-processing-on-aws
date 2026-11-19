@@ -906,6 +906,24 @@ class TestAbsentModelKeysResolveForTheStacksRegion:
         assert os.environ["AWS_REGION"] == "us-west-2"
 
     @mock_aws
+    def test_with_only_aws_region_set_the_stack_is_found_there(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        """boto3 does not read `AWS_REGION`; the bridge hands it to the lookup.
+
+        The stack exists only in the EU Region `AWS_REGION` names, so a lookup
+        left to boto3 (which resolves no Region here) cannot find it.
+        """
+        monkeypatch.setenv("AWS_REGION", EU_STACK_REGION)
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+
+        client = IDPClient(stack_name=STACK)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
+        assert os.environ["AWS_DEFAULT_REGION"] == EU_STACK_REGION
+
+    @mock_aws
     def test_with_no_region_given_and_the_region_from_the_profile(
         self, aws_credentials, config_env, monkeypatch, tmp_path
     ):

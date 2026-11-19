@@ -738,6 +738,22 @@ class TestRunLocal:
         assert result.status == "SUCCESS", result.error
         assert ctor.call_args.kwargs == {"region": "eu-central-1"}
 
+    def test_with_only_aws_region_set_bedrock_is_called_there(
+        self, tmp_path, monkeypatch
+    ):
+        """A shell that sets only `AWS_REGION` keeps working."""
+        document = tmp_path / "invoice.pdf"
+        document.write_bytes(_pdf(1))
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client) as ctor:
+            result = IDPClient().discovery.run(str(document))
+
+        assert result.status == "SUCCESS", result.error
+        assert ctor.call_args.kwargs == {"region": "eu-central-1"}
+
     def test_the_bedrock_request_is_built_from_the_system_defaults(self, tmp_path):
         """Model, prompts and sampling all come from `discovery.without_ground_truth`.
 
@@ -1482,7 +1498,6 @@ class TestAutoDetectLocal:
         """No hard-coded Region stands in: the run fails, naming the fix."""
         document = tmp_path / "packet.pdf"
         document.write_bytes(_pdf(2))
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.delenv("AWS_DEFAULT_REGION")
         client = _bedrock(_converse_response(_fenced([])))
 
@@ -1837,20 +1852,28 @@ class TestRunMultiDoc:
         )
 
     @mock_aws
-    @pytest.mark.parametrize("given", ["client", "call", "neither"])
+    @pytest.mark.parametrize("given", ["client", "call", "neither", "aws_region_only"])
     def test_the_models_are_called_in_the_region_the_stack_is_saved_into(
         self, aws_credentials, discovery_env, tmp_path, monkeypatch, given
     ):
         """One Region for the Bedrock calls and for the stack the schemas land in.
 
-        `AWS_REGION` names a third Region throughout, and the stack exists only
+        `AWS_REGION` names a third Region (except where it is the only source),
+        and the stack exists only
         in `eu-central-1`, so a lookup in any other Region fails and a pipeline
         built for any other Region is visible in its `region`.
         """
         stack_region = "eu-central-1"
         table = _create_stack(stack_region)
         monkeypatch.setenv("AWS_REGION", "us-west-2")
-        if given == "neither":
+        if given == "aws_region_only":
+            # boto3 resolves nothing, so the stack lookup must be handed the
+            # Region rather than left to find it.
+            monkeypatch.setenv("AWS_REGION", stack_region)
+            monkeypatch.delenv("AWS_DEFAULT_REGION")
+            client = IDPClient(stack_name=STACK)
+            kwargs = {}
+        elif given == "neither":
             monkeypatch.setenv("AWS_DEFAULT_REGION", stack_region)
             client = IDPClient(stack_name=STACK)
             kwargs = {}
@@ -1884,7 +1907,6 @@ class TestRunMultiDoc:
         self, tmp_path, monkeypatch
     ):
         """No hard-coded Region stands in: the run fails, naming the fix."""
-        monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.delenv("AWS_DEFAULT_REGION")
         pipeline = _multi_doc(_pipeline_result([]))
 

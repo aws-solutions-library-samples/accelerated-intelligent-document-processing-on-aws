@@ -493,6 +493,7 @@ class TestDeployFromCode:
         self, deployer, aws_credentials, project, monkeypatch
     ):
         monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.delenv("AWS_REGION")
         seen = self._record_subprocess(monkeypatch)
 
         with mock_aws():

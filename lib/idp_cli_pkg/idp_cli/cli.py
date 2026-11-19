@@ -452,8 +452,9 @@ TEMPLATE_URLS = {
 def _resolve_region(region: Optional[str]) -> str:
     """``--region``, else the Region boto3 resolves; refuses when there is none.
 
-    ``idp_sdk.resolve_region``, so a command addresses the Region its SDK clients
-    reach. boto3 does not read ``AWS_REGION``.
+    ``idp_sdk.resolve_region``: ``--region``, then boto3's Region, then
+    ``AWS_REGION``. The answer is passed to the SDK client explicitly, which is
+    what makes an ``AWS_REGION``-only shell work although boto3 does not read it.
     """
     from idp_sdk import resolve_region
 

@@ -833,16 +833,18 @@ class DiscoveryOperation:
 
         # One Region for the Bedrock calls and for the stack the schemas are saved
         # into. A per-call `region` that differs from the client's gets a client
-        # of its own, so the stack is looked up where the models are called.
+        # of its own, so the stack is looked up where the models are called. A
+        # Region resolved from `AWS_REGION` alone needs no such client: the
+        # configuration bridge hands it to the lookup.
         client = self._client
-        if region and region != self._client._region:
-            from idp_sdk.client import IDPClient
-
-            client = IDPClient(stack_name=self._client._stack_name, region=region)
         try:
-            resolved_region = self._require_region(client)
+            resolved_region = self._require_region_of(region or client._region)
         except IDPConfigurationError as e:
             return MultiDocDiscoveryResult(status="FAILED", error=str(e))
+        if region and region != client._region:
+            from idp_sdk.client import IDPClient
+
+            client = IDPClient(stack_name=client._stack_name, region=resolved_region)
 
         # Build config overrides
         config: Dict[str, Any] = {}
@@ -1002,19 +1004,23 @@ class DiscoveryOperation:
 
     @staticmethod
     def _require_region(client) -> str:
-        """The Region `client` reaches, or a configuration error naming the fix.
+        """The Region `client`'s calls go to, or a configuration error."""
+        return DiscoveryOperation._require_region_of(client._region)
 
-        `idp_sdk.resolve_region`, so Bedrock is called in the Region every
-        other client here reaches, rather than in `AWS_REGION`'s (which boto3
-        does not read) or a hard-coded one.
+    @staticmethod
+    def _require_region_of(region: Optional[str]) -> str:
+        """`idp_sdk.resolve_region`, or a configuration error naming the fix.
+
+        Never a hard-coded Region. The answer is passed to every client built
+        from it, which matters when it came from `AWS_REGION`.
         """
         from idp_sdk._core.region import resolve_region
 
-        region = resolve_region(client._region)
+        region = resolve_region(region)
         if not region:
             raise IDPConfigurationError(
                 "Region could not be determined. Pass a region, or set "
-                "AWS_DEFAULT_REGION or a region in your AWS profile."
+                "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
             )
         return region
 
