@@ -246,3 +246,29 @@ def test_the_agentic_ladder_end_to_end(bedrock, monkeypatch, member, message, se
             asyncio.run(invoke_agent_with_retry([{"text": "hi"}], agent))
         assert is_image_request_rejection(caught.value)
     assert sent == list(sends)
+
+
+def _coded(code: str, message: str) -> ClientError:
+    return ClientError({"Error": {"Code": code, "Message": message}}, "Converse")
+
+
+@pytest.mark.parametrize(
+    ("outer", "inner", "image", "block"),
+    [
+        ("ThrottlingException", "ValidationException", False, False),
+        ("ValidationException", "ThrottlingException", True, True),
+    ],
+)
+def test_the_first_code_on_the_chain_decides(outer, inner, image, block):
+    """Two coded exceptions on one chain: the outermost one is the verdict, so a
+    rule reading the last (or any) code on the chain gives the other answer."""
+    text = f"{_IMAGE}; {CONTENT_FILTER_BLOCK_MESSAGE}"
+    try:
+        try:
+            raise _coded(inner, text)
+        except ClientError as first:
+            raise _coded(outer, text) from first
+    except ClientError as error:
+        assert is_image_request_rejection(error) is image
+        assert is_content_filter_block(error) is block
+        assert is_unretryable_validation_error(error) is False

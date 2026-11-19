@@ -273,6 +273,11 @@ in-stream errors.
 
 A Converse `stopReason` of `content_filtered` or `guardrail_intervened`
 (`WITHHELD_OUTPUT_STOP_REASONS`) is a 200 whose text is not the model's answer.
+`guardrail_intervened` counts only when `trace.guardrail` records a policy whose
+`action` is `BLOCKED`: a guardrail that only anonymised sensitive information stops
+with the same reason and returns the model's answer, masked. With no trace the reply
+is read as an answer, as before; `guardrail_config_from_env` always enables the
+trace.
 `raise_if_output_withheld(response)` raises `ModelOutputWithheld` for it, with the
 envelope's metering attached (`utils.failure_metering`), and
 `is_content_filter_block` recognises that exception, so a step's existing
@@ -280,7 +285,16 @@ block handling applies. Classification (`_invoke_bedrock_model`), Simple extract
 and its escalation call, assessment and summarization call it after their model
 call; agentic extraction raises it when its last regeneration round is withheld
 too. `BedrockClient` itself does not, because document chat shows a guardrail's
-message to the user as the intended reply. `content_block_wording` gives the steps
+message to the user as the intended reply. Every block branch that catches it merges
+`utils.failure_metering(e)`, so the billed call is metered: the classification page
+and segment-labelling branches, the summarization stub, and the Assessment Lambda's
+deterministic-failure branch. In `assessment.batching`, a withheld list batch is
+caught in `_assess_chunk` and becomes per-row placeholders
+(`_UNASSESSED_CONTENT_FILTER_REASON`), and the recovery rungs use a call that scores
+nothing on a block instead of raising, so the other batches keep their scores; the
+first call of a section without list batching still raises and degrades it. Not
+covered: a withheld reply inside a Distributed Map extraction shard
+(`run_one_section_shard`), which fails the document as any failed shard does. `content_block_wording` gives the steps
 one wording, and tells a guardrail block to review the guardrail rather than change
 models. `tests/unit/test_withheld_reply_stop_reason.py` drives each step.
 

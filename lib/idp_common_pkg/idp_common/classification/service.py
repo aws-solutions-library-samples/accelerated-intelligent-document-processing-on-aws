@@ -415,7 +415,7 @@ def _content_filter_detail(error: BaseException) -> str:
 
     blocker, remedy = content_block_wording(error, "classification model")
     return (
-        f"{blocker[0].upper()}{blocker[1:]} withheld the classification model's "
+        f"{blocker[0].upper()}{blocker[1:]} the classification model's "
         f"reply ({type(error).__name__}: {error}). Review the page(s), or {remedy}"
     )
 
@@ -1406,6 +1406,11 @@ class ClassificationService:
                                 # keep failing the document as before.
                                 page_result = self._content_filtered_page_result(
                                     page_id, document.pages.get(page_id), e
+                                )
+                                # A reply withheld by stop reason was billed; its
+                                # usage rides on the exception.
+                                combined_metering = utils.merge_metering_data(
+                                    combined_metering, utils.failure_metering(e)
                                 )
                                 all_page_results.append(page_result)
                                 # The section builder writes the page's
@@ -6898,6 +6903,12 @@ class ClassificationService:
                             issues[index] = {
                                 "error": f"{where}: {_content_filter_detail(e)}"
                             }
+                            # A reply withheld by stop reason was billed.
+                            metering.update(
+                                utils.merge_metering_data(
+                                    metering, utils.failure_metering(e)
+                                )
+                            )
                         continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "

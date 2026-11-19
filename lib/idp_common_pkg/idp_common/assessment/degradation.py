@@ -200,7 +200,7 @@ def degrade_section_to_no_confidence(
 
         blocker, fix = content_block_wording(error, "confidence model")
         remedy = (
-            f"{blocker[0].upper()}{blocker[1:]} withheld the confidence model's "
+            f"{blocker[0].upper()}{blocker[1:]} the confidence model's "
             "reply, and a retry would send the same section to the same filter. "
             f"Review the section's pages, or {fix}."
         )

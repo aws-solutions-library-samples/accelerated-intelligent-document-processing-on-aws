@@ -2643,11 +2643,20 @@ retry it. The section shows as **Failed** and has no extracted fields; the other
 sections keep their results and the document completes. The confidence pass
 reports the section as unscored with the same reason. Bedrock can also withhold a
 reply without an error, ending it with the stop reason `content_filtered`, or
-`guardrail_intervened` when the stack has a guardrail configured
-(`GUARDRAIL_ID_AND_VERSION`); the reply is then empty, cut short, or the
-guardrail's own message. That is handled as the same block, in every step, and the
-issue names the stop reason. For a guardrail it advises reviewing the guardrail's
-policies, since a different model meets the same guardrail. ⚠️ Because the section has
+`guardrail_intervened` when the stack has a guardrail configured (the
+`BedrockGuardrailId` and `BedrockGuardrailVersion` stack parameters); the reply is
+then empty, cut short, or the guardrail's own message. Extraction, classification,
+the confidence pass and summarization handle that as the same block, and the issue
+names the stop reason. A guardrail can block the request before the model sees it,
+so its issue says the guardrail blocked the request or withheld the reply, and
+advises reviewing the guardrail's policies, since a different model meets the same
+guardrail. ⚠️ `guardrail_intervened` counts as a block only when the response's
+guardrail trace shows a policy that blocked: a guardrail that only masked
+sensitive information stops with the same reason, and its masked reply is used as
+the answer. In the confidence pass a withheld reply for one batch of list rows
+leaves only those rows unscored; the other batches keep their scores. The call that
+was withheld was still billed, and its tokens are counted in the document's
+metering. ⚠️ Because the section has
 no fields and no confidence scores, it raises no confidence alert and no
 missing-required-field reason, so it does **not** send the document to human
 review on its own; find such documents by the section's **Failed** status, and
@@ -2656,7 +2665,8 @@ handle a block on their own model call the same way: see
 [Classification](./classification.md#pages-classification-could-not-classify) and
 [Summarization Configuration](./configuration.md#summarization-configuration). This applies to extraction run inside the extraction function. A block
 inside one shard of a section sharded through the Distributed Map
-(`ExtractionShardMap`) still fails the document, as any failed shard does.
+(`ExtractionShardMap`) still fails the document, as any failed shard does, and
+that includes a reply withheld by stop reason.
 
 **A transient failure is not marked.** A throttle or a read timeout is retried by
 the state machine, so flagging the section would show it failed for as long as that

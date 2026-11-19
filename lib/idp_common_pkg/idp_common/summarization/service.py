@@ -480,7 +480,7 @@ class SummarizationService:
                     content={
                         "summary": (
                             "## Summary Unavailable\n\n"
-                            f"No summary was produced because {blocker} withheld "
+                            f"No summary was produced because {blocker} "
                             "the summarization model's reply. Extraction results "
                             "are available and unaffected. To get a summary, "
                             f"{remedy}."
@@ -490,6 +490,13 @@ class SummarizationService:
                         "summarization_skipped": True,
                         "skip_reason": "content_filtered",
                         "error": str(e),
+                        # A reply withheld by stop reason was billed; empty for
+                        # a blocked ValidationException, which returned nothing.
+                        **(
+                            {"metering": metering}
+                            if (metering := utils.failure_metering(e))
+                            else {}
+                        ),
                     },
                 )
             logger.error(f"Error summarizing text: {str(e)}")

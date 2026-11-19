@@ -2152,7 +2152,7 @@ class ExtractionService:
             code=EXTRACTION_FAILED_CODE,
             message=(
                 f"No fields were extracted from this section: {blocker} "
-                "withheld the model's reply. "
+                "the model's reply. "
                 "The rest of the document was processed normally."
             ),
             root_cause=(

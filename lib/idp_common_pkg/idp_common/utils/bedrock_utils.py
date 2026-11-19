@@ -366,7 +366,10 @@ class ModelOutputWithheld(Exception):
     def __init__(self, stop_reason: str):
         self.stop_reason = stop_reason
         if stop_reason == "guardrail_intervened":
-            detail = "the Amazon Bedrock guardrail configured for this stack intervened"
+            detail = (
+                "the Amazon Bedrock guardrail configured for this stack blocked "
+                "the request or the reply"
+            )
         else:
             detail = "the model's content filter withheld the reply"
         super().__init__(
@@ -375,18 +378,50 @@ class ModelOutputWithheld(Exception):
         )
 
 
+def _guardrail_blocked(node: object) -> bool:
+    """Whether a guardrail trace records a policy that BLOCKED, anywhere in it.
+
+    Every policy assessment in the ``bedrock-runtime`` model carries an
+    ``action`` (``BLOCKED`` or ``NONE``, and for sensitive information also
+    ``ANONYMIZED``); Strands' ``BedrockModel._has_blocked_guardrail`` reads the
+    trace the same way, requiring ``detected`` as well when it is present.
+    """
+    if isinstance(node, dict):
+        if node.get("action") == "BLOCKED" and node.get("detected", True) is not False:
+            return True
+        return any(_guardrail_blocked(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_guardrail_blocked(item) for item in node)
+    return False
+
+
 def withheld_stop_reason(response: object) -> str | None:
     """The ``stopReason`` if ``response`` is a withheld reply, else None.
 
     Accepts the metering-wrapped envelope or the bare Converse response, as
     :func:`is_output_token_truncation` does, and a Strands ``AgentResult``
     (whose ``stop_reason`` carries the same value).
+
+    ``guardrail_intervened`` counts only when the response's guardrail trace
+    shows a policy that BLOCKED. A guardrail that only masked sensitive
+    information (``ANONYMIZED``) stops with the same reason, and its reply is the
+    model's answer with the matches masked. Without a trace the two cannot be told
+    apart, and the reply is treated as an answer, which is how it was read before
+    this rule existed: ``guardrail_config_from_env`` always enables the trace, so
+    that case arises only for a caller configuring its own guardrail without one.
+    A Strands ``AgentResult`` carries no trace; the one caller that passes one
+    (agentic extraction) consults it only once the run has produced no
+    extraction at all, where either reading fails.
     """
     if isinstance(response, dict):
         raw = response.get("response", response)
         if not isinstance(raw, dict):
             raw = response
         reason = raw.get("stopReason")
+        if reason == "guardrail_intervened":
+            trace = (raw.get("trace") or {}).get("guardrail")
+            if not _guardrail_blocked(trace):
+                return None
     else:
         reason = getattr(response, "stop_reason", None)
     return reason if reason in WITHHELD_OUTPUT_STOP_REASONS else None
@@ -453,20 +488,24 @@ def is_guardrail_intervention(error: BaseException) -> bool:
 
 
 def content_block_wording(error: BaseException, model: str) -> tuple[str, str]:
-    """``(what blocked it, the remedy)`` for a content-filter block, for issue
-    text: ``model`` names the step's model ("classification model").
+    """``(what blocked it and how, the remedy)`` for a content-filter block, for
+    issue text: the first reads on into "the <step> model's reply", and ``model``
+    names the step's model ("classification model").
 
     One wording for every step, so a guardrail block is never described as the
-    model's filter and never told to change a model it is independent of.
+    model's filter, never told to change a model it is independent of, and never
+    said to have withheld a reply when it may have blocked the request before the
+    model saw it.
     """
     if is_guardrail_intervention(error):
         return (
-            "the Amazon Bedrock guardrail configured for this stack "
-            "(GUARDRAIL_ID_AND_VERSION)",
+            "the Amazon Bedrock guardrail configured for this stack (stack "
+            "parameters BedrockGuardrailId and BedrockGuardrailVersion) blocked "
+            "the request or withheld",
             "review the guardrail's policies; a different model meets the same "
             "guardrail",
         )
-    return ("Amazon Bedrock's content filter", f"use a different {model}")
+    return ("Amazon Bedrock's content filter withheld", f"use a different {model}")
 
 
 def _client_error_code(error: BaseException) -> str:

@@ -35,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 import botocore.session
@@ -109,21 +109,70 @@ class _Body:
         yield self._bytes
 
 
-def _reply(content: List[Dict[str, Any]], stop_reason: str) -> Dict[str, Any]:
-    return {
+def _guardrail_trace(policy: str, action: str) -> Dict[str, Any]:
+    """A Converse guardrail trace with one finding, in the service model's shape
+    (``GuardrailTraceAssessment``); botocore's parser drops anything else."""
+    if policy == "contentPolicy":
+        finding = {
+            "contentPolicy": {
+                "filters": [
+                    {
+                        "type": "VIOLENCE",
+                        "confidence": "HIGH",
+                        "action": action,
+                        "detected": True,
+                    }
+                ]
+            }
+        }
+    else:
+        finding = {
+            "sensitiveInformationPolicy": {
+                "piiEntities": [
+                    {
+                        "match": "jane@example.com",
+                        "type": "EMAIL",
+                        "action": action,
+                        "detected": True,
+                    }
+                ],
+                "regexes": [],
+            }
+        }
+    return {"guardrail": {"outputAssessments": {"gr-1": [finding]}}}
+
+
+#: A guardrail that blocked the reply.
+_BLOCKED_TRACE = _guardrail_trace("contentPolicy", "BLOCKED")
+#: A guardrail that only masked sensitive information in it.
+_MASKED_TRACE = _guardrail_trace("sensitiveInformationPolicy", "ANONYMIZED")
+_DEFAULT_TRACE = object()
+
+
+def _reply(
+    content: List[Dict[str, Any]], stop_reason: str, trace: Any = _DEFAULT_TRACE
+) -> Dict[str, Any]:
+    """A Converse response. A guardrail stop carries a BLOCKED trace unless
+    ``trace`` says otherwise (``None`` for no trace at all)."""
+    if trace is _DEFAULT_TRACE:
+        trace = _BLOCKED_TRACE if stop_reason == "guardrail_intervened" else None
+    reply: Dict[str, Any] = {
         "output": {"message": {"role": "assistant", "content": content}},
         "stopReason": stop_reason,
         "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15},
         "metrics": {"latencyMs": 1},
     }
+    if trace is not None:
+        reply["trace"] = trace
+    return reply
 
 
 @pytest.fixture
 def bedrock(monkeypatch):
-    """``install(route, withhold=(chosen, reason, content))``: every Converse
-    request is answered by ``route(system, text)``, except one for which
-    ``chosen(text)`` is true, which gets a 200 with ``reason`` and ``content``.
-    Returns the list of request texts."""
+    """``install(route, withhold=(chosen, reason, content[, trace]))``: every
+    Converse request is answered by ``route(system, text)``, except one for which
+    ``chosen(text)`` is true, which gets a 200 with ``reason``, ``content`` and
+    ``trace`` (see ``_reply``). Returns the list of request texts."""
     set_lambda_deadline_epoch(None)
     default = bedrock_client_module.default_client
     monkeypatch.setattr(default, "_client", None)
@@ -144,9 +193,9 @@ def bedrock(monkeypatch):
             for block in message.get("content", [])
         )
         sent.append(text)
-        chosen, reason, content = holder["withhold"]
+        chosen, reason, content, *trace = holder["withhold"]
         if chosen is not None and chosen(text):
-            payload = _reply(content, reason)
+            payload = _reply(content, reason, *trace)
         else:
             payload = _reply([{"text": holder["route"](system, text)}], "end_turn")
         return AWSResponse(
@@ -160,6 +209,7 @@ def bedrock(monkeypatch):
         holder["withhold"] = withhold
         return sent
 
+    install.sent = sent  # pyright: ignore[reportFunctionMemberAccess]
     yield install
     runtime.meta.events.unregister("before-send.bedrock-runtime.Converse", before_send)
     set_lambda_deadline_epoch(None)
@@ -207,6 +257,21 @@ def _page_text(uri: str) -> str:
     return f"PAGE-{uri.split('/')[-2]} invoice text"
 
 
+def _input_tokens(metering: Optional[Dict[str, Any]]) -> int:
+    """Input tokens across every metering key: each stubbed call bills 10."""
+    return sum(
+        int(usage.get("inputTokens", 0))
+        for usage in (metering or {}).values()
+        if isinstance(usage, dict)
+    )
+
+
+def _all_billed(bedrock, metering) -> None:
+    """Every call the stub answered, withheld or not, is in the metering."""
+    assert bedrock.sent, "no model call was made"
+    assert _input_tokens(metering) == 10 * len(bedrock.sent)
+
+
 # ------------------------------------------------------------------ the matcher
 
 
@@ -224,6 +289,40 @@ def test_the_rule_reads_the_envelope_and_keeps_its_metering(reason, content):
     assert failure_metering(caught.value) == {"m": {"x": 1}}
 
 
+def test_the_trace_shapes_are_the_service_model_s():
+    """The fixtures above are only evidence if botocore parses them as written."""
+    model = botocore.session.get_session().get_service_model("bedrock-runtime")
+    actions = model.shape_for("GuardrailSensitiveInformationPolicyAction").enum
+    assert "ANONYMIZED" in actions and "BLOCKED" in actions
+    assert "BLOCKED" in model.shape_for("GuardrailContentPolicyAction").enum
+
+
+@pytest.mark.parametrize(
+    ("trace", "withheld"),
+    [
+        pytest.param(_BLOCKED_TRACE, True, id="blocked"),
+        pytest.param(_MASKED_TRACE, False, id="masked-only"),
+        pytest.param(None, False, id="no-trace"),
+        pytest.param(
+            {
+                "guardrail": {
+                    "inputAssessment": {
+                        "gr-1": _BLOCKED_TRACE["guardrail"]["outputAssessments"][
+                            "gr-1"
+                        ][0]
+                    }
+                }
+            },
+            True,
+            id="blocked-input",
+        ),
+    ],
+)
+def test_a_guardrail_stop_is_withheld_only_when_it_blocked(trace, withheld):
+    reply = _reply([{"text": "x"}], "guardrail_intervened", trace)
+    assert (withheld_stop_reason({"response": reply}) is not None) == withheld
+
+
 @pytest.mark.parametrize(
     "reason",
     [r for r in _service_model_stop_reasons() if r not in WITHHELD_OUTPUT_STOP_REASONS],
@@ -236,7 +335,7 @@ def test_every_other_stop_reason_is_an_answer(reason):
 # ------------------------------------------------------------- classification
 
 
-def _classify_by_page(bedrock, reason, content) -> Document:
+def _classify_by_page(bedrock, reason, content, *trace) -> Document:
     service = ClassificationService(
         region="us-west-2",
         config={
@@ -252,7 +351,7 @@ def _classify_by_page(bedrock, reason, content) -> Document:
     )
     bedrock(
         lambda _s, _t: '{"class": "invoice", "document_boundary": "continue"}',
-        withhold=(lambda text: "PAGE-2 " in text, reason, content),
+        withhold=(lambda text: "PAGE-2 " in text, reason, content, *trace),
     )
     with patch("idp_common.s3.get_text_content", side_effect=_page_text):
         return service.classify_document(_pages(3))
@@ -262,6 +361,7 @@ def _classify_by_page(bedrock, reason, content) -> Document:
 def test_classification_marks_the_withheld_page_unclassified(bedrock, reason, content):
     result = _classify_by_page(bedrock, reason, content)
 
+    _all_billed(bedrock, result.metering)
     assert result.errors == []
     assert "failed_page_exceptions" not in (result.metadata or {})
     assert [result.pages[p].classification for p in ("1", "2", "3")] == [
@@ -347,6 +447,7 @@ def test_split_then_classify_marks_the_withheld_segment_unclassified(
     bedrock, reason, content
 ):
     result = _split_then_classify(bedrock, reason, content)
+    _all_billed(bedrock, result.metering)
     assert result.errors == []
     assert [s.classification for s in result.sections] == [
         "invoice",
@@ -408,6 +509,7 @@ def test_summarization_stubs_the_withheld_section(bedrock, reason, content):
     )
     assert result.status != Status.FAILED
     assert result.errors == []
+    _all_billed(bedrock, result.metering)
     combined = store["doc.pdf/summary/summary.json"]
     assert combined["invoice_1"]["summary"].startswith("fine")
     stub = combined["invoice_2"]["summary"]
@@ -425,6 +527,7 @@ def test_summarization_whole_document_flags_the_stub(bedrock, reason, content):
         bedrock, (lambda _text: True, reason, content), sections=False
     )
     assert result.errors == []
+    _all_billed(bedrock, result.metering)
     summary = store["doc.pdf/summary/summary.json"]
     assert summary["metadata"]["summarization_skipped"] is True
     assert summary["metadata"]["skip_reason"] == "content_filtered"
@@ -517,6 +620,7 @@ def test_assessment_degrades_the_withheld_section(
     assert sent, "the confidence model was called"
     out = Document.from_dict(result["document"])
     assert out.status != Status.FAILED
+    _all_billed(bedrock, out.metering)
     (issue,) = _issues(out, "assessment_failed_confidence_unavailable")
     assert issue.severity == "error"
     assert reason in issue.root_cause
@@ -605,7 +709,7 @@ def test_simple_extraction_fails_only_the_withheld_section(bedrock, reason, cont
     assert written["inference_result"] == {}
     assert written["metadata"]["content_filtered"] is True
     # The withheld call was billed.
-    assert any("Extraction/bedrock/" in key for key in (document.metering or {}))
+    _all_billed(bedrock, document.metering)
 
 
 def test_simple_extraction_control_extracts(bedrock):
@@ -734,3 +838,113 @@ def test_simple_escalation_control_merges_an_answer(bedrock):
     (fields, _r, _m, escalated, _why), _sent = _escalate(bedrock, (None, "", []))
     assert escalated is True
     assert fields["invoice_number"] == "FROM-ESCALATION"
+
+
+# ------------------------------------------- a guardrail that only masked PII
+
+
+def test_classification_reads_a_masked_only_guardrail_reply_as_the_answer(bedrock):
+    """A guardrail that anonymised a match stops with ``guardrail_intervened``
+    too; its reply is the model's answer and the page is classified."""
+    result = _classify_by_page(
+        bedrock,
+        "guardrail_intervened",
+        [{"text": '{"class": "receipt"}'}],
+        _MASKED_TRACE,
+    )
+    assert result.errors == []
+    assert result.pages["2"].classification == "receipt"
+    assert _issues(result, "classification_failed") == []
+
+
+@pytest.mark.parametrize("trace", [_MASKED_TRACE, None], ids=["masked", "no-trace"])
+def test_simple_extraction_keeps_a_masked_only_guardrail_reply(bedrock, trace):
+    bedrock(
+        lambda _s, _t: "unused",
+        withhold=(
+            lambda _text: True,
+            "guardrail_intervened",
+            [{"text": '{"invoice_number": "INV-{EMAIL}"}'}],
+            trace,
+        ),
+    )
+    service = ExtractionService(
+        config=IDPConfig.model_validate(
+            {"classes": [_INVOICE], "extraction": {"model": "us.amazon.nova-lite-v1:0"}}
+        )
+    )
+    with (
+        patch.object(
+            ExtractionService,
+            "_prepare_section_context",
+            return_value=([{"text": "page text"}], "system prompt"),
+        ),
+        patch("idp_common.s3.write_content") as write,
+    ):
+        document = service.process_document_section(
+            document=_extraction_document(), section_id="2"
+        )
+    assert _issues(document, EXTRACTION_FAILED_CODE) == []
+    assert write.call_args.args[0]["inference_result"] == {
+        "invoice_number": "INV-{EMAIL}"
+    }
+
+
+# ------------------------------------------------ batched confidence assessment
+
+
+class _BatchedService:
+    """``assess_results`` for the batcher: the batch whose first row is ``"3"``
+    gets a withheld reply, raised the way ``AssessmentService`` raises it, every
+    time it is asked."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        self.calls: List[List[str]] = []
+
+    def assess_results(self, *, extraction_results, **_kw):
+        from idp_common.assessment.service import AssessmentCoreResult
+
+        txs = extraction_results.get("txs", [])
+        self.calls.append([r["amount"] for r in txs])
+        envelope = {
+            "response": _reply([], "content_filtered")
+            if self.reason == "content_filtered"
+            else _reply([{"text": _GUARDRAIL_TEXT}], self.reason),
+            "metering": {"Assessment/bedrock/m": {"inputTokens": 10}},
+        }
+        if txs and txs[0]["amount"] == "3":
+            raise_if_output_withheld(envelope)
+        return AssessmentCoreResult(
+            enhanced_assessment={
+                "account": {"confidence": 0.9},
+                "txs": [{"amount": {"confidence": 0.9}} for _ in txs],
+            },
+            metering={"Assessment/bedrock/m": {"inputTokens": 10}},
+        )
+
+
+@pytest.mark.parametrize("reason", _REASONS)
+def test_one_withheld_confidence_batch_leaves_only_its_rows_unscored(reason):
+    from idp_common.assessment.batching import assess_results_batched
+
+    service = _BatchedService(reason)
+    rows = [{"amount": str(i)} for i in range(9)]
+    out = assess_results_batched(
+        service,
+        class_label="statement",
+        extraction_results={"account": "A", "txs": rows},
+        document_text="t",
+        page_images=[],
+        batch_size=3,
+    )
+    scored = [
+        row.get("amount", {}).get("confidence") for row in out["assessment"]["txs"]
+    ]
+    assert scored[:3] == [0.9] * 3 and scored[6:] == [0.9] * 3
+    assert all(value is None for value in scored[3:6])
+    assert "withheld" in out["assessment"]["txs"][4]["amount"]["confidence_reason"]
+    assert out["assessment"]["account"]["confidence"] == 0.9
+    # Every call was billed, the withheld batch and its recovery attempts too.
+    assert _input_tokens(out["metering"]) == 10 * len(service.calls)
+    assert len(service.calls) > 3, "the recovery rung re-offered the withheld rows"
