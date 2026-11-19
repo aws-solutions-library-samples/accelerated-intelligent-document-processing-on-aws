@@ -1570,6 +1570,17 @@ For GovCloud, use `region="us-gov-west-1"` with either `govcloud=True` (full Web
 
 Operations for managing IDP configurations.
 
+The operations that read a stack (`download`, `upload`, `list`, `activate`,
+`delete` and the others that take a stack name) set environment variables in
+your process and leave them set: `CONFIGURATION_TABLE_NAME` and
+`CONFIGURATION_BUCKET` name the stack's configuration table and bucket, and
+`AWS_REGION` and `AWS_DEFAULT_REGION` both name the Region the stack was found
+in. The Region is set because a model setting a configuration leaves out
+resolves to that Region's inference profile (see
+[EU Region Model Support](eu-region-model-support.md)), and that lookup reads
+`AWS_REGION` first. If your process works with stacks in more than one Region,
+each operation sets the variables again for its own stack.
+
 ### config.create()
 
 Generate an IDP configuration template.

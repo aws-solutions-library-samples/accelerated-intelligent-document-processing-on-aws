@@ -70,15 +70,19 @@ class ConfigOperation:
     def __init__(self, client):
         self._client = client
 
-    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
-        """Physical IDs for the requested logical IDs, in one pass over the stack."""
+    def _cloudformation_client(self):
+        """The CloudFormation client every stack lookup here uses."""
         import boto3
 
+        # Enhancement 8: use self._client._region consistently
+        return boto3.client("cloudformation", region_name=self._client._region)
+
+    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
+        """Physical IDs for the requested logical IDs, in one pass over the stack."""
         wanted = set(logical_ids)
         found: dict = {}
 
-        # Enhancement 8: use self._client._region consistently
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
+        cfn = self._cloudformation_client()
         paginator = cfn.get_paginator("list_stack_resources")
 
         for page in paginator.paginate(StackName=stack_name):
@@ -132,19 +136,36 @@ class ConfigOperation:
         validates against on-disk default limits instead of the stack's and can
         reject a config that is legitimately above a default cap.
 
-        `AWS_DEFAULT_REGION` (not `AWS_REGION`) because it is the variable boto3
-        consults for a client built with no explicit region, which is exactly the
-        case being covered. `_core/publish.py` uses the same bridge for the same
-        reason. Only set when a region was actually requested — writing it
-        unconditionally would pin the process to `None`.
+        Both region variables, because the two readers prefer different ones.
+        `AWS_DEFAULT_REGION` is the variable boto3 consults for a client built with
+        no explicit region, which is the client case above (`_core/publish.py`
+        uses the same bridge for the same reason). `AWS_REGION` is the one
+        `idp_common.regional_models.stack_region` reads first, and that answer
+        picks the Region's inference profile for every model key a configuration
+        leaves out (`RegionalModelDefaults`). Bridging only the first left a shell
+        whose `AWS_REGION` names another Region resolving those keys for that
+        Region, so `config-download` from an EU stack wrote `us.` profiles into
+        the file, which a re-upload then stores as explicit values.
+
+        The Region bridged is read from a client built exactly as the lookup
+        below builds its own (`_cloudformation_client`: `--region` when given,
+        otherwise boto3's default session), so it names the Region the stack is
+        actually found in. A fresh `boto3.session.Session()` is not equivalent: it
+        ignores a region given to `boto3.setup_default_session`. A client
+        substituted for boto3's (a test double) carries no real Region, and then
+        nothing is bridged rather than a non-string being written into the
+        environment.
 
         Returns the configuration table's physical ID.
         """
         import os
 
-        region = self._client._region
+        region = self._client._region or self._cloudformation_client().meta.region_name
+        if not isinstance(region, str):
+            region = None
         if region:
             os.environ["AWS_DEFAULT_REGION"] = region
+            os.environ["AWS_REGION"] = region
 
         found = self._lookup_stack_resources(
             stack_name, {"ConfigurationTable", "ConfigurationBucket"}
