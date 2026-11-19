@@ -950,6 +950,22 @@ document-level issue would raise that count and then have no text to show for it
 | `error` (a content-filter block) | `failed` | `classification_failed` | error | `_classify_pages_multimodal`, for a page whose Bedrock reply a content filter withheld (`_content_filtered_page_result`) |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
 
+The message is chosen per section after the sections are built. When the class the
+page's own result carried (`unclassified`, or the fallback class) is not the class
+its section ended up with, it says the page took the section's class and names it,
+because that page is extracted against the section's schema; when the section's
+class is not in `valid_doc_types` it says instead that there was no schema and
+nothing was extracted, and when the section's class is excluded from processing it
+says that and that nothing was extracted (this runs before `_mark_excluded_sections`,
+so it reads the class's `excluded` flag itself; the ordinary fallback wording, which
+says extraction ran against the fallback's schema, is replaced the same way). Relabelling happens under `sectionSplitting: disabled`, whose
+one section gives every page the winning class, and on a document-name regex match,
+where `_pin_page_class` overwrites every page's class before splitting and keeps the
+class it had in `metadata["class_before_pin"]` (`CLASS_BEFORE_PIN_KEY`), which the
+comparison reads. It is the comparison, not the setting, that picks the wording, so a
+disabled document whose pages all failed, or whose fallback class won the vote, gets
+the ordinary wording.
+
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
 

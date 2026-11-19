@@ -68,8 +68,9 @@ from idp_common.models import Document, ProcessingIssue
 #: issue below instead of accumulating alongside it.
 EXTRACTION_STAGE = "extraction"
 
-#: The section's extraction step raised. Distinct from the *detection* codes
-#: extraction writes on a section that still succeeded
+#: The section's extraction step failed: it raised, or a content-filter block
+#: was recorded without raising (``_handle_content_filtered``). Distinct from the
+#: *detection* codes extraction writes on a section that still succeeded
 #: (``extraction_incomplete``, ``extraction_rows_below_ocr_estimate``, …): those
 #: flag a result, this one says there is no successful result to flag. The
 #: distinction is load-bearing for ``extraction_rows_below_ocr_estimate``, which
