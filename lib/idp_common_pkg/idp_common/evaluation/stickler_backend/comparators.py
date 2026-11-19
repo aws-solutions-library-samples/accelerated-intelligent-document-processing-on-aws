@@ -29,7 +29,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Tuple
 
-from idp_common.config.models import EvaluationLLMMethodConfig
+from idp_common.config.models import EvaluationLLMMethodConfig, regional_field_default
 from idp_common.evaluation.contract import _is_match_true
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 # `evaluation.llm_method` field defaults, read from the model rather than
 # spelled out here, so this module cannot drift from what a resolved
 # configuration carries (which base-evaluation.yaml also ships, and
-# tests/unit/config/test_system_defaults_value_parity.py pins).
+# tests/unit/config/test_system_defaults_value_parity.py pins). The model is the
+# US id, translated for the stack's Region where it is used, as an absent
+# `evaluation.llm_method.model` key is.
 _LLM_METHOD_FIELDS = EvaluationLLMMethodConfig.model_fields
 _DEFAULT_MODEL: str = _LLM_METHOD_FIELDS["model"].default
 _DEFAULT_SYSTEM_PROMPT: str = _LLM_METHOD_FIELDS["system_prompt"].default
@@ -278,7 +280,7 @@ class LLMComparator(BaseComparator):
             return int(val) if isinstance(val, str) else val
 
         self.llm_config = {
-            "model": model or _DEFAULT_MODEL,
+            "model": model or regional_field_default(_DEFAULT_MODEL),
             "temperature": to_float(temperature, _DEFAULT_TEMPERATURE),
             "top_k": to_float(top_k, _DEFAULT_TOP_K),
             "top_p": to_float(top_p, _DEFAULT_TOP_P),
@@ -504,7 +506,7 @@ def compare_llm(
             return default if value is None else value
 
         # An empty model is treated as missing, as LLMComparator treats it.
-        model = config.get("model") or _DEFAULT_MODEL
+        model = config.get("model") or regional_field_default(_DEFAULT_MODEL)
         temperature = setting("temperature", _DEFAULT_TEMPERATURE)
         top_k = setting("top_k", _DEFAULT_TOP_K)
         top_p = setting("top_p", _DEFAULT_TOP_P)
