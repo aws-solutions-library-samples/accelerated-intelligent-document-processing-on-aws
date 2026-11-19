@@ -887,17 +887,20 @@ def test_no_exclude_entry_shadows_an_include_entry() -> None:
 # foreign checkout is exactly the accident #1094 makes available.
 #
 # `reportMissingImports` stays at "none", and that is a measured decision rather
-# than an inherited one. Raised to "warning" with `extraPaths` in place it reports
-# 44 findings over 25 distinct modules, **none of them first-party**: about 38 are
-# sibling-module imports inside script and Lambda trees that are not packages
-# (`from index import ...`, `processors.pdf_image_processor`, `seed_data.stages`),
-# which resolve at runtime because the handler's own directory is on `sys.path`;
-# the remaining handful are genuinely uninstalled third-party distributions
-# (`pdf2image`, `fastapi`, `mlflow`, `requests_aws4auth`). So the rule is unusable
-# above "none" here for the reason DISABLED_RULE_EXEMPTIONS already gives, and the
-# gap it leaves is not "third-party imports are unchecked" but "nothing reports an
-# import that *should* have resolved and did not". That is precisely what the
-# checks below cover, and why they are not redundant with the rule.
+# than an inherited one. Raised to "warning" with `extraPaths` in place, **none of
+# its findings is first-party** (CLAUDE.md gives the command that counts them; the
+# count moves with the tree, so it is not quoted here): most are sibling-module
+# imports inside script and Lambda trees that are not packages (`from index import
+# ...`, `processors.pdf_image_processor`), which resolve at runtime because the
+# handler's own directory is on `sys.path`; the rest are third-party distributions
+# the checkout does not install (`pdf2image`, `fastapi`, `mlflow`,
+# `requests_aws4auth`, and `seed_data`, which only the generator extension's
+# container installs and `idp_common.synthesis.engine` imports lazily). So the
+# rule is unusable above "none" here for the reason DISABLED_RULE_EXEMPTIONS
+# already gives, and the gap it leaves is not "third-party imports are unchecked"
+# but "nothing reports an import that *should* have resolved and did not". That is
+# precisely what the checks below cover, and why they are not redundant with the
+# rule.
 # --------------------------------------------------------------------------- #
 
 
@@ -1175,7 +1178,7 @@ def test_first_party_packages_are_resolvable_from_the_config() -> None:
     """The invariant from #1109, stated as the conjunction that caused it.
 
     `reportMissingImports: "none"` is legitimate on its own (see the block comment
-    above: above "none" the rule reports 44 findings on correct code). First-party
+    above: above "none" the rule reports findings on correct code). First-party
     packages failing to resolve is survivable on its own, because the rule would
     then say so on every affected line. **Together** they are a gate that reads
     every file in the repository and cannot produce a diagnostic about any call

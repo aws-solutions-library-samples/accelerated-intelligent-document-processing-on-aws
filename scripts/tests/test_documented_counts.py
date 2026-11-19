@@ -203,6 +203,24 @@ def derive_tracked_python_files() -> int:
     return len(_tracked(".py"))
 
 
+def derive_missing_import_findings() -> int:
+    """Not derived here: counting them is a whole-tree basedpyright run.
+
+    The count is what ``reportMissingImports`` reports when raised to "warning",
+    and CLAUDE.md gives the command that measures it. That run takes about a
+    minute and a half, which is not a cost a unit test should pay to compare
+    against a figure the tree has decided not to quote. The entry using this is a
+    reintroduction guard, so the comparison test reaches it only once a statement
+    exists, and :func:`test_a_reintroduction_guard_matches_nothing` has failed by
+    then anyway; this raising says why the figure has no derivation to match.
+    """
+    raise AssertionError(
+        "the reportMissingImports finding count is measured by a whole-tree "
+        "basedpyright run (see CLAUDE.md), not derived offline; name that command "
+        "instead of quoting a figure"
+    )
+
+
 def _lint_debt_baseline() -> dict:
     return json.loads((REPO_ROOT / "scripts/lint_debt.json").read_text("utf-8"))
 
@@ -396,6 +414,27 @@ DOCUMENTED_COUNTS = (
             "statements is zero"
         ),
     ),
+    DocumentedCount(
+        name="reportMissingImports findings at warning",
+        derive=derive_missing_import_findings,
+        # `(?:\s|#)+` between words because the statement this replaced was a
+        # Python comment wrapping across lines, so a `# ` sits inside the phrase.
+        patterns=(
+            rf"\breports(?:\s|#)+{_NUMBER}(?:\s|#)+findings(?:\s|#)+"
+            r"(?:over|on)\b",
+            rf"\b{_NUMBER}(?:\s|#)+findings(?:\s|#)+over(?:\s|#)+\S+(?:\s|#)+"
+            r"(?:distinct(?:\s|#)+)?modules\b",
+        ),
+        probes=(
+            "raised to it reports\n# {n} findings over many modules",
+            "the rule produces {n} findings over 25 distinct\nmodules",
+        ),
+        documents=(),
+        why=(
+            "a whole-tree basedpyright run with the rule raised, whose command "
+            "CLAUDE.md gives; the correct number of statements is zero"
+        ),
+    ),
 )
 
 #: Suffixes scanned. Prose that states one of these counts lives in Markdown, in a
@@ -426,11 +465,22 @@ def _matches(count: DocumentedCount) -> list[tuple[Path, str, int | None]]:
 @pytest.mark.unit
 @pytest.mark.parametrize("count", DOCUMENTED_COUNTS, ids=lambda c: c.name)
 def test_every_stated_count_matches_what_produces_it(count: DocumentedCount) -> None:
-    """The assertion this module exists for, in the direction prose goes stale."""
+    """The assertion this module exists for, in the direction prose goes stale.
+
+    The derivation runs only when there is a statement to compare, so a
+    reintroduction guard whose figure is too expensive to derive in a unit test
+    (:func:`derive_missing_import_findings`) costs nothing while the tree is clean.
+    An entry with registered documents always has statements, which
+    :func:`test_every_document_making_a_count_claim_states_a_pinned_one` enforces,
+    so its derivation still runs on every pass.
+    """
+    statements = _matches(count)
+    if not statements:
+        return
     expected = count.derive()
     wrong = [
         (path.relative_to(REPO_ROOT).as_posix(), text, value)
-        for path, text, value in _matches(count)
+        for path, text, value in statements
         if value != expected
     ]
     assert not wrong, (
