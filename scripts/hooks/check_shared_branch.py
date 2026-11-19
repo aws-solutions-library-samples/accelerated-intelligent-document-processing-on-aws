@@ -185,10 +185,23 @@ GIT_GLOBAL_WITH_VALUE = frozenset(
 )
 
 #: ``git push`` options that take a separate value, so the value is not mistaken
-#: for a remote or a refspec.
+#: for a remote or a refspec. ``--recurse-submodules check origin`` is the case a
+#: reader would not guess: its value is separate, and reading ``check`` as the
+#: remote turns ``origin`` into a refspec naming no shared branch.
 PUSH_FLAGS_WITH_VALUE = frozenset(
-    {"-o", "--push-option", "--receive-pack", "--exec", "--repo"}
+    {
+        "-o",
+        "--push-option",
+        "--receive-pack",
+        "--exec",
+        "--repo",
+        "--recurse-submodules",
+    }
 )
+
+#: ``git push`` options that send every local branch. ``--branches`` is an alias
+#: of ``--all`` (git 2.46), so naming only ``--all`` misses a spelling of it.
+PUSH_EVERYTHING_FLAGS = frozenset({"--all", "--branches", "--mirror"})
 
 #: ``gh`` options that may sit *before* the subcommand and take a separate value.
 #: ``--repo`` is registered on gh's root command, so ``gh -R owner/name pr merge
@@ -275,6 +288,15 @@ TENANCY_FILE = "idp-session-tenancy.json"
 CREATE_FLAGS = frozenset(
     {"-c", "-C", "--create", "--force-create", "-b", "-B", "--orphan"}
 )
+
+#: ``switch`` / ``checkout`` options that take a value, so the value is not read as
+#: the branch: the create options above plus two whose value is something else.
+SWITCH_FLAGS_WITH_VALUE = CREATE_FLAGS | {"--conflict", "--pathspec-from-file"}
+
+#: ``switch`` / ``checkout`` short options whose value is optional, and so can only
+#: be attached: ``-t`` is ``--track[=(direct|inherit)]``. Inside a bundle it takes
+#: the rest of the bundle as that value, which is why git rejects ``-tb x``.
+SWITCH_SHORTS_OPTIONAL_VALUE = frozenset({"-t"})
 
 #: Per-subprocess timeout. A single command can spend several of these -- one
 #: `git` call per reading, plus a `gh pr checks` -- so the total can exceed the
@@ -578,6 +600,71 @@ def command_repo(tokens: list[str], base: Path) -> Path:
     return repo
 
 
+def option_walk(
+    args: list[str],
+    with_value: frozenset[str],
+    optional_value: frozenset[str] = frozenset(),
+    *,
+    pflag: bool = False,
+) -> list[tuple[str | None, str | None]]:
+    """Split ``args`` the way the program's option parser does.
+
+    Returns ``(option, value)`` per option given and ``(None, word)`` per
+    positional, in order. The part that is easy to get wrong is a **bundle** of
+    short options: ``-sb text`` is ``-s -b text``, and reading the bundle as one
+    unknown flag leaves ``text`` looking like the positional -- for ``gh pr merge``
+    that is the pull request number, ``gh pr checks text`` errors, and the merge is
+    allowed with nothing printed. So the rule is implemented rather than spellings
+    listed. Walking a bundle left to right, a short option that takes a value takes
+    the **rest of the bundle** if there is any (``-btext``, ``-sbtext``) and the
+    next argument otherwise; one whose value is optional (``optional_value``) takes
+    the rest of the bundle or nothing; any other is a switch and the walk moves on.
+
+    Two parsers differ in one place, selected by ``pflag``. Go's pflag, which gh
+    uses, reads ``-b=text`` as the value ``text`` for any short option, a switch
+    included (``-s=true``). git's parse-options has no such rule: ``git checkout
+    -b=x`` creates a branch called ``=x``. A long option is the same in both:
+    ``--name=value``, or ``--name value`` when it takes a value. ``--`` ends the
+    options and a lone ``-`` is a positional.
+    """
+    out: list[tuple[str | None, str | None]] = []
+    rest = list(args)
+    while rest:
+        arg = rest.pop(0)
+        if arg == "--":
+            out.extend((None, word) for word in rest)
+            break
+        if not arg.startswith("-") or arg == "-":
+            out.append((None, arg))
+            continue
+        if arg.startswith("--"):
+            name, separator, attached = arg.partition("=")
+            if separator:
+                out.append((name, attached))
+            elif name in with_value:
+                out.append((name, rest.pop(0) if rest else None))
+            else:
+                out.append((name, None))
+            continue
+        bundle = arg[1:]
+        while bundle:
+            option, bundle = "-" + bundle[0], bundle[1:]
+            if pflag and len(bundle) > 1 and bundle[0] == "=":
+                out.append((option, bundle[1:]))
+                break
+            if option in with_value:
+                if bundle:
+                    out.append((option, bundle))
+                else:
+                    out.append((option, rest.pop(0) if rest else None))
+                break
+            if option in optional_value:
+                out.append((option, bundle or None))
+                break
+            out.append((option, None))
+    return out
+
+
 def switch_target(args: list[str]) -> tuple[bool, str | None]:
     """``(moves_head, branch)`` for a ``git switch`` / ``git checkout``.
 
@@ -592,32 +679,34 @@ def switch_target(args: list[str]) -> tuple[bool, str | None]:
         # with nothing after it does switch branches, and is read here as a
         # restore; a bare trailing `--` is not a shape anyone types by accident.
         return False, None
-    if any(arg in ("--detach", "-d") for arg in rest):
+    walked = option_walk(rest, SWITCH_FLAGS_WITH_VALUE, SWITCH_SHORTS_OPTIONAL_VALUE)
+    options = [option for option, _ in walked if option is not None]
+    if any(option in ("--detach", "-d") for option in options):
         # `git switch --detach develop` names a branch but lands on no branch, so a
         # commit after it is not on develop. Reading the positional would refuse it
         # -- a false refusal, and the kind that makes a guard look wrong.
         return True, None
-    tracks = any(arg == "-t" or arg.startswith("--track") for arg in rest)
+    tracks = any(option in ("-t", "--track") for option in options)
     # A create option's *value* is the branch, so it is read from the option
     # wherever the option sits -- and the whole argument list is searched before
     # any positional is considered, because in `git checkout -t origin/x -b
     # develop` the start point comes first. A value-less create flag is a
     # malformed command; naming no branch leaves the following segments unjudged
     # rather than judged against the wrong one.
-    for index, arg in enumerate(rest):
-        if arg in CREATE_FLAGS:
-            return True, rest[index + 1] if index + 1 < len(rest) else None
-        flag, separator, attached = arg.partition("=")
-        if separator and flag in CREATE_FLAGS:
-            return True, attached or None
-    for arg in rest:
-        if not arg.startswith("-"):
+    for option, value in walked:
+        if option in CREATE_FLAGS:
+            return True, value or None
+    for option, word in walked:
+        if option is None and word is not None:
+            if word == "-":
+                # `git switch -` is the previous branch, which this cannot name.
+                return True, None
             if tracks:
                 # `git switch --track origin/develop` and `git checkout -t
                 # origin/develop` name no new branch: git takes the remote ref's
                 # leaf, so HEAD lands on local `develop`.
-                return True, _branch_part(arg)
-            return True, arg
+                return True, _branch_part(word)
+            return True, word
     return True, None
 
 
@@ -644,21 +733,14 @@ def push_destinations(
     positionals: list[str] = []
     pushes_everything = False
     tags_only = False
-    rest = list(args)
-    while rest:
-        arg = rest[0]
-        if arg == "--":
-            positionals.extend(rest[1:])
-            break
-        if arg.startswith("-"):
-            if arg in ("--all", "--mirror"):
-                pushes_everything = True
-            if arg == "--tags":
-                tags_only = True
-            rest = rest[2:] if arg in PUSH_FLAGS_WITH_VALUE else rest[1:]
-            continue
-        positionals.append(arg)
-        rest = rest[1:]
+    for option, word in option_walk(args, PUSH_FLAGS_WITH_VALUE):
+        if option is None:
+            if word is not None:
+                positionals.append(word)
+        elif option in PUSH_EVERYTHING_FLAGS:
+            pushes_everything = True
+        elif option == "--tags":
+            tags_only = True
 
     if pushes_everything:
         # Every local branch goes, so any shared branch that exists locally is a
@@ -773,23 +855,23 @@ def gh_repo_selector(tokens: list[str]) -> str | None:
     -Rfoo/bar``'s "argument required when using the `--repo` flag" as a rejection of
     the attached form was wrong: that message is about the missing pull request
     argument, which ``gh pr checks`` requires as soon as ``--repo`` is given.
+
+    The command is walked with ``gh pr merge``'s own option set, because cobra
+    parses every option in the command -- those before the subcommand included --
+    with the leaf command's flags. That is what finds ``-R`` at the end of a bundle
+    (``-sR owner/name``) and stops a value such as ``--body -Rx`` from being read
+    as a selector. Measured on gh 2.105.0: ``gh pr merge -sR cli/cli <n>`` and
+    ``-sRcli/cli`` both resolve against ``cli/cli``, and of two ``-R`` options the
+    last is the one used.
     """
-    rest = list(tokens)
-    while rest:
-        arg = rest[0]
-        flag, separator, attached = arg.partition("=")
-        if separator and flag in GH_GLOBAL_WITH_VALUE:
-            return attached or None
-        if arg in GH_GLOBAL_WITH_VALUE and len(rest) > 1:
-            return rest[1]
-        if (
-            len(arg) > 2
-            and not arg.startswith("--")
-            and arg[:2] in GH_GLOBAL_WITH_VALUE
-        ):
-            return arg[2:]
-        rest = rest[1:]
-    return None
+    selector: str | None = None
+    for option, value in option_walk(
+        tokens[1:], GH_MERGE_FLAGS_WITH_VALUE | GH_GLOBAL_WITH_VALUE, pflag=True
+    ):
+        if option in GH_GLOBAL_WITH_VALUE:
+            # pflag keeps the last value given, so a repeated --repo is the last.
+            selector = value or None
+    return selector
 
 
 def merge_target(args: list[str]) -> str | None:
@@ -799,18 +881,14 @@ def merge_target(args: list[str]) -> str | None:
     "chore: x" 1055`` would otherwise be checked as pull request ``chore: x``,
     and since ``gh pr checks`` errors on that, the failure reads as "cannot tell"
     and the merge is allowed with nothing printed. Same class as
-    ``PUSH_FLAGS_WITH_VALUE``.
+    ``PUSH_FLAGS_WITH_VALUE``. A bundle is where that hides: measured on gh
+    2.105.0, ``gh pr merge -sb text <n>``, ``-sbtext`` and ``-sb=text`` all merge
+    pull request ``<n>`` with ``text`` as the body -- see ``option_walk``.
     """
-    rest = list(args[1:])  # args[0] is "merge"
-    while rest:
-        arg = rest[0]
-        if arg.startswith("-"):
-            if "=" not in arg and arg in GH_MERGE_FLAGS_WITH_VALUE and len(rest) > 1:
-                rest = rest[2:]
-                continue
-            rest = rest[1:]
-            continue
-        return arg
+    walked = option_walk(args[1:], GH_MERGE_FLAGS_WITH_VALUE, pflag=True)
+    for option, word in walked:  # args[0] is "merge"
+        if option is None:
+            return word
     return None
 
 
