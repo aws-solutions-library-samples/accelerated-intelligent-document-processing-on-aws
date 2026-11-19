@@ -2199,7 +2199,13 @@ both escalation scopes, is metered under `ESCALATION_METERING_CONTEXT`
 (`ExtractionEscalation`) from `extraction/service.py`. Simple mode used
 `Extraction-Escalation` before that constant existed, so stored reporting rows
 from earlier releases carry that spelling; a reader that groups escalation cost
-must accept both.
+must accept both. Capacity Planning is one such reader: it plans escalation as
+its own demand line on the escalation model, measures the escalation rate from
+these keys, and keeps them out of the Extraction line, so both spellings are
+matched in `ESCALATION_METERING_PREFIXES` in
+`src/lambda/calculate_capacity/index.py`. Renaming the context needs that tuple
+changed too; `test_evaluation_and_escalation_demand.py` beside it reads the
+constant from this module and fails if the two disagree.
 
 **Configuration UI.** The global `validation` block (enabled / check_formats /
 fail_action / escalation_model) is editable under **Extraction → Agentic

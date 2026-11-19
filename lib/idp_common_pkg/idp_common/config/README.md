@@ -598,12 +598,13 @@ Four decisions worth knowing before changing this code:
   `CONFIGURATION_BUCKET` as well as `CONFIGURATION_TABLE_NAME`, or a save to a
   profile with history raises `RevisionNotRecordedError`.
 - **Resolving against `default` is recorded as a revision, by the deployment.**
-  `get_merged_configuration` resolves every profile against `default`. A pinned
-  read builds `IDPConfig` from the revision body without that resolution, so for a
-  profile with revision history the two differ whenever `default` holds a value
-  the model's own default does not (#1782). For such a profile a read applies the
-  resolution in memory and writes nothing, because whether its process may write
-  revisions depends on IAM grants the code cannot see.
+  `get_merged_configuration` resolves every profile against `default`, the head
+  and a pinned revision alike (`_resolve_against_default`, #1955). A revision's
+  stored body does not carry the values that fills in, so for a profile with
+  revision history the body Revision History shows differs from what documents
+  run whenever `default` fills something in (#1782). For such a profile a read
+  applies the resolution in memory and writes nothing, because whether its
+  process may write revisions depends on IAM grants the code cannot see.
   `record_resolution_against_default(profile)` saves the resolution as a revision
   (`created_by="system"`, notes `RESOLVED_AGAINST_DEFAULT_NOTES`) and publishes
   it, and its one caller is the stack-deployment custom resource
@@ -679,8 +680,23 @@ Lambda passes `document.config_revision`, which the queue processor pins at queu
 time, so a save made mid-flight cannot change the configuration under an in-flight
 document.
 
-Two deliberate choices:
+Three deliberate choices:
 
+- **A pinned revision is resolved against `default` exactly as the head is.**
+  `_load_revision_config()` and the head path both call
+  `_resolve_against_default()`: start from the current `default` profile and let
+  every key the stored configuration holds override it. A key it holds wins even
+  when empty, so a revision that stored `max_tokens: null` (one saved before the
+  10000-token defaults that left the cap empty) keeps requesting the model's maximum, on the
+  pinned read and on the head alike; a key it lacks, typically one a later release
+  added, takes `default`'s value — including the stack Region's model id that the
+  deployment stored in `default` for an absent model key — rather than the
+  model's own default. The same guards apply: `default` unreadable, or a merge
+  that fails a cross-field validator, returns the revision validated on its own.
+  Nothing is written, and `get_revision()` still returns the body as stored.
+  `restore_revision()` saves the resolved form, so the restored head runs what a
+  document pinned to that revision runs. A setting a revision lacks therefore
+  follows later changes to `default`; one it holds never does.
 - **A missing pinned revision raises.** It does *not* fall back to the head: a run
   that silently used the wrong configuration looks successful, and its numbers then
   enter a comparison. The one exception is below.
@@ -693,8 +709,8 @@ Two deliberate choices:
   conversion is **in memory only; the stored body is never rewritten**, because a
   revision is an immutable record of the configuration that actually ran. Callers
   that construct an `IDPConfig` from the result (`_load_revision_config()`,
-  `restore_revision()`) convert again through its validator, which is a no-op: the
-  chain is idempotent. What depends on this is shape agreement between the surfaces
+  `restore_revision()`) convert again before resolving it against `default`, which
+  is a no-op: the chain is idempotent. What depends on this is shape agreement between the surfaces
   that serve one revision — `get_revision()` behind `idp-cli config-download
   --config-revision`, the Revision History and Compare views, and a pinned run.
 - **No "published revision" branch on the unpinned path.** The head always holds

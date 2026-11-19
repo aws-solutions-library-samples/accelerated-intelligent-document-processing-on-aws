@@ -40,6 +40,8 @@ Key capabilities:
 - **Track** which profile (and revision) was used for each processed document and test run
 - **Select** a specific profile when uploading documents, running tests, or using the CLI (`--config-profile`, with `--config-revision` to pin a revision)
 
+A pinned revision is filled from the current `default` profile exactly as the profile itself is: every setting the revision holds is used as saved (an empty one included), and a setting it lacks, such as one added by a later release, takes `default`'s value. The stored revision is not changed. See [Selecting a revision for processing or testing](configuration-profiles.md#selecting-a-revision-for-processing-or-testing).
+
 #### Managed Configuration Profiles
 
 The stack automatically deploys **managed configuration profiles** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 /* eslint-disable react/no-array-index-key */
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
 import { generateClient } from '../../api/client-shim';
 import { calculateCapacity as calculateCapacityOp } from '../../graphql/generated';
 import {
@@ -40,6 +40,7 @@ import { parseMetering } from '../../graphql/awsjson-parsers';
 import { chooseOpeningProfile, isProfileReadable } from '../../utils/readable-profile';
 import { classificationModelOf } from '../../utils/classification-config';
 import { useFormatters } from '../../i18n/format';
+import { countLlmComparisons, escalationModelOf, evaluationModelOf } from './demand-lines';
 
 // The split-then-classify strategy meters its halves as Splitting and
 // SectionClassification instead of Classification; all three are the
@@ -56,7 +57,9 @@ interface Configuration {
     model?: string;
     // v0.6: confidence assessment (model + granular) lives under extraction
     confidence?: { enabled?: boolean; model?: string; granular?: { enabled?: boolean } };
+    validation?: { enabled?: boolean; fail_action?: string; escalation_model?: string | null };
   };
+  evaluation?: { enabled?: boolean; llm_method?: { model?: string } };
   assessment?: { enabled?: boolean; model?: string; granular?: { enabled?: boolean } };
   summarization?: { model?: string };
   classes?: Array<{
@@ -93,6 +96,9 @@ interface TimeSlot {
 interface ProcessingConfig {
   timeSlots: TimeSlot[];
   maxLatency: string;
+  // Percent of documents assumed to escalate when metering cannot measure it;
+  // empty means the planner's stated default.
+  escalationRate?: string;
   missingConfig?: string;
 }
 
@@ -188,6 +194,50 @@ interface SelectOption {
   description?: string;
   disabled?: boolean;
 }
+
+const escalationRateMessages = defineMessages<{ label: NoMessageValues; description: NoMessageValues; placeholder: NoMessageValues }>({
+  label: {
+    id: 'capacityPlanning.escalationRate.label',
+    defaultMessage: 'Escalation rate when not measured (%)',
+    description:
+      'Label of an optional number field on the capacity planning page, shown only when extraction validation failures are re-extracted with an escalation model.',
+  },
+  description: {
+    id: 'capacityPlanning.escalationRate.description',
+    defaultMessage:
+      'Share of documents assumed to fail validation and be re-extracted with the escalation model. Used only until enough processed documents are available to measure the rate from metering. The results say which rate was used.',
+    description: 'Help text under the escalation rate field on the capacity planning page.',
+  },
+  placeholder: {
+    id: 'capacityPlanning.escalationRate.placeholder',
+    defaultMessage: 'Default: 15',
+    description: 'Placeholder of the empty escalation rate field. 15 is the percentage the planner uses when the field is left empty.',
+  },
+});
+
+// Its own component so that `useIntl` runs only when escalation is on.
+const EscalationRateField = ({ value, onChange }: { value: string; onChange: (value: string) => void }) => {
+  const intl = useIntl();
+  return (
+    <FormField
+      label={<FormattedMessage {...escalationRateMessages.label} />}
+      description={<FormattedMessage {...escalationRateMessages.description} />}
+    >
+      <Input
+        type="number"
+        value={value}
+        onChange={({ detail }) => {
+          const parsed = parseFloat(detail.value);
+          if (detail.value === '' || (!Number.isNaN(parsed) && parsed >= 0 && parsed <= 100)) {
+            onChange(detail.value);
+          }
+        }}
+        placeholder={intl.formatMessage(escalationRateMessages.placeholder)}
+        inputMode="decimal"
+      />
+    </FormField>
+  );
+};
 
 const quotaWarningMessages = defineMessages<{ header: NoMessageValues; body: NoMessageValues }>({
   header: {
@@ -377,6 +427,11 @@ const CapacityPlanningLayout = () => {
       setCustomDateRange(dateRange);
     }
   };
+
+  // The class schema a document type was named after, matched the way the type
+  // options are built from `configuration.classes`.
+  const classSchemaFor = (docType: string) =>
+    configuration?.classes?.find((docClass) => (docClass['x-aws-idp-document-type'] || docClass.name || docClass.$id) === docType);
 
   // Check if granular assessment is enabled in configuration
   // v0.6: confidence enable + granular live under extraction.confidence
@@ -1390,6 +1445,7 @@ const CapacityPlanningLayout = () => {
           extractionTokens: number;
           summarizationTokens: number;
           assessmentTokens: number;
+          evaluationComparisons: number;
           docsPerHour: number;
           ocrRequests?: number;
           classificationRequests?: number;
@@ -1421,6 +1477,9 @@ const CapacityPlanningLayout = () => {
               extractionTokens: parseFloat(String(docConfig.extractionTokens || 0)),
               summarizationTokens: parseFloat(String(docConfig.summarizationTokens || 0)),
               assessmentTokens: parseFloat(String(docConfig.assessmentTokens || 0)),
+              // Judge requests per document while no evaluation metering exists,
+              // from the LLM-compared fields of this type's class schema.
+              evaluationComparisons: countLlmComparisons(classSchemaFor(docType)),
               docsPerHour,
             };
           } else {
@@ -1443,6 +1502,10 @@ const CapacityPlanningLayout = () => {
         assessment_model: configuration?.extraction?.confidence?.model ?? configuration?.assessment?.model,
         summarization_model: configuration?.summarization?.model,
         ocr_model: configuration?.ocr?.backend === 'bedrock' ? configuration?.ocr?.model_id : null,
+        // Separate demand lines, each on the model that serves it; absent while the
+        // feature is off (evaluation disabled, or validation not escalating).
+        evaluation_model: evaluationModelOf(configuration),
+        escalation_model: escalationModelOf(configuration),
       };
 
       // Add request count data to document configs for API
@@ -1471,6 +1534,7 @@ const CapacityPlanningLayout = () => {
         timeSlots: JSON.stringify(timeSlotsForAPI),
         granularAssessmentEnabled: isGranularAssessmentEnabled(),
         latencyMetricsHours: parseInt(latencyTimeRange.value, 10),
+        ...(processingConfig.escalationRate ? { escalationRate: parseFloat(processingConfig.escalationRate) / 100 } : {}),
       };
 
       // Validate input before sending
@@ -2778,6 +2842,12 @@ const CapacityPlanningLayout = () => {
                 </Box>
               </SpaceBetween>
             </FormField>
+            {escalationModelOf(configuration) && (
+              <EscalationRateField
+                value={processingConfig.escalationRate ?? ''}
+                onChange={(escalationRate) => setProcessingConfig({ ...processingConfig, escalationRate })}
+              />
+            )}
             <Alert type="info">
               <strong>Understanding Max Latency:</strong> This is the maximum time (in seconds) that a single document should take to
               process end-to-end. After calculating capacity, check the <strong>Processing Latency Distribution</strong> section to see what
