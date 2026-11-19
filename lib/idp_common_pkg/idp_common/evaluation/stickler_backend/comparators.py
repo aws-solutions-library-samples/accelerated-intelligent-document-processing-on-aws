@@ -345,7 +345,7 @@ class LLMComparator(BaseComparator):
         #   once: EvaluationService.evaluate_document evaluates a document's
         #   sections in a ThreadPoolExecutor, and sections of the same class
         #   share the cached Stickler model and therefore its comparator
-        #   instances. Stickler itself (1.0.0) runs no thread pool; its
+        #   instances. Stickler itself (1.0.1) runs no thread pool; its
         #   Hungarian list matching calls ``compare`` sequentially.
         #   OrderedDict's move_to_end + popitem + __setitem__ combo used below
         #   is a three-op critical section.
