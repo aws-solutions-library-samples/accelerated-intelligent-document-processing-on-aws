@@ -506,9 +506,15 @@ Before you detach anything, check:
   An [evaluation](./evaluation.md) against your baselines is the most reliable check.
 - The new deployment's alerts subscription is confirmed (see
   [Who receives the alerts](./monitoring.md#who-receives-the-alerts)).
-- The knowledge base, if you use it, is re-synced from the adopted output bucket. It
-  is a new knowledge base on S3 Vectors, so it starts empty; start an ingestion job
-  on its data source to index existing documents. This step is unverified.
+- The knowledge base, if you use it, indexes the adopted output bucket. It is a new
+  knowledge base on S3 Vectors and starts empty, but its data source covers the whole
+  output bucket, the deployment starts an ingestion job when it creates that data
+  source, and a schedule starts another every 30 minutes, so documents processed
+  before the migration are indexed without a manual job. This is read from the
+  templates, not measured in a migration run; the data source's ingestion jobs in the
+  Amazon Bedrock console show whether it ran. If the first job failed (the deployment
+  only logs that), the next scheduled one runs it again, or start one on the data
+  source yourself.
 
 ### 8. Detach the adopted resources from the old state
 
@@ -668,7 +674,7 @@ unmanaged** means it stays in the account, managed by neither.
 | Concurrency table | Recreate | | measured |
 | Queues | Recreate, after `freeze` drains them | | measured |
 | Web UI bucket, app client, identity pool, settings parameters | Recreate | | measured |
-| Knowledge base (OpenSearch Serverless collection and index) | Recreate on S3 Vectors; re-sync from the output bucket | | measured |
+| Knowledge base (OpenSearch Serverless collection and index) | Recreate on S3 Vectors, which indexes the output bucket again | | measured |
 | Reporting Glue database and tables | Recreate (catalog metadata only) | | measured |
 | Installed-features table | Recreate; features installed on the old deployment do not carry over | | measured |
 | Test-sets table | Recreate; test-set definitions do not carry over, their documents stay in the adopted bucket | | measured |
@@ -703,7 +709,8 @@ one.
   before the module's setting is accepted. [Step 1a](#1a-turn-off-the-old-agent-jobs-time-to-live)
   turns it off and says how long to wait.
 - **Some history does not carry over**: discovery jobs, test-set definitions,
-  installed features, and the old knowledge base's index (re-sync it).
+  installed features, and the old knowledge base's index (the new knowledge base
+  builds its own from the output bucket; see [step 7](#7-verify-the-new-deployment)).
 
 ## Backing out
 
