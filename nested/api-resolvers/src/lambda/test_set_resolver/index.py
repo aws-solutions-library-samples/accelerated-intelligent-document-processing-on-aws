@@ -546,6 +546,26 @@ def _dispatch(event, context):
         raise Exception(f"Unknown field: {field_name}")
 
 
+def _put_new_test_set_row(item, test_set_id):
+    """Write a new set's metadata row, refusing an id that already has one.
+
+    The id is derived from the name, so two names can share it ("My Set" and
+    "my-set"). An unconditional put would replace the existing set's record,
+    status, description and label state included, while its documents stayed
+    in S3 under the same prefix. Every create path goes through here so the
+    refusal is the same everywhere: a ``ValueError``, which the API reports as
+    a bad argument rather than a server fault.
+    """
+    try:
+        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
+    except Exception as e:
+        if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
+            "ConditionalCheckFailed" in str(e)
+        ):
+            raise ValueError(f"A test set with id '{test_set_id}' already exists")
+        raise
+
+
 def add_test_set_from_upload(args):
     logger.info(f"Adding test set from zip upload: {args}")
 
@@ -629,7 +649,9 @@ def add_test_set_from_upload(args):
 
     # Don't set fileCount for uploads - will be added after zip processing
 
-    db_client.put_item(item)
+    # Before the URL is returned: a refused id must not leave the caller holding a
+    # URL that uploads into the existing set's folder.
+    _put_new_test_set_row(item, test_set_id)
     logger.info(f"Created test set {test_set_id} in tracking table with QUEUED status")
 
     logger.info(
@@ -686,7 +708,8 @@ def add_test_set(args):
     if document_class_type:
         item["documentClassType"] = document_class_type
 
-    db_client.put_item(item)
+    # Before the copy is queued, so a refused id copies nothing into that set.
+    _put_new_test_set_row(item, test_set_id)
     logger.info(f"Created test set {test_set_id} in tracking table")
 
     # Send file copying job to SQS queue
@@ -799,16 +822,7 @@ def create_empty_test_set(args):
     if document_class_type:
         item["documentClassType"] = document_class_type
 
-    # Conditional so a name that derives to an existing id is refused rather than
-    # silently replacing that set's record.
-    try:
-        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
-    except Exception as e:
-        if getattr(e, "error_code", None) == "ConditionalCheckFailedException" or (
-            "ConditionalCheckFailed" in str(e)
-        ):
-            raise ValueError(f"A test set with id '{test_set_id}' already exists")
-        raise
+    _put_new_test_set_row(item, test_set_id)
     # After the row: a marker without a row is a stray folder discovery ignores,
     # while a row without a marker is reaped on the next getTestSets.
     _write_keep_marker(test_set_id)
@@ -6100,7 +6114,7 @@ def get_test_sets():
                         else None
                     )
 
-                    _create_test_set_tracking_entry(
+                    registered = _create_test_set_tracking_entry(
                         prefix,
                         prefix,  # Use prefix as name
                         validation_result["input_count"],
@@ -6111,6 +6125,10 @@ def get_test_sets():
                         label_state,
                         content_signature,
                     )
+                    if not registered:
+                        # A create took the id during this scan; its row, not this
+                        # discovery-shaped one, is what the next poll reports.
+                        continue
 
                     # Add to results
                     result.append(
@@ -7012,7 +7030,11 @@ def _create_test_set_tracking_entry(
     label_state=None,
     content_signature=None,
 ):
-    """Create tracking table entry for direct upload test set"""
+    """Create tracking table entry for direct upload test set.
+
+    Returns False only when another writer created the row first; any other
+    failure is logged and returns True, so the folder is still listed this poll.
+    """
     try:
         now = datetime.utcnow().isoformat() + "Z"
         item = {
@@ -7038,11 +7060,21 @@ def _create_test_set_tracking_entry(
         if content_signature:
             item["contentSignature"] = content_signature
 
-        db_client.put_item(item)
+        # Conditional: discovery registers a folder that had no row when the scan
+        # read the table, and a create that lands in between must keep its row
+        # rather than have it replaced by this discovery-shaped one.
+        db_client.put_item(item, condition_expression="attribute_not_exists(PK)")
         logger.info(f"Created tracking entry for direct upload test set {test_set_id}")
 
     except Exception as e:
+        if getattr(e, "error_code", None) == "ConditionalCheckFailedException":
+            logger.info(
+                f"Not registering {test_set_id}: a row was created for it during "
+                "this scan"
+            )
+            return False
         logger.error(f"Error creating tracking entry for {test_set_id}: {str(e)}")
+    return True
 
 
 # Rows in one of these non-terminal states are being actively mutated by a

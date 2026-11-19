@@ -45,7 +45,8 @@ class StackDeletionResult(BaseModel):
         description=(
             "Resources a Terraform delete left in place because CloudFormation "
             "would retain them, categorized as dynamodb_tables, log_groups, "
-            "s3_buckets and other"
+            "s3_buckets and other; service_log_groups lists the log groups AWS "
+            "services created for the destroyed resources, which are left too"
         ),
     )
 
