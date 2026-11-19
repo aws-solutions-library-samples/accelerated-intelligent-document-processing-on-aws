@@ -539,7 +539,11 @@ ui_tests:
     # job still passed, but anything that failed after that point would have had no
     # diagnostic in the log at all, which is the worst shape a CI failure can have.
     # It silences console output from tests only; failure output is unaffected.
-    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent)
+    # --testTimeout: on the 32-CPU code.aws.dev pod vitest runs ~31 workers at once, and
+    # the heaviest render tests (DocumentList add-to-test-set, capacity-planning populate)
+    # then take ~10.3s against the 10s default. Headroom here, not fewer workers, keeps
+    # the suite at full speed. CI only; `make ui-test` is unchanged.
+    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent --testTimeout=20000)
 
 # The Terraform offline gate: translate template.yaml with terraform/translator,
 # then `init -backend=false` and `validate` the generated module with every pinned
