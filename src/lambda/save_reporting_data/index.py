@@ -160,7 +160,12 @@ def handler(event, context):
             from idp_common.review_queues.models import ReviewReportingInfo
 
             review = ReviewReportingInfo.model_validate(event["review"])
-        results = reporter.save(document, data_to_save, review=review)
+        results = reporter.save(
+            document,
+            data_to_save,
+            review=review,
+            execution_status=event.get("execution_status"),
+        )
 
         # If no data was processed, return a warning
         if not results:

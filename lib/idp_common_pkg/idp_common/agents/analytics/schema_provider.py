@@ -64,6 +64,12 @@ def get_metering_table_description() -> str:
 - `initial_event_time` (timestamp): Original queue time — when the document was first
   enqueued. Populated on every row for consumers who need queue-time semantics.
 - `config_version` (string): Configuration version used for processing (defaults to "default" if not specified)
+- `document_class` (string): The document's class from its sections ('mixed' for several, 'unknown' for none)
+- `execution_arn` (string): The workflow execution the usage was incurred in (NULL on older rows)
+- `execution_status` (string): How that execution ended: 'SUCCEEDED', 'FAILED', 'TIMED_OUT' or 'ABORTED'
+  (NULL on older rows, which are all from executions that succeeded). Failed executions report the
+  usage they incurred, so totals are actual spend; filter or group on this column to separate
+  failed attempts
 
 **Partitioned by**: date + hour (both string, `YYYY-MM-DD` / `HH`). Partition
 values reflect COMPLETION time (write time), not queue time. `WHERE date = 'X'`

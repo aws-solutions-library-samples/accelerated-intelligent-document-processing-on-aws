@@ -30,6 +30,10 @@ from idp_common.models import (  # type: ignore[import-untyped]
 from idp_common.utils.log_sanitizer import (
     sanitize_event_for_logging,  # type: ignore[import-untyped]
 )
+from idp_common.utils.metering import (  # type: ignore[import-untyped]
+    cumulative_metering,
+    subtract_metering,
+)
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -109,6 +113,14 @@ DECREMENT_MARKER_PREFIX = "dec#"
 DECREMENT_MARKER_TTL_SECONDS = int(
     os.environ.get("DECREMENT_MARKER_TTL_SECONDS", str(7 * 24 * 60 * 60))
 )
+# One metering record per EXECUTION (issue #1951). Written to the counter table
+# once SaveReportingData has stored an execution's usage, so a redelivered event
+# for the same execution does not report it a second time. The file name is
+# already per execution, which covers a redelivery in the same hour; the marker
+# covers one that lands in a later hour, and so in another partition. Same TTL
+# reasoning as the decrement marker above.
+METERING_MARKER_PREFIX = "meter#"
+METERING_MARKER_TTL_SECONDS = DECREMENT_MARKER_TTL_SECONDS
 CIRCUIT_BREAKER_ID = "circuit_breaker"
 CIRCUIT_BREAKER_ENABLED = (
     os.environ.get("CIRCUIT_BREAKER_ENABLED", "false").lower() == "true"
@@ -180,11 +192,118 @@ def _record_workflow_timeout(object_key: str) -> None:
         )
 
 
+def _metering_marker_key(execution_arn: str) -> Dict[str, Any]:
+    return {"counter_id": {"S": f"{METERING_MARKER_PREFIX}{execution_arn}"}}
+
+
+def _metering_already_reported(execution_arn: Optional[str]) -> bool:
+    """Whether this execution's usage was already stored for reporting.
+
+    A read that fails answers False, so the usage is written: a duplicate within
+    the hour replaces the same object, while a skipped write would lose the
+    execution's cost for good.
+    """
+    if not execution_arn:
+        return False
+    try:
+        response = dynamodb_client.get_item(
+            TableName=CONCURRENCY_TABLE,
+            Key=_metering_marker_key(execution_arn),
+            ConsistentRead=True,
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not read the metering marker for {execution_arn}: {e}; "
+            "reporting this execution's usage"
+        )
+        return False
+    return "Item" in response
+
+
+def _record_metering_reported(execution_arn: Optional[str]) -> None:
+    """Record that this execution's usage is stored. Never raises."""
+    if not execution_arn:
+        return
+    try:
+        dynamodb_client.put_item(
+            TableName=CONCURRENCY_TABLE,
+            Item={
+                **_metering_marker_key(execution_arn),
+                # ExpiresAfter is this stack's TTL attribute name on every table.
+                "ExpiresAfter": {
+                    "N": str(int(time.time()) + METERING_MARKER_TTL_SECONDS)
+                },
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not record the metering marker for {execution_arn}: {e}. A "
+            "redelivery of this execution's event in a later hour would report "
+            "its usage again."
+        )
+
+
+def _unsuccessful_run_document(
+    object_key: str,
+    input_data: Optional[Dict[str, Any]],
+    doc_status: Status,
+) -> Optional[Document]:
+    """The usage an execution that did not succeed had incurred, for reporting.
+
+    A FAILED, TIMED_OUT or ABORTED execution has no output document, but its
+    stages were billed. Each stage that ran wrote the tracking row, whose
+    ``Metering`` is the document's cumulative usage (the baseline the run started
+    with plus the run's own, see ``cumulative_metering``). The execution input is
+    the document as the run started, which carries that baseline. The difference
+    is this run's own usage, as far as the last stage that wrote the row.
+
+    Returns the tracking row's document with ``metering`` set to that usage, or
+    None when there is none or it cannot be determined. Without a readable start
+    document the baseline is unknown, and subtracting nothing would report every
+    earlier run's usage again, so nothing is reported.
+
+    Usage incurred after the last write of the row is not in it: the step that
+    failed, and shards of a section map that completed before another failed, are
+    not counted.
+    """
+    start_data = (input_data or {}).get("document")
+    if not start_data:
+        logger.warning(
+            f"No start document in the execution input for {object_key}; the "
+            "usage of this unsuccessful run is not reported"
+        )
+        return None
+    try:
+        start_doc = Document.load_document(
+            start_data, os.environ.get("WORKING_BUCKET"), logger
+        )
+        baseline = cumulative_metering(start_doc)
+        row = document_service.get_document(object_key, consistent_read=True)
+    except Exception as e:
+        logger.error(
+            f"Could not read the usage of the unsuccessful run of {object_key}: {e}",
+            exc_info=True,
+        )
+        return None
+    if row is None:
+        return None
+    own = subtract_metering(row.metering or {}, baseline)
+    if not own:
+        logger.info(f"The unsuccessful run of {object_key} recorded no usage")
+        return None
+    row.metering = own
+    row.status = doc_status
+    return row
+
+
 def update_document_completion(
     object_key: str,
     workflow_status: str,
     output_data: Dict[str, Any],
     review_ctx: Any = None,
+    *,
+    execution_arn: Optional[str] = None,
+    input_data: Optional[Dict[str, Any]] = None,
 ) -> Document:
     """
     Update document completion status via document service
@@ -195,6 +314,10 @@ def update_document_completion(
         output_data: The output data from the workflow execution
         review_ctx: The review-queue context of this run (phase 1 or finalize),
             or None for every other run
+        execution_arn: The execution this event reports on. Every execution's
+            usage is reported once under it, whatever its status.
+        input_data: The execution input, read for the start document when the
+            execution did not succeed (see ``_unsuccessful_run_document``)
 
     Returns:
         The updated Document object
@@ -218,6 +341,15 @@ def update_document_completion(
         status=doc_status,
         completion_time=datetime.now(timezone.utc).isoformat(),
     )
+
+    # An unsuccessful execution was billed for the stages it ran. Read that usage
+    # before the status write below; it is reported, and the tracking row (which
+    # already holds it in its cumulative total) is not changed by it.
+    unsuccessful_usage = None
+    if workflow_status != "SUCCEEDED":
+        unsuccessful_usage = _unsuccessful_run_document(
+            object_key, input_data, doc_status
+        )
 
     # Get sections, pages, and metering data if workflow succeeded
     if workflow_status == "SUCCEEDED" and output_data:
@@ -321,9 +453,18 @@ def update_document_completion(
     tracked_document = document
     if reporting_document is not None:
         document = reporting_document
+    if unsuccessful_usage is not None:
+        # Only the usage is reported for an unsuccessful run: its sections and
+        # rule validation are not a result.
+        document = unsuccessful_usage
+    unsuccessful = workflow_status != "SUCCEEDED"
 
     # Save reporting data to reporting bucket if available
     if REPORTING_BUCKET and SAVE_REPORTING_FUNCTION_NAME:
+        # The execution in the event is the authority: a resubmitted document
+        # carries the ARN of the run that last wrote it until this one is
+        # recorded.
+        reporting_arn = execution_arn or document.workflow_execution_arn or None
         # Determine what data to save based on what's available in the document
         data_to_save = []
         review_payload = None
@@ -334,9 +475,15 @@ def update_document_completion(
             )
 
         if document.metering:
-            data_to_save.append("metering")
+            if _metering_already_reported(reporting_arn):
+                logger.info(
+                    f"Usage of {reporting_arn} is already reported; not reporting "
+                    "it again"
+                )
+            else:
+                data_to_save.append("metering")
 
-        if document.sections:
+        if not unsuccessful and document.sections:
             # Check if any sections have extraction results
             sections_with_results = [
                 s for s in document.sections if s.extraction_result_uri
@@ -349,7 +496,8 @@ def update_document_completion(
 
         # Check if rule validation results are available
         if (
-            hasattr(document, "rule_validation_result")
+            not unsuccessful
+            and hasattr(document, "rule_validation_result")
             and document.rule_validation_result
         ):
             data_to_save.append("rule_validation_results")
@@ -364,6 +512,8 @@ def update_document_completion(
                 # own usage once.
                 reporting_payload = document.to_dict()
                 reporting_payload.pop("metering_baseline", None)
+                if reporting_arn:
+                    reporting_payload["workflow_execution_arn"] = reporting_arn
                 lambda_response = lambda_client.invoke(
                     FunctionName=SAVE_REPORTING_FUNCTION_NAME,
                     InvocationType="RequestResponse",
@@ -372,6 +522,7 @@ def update_document_completion(
                             "document": reporting_payload,
                             "reporting_bucket": REPORTING_BUCKET,
                             "data_to_save": data_to_save,
+                            "execution_status": workflow_status,
                             **({"review": review_payload} if review_payload else {}),
                         }
                     ),
@@ -387,6 +538,8 @@ def update_document_completion(
                     )
                 else:
                     logger.info("SaveReportingData Lambda executed successfully")
+                    if "metering" in data_to_save:
+                        _record_metering_reported(reporting_arn)
             except Exception as e:
                 logger.error(f"Error invoking SaveReportingData Lambda: {str(e)}")
                 # Continue execution - don't fail the entire function if reporting fails
@@ -975,7 +1128,12 @@ def handler(event, context):
 
         # Update document completion status
         updated_doc = update_document_completion(
-            object_key, workflow_status, output_data, review_ctx
+            object_key,
+            workflow_status,
+            output_data,
+            review_ctx,
+            execution_arn=execution_arn,
+            input_data=input_data,
         )
 
         # A REDACTED_SUPERSEDED original was deleted (redact-copy-and-stop): there

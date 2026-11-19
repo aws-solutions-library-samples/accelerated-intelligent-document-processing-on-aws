@@ -369,7 +369,6 @@ exclude = [
     "src/lambda/user_management/test_scan_pagination.py",
     "src/lambda/user_sync/index.py",
     "src/lambda/w2_dataset_deployer/index.py",
-    "src/lambda/workflow_tracker/conftest.py",
     "src/lambda/workflow_tracker/test_decrement_floor_and_idempotency.py",
     "src/lambda/workflow_tracker/test_notify_circuit_breaker.py",
 # <<< GENERATED format-debt
