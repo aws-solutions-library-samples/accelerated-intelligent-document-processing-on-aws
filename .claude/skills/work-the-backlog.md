@@ -230,6 +230,10 @@ So two rules, one for each side, and both go into every brief:
 > (reviewers write theirs to `scratch/backlog/reports/review-<slug>.md`), decide, and
 > re-arm the watchdog if you are still waiting. Never end a turn whose only pending
 > work is a notification you did not also put a watchdog on.
+>
+> **Before you send your final report, stop every watchdog you started** (record each
+> one's PID when you start it, then `kill <pid>`). A watchdog left running fires after
+> the work is done and sends the coordinator an empty notification each time.
 
 > **Coordinator rule.** On every heartbeat, measure each fixer's idleness as the later
 > of its worktree's newest file mtime **and its newest commit time** (`git log -1
