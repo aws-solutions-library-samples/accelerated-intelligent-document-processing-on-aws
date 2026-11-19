@@ -202,12 +202,16 @@ The resolution order is:
    configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
    read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
 
-Every command that takes `--region` resolves it this one way, including
-`test-result`, `test-compare`, `abort-test-run` and `discover-multidoc`, and no
-command substitutes a hardcoded Region. A command run with no `--region` and no
-Region resolvable from the environment fails, saying the Region could not be
-determined, rather than guessing. A shell that sets only `AWS_REGION` therefore
-needs `AWS_DEFAULT_REGION` or `--region` as well.
+Every command that works against a stack resolves `--region` this one way,
+including `test-result`, `test-compare`, `abort-test-run` and
+`discover-multidoc`, and none substitutes a hardcoded Region. A command run with
+no `--region` and no Region resolvable from the environment fails rather than
+guessing: the Test Studio commands, `discover-multidoc` and `deploy` say the
+Region could not be determined, and the others fail with boto3's
+`NoRegionError` ("You must specify a region"). A shell that sets only
+`AWS_REGION` therefore needs `AWS_DEFAULT_REGION` or `--region` as well.
+`remove-deleted-stack-resources` is the exception: it sweeps several Regions, and
+its `--region` defaults to `us-west-2`.
 
 `--region` applies to every AWS call a command makes, not only to the
 CloudFormation lookup that resolves a resource's name. That distinction is the

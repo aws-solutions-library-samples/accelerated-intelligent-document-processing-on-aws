@@ -170,6 +170,9 @@ def ambient_region(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", AMBIENT_REGION)
     monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
     monkeypatch.delenv("AWS_PROFILE", raising=False)
+    # A default session left by an earlier test keeps the config file it read
+    # first, which on a developer machine names a Region of its own.
+    monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
     # Recorded, so a bridge that writes it during a test is undone afterwards.
     monkeypatch.setenv("AWS_REGION", "set-by-fixture")
     monkeypatch.delenv("AWS_REGION")

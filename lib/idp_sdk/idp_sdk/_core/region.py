@@ -14,9 +14,10 @@ def resolve_region(region: Optional[str]) -> Optional[str]:
     ``region`` of the selected profile, or the one given to
     ``boto3.setup_default_session``. boto3 does not read ``AWS_REGION``, so a
     process that reads that variable itself, or falls back to a hard-coded Region,
-    can address a different Region from the one its own clients reach. Every
-    caller here asks this function instead, so a stack is looked up, its tables
-    read and its models called in the same Region.
+    can address a different Region from the one its own clients reach. The
+    commands and operations that need a Region before they build a client ask
+    this function, so a stack is looked up, its tables read and its models called
+    in the same Region.
 
     The answer is boto3's default session's, which is where a client built with
     no Region takes its Region from, rather than a freshly built
