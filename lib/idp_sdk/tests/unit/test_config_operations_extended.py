@@ -793,11 +793,13 @@ class TestStackResourceResolution:
 
     @mock_aws
     def test_both_the_table_and_the_bucket_are_exported(
-        self, aws_credentials, config_env
+        self, aws_credentials, config_env, monkeypatch
     ):
         _create_stack(aws_credentials)
         import os
 
+        # Unset, so the assertion below can only pass through the bridge.
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
         _client(aws_credentials).config._configure_config_env(STACK)
 
         assert os.environ["CONFIGURATION_TABLE_NAME"] == _table(aws_credentials).name
@@ -881,6 +883,44 @@ class TestAbsentModelKeysResolveForTheStacksRegion:
         """
         monkeypatch.setenv("AWS_REGION", "us-east-1")
         monkeypatch.setenv("AWS_DEFAULT_REGION", EU_STACK_REGION)
+
+        client = IDPClient(stack_name=STACK)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
+
+    @mock_aws
+    def test_with_no_region_given_and_the_region_from_the_profile(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        """No `--region` and no `AWS_DEFAULT_REGION`: the profile names the Region.
+
+        Distinguishes boto3's resolution from reading `AWS_DEFAULT_REGION` alone,
+        which here is unset.
+        """
+        profile = tmp_path / "aws-config"
+        profile.write_text(f"[default]\nregion = {EU_STACK_REGION}\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(profile))
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+
+        client = IDPClient(stack_name=STACK)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
+
+    @mock_aws
+    def test_with_no_region_given_and_a_default_session_naming_the_stacks_region(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        """The stack is found through boto3's default session, not a fresh one.
+
+        A caller that ran `boto3.setup_default_session(region_name=...)` has its
+        stack looked up in that Region, while a newly built `Session()` would
+        still answer `AWS_DEFAULT_REGION`'s.
+        """
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name=EU_STACK_REGION)
 
         client = IDPClient(stack_name=STACK)
 

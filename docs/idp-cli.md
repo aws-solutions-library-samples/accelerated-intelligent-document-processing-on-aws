@@ -199,8 +199,8 @@ The resolution order is:
 
 1. `--region` on the subcommand, if given.
 2. Otherwise boto3's own chain: `AWS_DEFAULT_REGION`, then the `region`
-   configured for the selected `--profile` (or `AWS_PROFILE`), then EC2 instance
-   metadata. boto3 does not read `AWS_REGION`.
+   configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
+   read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
 
 Nothing substitutes a hardcoded region for the configuration commands, so a
 command run with no `--region` and no region resolvable from the environment fails

@@ -70,15 +70,19 @@ class ConfigOperation:
     def __init__(self, client):
         self._client = client
 
-    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
-        """Physical IDs for the requested logical IDs, in one pass over the stack."""
+    def _cloudformation_client(self):
+        """The CloudFormation client every stack lookup here uses."""
         import boto3
 
+        # Enhancement 8: use self._client._region consistently
+        return boto3.client("cloudformation", region_name=self._client._region)
+
+    def _lookup_stack_resources(self, stack_name: str, logical_ids, cfn=None) -> dict:
+        """Physical IDs for the requested logical IDs, in one pass over the stack."""
         wanted = set(logical_ids)
         found: dict = {}
 
-        # Enhancement 8: use self._client._region consistently
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
+        cfn = cfn or self._cloudformation_client()
         paginator = cfn.get_paginator("list_stack_resources")
 
         for page in paginator.paginate(StackName=stack_name):
@@ -143,24 +147,24 @@ class ConfigOperation:
         Region, so `config-download` from an EU stack wrote `us.` profiles into
         the file, which a re-upload then stores as explicit values.
 
-        The region is the one the stack lookup below uses: `--region` when given,
-        otherwise boto3's own resolution, so the bridge names the Region the stack
-        was actually found in. Nothing is written when neither resolves — writing
-        unconditionally would pin the process to `None`.
+        The Region bridged is the one the CloudFormation client of the lookup
+        below was built for (`--region` when given, otherwise boto3's default
+        session), read from that client rather than resolved a second time, so it
+        names the Region the stack is actually found in. A fresh
+        `boto3.session.Session()` is not equivalent: it ignores a region given to
+        `boto3.setup_default_session`.
 
         Returns the configuration table's physical ID.
         """
         import os
 
-        import boto3
-
-        region = self._client._region or boto3.session.Session().region_name
-        if region:
-            os.environ["AWS_DEFAULT_REGION"] = region
-            os.environ["AWS_REGION"] = region
+        cfn = self._cloudformation_client()
+        region = cfn.meta.region_name
+        os.environ["AWS_DEFAULT_REGION"] = region
+        os.environ["AWS_REGION"] = region
 
         found = self._lookup_stack_resources(
-            stack_name, {"ConfigurationTable", "ConfigurationBucket"}
+            stack_name, {"ConfigurationTable", "ConfigurationBucket"}, cfn=cfn
         )
 
         config_table = found.get("ConfigurationTable")
