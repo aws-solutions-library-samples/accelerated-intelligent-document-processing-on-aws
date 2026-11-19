@@ -29,6 +29,10 @@ from idp_common.decision_model import (
     merge_metering,
     resolve_endpoint,
 )
+from tests.unit.decision_model.window_contract import (  # noqa: F401 - autouse
+    no_oversize_requests,
+    window_refusal,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -75,6 +79,9 @@ class FakeLambda:
 
     def invoke(self, **kwargs):
         self.calls.append(kwargs)
+        refusal = window_refusal(kwargs["Payload"])
+        if refusal:
+            return refusal
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -183,6 +190,9 @@ class StateKeyedLambda:
         self.outcomes = outcomes
 
     def invoke(self, **kwargs):
+        refusal = window_refusal(kwargs["Payload"])
+        if refusal:
+            return refusal
         outcome = self.outcomes[json.loads(kwargs["Payload"])["state"]]()
         if isinstance(outcome, Exception):
             raise outcome
