@@ -454,10 +454,9 @@ class TestConstruction:
         monkeypatch.delenv("AWS_REGION", raising=False)
         monkeypatch.delenv("AWS_PROFILE", raising=False)
         monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
 
-        with pytest.raises(
-            ValueError, match="--region or configure AWS_DEFAULT_REGION"
-        ):
+        with pytest.raises(ValueError, match="--region, or set AWS_DEFAULT_REGION"):
             RerunProcessor(STACK_NAME)
 
     def test_an_ambient_region_is_picked_up_when_none_is_passed(self, aws):
@@ -471,6 +470,36 @@ class TestConstruction:
 
         assert processor.region == aws["region"]
         assert processor.resources["DocumentsTable"] == TRACKING_TABLE
+
+    def test_a_default_session_region_is_honoured(self, aws, monkeypatch):
+        """A Region given to ``boto3.setup_default_session`` is where the stack is
+        looked for.
+
+        ``AWS_DEFAULT_REGION`` names a Region the stack is not in, which is what a
+        freshly built ``boto3.Session()`` would read, so that lookup would refuse
+        the stack as absent.
+        """
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-west-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name=aws["region"])
+
+        processor = RerunProcessor(STACK_NAME)
+
+        assert processor.region == aws["region"]
+        assert processor.resources["DocumentsTable"] == TRACKING_TABLE
+
+    def test_with_only_aws_region_set_it_is_used(self, aws, monkeypatch):
+        """boto3 does not read ``AWS_REGION``; the processor resolves it and
+        passes it to every client it builds."""
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setenv("AWS_REGION", aws["region"])
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+
+        processor = RerunProcessor(STACK_NAME)
+
+        assert processor.region == aws["region"]
+        assert processor.lambda_client.meta.region_name == aws["region"]
+        assert processor.sqs_client.meta.region_name == aws["region"]
 
 
 @pytest.mark.unit

@@ -187,7 +187,9 @@ With no `region`, the client uses the Region boto3's default session resolves:
 `AWS_DEFAULT_REGION`, then the `region` of the selected profile, or a Region given
 to `boto3.setup_default_session`. Operations that work out the Region before
 calling AWS (configuration operations that read a stack, discovery,
-`stack.deploy(from_code=...)`) then fall back to `AWS_REGION`, which boto3 itself
+`stack.deploy()` including its `from_code` build and the upload of a local
+`custom_config`, `publish.build()`, and `batch.reprocess()` and
+`document.reprocess()`) then fall back to `AWS_REGION`, which boto3 itself
 does not read, and pass the Region to every client they build. No operation falls
 back to a hard-coded Region; one that needs a Region and finds none says so.
 `idp_sdk.resolve_region(region)` returns that answer (explicit Region, then
