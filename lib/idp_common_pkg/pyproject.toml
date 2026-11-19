@@ -137,7 +137,7 @@ evaluation = [
   # (upstream release note #284). Without ``[docsplit]``, the
   # EvaluationFunction Lambda fails at import time with
   # ``stickler.doc_split requires pandas``.
-  "stickler-eval[docsplit]==1.0.0",
+  "stickler-eval[docsplit]==1.0.1",
   # munkres is Stickler's Hungarian-matching dependency, declared there only as
   # ``munkres>=1.1.4``. Pinned to 1.1.4, the last release by the original
   # maintainer: 2.0.0 (2026-10-06) and 3.0.0 (2026-10-18) are a rewrite with a
@@ -271,7 +271,7 @@ test = [
   "datamodel-code-generator>=0.81.0",   # Required for schema/pydantic generator tests
   "mypy-boto3-bedrock-runtime>=1.39.0", # Required for bedrock_utils tests
   # Evaluation module dependencies (from evaluation group)
-  "stickler-eval[docsplit]==1.0.0",
+  "stickler-eval[docsplit]==1.0.1",
   "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
   "numpy>=1.26,<3",
@@ -322,7 +322,7 @@ test = [
 
 # Full package with all dependencies
 all = [
-  "stickler-eval[docsplit]==1.0.0",
+  "stickler-eval[docsplit]==1.0.1",
   "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
   "Pillow==13.0.0",
