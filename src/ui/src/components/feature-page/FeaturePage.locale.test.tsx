@@ -13,6 +13,7 @@ import React, { useEffect } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { I18n } from 'aws-amplify/utils';
 
 import FeaturePage from './FeaturePage';
 import type { CatalogFeature, FeatureContext, FeatureEntitlement, InstalledFeature } from '../../types/feature-platform';
@@ -122,6 +123,7 @@ describe('FeaturePage passes the UI locale to the extension', () => {
   afterEach(() => {
     window.localStorage.clear();
     document.documentElement.lang = '';
+    I18n.setLanguage('');
   });
 
   it('passes the current locale and follows a switch without remounting', async () => {

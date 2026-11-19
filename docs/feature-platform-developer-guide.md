@@ -307,8 +307,9 @@ extensions share the host's Cloudscape. Your extension's `displayName` and
 
 To translate your own text:
 
-- Ship the translations inside `ui-bundle.js`: the ui-deployer copies only that
-  file, and `idp-feature-cli build` rejects a bundle over 500 KiB.
+- Ship the translations inside `ui-bundle.js`: the template's ui-deployer
+  copies only that file, and `idp-feature-cli build` rejects a bundle over
+  500 KiB.
 - Treat a tag you have no translation for as English; the host can add
   languages.
 - Default to `en` when `locale` is absent: hosts older than this field do not
