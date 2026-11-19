@@ -1521,7 +1521,7 @@ FOOT_H = 14
 
 
 def _with_unit(text: str, unit: str) -> str:
-    return N_RUNS.sub(lambda m: f"{m[1]} {unit} × {m[2]} runs", text)
+    return N_RUNS.sub(lambda m: f"{m.group(1)} {unit} × {m.group(2)} runs", text)
 
 
 def chart_labels(

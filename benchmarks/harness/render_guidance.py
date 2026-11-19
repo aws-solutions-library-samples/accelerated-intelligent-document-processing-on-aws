@@ -1223,7 +1223,7 @@ def lower_first(text: str) -> str:
     return text[:1].lower() + text[1:]
 
 
-def with_cost(cols: list[str], metric: str = COST) -> list[str]:
+def with_cost_column(cols: list[str], metric: str = COST) -> list[str]:
     """Add the cost column (`metric`) after the last tokens column, or at the end."""
     if metric in cols:
         return cols
@@ -2081,7 +2081,7 @@ def render_ablation(
                 file=sys.stderr,
             )
         if priced:
-            cols = with_cost(cols, cost_col)
+            cols = with_cost_column(cols, cost_col)
         ceiling, rows_only = ceiling_sets(ab, cells, kind_sets, plot_metrics)
         too_easy += [
             f"*{datasets[k].get('short', datasets[k]['name'])}: every value scored "

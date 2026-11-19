@@ -228,7 +228,12 @@ from pathlib import Path
 from typing import Any
 
 import boto3
-from render_guidance import load_registry, unit_price
+
+# lib needs idp_common; put this checkout's on the path, ahead of any other.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "lib" / "idp_common_pkg"))
+from render_guidance import load_registry, unit_price  # noqa: E402
+
+from lib import METERING_ATTRIBUTE, metering_of_item  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "benchmarks" / "results" / "guidance"
@@ -253,7 +258,12 @@ DOC_EVAL_CACHE = WORKDIR / "doceval"
 DOC_EVAL_WORKERS = 8
 #: Where tracking-table items are cached: one file per run, the fields below only.
 TRACKING_CACHE = WORKDIR / "tracking"
-TRACKING_FIELDS = ("WorkflowStartTime", "CompletionTime", "ObjectStatus", "Metering")
+TRACKING_FIELDS = (
+    "WorkflowStartTime",
+    "CompletionTime",
+    "ObjectStatus",
+    METERING_ATTRIBUTE,
+)
 #: The review budget behind `errors_caught_30`: the share of values a reviewer checks,
 #: lowest confidence first, as Test Studio keys it under error_capture_at_budget.
 REVIEW_BUDGET = "0.30"
@@ -1098,7 +1108,7 @@ class TrackingItems:
     """Each document's tracking-table item, as far as the collector reads it.
 
     An item is `PK = doc#<run ID>/<document>`, `SK = none`. Only TRACKING_FIELDS are
-    read, with `Metering` parsed from its JSON string, and only finished items (those
+    read, with the metering attribute decoded by lib.metering_of_item, and only finished items (those
     with a CompletionTime) are cached, one file per run, so a document still running
     is read again next time.
     """
@@ -1110,22 +1120,26 @@ class TrackingItems:
 
     def _get(self, run_id: str, doc: str) -> dict[str, Any] | None:
         names = {f"#f{i}": f for i, f in enumerate(TRACKING_FIELDS)}
+        pk = f"doc#{run_id}/{doc}"
         raw = self.ddb.get_item(
             TableName=self.table_name,
-            Key={"PK": {"S": f"doc#{run_id}/{doc}"}, "SK": {"S": "none"}},
+            Key={"PK": {"S": pk}, "SK": {"S": "none"}},
             ProjectionExpression=", ".join(names),
             ExpressionAttributeNames=names,
         ).get("Item")
         if not raw:
             return None
         item: dict[str, Any] = {
-            k: v["S"] for k, v in raw.items() if k in TRACKING_FIELDS and "S" in v
+            k: v["S"]
+            for k, v in raw.items()
+            if k in TRACKING_FIELDS and k != METERING_ATTRIBUTE and "S" in v
         }
-        if item.get("Metering"):
-            try:
-                item["Metering"] = json.loads(item["Metering"])
-            except ValueError:
-                item.pop("Metering")
+        metering = metering_of_item(raw, where=pk)
+        if metering.is_present:
+            item[METERING_ATTRIBUTE] = metering.value
+        else:
+            # Left out of the costs, never priced as $0.00.
+            print(f"warning: {metering.error}", file=sys.stderr)
         return item
 
     def items(self, run_id: str, docs: list[str]) -> dict[str, dict[str, Any]]:
@@ -1151,7 +1165,7 @@ class TrackingItems:
         return {d: found[d] for d in docs if d in found}
 
 
-def pick_cost(
+def doc_cost_over_runs(
     by_run: dict[int, float], all_isolated: bool, cold_index: int
 ) -> float | None:
     """A document's cost over a value's runs, on the basis the run costs use.
@@ -1425,8 +1439,8 @@ def main() -> int:
                 surcharges: list[float] = []
                 ceilings: list[float] = []
                 for doc, item in items.items():
-                    if isinstance(item.get("Metering"), dict):
-                        metering = item["Metering"]
+                    if isinstance(item.get(METERING_ATTRIBUTE), dict):
+                        metering = item[METERING_ATTRIBUTE]
                         cost, classifying = metering_cost(
                             metering, unpriced, CLASSIFICATION_STEPS
                         )
@@ -1532,7 +1546,9 @@ def main() -> int:
                         entry["weighted_accuracy"] = round(
                             statistics.fmean(per_doc[doc]), 6
                         )
-                    cost = pick_cost(doc_costs.get(doc) or {}, all_isolated, cold_index)
+                    cost = doc_cost_over_runs(
+                        doc_costs.get(doc) or {}, all_isolated, cold_index
+                    )
                     if cost is not None:
                         entry["cost"] = round(cost, 6)
                     if entry:

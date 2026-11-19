@@ -555,6 +555,10 @@ def sections_of_item(item) -> list:
     return decoded if isinstance(decoded, list) else []
 
 
+#: The tracking row's metering attribute. Decode it with metering_of_item, nowhere else.
+METERING_ATTRIBUTE = "Metering"
+
+
 def metering_of_item(item, where: str = "") -> Reading[dict]:
     """The ``Metering`` attribute of ONE tracking row, as a three-state reading.
 
