@@ -65,13 +65,23 @@ axes:
   multi_instance_detection:
     'off': {extraction.multi_instance_detection.enabled: false}
     'on':  {extraction.multi_instance_detection.enabled: true}
-  # extraction.forced_tool.enabled (WS-05). Sends the class schema as a forced
+  # extraction.schema_enforcement.mode: forced_tool (WS-05; this was
+  # extraction.forced_tool.enabled before config format v0.11, and results
+  # recorded under that key are the same arm). Sends the class schema as a forced
   # Converse tool instead of describing it in the prompt. The task prompt is
   # deliberately UNCHANGED between arms: forcing and prompt de-duplication (#710)
   # are separate questions, and varying both at once would confound each.
   forcing:
-    'off': {extraction.forced_tool.enabled: false}
-    'on':  {extraction.forced_tool.enabled: true}
+    'off': {extraction.schema_enforcement.mode: 'off'}
+    'on':  {extraction.schema_enforcement.mode: forced_tool}
+  # extraction.schema_enforcement.mode: structured_output (#1785). Bedrock
+  # structured outputs: constrained decoding guarantees schema-valid JSON, Claude
+  # models only. Read metadata.structured_output.applied (and .skipped for a class
+  # whose schema exceeds the limits) before comparing arms — an arm in which the
+  # format never applied measured nothing. Same unchanged-prompt rule as forcing.
+  structured_outputs:
+    'off': {extraction.schema_enforcement.mode: 'off'}
+    'on':  {extraction.schema_enforcement.mode: structured_output}
   # extraction.agentic.restate_schema_in_system_prompt (#710). Advanced extraction
   # sends the class schema THREE times per request; copies 2 and 3 are the same
   # JSON string, so copy 2 (the system-prompt restatement) is pure duplication —

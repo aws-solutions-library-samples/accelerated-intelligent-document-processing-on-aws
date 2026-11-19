@@ -41,20 +41,28 @@ extraction:
                                             # pre-load page images (table path is text-driven;
                                             # view_image fetches on demand). Big cost saver on
                                             # multi-page tables. false = always attach images.
-  # Send the class schema on the wire as a FORCED Converse tool instead of
-  # describing it in the prompt (WS-05). Listed here, alongside its siblings, so it
-  # is visible in Config#default rather than existing only as a Pydantic default.
-  forced_tool:
-    # OFF by default and gated on a measured win: forcing constrains the response
-    # SHAPE, not the values in it, so a model that would have returned a stray key
-    # may instead return a worse value that fits. Models that cannot carry a
-    # toolConfig (a custom Lambda hook, GPT-5.x) or that reject a forced toolChoice
-    # (Claude Opus 5.5) fall back to the prompt automatically, and the reason is
-    # recorded in the section's metadata.forced_tool.
-    enabled: false
-    # A model can accept the tool and still answer in prose — a normal outcome, not
-    # an error. Keep true in production; set false only to measure how often
-    # forcing is actually honored.
+  # Make the reply match the class schema (WS-05, #1785). One setting, two
+  # mechanisms. Listed here, alongside its siblings, so it is visible in
+  # Config#default rather than existing only as a Pydantic default.
+  schema_enforcement:
+    # off               - the schema is described in the prompt only (default)
+    # structured_output - Bedrock structured outputs: constrained decoding
+    #                     GUARANTEES the reply is JSON matching the schema. Claude
+    #                     models only, and schemas within its limits (16 nullable
+    #                     plus 12 optional properties).
+    # forced_tool       - the schema is a forced Converse tool call: best effort,
+    #                     most Converse models, but not Claude Opus 5.5 / Sonnet 5.5
+    # auto              - structured outputs where it applies, else the forced tool,
+    #                     else the prompt
+    # OFF by default and gated on a measured win: either mechanism constrains the
+    # SHAPE of the reply, not the values in it. Anything that cannot apply falls
+    # back to the prompt, and the reason is recorded in the section's
+    # metadata.structured_output / metadata.forced_tool. Replaces the former
+    # extraction.forced_tool (migrated on read, config format v0.11).
+    mode: "off"
+    # Forced tool only. A model can accept the tool and still answer in prose — a
+    # normal outcome, not an error. Keep true in production; set false only to
+    # measure how often forcing is actually honored.
     fallback_to_prompt: true
   # Detect a section that holds SEVERAL records of the same class when the
   # model returned only one of them (GitHub #753 / #565). One extra integer is

@@ -15,6 +15,7 @@ chain via ``migrate_config`` rather than picking a single step.
 
 from typing import Any, Dict
 
+from .v010_to_v011 import migrate_v010_to_v011
 from .v05_to_v06 import _has_legacy_markers as _v05_legacy
 from .v05_to_v06 import migrate_v05_to_v06
 from .v06_to_v07 import _has_legacy_markers as _v06_legacy
@@ -34,6 +35,7 @@ __all__ = [
     "migrate_v07_to_v08",
     "migrate_v08_to_v09",
     "migrate_v09_to_v010",
+    "migrate_v010_to_v011",
 ]
 
 
@@ -88,5 +90,9 @@ def migrate_config(config, *, unstamped_is_current: bool = False):
         # Every earlier hop stamps an unstamped dict, so ``moved`` is a copy and
         # the stamp is the only thing to set: the value hop does not apply.
         moved["config_format_version"] = V010_TARGET_VERSION
-        return moved
-    return migrate_v09_to_v010(moved)
+    else:
+        moved = migrate_v09_to_v010(moved)
+    # Key-moving, so it runs for current input too: an uploaded file or a
+    # benchmark override written with ``extraction.forced_tool`` is migrated
+    # whatever its stamp says.
+    return migrate_v010_to_v011(moved)
