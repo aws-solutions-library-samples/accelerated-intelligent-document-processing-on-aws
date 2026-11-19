@@ -60,7 +60,10 @@ def _policies() -> list[dict]:
 
 def _statements(document: dict) -> list[dict]:
     statements = document["Statement"]
-    return statements if isinstance(statements, list) else [statements]
+    statements = statements if isinstance(statements, list) else [statements]
+    # `!If [Cond, <statement>, !Ref AWS::NoValue]` loads as a 3-item list here (the
+    # tag is dropped). Audit the statement it can add: what it grants still counts.
+    return [s[1] if isinstance(s, list) and len(s) == 3 else s for s in statements]
 
 
 def _actions(statement: dict) -> list[str]:

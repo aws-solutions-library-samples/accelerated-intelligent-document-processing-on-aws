@@ -299,7 +299,11 @@ def test_each_job_is_advisory_interruptible_and_in_the_ux_review_stage(
         f"{name} is no longer interruptible, so a burst of pushes pays for a full "
         "run per push"
     )
-    assert job["tags"] == ["size:large"]
+    # code.aws.dev runs jobs as EKS pods: an arch tag picks the node type and
+    # KUBERNETES_* picks the size (was gitlab.aws.dev's size:large).
+    assert job["tags"] == ["arch:amd64"]
+    assert job["variables"]["KUBERNETES_CPU_REQUEST"] == "8"
+    assert job["variables"]["KUBERNETES_MEMORY_LIMIT"] == "16Gi"
     assert job["stage"] == "ux_review"
     assert job["variables"]["GIT_DEPTH"] == 0, (
         f"{name} diffs against the merge base with develop, which a shallow "
