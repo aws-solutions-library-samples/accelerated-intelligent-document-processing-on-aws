@@ -1935,7 +1935,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/document-agents-layout/AgentQueryInput.tsx",
             "Delete query: What is in this document?",
-            source="`Delete query: ${displayText}`",
+            source="defaultMessage: 'Delete query: {query}'",
         ),
     ),
     "DeleteChatSession": (

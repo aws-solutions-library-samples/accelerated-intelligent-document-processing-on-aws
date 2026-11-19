@@ -7,6 +7,66 @@
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
   },
+  "agents.jobStatus.completed": {
+    "defaultMessage": "Processing complete",
+    "description": "Status of the agents' job on the agents page: the agents have answered."
+  },
+  "agents.jobStatus.errorLabel": {
+    "defaultMessage": "Error:",
+    "description": "Bold label before an error on the agents page. The error text after it is shown as it arrives."
+  },
+  "agents.jobStatus.failed": {
+    "defaultMessage": "Processing failed",
+    "description": "Status of the agents' job on the agents page: the job failed."
+  },
+  "agents.jobStatus.pending": {
+    "defaultMessage": "Job created, waiting to start processing",
+    "description": "Status of the agents' job on the agents page: the job exists and has not started yet."
+  },
+  "agents.jobStatus.processing": {
+    "defaultMessage": "Processing your query",
+    "description": "Status of the agents' job on the agents page: the agents are working on the question."
+  },
+  "agents.page.fetchAfterCompletionFailed": {
+    "defaultMessage": "Failed to fetch job details after completion",
+    "description": "Error on the agents page when the agents' job finished but its result could not be read."
+  },
+  "agents.page.fetchFailed": {
+    "defaultMessage": "Failed to fetch job details: {error}",
+    "description": "Error on the agents page when reading the finished job's result failed. {error} is the error's own text, as it arrives, or the unknown-error text."
+  },
+  "agents.page.invalidNotification": {
+    "defaultMessage": "Received invalid completion notification. Check console logs for details.",
+    "description": "Error on the agents page when the notice that the agents' job finished could not be read."
+  },
+  "agents.page.jobFailed": {
+    "defaultMessage": "Job processing failed",
+    "description": "Error on the agents page when the agents' job failed and the server sent no reason."
+  },
+  "agents.page.submitFailed": {
+    "defaultMessage": "Failed to submit query",
+    "description": "Error on the agents page when the question could not be sent and the server sent no reason."
+  },
+  "agents.page.submitting": {
+    "defaultMessage": "Submitting your query...",
+    "description": "Shown under a spinner on the agents page while the question is being sent."
+  },
+  "agents.page.subscriptionError": {
+    "defaultMessage": "Subscription error: {error}",
+    "description": "Error on the agents page when following the agents' job failed. {error} is the error's own text, as it arrives, or the unknown-error text."
+  },
+  "agents.page.subscriptionSetupFailed": {
+    "defaultMessage": "Failed to set up job status subscription: {error}",
+    "description": "Error on the agents page when following the agents' job could not start. {error} is the error's own text, as it arrives, or the unknown-error text."
+  },
+  "agents.page.title": {
+    "defaultMessage": "Agent Analysis",
+    "description": "Heading of the agents page, where the user puts a question about the documents to the selected agents."
+  },
+  "agents.page.unknownError": {
+    "defaultMessage": "Unknown error",
+    "description": "Shown in the errors of the agents page in place of an error's own text when the error has none."
+  },
   "agents.plot.combinedData": {
     "defaultMessage": "Combined Data",
     "description": "Name of the one data series a pie or doughnut chart shows when it adds up several series that have no names."
@@ -54,6 +114,122 @@
   "agents.plot.unknownLabel": {
     "defaultMessage": "Unknown",
     "description": "Tooltip of a pie or doughnut chart slice that has no label, when its value cannot be shown."
+  },
+  "agents.queryInput.agentsHeading": {
+    "defaultMessage": "Select from available agents",
+    "description": "Heading above the list of agents the user can put the question to, on the agents page."
+  },
+  "agents.queryInput.clear": {
+    "defaultMessage": "Clear question",
+    "description": "Button that clears the question and the results on the agents page."
+  },
+  "agents.queryInput.completed": {
+    "defaultMessage": "Completed",
+    "description": "Status after the date of a previous question on the agents page when the agents' job finished."
+  },
+  "agents.queryInput.deleteAriaLabel": {
+    "defaultMessage": "Delete query: {query}",
+    "description": "Screen-reader label of the button that deletes a previous question on the agents page. {query} is the question, as typed, cut to its first 50 characters."
+  },
+  "agents.queryInput.deselectAll": {
+    "defaultMessage": "Deselect All Agents",
+    "description": "Button under the list of agents on the agents page that clears the selection, shown when every agent is selected."
+  },
+  "agents.queryInput.historyButton": {
+    "defaultMessage": "Select a previous question",
+    "description": "Button that opens the list of previous questions on the agents page."
+  },
+  "agents.queryInput.historySelected": {
+    "defaultMessage": "Selected question",
+    "description": "Label of the previous-questions button on the agents page when the selected question has no text to show."
+  },
+  "agents.queryInput.loadingAgents": {
+    "defaultMessage": "Loading agents...",
+    "description": "Shown in the list of agents on the agents page while the list loads."
+  },
+  "agents.queryInput.mcp.addingBody": {
+    "defaultMessage": "You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate custom tools, APIs, and services specific to your organization's needs without any code changes or redeployments.",
+    "description": "Paragraph in the custom MCP agents dialog, under \"Adding Custom Agents\". AWS Secrets Manager is a product name."
+  },
+  "agents.queryInput.mcp.addingTitle": {
+    "defaultMessage": "Adding Custom Agents",
+    "description": "Heading in the custom MCP agents dialog."
+  },
+  "agents.queryInput.mcp.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the custom MCP agents dialog."
+  },
+  "agents.queryInput.mcp.learnMoreBody": {
+    "defaultMessage": "For detailed setup instructions and examples, see the <link>Custom MCP Agent Documentation</link>",
+    "description": "Last paragraph of the custom MCP agents dialog. The text inside <link> links to the custom MCP agent documentation."
+  },
+  "agents.queryInput.mcp.learnMoreTitle": {
+    "defaultMessage": "Learn More",
+    "description": "Heading in the custom MCP agents dialog, above the link to the documentation."
+  },
+  "agents.queryInput.mcp.title": {
+    "defaultMessage": "Custom MCP Agents",
+    "description": "Title of the dialog on the agents page that explains custom MCP agents."
+  },
+  "agents.queryInput.mcp.whatBody": {
+    "defaultMessage": "Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your document analysis workflow.",
+    "description": "Paragraph in the custom MCP agents dialog, under \"What are MCP Agents?\"."
+  },
+  "agents.queryInput.mcp.whatTitle": {
+    "defaultMessage": "What are MCP Agents?",
+    "description": "Heading in the custom MCP agents dialog."
+  },
+  "agents.queryInput.mcpButton": {
+    "defaultMessage": "NEW: Integrate your own systems with MCP!",
+    "description": "Button on the agents page that explains custom MCP agents. A rocket emoji is shown before it."
+  },
+  "agents.queryInput.noAgents": {
+    "defaultMessage": "No agents available",
+    "description": "Shown in the list of agents on the agents page when the deployment has no agents."
+  },
+  "agents.queryInput.noHistory": {
+    "defaultMessage": "No previous questions found",
+    "description": "The only entry of the previous-questions list on the agents page when the user has asked none."
+  },
+  "agents.queryInput.noQuery": {
+    "defaultMessage": "No query",
+    "description": "Shown in place of a previous question on the agents page when the question has no text."
+  },
+  "agents.queryInput.placeholder": {
+    "defaultMessage": "Enter your question here...",
+    "description": "Placeholder of the question box on the agents page when the first selected agent has no sample question to show instead."
+  },
+  "agents.queryInput.placeholderNoAgent": {
+    "defaultMessage": "Select at least one available agent to get started",
+    "description": "Placeholder of the question box on the agents page while no agent is selected."
+  },
+  "agents.queryInput.questionLabel": {
+    "defaultMessage": "Enter your question for the agent",
+    "description": "Label of the text box in which the user types the question for the agents."
+  },
+  "agents.queryInput.sampleQueries": {
+    "defaultMessage": "Sample Queries:",
+    "description": "Heading above an agent's sample questions, in the tooltip of an agent on the agents page."
+  },
+  "agents.queryInput.selectAll": {
+    "defaultMessage": "Select All Agents",
+    "description": "Button under the list of agents on the agents page that selects every agent."
+  },
+  "agents.queryInput.submit": {
+    "defaultMessage": "Submit question",
+    "description": "Button that sends the question to the selected agents."
+  },
+  "agents.queryInput.submitting": {
+    "defaultMessage": "Submitting...",
+    "description": "Label of the submit button on the agents page while the question is being sent."
+  },
+  "agents.queryInput.unknownDate": {
+    "defaultMessage": "Unknown date",
+    "description": "Shown in place of the date of a previous question on the agents page when the date cannot be read."
+  },
+  "agents.queryInput.unknownStatus": {
+    "defaultMessage": "Unknown status",
+    "description": "Status after the date of a previous question on the agents page when the job's status is missing."
   },
   "agents.result.debugInfo": {
     "defaultMessage": "Debug Information:",

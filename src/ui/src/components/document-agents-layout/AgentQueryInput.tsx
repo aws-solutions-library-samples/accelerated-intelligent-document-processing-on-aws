@@ -17,6 +17,7 @@ import {
   Link,
 } from '@cloudscape-design/components';
 import type { ButtonDropdownProps } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 
 import { listAgentJobs, deleteAgentJob, listAvailableAgents } from '../../graphql/generated';
 import { useAnalyticsContext } from '../../contexts/analytics';
@@ -57,7 +58,7 @@ interface AgentQueryInputProps {
 const client = generateClient();
 
 // Custom styles for expandable textarea
-const textareaStyles = `
+const TEXTAREA_STYLES = `
   .expandable-textarea {
     max-height: 250px;
     overflow-y: auto !important;
@@ -67,7 +68,199 @@ const textareaStyles = `
 
 const logger = new ConsoleLogger('AgentQueryInput');
 
+const messages = defineMessages<{
+  unknownDate: NoMessageValues;
+  noHistory: NoMessageValues;
+  noQuery: NoMessageValues;
+  completed: NoMessageValues;
+  unknownStatus: NoMessageValues;
+  deleteAriaLabel: { readonly query: string };
+  agentsHeading: NoMessageValues;
+  mcpButton: NoMessageValues;
+  loadingAgents: NoMessageValues;
+  noAgents: NoMessageValues;
+  sampleQueries: NoMessageValues;
+  selectAll: NoMessageValues;
+  deselectAll: NoMessageValues;
+  questionLabel: NoMessageValues;
+  placeholder: NoMessageValues;
+  placeholderNoAgent: NoMessageValues;
+  submit: NoMessageValues;
+  submitting: NoMessageValues;
+  clear: NoMessageValues;
+  historyButton: NoMessageValues;
+  historySelected: NoMessageValues;
+  mcpTitle: NoMessageValues;
+  mcpClose: NoMessageValues;
+  mcpWhatTitle: NoMessageValues;
+  mcpWhatBody: NoMessageValues;
+  mcpAddingTitle: NoMessageValues;
+  mcpAddingBody: NoMessageValues;
+  mcpLearnMoreTitle: NoMessageValues;
+  mcpLearnMoreBody: { readonly link: MessageTag };
+}>({
+  unknownDate: {
+    id: 'agents.queryInput.unknownDate',
+    defaultMessage: 'Unknown date',
+    description: 'Shown in place of the date of a previous question on the agents page when the date cannot be read.',
+  },
+  noHistory: {
+    id: 'agents.queryInput.noHistory',
+    defaultMessage: 'No previous questions found',
+    description: 'The only entry of the previous-questions list on the agents page when the user has asked none.',
+  },
+  noQuery: {
+    id: 'agents.queryInput.noQuery',
+    defaultMessage: 'No query',
+    description: 'Shown in place of a previous question on the agents page when the question has no text.',
+  },
+  completed: {
+    id: 'agents.queryInput.completed',
+    defaultMessage: 'Completed',
+    description: "Status after the date of a previous question on the agents page when the agents' job finished.",
+  },
+  unknownStatus: {
+    id: 'agents.queryInput.unknownStatus',
+    defaultMessage: 'Unknown status',
+    description: "Status after the date of a previous question on the agents page when the job's status is missing.",
+  },
+  deleteAriaLabel: {
+    id: 'agents.queryInput.deleteAriaLabel',
+    defaultMessage: 'Delete query: {query}',
+    description:
+      'Screen-reader label of the button that deletes a previous question on the agents page. {query} is the question, as typed, cut to its first 50 characters.',
+  },
+  agentsHeading: {
+    id: 'agents.queryInput.agentsHeading',
+    defaultMessage: 'Select from available agents',
+    description: 'Heading above the list of agents the user can put the question to, on the agents page.',
+  },
+  mcpButton: {
+    id: 'agents.queryInput.mcpButton',
+    defaultMessage: 'NEW: Integrate your own systems with MCP!',
+    description: 'Button on the agents page that explains custom MCP agents. A rocket emoji is shown before it.',
+  },
+  loadingAgents: {
+    id: 'agents.queryInput.loadingAgents',
+    defaultMessage: 'Loading agents...',
+    description: 'Shown in the list of agents on the agents page while the list loads.',
+  },
+  noAgents: {
+    id: 'agents.queryInput.noAgents',
+    defaultMessage: 'No agents available',
+    description: 'Shown in the list of agents on the agents page when the deployment has no agents.',
+  },
+  sampleQueries: {
+    id: 'agents.queryInput.sampleQueries',
+    defaultMessage: 'Sample Queries:',
+    description: "Heading above an agent's sample questions, in the tooltip of an agent on the agents page.",
+  },
+  selectAll: {
+    id: 'agents.queryInput.selectAll',
+    defaultMessage: 'Select All Agents',
+    description: 'Button under the list of agents on the agents page that selects every agent.',
+  },
+  deselectAll: {
+    id: 'agents.queryInput.deselectAll',
+    defaultMessage: 'Deselect All Agents',
+    description: 'Button under the list of agents on the agents page that clears the selection, shown when every agent is selected.',
+  },
+  questionLabel: {
+    id: 'agents.queryInput.questionLabel',
+    defaultMessage: 'Enter your question for the agent',
+    description: 'Label of the text box in which the user types the question for the agents.',
+  },
+  placeholder: {
+    id: 'agents.queryInput.placeholder',
+    defaultMessage: 'Enter your question here...',
+    description: 'Placeholder of the question box on the agents page when the first selected agent has no sample question to show instead.',
+  },
+  placeholderNoAgent: {
+    id: 'agents.queryInput.placeholderNoAgent',
+    defaultMessage: 'Select at least one available agent to get started',
+    description: 'Placeholder of the question box on the agents page while no agent is selected.',
+  },
+  submit: {
+    id: 'agents.queryInput.submit',
+    defaultMessage: 'Submit question',
+    description: 'Button that sends the question to the selected agents.',
+  },
+  submitting: {
+    id: 'agents.queryInput.submitting',
+    defaultMessage: 'Submitting...',
+    description: 'Label of the submit button on the agents page while the question is being sent.',
+  },
+  clear: {
+    id: 'agents.queryInput.clear',
+    defaultMessage: 'Clear question',
+    description: 'Button that clears the question and the results on the agents page.',
+  },
+  historyButton: {
+    id: 'agents.queryInput.historyButton',
+    defaultMessage: 'Select a previous question',
+    description: 'Button that opens the list of previous questions on the agents page.',
+  },
+  historySelected: {
+    id: 'agents.queryInput.historySelected',
+    defaultMessage: 'Selected question',
+    description: 'Label of the previous-questions button on the agents page when the selected question has no text to show.',
+  },
+  mcpTitle: {
+    id: 'agents.queryInput.mcp.title',
+    defaultMessage: 'Custom MCP Agents',
+    description: 'Title of the dialog on the agents page that explains custom MCP agents.',
+  },
+  mcpClose: {
+    id: 'agents.queryInput.mcp.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the custom MCP agents dialog.',
+  },
+  mcpWhatTitle: {
+    id: 'agents.queryInput.mcp.whatTitle',
+    defaultMessage: 'What are MCP Agents?',
+    description: 'Heading in the custom MCP agents dialog.',
+  },
+  mcpWhatBody: {
+    id: 'agents.queryInput.mcp.whatBody',
+    defaultMessage:
+      'Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your document analysis workflow.',
+    description: 'Paragraph in the custom MCP agents dialog, under "What are MCP Agents?".',
+  },
+  mcpAddingTitle: {
+    id: 'agents.queryInput.mcp.addingTitle',
+    defaultMessage: 'Adding Custom Agents',
+    description: 'Heading in the custom MCP agents dialog.',
+  },
+  mcpAddingBody: {
+    id: 'agents.queryInput.mcp.addingBody',
+    defaultMessage:
+      "You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate custom tools, APIs, and services specific to your organization's needs without any code changes or redeployments.",
+    description: 'Paragraph in the custom MCP agents dialog, under "Adding Custom Agents". AWS Secrets Manager is a product name.',
+  },
+  mcpLearnMoreTitle: {
+    id: 'agents.queryInput.mcp.learnMoreTitle',
+    defaultMessage: 'Learn More',
+    description: 'Heading in the custom MCP agents dialog, above the link to the documentation.',
+  },
+  mcpLearnMoreBody: {
+    id: 'agents.queryInput.mcp.learnMoreBody',
+    defaultMessage: 'For detailed setup instructions and examples, see the <link>Custom MCP Agent Documentation</link>',
+    description: 'Last paragraph of the custom MCP agents dialog. The text inside <link> links to the custom MCP agent documentation.',
+  },
+});
+
+/** Renders a `<link>...</link>` element value: the custom MCP agent documentation. */
+const mcpDocsLink = (chunks: React.ReactNode[]): React.JSX.Element => (
+  <Link
+    external
+    href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/custom-MCP-agent.md"
+  >
+    {chunks}
+  </Link>
+);
+
 const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null }: AgentQueryInputProps): React.JSX.Element => {
+  const intl = useIntl();
   const { analyticsState, updateAnalyticsState, resetAnalyticsState } = useAnalyticsContext();
   const { currentInputText } = analyticsState;
   const { formatDateTime } = useFormatters();
@@ -361,23 +554,23 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
       const date = new Date(dateString as string);
       // Check if date is valid
       if (Number.isNaN(date.getTime())) {
-        return 'Unknown date';
+        return intl.formatMessage(messages.unknownDate);
       }
       return formatDateTime(date);
     } catch (e) {
       logger.warn(`Error formatting date: ${dateString}`, e);
-      return 'Unknown date';
+      return intl.formatMessage(messages.unknownDate);
     }
   };
 
   // Create dropdown items with delete functionality
   const createDropdownItems = (): { id?: string; text: string | React.ReactNode; disabled: boolean }[] => {
     if (queryHistory.length === 0) {
-      return [{ text: 'No previous questions found', disabled: true }];
+      return [{ text: intl.formatMessage(messages.noHistory), disabled: true }];
     }
 
     return queryHistory.map((job) => {
-      const displayText = job.query?.length > 50 ? `${job.query.substring(0, 50)}...` : job.query || 'No query';
+      const displayText = job.query?.length > 50 ? `${job.query.substring(0, 50)}...` : job.query || intl.formatMessage(messages.noQuery);
       const dateText = formatDate(job.createdAt);
 
       return {
@@ -387,7 +580,12 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontWeight: 'normal', marginBottom: '2px' }}>{displayText}</div>
               <div style={{ fontSize: '12px', color: '#5f6b7a' }}>
-                {dateText} • {job.status === 'COMPLETED' ? 'Completed' : job.status || 'Unknown status'}
+                {dateText} •{' '}
+                {job.status === 'COMPLETED' ? (
+                  <FormattedMessage {...messages.completed} />
+                ) : (
+                  job.status || <FormattedMessage {...messages.unknownStatus} />
+                )}
               </div>
             </div>
             <Button
@@ -427,7 +625,7 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
                   }, 100);
                 }
               }}
-              ariaLabel={`Delete query: ${displayText}`}
+              ariaLabel={intl.formatMessage(messages.deleteAriaLabel, { query: displayText })}
             />
           </div>
         ),
@@ -438,16 +636,16 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
 
   return (
     <>
-      <style>{textareaStyles}</style>
+      <style>{TEXTAREA_STYLES}</style>
       <form onSubmit={handleSubmit}>
         <SpaceBetween size="l">
           <Box>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <Box fontSize="heading-xs" fontWeight="bold">
-                Select from available agents
+                <FormattedMessage {...messages.agentsHeading} />
               </Box>
               <Button variant="normal" onClick={() => setShowMcpInfoModal(true)} {...({ fontSize: 'body-s' } as Record<string, unknown>)}>
-                🚀 NEW: Integrate your own systems with MCP!
+                🚀 <FormattedMessage {...messages.mcpButton} />
               </Button>
             </div>
             <div
@@ -462,12 +660,14 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
             >
               {isLoadingAgents && (
                 <Box textAlign="center" padding="m">
-                  Loading agents...
+                  <FormattedMessage {...messages.loadingAgents} />
                 </Box>
               )}
               {!isLoadingAgents && availableAgents.length === 0 && (
                 <Box textAlign="center" padding="m">
-                  <b>No agents available</b>
+                  <b>
+                    <FormattedMessage {...messages.noAgents} />
+                  </b>
                 </Box>
               )}
               {!isLoadingAgents && availableAgents.length > 0 && (
@@ -516,7 +716,11 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
                   variant={selectedAgents.length === availableAgents.length ? 'normal' : 'primary'}
                   onClick={handleSelectAllAgents}
                 >
-                  {selectedAgents.length === availableAgents.length ? 'Deselect All Agents' : 'Select All Agents'}
+                  {selectedAgents.length === availableAgents.length ? (
+                    <FormattedMessage {...messages.deselectAll} />
+                  ) : (
+                    <FormattedMessage {...messages.selectAll} />
+                  )}
                 </Button>
               </Box>
             )}
@@ -550,7 +754,7 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
                       {agent.sample_queries && agent.sample_queries.length > 0 && (
                         <Box>
                           <Box fontWeight="bold" fontSize="body-s" padding={{ bottom: 'xs' }}>
-                            Sample Queries:
+                            <FormattedMessage {...messages.sampleQueries} />
                           </Box>
                           <SpaceBetween size="xs">
                             {agent.sample_queries.map((query) => (
@@ -569,13 +773,13 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
           </Box>
 
           <Grid gridDefinition={[{ colspan: { default: 12, xxs: 9 } }, { colspan: { default: 12, xxs: 3 } }]}>
-            <FormField label="Enter your question for the agent">
+            <FormField label={intl.formatMessage(messages.questionLabel)}>
               <Textarea
                 placeholder={
                   selectedAgents.length > 0
                     ? availableAgents.find((agent) => agent.agent_id === selectedAgents[0])?.sample_queries?.[0] ||
-                      'Enter your question here...'
-                    : 'Select at least one available agent to get started'
+                      intl.formatMessage(messages.placeholder)
+                    : intl.formatMessage(messages.placeholderNoAgent)
                 }
                 value={currentInputText}
                 onChange={({ detail }) => updateAnalyticsState({ currentInputText: detail.value })}
@@ -592,10 +796,10 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
                   disabled={!currentInputText.trim() || selectedAgents.length === 0 || isSubmitting}
                   fullWidth
                 >
-                  {isSubmitting ? 'Submitting...' : 'Submit question'}
+                  {isSubmitting ? <FormattedMessage {...messages.submitting} /> : <FormattedMessage {...messages.submit} />}
                 </Button>
                 <Button variant="normal" onClick={handleClearQuery} disabled={isSubmitting} fullWidth>
-                  Clear question
+                  <FormattedMessage {...messages.clear} />
                 </Button>
               </SpaceBetween>
             </Box>
@@ -610,11 +814,11 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
               disabled={isSubmitting}
             >
               {(() => {
-                if (!selectedOption) return 'Select a previous question';
+                if (!selectedOption) return <FormattedMessage {...messages.historyButton} />;
                 if (selectedOption.label?.length > 40) {
                   return `${selectedOption.label.substring(0, 40)}...`;
                 }
-                return selectedOption.label || 'Selected question';
+                return selectedOption.label || <FormattedMessage {...messages.historySelected} />;
               })()}
             </ButtonDropdown>
           </FormField>
@@ -624,11 +828,15 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
       <Modal
         onDismiss={() => setShowMcpInfoModal(false)}
         visible={showMcpInfoModal}
-        header={<Header>Custom MCP Agents</Header>}
+        header={
+          <Header>
+            <FormattedMessage {...messages.mcpTitle} />
+          </Header>
+        }
         footer={
           <Box float="right">
             <Button variant="primary" onClick={() => setShowMcpInfoModal(false)}>
-              Close
+              <FormattedMessage {...messages.mcpClose} />
             </Button>
           </Box>
         }
@@ -636,36 +844,28 @@ const AgentQueryInput = ({ onSubmit, isSubmitting = false, selectedResult = null
         <SpaceBetween size="m">
           <Box>
             <Box fontWeight="bold" fontSize="body-m">
-              What are MCP Agents?
+              <FormattedMessage {...messages.mcpWhatTitle} />
             </Box>
             <Box>
-              Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your
-              document analysis workflow.
+              <FormattedMessage {...messages.mcpWhatBody} />
             </Box>
           </Box>
 
           <Box>
             <Box fontWeight="bold" fontSize="body-m">
-              Adding Custom Agents
+              <FormattedMessage {...messages.mcpAddingTitle} />
             </Box>
             <Box>
-              You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate
-              custom tools, APIs, and services specific to your organization&apos;s needs without any code changes or redeployments.
+              <FormattedMessage {...messages.mcpAddingBody} />
             </Box>
           </Box>
 
           <Box>
             <Box fontWeight="bold" fontSize="body-m">
-              Learn More
+              <FormattedMessage {...messages.mcpLearnMoreTitle} />
             </Box>
             <Box>
-              For detailed setup instructions and examples, see the{' '}
-              <Link
-                external
-                href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/custom-MCP-agent.md"
-              >
-                Custom MCP Agent Documentation
-              </Link>
+              <FormattedMessage {...messages.mcpLearnMoreBody} values={{ link: mcpDocsLink }} />
             </Box>
           </Box>
         </SpaceBetween>
