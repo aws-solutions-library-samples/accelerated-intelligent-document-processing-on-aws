@@ -4724,7 +4724,9 @@ class ClassificationService:
         This reads each page's text only where the model path would report the
         page: the Bedrock backend, the combined strategy at page granularity, and
         images off. Elsewhere it returns nothing and reads nothing, so those
-        short-circuits keep their zero-read cost. A text read that fails, or a page
+        short-circuits keep their zero-read cost. Under
+        ``maxPagesForClassification`` only the sample of pages the model path would
+        classify is read. A text read that fails, or a page
         with no text URI, is logged and not reported: on the model path that page
         fails the document, and a short-circuit that has never failed a document
         for it does not start here.
@@ -4760,7 +4762,9 @@ class ClassificationService:
                 return False
             return not (text and text.strip())
 
-        pages = list(document.pages.items())
+        # Under ``maxPagesForClassification`` the model path classifies only the
+        # first N pages and extrapolates, so only those are read and reported.
+        pages = list(self._limit_pages_for_classification(document).pages.items())
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             blank = list(
                 executor.map(

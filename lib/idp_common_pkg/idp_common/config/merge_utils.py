@@ -1968,9 +1968,14 @@ def _validate_fallback_class(validated: Any, result: Dict[str, Any]) -> None:
     configuration runs today and an error would make ``idp-cli config-upload``
     refuse it. The check reads the validated model, so a pre-0.9
     ``invalidClassFallback`` is judged after it was migrated, and compares names
-    exactly, as the classification service does.
+    exactly, as the classification service does. A class list in the legacy
+    ``name``/``attributes`` format is converted first, as
+    ``ConfigurationRecord.from_dynamodb_item`` converts it before the service
+    reads it; ``IDPConfig.model_validate`` alone does not.
     """
     from difflib import get_close_matches
+
+    from idp_common.config.migration import is_legacy_format, migrate_legacy_to_schema
 
     from idp_common.config.schema_constants import (
         UNCLASSIFIED_CLASS,
@@ -1980,9 +1985,12 @@ def _validate_fallback_class(validated: Any, result: Dict[str, Any]) -> None:
     fallback = validated.classification.fallback_class
     if fallback == UNCLASSIFIED_CLASS:
         return
+    classes = list(validated.classes or [])
+    if classes and is_legacy_format(classes):
+        classes = migrate_legacy_to_schema(classes)
     names = [
         str(c.get(X_AWS_IDP_DOCUMENT_TYPE))
-        for c in validated.classes or []
+        for c in classes
         if isinstance(c, dict) and c.get(X_AWS_IDP_DOCUMENT_TYPE)
     ]
     if fallback in names:

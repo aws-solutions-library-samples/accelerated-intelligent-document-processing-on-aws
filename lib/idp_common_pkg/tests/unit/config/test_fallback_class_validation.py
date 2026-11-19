@@ -105,3 +105,29 @@ def test_presets_were_found():
 def test_no_shipped_preset_is_reported(preset):
     config = yaml.safe_load(preset.read_text())
     assert _fallback_findings(validate_config(config)) == []
+
+
+def test_a_short_name_differing_only_in_case_still_gets_a_suggestion():
+    [finding] = _fallback_findings(validate_config(_config("w2", "W2", "Paystub")))
+    assert finding.endswith("Did you mean 'W2'?")
+
+
+def test_the_built_in_fallback_is_matched_exactly():
+    [finding] = _fallback_findings(validate_config(_config("Unclassified", "Invoice")))
+    assert "'Unclassified'" in finding
+
+
+def test_a_legacy_class_list_is_read_after_conversion():
+    legacy = {
+        "classes": [
+            {
+                "name": "Invoice",
+                "description": "An invoice",
+                "attributes": [{"name": "total", "description": "Total"}],
+            }
+        ],
+        "classification": {"fallback_class": "Invoice"},
+    }
+    assert _fallback_findings(validate_config(legacy)) == []
+    legacy["classification"]["fallback_class"] = "other"
+    assert len(_fallback_findings(validate_config(legacy))) == 1

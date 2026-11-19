@@ -974,7 +974,7 @@ regex match, or a single-class configuration, under a `sectionSplitting` that ne
 no boundary signal goes to `_create_single_class_sections` and calls no model. There
 `_short_circuit_empty_pages` reads each page's text, but only where
 `classify_page_bedrock` would have reported the page (Bedrock backend, combined
-strategy, page granularity, images resolved off), and gives a blank page the same
+strategy, page granularity, images resolved off; under `maxPagesForClassification`, only the sample `_limit_pages_for_classification` picks), and gives a blank page the same
 `no_content` metadata with `class_before_pin` set to `unclassified`, so the
 recorder words it as a page given the asserted class. A failed read or a missing
 text URI is logged and not reported, and does not fail the document. Everywhere

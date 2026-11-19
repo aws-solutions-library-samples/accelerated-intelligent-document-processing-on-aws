@@ -214,3 +214,34 @@ def test_a_page_with_no_text_uri_is_not_reported():
         document = service.classify_document(document)
     assert [i for s in document.sections for i in (s.processing_issues or [])] == []
     assert document.errors == []
+
+
+def test_under_a_page_limit_only_the_sampled_pages_are_read():
+    # maxPagesForClassification: 1 makes the model path classify page 1 alone and
+    # extrapolate, so a blank page 3 is not reported there; nor is it here.
+    service = _service("disabled", maxPagesForClassification=1)
+    _, issues, calls, reads = _run(service, blank=("3",), pages=5)
+    assert calls == 0
+    assert issues == []
+    assert [uri.split("/")[-2] for uri in reads] == ["1"]
+    _, issues, _, _ = _run(service, blank=("1",), pages=5)
+    assert [i.code for _, i in issues] == ["classification_page_no_content"]
+
+
+def test_the_parsed_text_is_read_as_on_the_model_path():
+    service = _service("disabled")
+    document = _document("inv-1.pdf")
+    for page in document.pages.values():
+        page.raw_text_uri = "s3://in/raw/" + page.page_id + "/raw.json"
+    reads: List[str] = []
+
+    def text(uri: str) -> str:
+        reads.append(uri)
+        return "PAGE text"
+
+    with (
+        patch("idp_common.s3.get_text_content", side_effect=text),
+        patch.object(service, "_invoke_bedrock_model", return_value=_reply()),
+    ):
+        service.classify_document(document)
+    assert sorted(reads) == sorted(p.parsed_text_uri for p in document.pages.values())
