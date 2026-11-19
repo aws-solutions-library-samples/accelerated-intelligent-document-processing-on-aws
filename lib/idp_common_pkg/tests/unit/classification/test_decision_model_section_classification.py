@@ -55,9 +55,10 @@ ARN = "arn:aws:lambda:us-west-2:123456789012:function:GENAIIDP-decider"
 class FakeDecider:
     """A decision-model Lambda that answers each section with the next distribution.
 
-    The answers go out in the order the sections ask, so ``_service`` builds the
-    service with one worker: with several, the sections are labelled concurrently
-    and which section asks first is a matter of thread timing.
+    The answers go out in the order the sections ask, so a test that hands out
+    more than one builds its service with ``max_workers=1``: with several workers
+    the sections are labelled concurrently, and which one asks first is a matter
+    of thread timing.
     """
 
     def __init__(self, distributions: List[Dict[str, float]], error: Any = None):
@@ -93,7 +94,12 @@ class FakeDecider:
         return {"StatusCode": 200, "Payload": io.BytesIO(json.dumps(body).encode())}
 
 
-def _service(decision_model=None, low_confidence=None, classes=("invoice", "receipt")):
+def _service(
+    decision_model=None,
+    low_confidence=None,
+    classes=("invoice", "receipt"),
+    max_workers=20,
+):
     section = {
         "method": "decision_model",
         "pages": "all",
@@ -111,7 +117,9 @@ def _service(decision_model=None, low_confidence=None, classes=("invoice", "rece
             },
         },
     }
-    return ClassificationService(region="us-west-2", config=config, max_workers=1)
+    return ClassificationService(
+        region="us-west-2", config=config, max_workers=max_workers
+    )
 
 
 def _split(*ranges):
@@ -138,7 +146,7 @@ def _run(service, document, decider, bedrock):
 
 
 def test_each_section_is_one_choice_question_over_the_classes():
-    service = _service()
+    service = _service(max_workers=1)
     decider = FakeDecider(
         [{"invoice": 0.9, "receipt": 0.1}, {"invoice": 0.2, "receipt": 0.8}]
     )
@@ -201,7 +209,8 @@ def test_a_refusal_fails_the_section_and_calls_no_llm():
 
 def test_low_confidence_llm_relabels_only_answers_below_the_threshold():
     service = _service(
-        low_confidence={"min_confidence": 0.7, "on_low_confidence": "llm"}
+        max_workers=1,
+        low_confidence={"min_confidence": 0.7, "on_low_confidence": "llm"},
     )
     decider = FakeDecider(
         [{"invoice": 0.95, "receipt": 0.05}, {"invoice": 0.55, "receipt": 0.45}]

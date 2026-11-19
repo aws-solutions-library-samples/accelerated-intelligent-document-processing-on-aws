@@ -140,6 +140,7 @@ def _service(
     few_shot_examples: bool = False,
     segmentation: Optional[Dict[str, Any]] = None,
     labeling: Optional[Dict[str, Any]] = None,
+    max_workers: int = 20,
     **classification: Any,
 ) -> ClassificationService:
     cfg: Dict[str, Any] = {
@@ -172,7 +173,7 @@ def _service(
     cfg.update(classification)
     return ClassificationService(
         region="us-west-2",
-        max_workers=1,
+        max_workers=max_workers,
         config={
             "classes": _classes(
                 *(classes or ["invoice", "receipt"]), examples=few_shot_examples
@@ -215,9 +216,10 @@ class _Router:
     because that is exactly what the production code routes on — the metering
     context, the model and the prompts all come from it.
 
-    Section labels go out in the order the sections ask, so ``_service`` builds
-    the service with one worker: with several, the sections are labelled
-    concurrently and which section asks first is a matter of thread timing.
+    Section labels go out in the order the sections ask, so a test that gives
+    its sections different labels builds its service with ``max_workers=1``:
+    with several workers the sections are labelled concurrently, and which one
+    asks first is a matter of thread timing.
     """
 
     def __init__(
@@ -493,6 +495,7 @@ class TestSplittingWithholdsTheVocabularyOnEveryPath:
         self, granularity, context_pages
     ):
         service = _service(
+            max_workers=1,
             granularity=granularity,
             few_shot_examples=True,
             contextPagesCount=context_pages,
@@ -726,7 +729,7 @@ class TestSplitThenClassifyPacket:
     def test_one_splitting_call_then_one_section_classification_call_per_segment(
         self,
     ):
-        service = _service(granularity="packet")
+        service = _service(max_workers=1, granularity="packet")
         router = _Router(
             packet_segments=[
                 {"ordinal_start_page": 1, "ordinal_end_page": 2},
@@ -754,7 +757,7 @@ class TestSplitThenClassifyPacket:
         assert result.sections[0].page_ids == ["1", "2", "3"]
 
     def test_the_two_calls_are_metered_separately(self):
-        service = _service(granularity="packet")
+        service = _service(max_workers=1, granularity="packet")
         router = _Router(
             packet_segments=[
                 {"ordinal_start_page": 1, "ordinal_end_page": 1},
@@ -888,7 +891,7 @@ class TestSplitThenClassifyPage:
 
     def test_one_boundary_call_per_page_then_one_label_call_per_segment(self):
         boundaries = {"1": "start", "2": "continue", "3": "start"}
-        service = _service(granularity="page")
+        service = _service(max_workers=1, granularity="page")
         router = _Router(boundaries=boundaries, labels=["invoice", "receipt"])
         result = self._run(service, _document(3), router)
 
@@ -1345,7 +1348,7 @@ class TestADeclaredDocumentShapeSkipsSplitting:
         assert all(f"PAGE-{i}" in text for i in range(1, 5))
 
     def test_one_per_page_classifies_each_page_once(self):
-        service = _service(sectionSplitting="page")
+        service = _service(max_workers=1, sectionSplitting="page")
         router = _Router(labels=["invoice", "receipt", "invoice"])
         result = self._run(service, _document(3), router)
 
@@ -1428,7 +1431,7 @@ class TestASplittingAnswerThatLeavesAPageOut:
     classification then labels the segment it joined."""
 
     def test_the_trailing_page_is_kept_labelled_and_reported(self):
-        service = _service(granularity="packet")
+        service = _service(max_workers=1, granularity="packet")
         document = _document(3)
         router = _Router(
             packet_segments=[
