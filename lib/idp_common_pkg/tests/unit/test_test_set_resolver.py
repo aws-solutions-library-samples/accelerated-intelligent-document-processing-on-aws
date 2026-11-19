@@ -14,7 +14,7 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from idp_common.dynamodb.client import DynamoDBClient as RealDynamoDBClient
-from idp_common.dynamodb.client import DynamoDBError
+from idp_common.dynamodb.client import DynamoDBError, _condition_failure_item
 from idp_common.forced_sections import decode_forced_sections
 from idp_common.review_queues.testset_docs import (
     SUMMARY_BUILDING,
@@ -247,12 +247,17 @@ def _db_client_on(table):
         expression_attribute_values=None,
         return_values="ALL_NEW",
         condition_expression=None,
+        return_values_on_condition_check_failure=None,
     ):
         kwargs = {
             "Key": key,
             "UpdateExpression": update_expression,
             "ReturnValues": return_values,
         }
+        if return_values_on_condition_check_failure:
+            kwargs["ReturnValuesOnConditionCheckFailure"] = (
+                return_values_on_condition_check_failure
+            )
         if expression_attribute_names:
             kwargs["ExpressionAttributeNames"] = expression_attribute_names
         if expression_attribute_values:
@@ -272,6 +277,7 @@ def _db_client_on(table):
             raise DynamoDBError(
                 f"Update item failed: {exc.response['Error']['Message']}",
                 exc.response["Error"]["Code"],
+                item=_condition_failure_item(exc),
             ) from exc
 
     def _delete_item(
@@ -9991,6 +9997,36 @@ class TestDeletingATestSet:
 
         assert _row(table) == original
         assert _set_files(s3) == sorted(keys)
+
+    def test_the_refusal_names_the_status_the_condition_saw(self, create_env):
+        # The job finishes between the refused claim and the message: the row is
+        # COMPLETED by then, and a re-read would report "busy (COMPLETED)", a
+        # contradiction. The message must name the status that was refused.
+        table, _sqs, _queue_url, s3 = create_env
+        original = _busy(_existing_set(table), "COPYING")
+        table.put_item(Item=original)
+        _put_set_files(s3)
+        real_update = test_set_index.db_client.table.update_item
+
+        def update_then_finish(**kwargs):
+            try:
+                return real_update(**kwargs)
+            except ClientError:
+                table.put_item(Item={**original, "status": "COMPLETED"})
+                raise
+
+        with (
+            patch.object(
+                test_set_index.db_client.table,
+                "update_item",
+                side_effect=update_then_finish,
+            ),
+            pytest.raises(ValueError) as raised,
+        ):
+            self._delete("my-set")
+
+        assert "'my-set' is busy (COPYING)" in str(raised.value)
+        assert _row(table)["status"] == "COMPLETED"
 
     def test_a_claim_failure_other_than_the_condition_is_not_a_refusal(
         self, create_env

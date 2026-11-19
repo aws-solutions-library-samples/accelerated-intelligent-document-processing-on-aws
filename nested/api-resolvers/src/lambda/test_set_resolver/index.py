@@ -5498,6 +5498,9 @@ def _claim_test_set_for_deletion(test_set_id):
             expression_attribute_names={"#st": "status"},
             expression_attribute_values=values,
             return_values="NONE",
+            # The row the condition refused, so the message names the status that
+            # decided it rather than one a re-read sees after the job has moved on.
+            return_values_on_condition_check_failure="ALL_OLD",
             # A busy row with no statusUpdatedAt (other than QUEUED, which is aged
             # by createdAt) is one the reaper can never fail, written before the
             # stamp existed; refusing it would make that set undeletable for good,
@@ -5511,8 +5514,8 @@ def _claim_test_set_for_deletion(test_set_id):
     except DynamoDBError as e:
         if e.error_code != "ConditionalCheckFailedException":
             raise
-    # This read only chooses the message; the write above made the decision.
-    row = db_client.get_item(key)
+        row = e.item
+    # No row comes back when the condition failed on attribute_exists(PK).
     if not row:
         return False
     raise ValueError(
