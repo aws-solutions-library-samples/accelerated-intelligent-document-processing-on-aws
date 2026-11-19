@@ -185,6 +185,7 @@
         "idp_common/evaluation/confidence_integration.py": 0.0,
         "idp_common/evaluation/contract.py": 90.7,
         "idp_common/evaluation/curve_store.py": 96.34,
+        "idp_common/evaluation/empty_values.py": 94.12,
         "idp_common/evaluation/intervals.py": 100.0,
         "idp_common/evaluation/llm_comparator.py": 0.0,
         "idp_common/evaluation/models.py": 87.84,

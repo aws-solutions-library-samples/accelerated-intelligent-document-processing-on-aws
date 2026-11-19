@@ -2088,12 +2088,35 @@ When a model extracts a field with 90% confidence, ideally 90% of such predictio
 - **Poor AUROC (0.62), Any ECE**: Confidence scores don't correlate with correctness — unreliable even if calibrated
 - **ECARB@30 = 89% (3.0x)**: **The business metric** - If you can only manually review 30% of extracted data, sorting by confidence (lowest first) lets you catch 89% of errors with 3x better efficiency than random sampling. This answers the practical question: "How much value does confidence-guided review provide?"
 
+**Empty Predictions:**
+
+AUROC, ECE and Brier above are computed over the fields the extractor returned a value
+for. A field it returned as empty (no value, a blank string, or an empty list) is left out
+of them, which hides one important failure: a confidence scorer that gives a **missed**
+field a high score. Such a field is exactly the one a reviewer most needs to see, and the
+headline AUROC cannot show the problem because it never sees the field.
+
+Test results therefore report empty predictions in two extra rows of the breakdown table,
+next to the existing figures rather than folded into them, so the meaning of the existing
+AUROC does not change between runs:
+
+| Row | What it shows |
+|-----|---------------|
+| **Confidence: AUROC incl. Empty Values** | AUROC over every scored field with the empty predictions included. Compare it with the AUROC row: a large drop means the scorer ranks missed fields wrongly. |
+| **Confidence: Empty Predictions** | How many fields came back empty, how many of those were wrong (the ground truth had a value), and the AUROC over the empty fields alone. Below 0.5 means missed fields score higher than correctly empty ones. |
+
+A run evaluated before this measurement existed has no such rows. If some of a run's
+documents were evaluated before it existed and some after, the value says how many older
+sections could not be scored, because their empty fields' confidences were never kept.
+The figures are stored under `confidenceMetrics.empty_values` in the test run's results.
+
 **How Calibration Metrics Are Computed:**
 
 1. **Document Evaluation**: For each document, the evaluation service:
    - Flattens confidence scores from extraction results (unwraps wrapper keys like `Item_N`, `Record_N`)
    - Patches Stickler's comparison results with `field_path` for matching
-   - Stores `stickler_comparison_result` with confidences in `results.json`
+   - Stores `stickler_comparison_result` with confidences in `results.json`, including the
+     confidence of each empty prediction under `empty_prediction_confidences`
 
 2. **Test Aggregation**: When viewing test results, the aggregation function:
    - Loads all `stickler_comparison_result` records for the test run
