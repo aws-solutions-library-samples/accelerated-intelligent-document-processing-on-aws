@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Optional
 
 import boto3
 
+from idp_sdk._core.region import resolve_region
 from idp_sdk._core.stack_info import StackInfo
 
 if TYPE_CHECKING:
@@ -63,7 +64,9 @@ class ChatProcessor:
 
         reporting_bucket = outputs.get("S3ReportingBucketName", "")
         reporting_db = outputs.get("ReportingDatabase", "")
-        resolved_region = self.region or boto3.Session().region_name or "us-east-1"
+        # The Region the stack was just found in (the client `info` used), so the
+        # agents' clients reach the same stack rather than a hard-coded Region's.
+        resolved_region = resolve_region(self.region)
 
         env = {
             "AWS_STACK_NAME": self.stack_name,

@@ -128,7 +128,18 @@ class StackOperation:
                 if not os.path.isfile(publish_script):
                     raise IDPConfigurationError(f"publish.py not found in {from_code}")
 
-                sts = boto3.client("sts", region_name=self._client._region)
+                # Publish into the Region the stack is deployed in: artifacts in
+                # another Region's bucket cannot be read by this one's Lambdas.
+                from idp_sdk._core.region import resolve_region
+
+                publish_region = resolve_region(self._client._region)
+                if not publish_region:
+                    raise IDPConfigurationError(
+                        "Region could not be determined. Pass a region, or set "
+                        "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS "
+                        "profile."
+                    )
+                sts = boto3.client("sts", region_name=publish_region)
                 account_id = sts.get_caller_identity()["Account"]
                 cfn_bucket_basename = f"idp-accelerator-artifacts-{account_id}"
                 cfn_prefix = "idp-sdk"
@@ -138,7 +149,7 @@ class StackOperation:
                     publish_script,
                     cfn_bucket_basename,
                     cfn_prefix,
-                    self._client._region or "us-west-2",
+                    publish_region,
                     # A direct publish.py run also publishes the Terraform
                     # module, which a CloudFormation deployment never reads.
                     "--no-terraform",
