@@ -28,6 +28,7 @@ import { generateClient } from '../../api/client-shim';
 import { addDocumentsToTestSet, addDocumentsToTestSetFromUpload, listBucketFiles } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { BUCKET_OPTIONS, TIME_FILTER_OPTIONS } from './testSetOptions';
+import { customCutoffIsInvalid, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import AddProcessedDocumentsModal from './AddProcessedDocumentsModal';
 import { createLatestResponseGuard } from './latestResponseOnly';
 import { useFormatters } from '../../i18n/format';
@@ -100,6 +101,11 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
   const [customTime, setCustomTime] = useState('00:00:00');
   const [matchingFiles, setMatchingFiles] = useState<string[]>([]);
   const [preview, setPreview] = useState<PatternPreview | null>(null);
+  // The cutoff the preview above was computed against. A relative window ("last
+  // 24 hours") is resolved to an absolute time when Check Files is sent, and Add
+  // sends that same time: resolving it again would move the cutoff later and
+  // leave out counted files that aged out in between. Cleared with the preview.
+  const [checkedCutoff, setCheckedCutoff] = useState<{ modifiedAfter: string | undefined } | null>(null);
   const [showFilesModal, setShowFilesModal] = useState(false);
   const [zipFile, setZipFile] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -123,6 +129,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
     setCustomTime('00:00:00');
     setMatchingFiles([]);
     setPreview(null);
+    setCheckedCutoff(null);
     setZipFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setError('');
@@ -136,6 +143,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
   const clearCheck = () => {
     checkGuard.current.claim();
     setPreview(null);
+    setCheckedCutoff(null);
   };
 
   const close = () => {
@@ -143,21 +151,22 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
     onDismiss();
   };
 
-  const getModifiedAfterTimestamp = (): string | undefined => {
-    const filterValue = selectedTimeFilter.value;
-    if (!filterValue) return undefined;
-    if (filterValue === 'custom') {
-      if (!customDate) return undefined;
-      return `${customDate}T${customTime || '00:00:00'}.000Z`;
-    }
-    const date = new Date(Date.now() - parseInt(filterValue, 10) * 60 * 60 * 1000);
-    return date.toISOString();
-  };
+  // "Modified after" is shown for the Input bucket only, so a filter left set
+  // before switching to the Test Set bucket neither applies nor blocks a check.
+  const timeFilterValue = selectedBucket.value === 'input' ? selectedTimeFilter.value : undefined;
+  const customDateTimeInvalid = customCutoffIsInvalid(timeFilterValue, customDate, customTime);
+  const getModifiedAfterTimestamp = (): string | undefined => resolveModifiedAfter(timeFilterValue, customDate, customTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim() || !testSet) return;
+    if (customDateTimeInvalid) {
+      setError(intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime));
+      return;
+    }
+    setError('');
     const bucketType = selectedBucket.value ?? '';
     const isCurrent = checkGuard.current.claim();
+    const modifiedAfter = getModifiedAfterTimestamp();
     setLoading(true);
     try {
       // The set's own input/ folder is listed alongside the pattern, because the
@@ -165,7 +174,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
       const [result, existing] = await Promise.all([
         client.graphql({
           query: listBucketFiles,
-          variables: { bucketType, filePattern: filePattern.trim(), modifiedAfter: getModifiedAfterTimestamp() },
+          variables: { bucketType, filePattern: filePattern.trim(), modifiedAfter },
         }),
         client.graphql({
           query: listBucketFiles,
@@ -181,6 +190,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
       const split = splitPatternMatches(bucketType, files, members);
       setMatchingFiles(files);
       setPreview(split);
+      setCheckedCutoff({ modifiedAfter });
       setShowFilesModal(true);
     } catch (err) {
       if (isCurrent()) setError(`Failed to check files: ${getErrorMessage(err)}`);
@@ -204,7 +214,9 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           filePattern: filePattern.trim(),
           bucketType: selectedBucket.value ?? '',
           fileCount,
-          modifiedAfter: getModifiedAfterTimestamp(),
+          // Add is enabled only once a check has answered, so the stored cutoff is
+          // there; resolving now covers a future path that enables Add without one.
+          modifiedAfter: checkedCutoff ? checkedCutoff.modifiedAfter : getModifiedAfterTimestamp(),
         },
       });
       const updated = result.data.addDocumentsToTestSet;
@@ -322,7 +334,11 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           </FormField>
 
           {selectedBucket.value === 'input' && (
-            <FormField label="Modified after" description="Optional: only include files modified within this time period">
+            <FormField
+              label="Modified after"
+              description="Optional: only include files modified within this time period"
+              errorText={customDateTimeInvalid ? intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime) : undefined}
+            >
               <SpaceBetween size="xs">
                 <Select
                   selectedOption={selectedTimeFilter}
@@ -353,7 +369,7 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
                       placeholder="HH:mm:ss"
                     />
                     <Box variant="small" padding={{ top: 'xs' }}>
-                      UTC
+                      {intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}
                     </Box>
                   </SpaceBetween>
                 )}
