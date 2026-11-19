@@ -55,10 +55,10 @@ ARN = "arn:aws:lambda:us-west-2:123456789012:function:GENAIIDP-decider"
 class FakeDecider:
     """A decision-model Lambda that answers each section with the next distribution.
 
-    The answers go out in the order the sections ask, so a test that hands out
-    more than one builds its service with ``max_workers=1``: with several workers
-    the sections are labelled concurrently, and which one asks first is a matter
-    of thread timing.
+    The answers go out in the order the sections ask, so a test that asserts
+    which section got which answer builds its service with ``max_workers=1``:
+    with several workers the sections are labelled concurrently, and which one
+    asks first is a matter of thread timing.
     """
 
     def __init__(self, distributions: List[Dict[str, float]], error: Any = None):

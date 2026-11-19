@@ -216,8 +216,8 @@ class _Router:
     because that is exactly what the production code routes on — the metering
     context, the model and the prompts all come from it.
 
-    Section labels go out in the order the sections ask, so a test that gives
-    its sections different labels builds its service with ``max_workers=1``:
+    Section labels go out in the order the sections ask, so a test that asserts
+    which section got which label builds its service with ``max_workers=1``:
     with several workers the sections are labelled concurrently, and which one
     asks first is a matter of thread timing.
     """
@@ -495,7 +495,6 @@ class TestSplittingWithholdsTheVocabularyOnEveryPath:
         self, granularity, context_pages
     ):
         service = _service(
-            max_workers=1,
             granularity=granularity,
             few_shot_examples=True,
             contextPagesCount=context_pages,
@@ -757,7 +756,7 @@ class TestSplitThenClassifyPacket:
         assert result.sections[0].page_ids == ["1", "2", "3"]
 
     def test_the_two_calls_are_metered_separately(self):
-        service = _service(max_workers=1, granularity="packet")
+        service = _service(granularity="packet")
         router = _Router(
             packet_segments=[
                 {"ordinal_start_page": 1, "ordinal_end_page": 1},
@@ -891,7 +890,7 @@ class TestSplitThenClassifyPage:
 
     def test_one_boundary_call_per_page_then_one_label_call_per_segment(self):
         boundaries = {"1": "start", "2": "continue", "3": "start"}
-        service = _service(max_workers=1, granularity="page")
+        service = _service(granularity="page")
         router = _Router(boundaries=boundaries, labels=["invoice", "receipt"])
         result = self._run(service, _document(3), router)
 
@@ -1348,7 +1347,7 @@ class TestADeclaredDocumentShapeSkipsSplitting:
         assert all(f"PAGE-{i}" in text for i in range(1, 5))
 
     def test_one_per_page_classifies_each_page_once(self):
-        service = _service(max_workers=1, sectionSplitting="page")
+        service = _service(sectionSplitting="page")
         router = _Router(labels=["invoice", "receipt", "invoice"])
         result = self._run(service, _document(3), router)
 
