@@ -126,6 +126,13 @@ const CreateTestSetWizard = ({
   const [customTime, setCustomTime] = useState('00:00:00');
   const [fileCount, setFileCount] = useState(0);
   const [leftOut, setLeftOut] = useState('');
+  // The cutoff the count above was computed against. A relative window ("last 24
+  // hours") is resolved to an absolute time when the check is sent, and submit
+  // sends that same time: resolving it again would move the cutoff later and
+  // leave out counted files that aged out in between. The cutoff is a lower
+  // bound only, so files added after the check are still copied. Null until a
+  // check has answered.
+  const [checkedCutoff, setCheckedCutoff] = useState<{ modifiedAfter: string | undefined } | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   // A check's reply describes the bucket, pattern and time filter it was sent
   // with; one landing after any of them changed must not set the count.
@@ -153,6 +160,7 @@ const CreateTestSetWizard = ({
     checkGuard.current.claim();
     setFileCount(0);
     setLeftOut('');
+    setCheckedCutoff(null);
     setError('');
   };
 
@@ -171,6 +179,7 @@ const CreateTestSetWizard = ({
     setCustomTime('00:00:00');
     setFileCount(0);
     setLeftOut('');
+    setCheckedCutoff(null);
     setError('');
   };
 
@@ -194,6 +203,7 @@ const CreateTestSetWizard = ({
       return;
     }
     const isCurrent = checkGuard.current.claim();
+    const modifiedAfter = getModifiedAfter();
     setIsChecking(true);
     setError('');
     try {
@@ -202,7 +212,7 @@ const CreateTestSetWizard = ({
         variables: {
           bucketType: bucket.value ?? '',
           filePattern: filePattern.trim(),
-          modifiedAfter: getModifiedAfter(),
+          modifiedAfter,
         },
       });
       if (!isCurrent()) return;
@@ -210,6 +220,7 @@ const CreateTestSetWizard = ({
       // A new set holds nothing yet, so only the .zip matches are left out.
       const split = splitPatternMatches(bucket.value ?? '', matched);
       setFileCount(split.documents.length);
+      setCheckedCutoff({ modifiedAfter });
       const leftOutText = formatLeftOut(intl, split);
       setLeftOut(leftOutText);
       if (matched.length === 0) setError('No files matched that pattern');
@@ -305,7 +316,8 @@ const CreateTestSetWizard = ({
       filePattern: filePattern.trim(),
       bucketType: bucket.value ?? '',
       fileCount,
-      modifiedAfter: getModifiedAfter(),
+      // Unchecked, there is no count to agree with, so the window is resolved now.
+      modifiedAfter: checkedCutoff ? checkedCutoff.modifiedAfter : getModifiedAfter(),
     };
     if (documentClassType.value) {
       variables.documentClassType = documentClassType.value as DocumentClassType;

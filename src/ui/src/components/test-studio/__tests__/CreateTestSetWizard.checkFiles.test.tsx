@@ -15,7 +15,7 @@ import createWrapper from '@cloudscape-design/components/test-utils/dom';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { IntlProvider } from 'react-intl';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const graphql = vi.fn();
 vi.mock('../../../api/client-shim', () => ({ generateClient: () => ({ graphql: (...a: unknown[]) => graphql(...a) }) }));
@@ -209,5 +209,100 @@ describe('Check matching files in the create wizard', () => {
 
     expect(screen.getByPlaceholderText('*.pdf')).toBeTruthy();
     expect(screen.queryByText('2 files to add')).toBeNull();
+  });
+});
+
+/** The `modifiedAfter` each call of `query` was sent with, in call order. */
+const cutoffsSent = (query: string): (string | undefined)[] =>
+  graphql.mock.calls
+    .map(([arg]) => arg as { query: string; variables?: { modifiedAfter?: string } })
+    .filter((arg) => arg.query === query)
+    .map((arg) => arg.variables?.modifiedAfter);
+
+const chooseTimeFilter = (value: string): void => {
+  const timeFilter = createWrapper(document.body).findWizard()!.findContent()!.findAllSelects()[2];
+  act(() => timeFilter.openDropdown());
+  act(() => timeFilter.selectOptionByValue(value));
+};
+
+/** Name the set, go on to Review, and press Create. */
+const submit = async (): Promise<void> => {
+  fireEvent.change(screen.getByPlaceholderText('my-invoices-benchmark'), { target: { value: 'recent-invoices' } });
+  const wizard = createWrapper(document.body).findWizard()!;
+  act(() => wizard.findPrimaryButton().click());
+  await act(async () => wizard.findPrimaryButton().click());
+  await waitFor(() => expect(cutoffsSent('addTestSet')).toHaveLength(1));
+};
+
+describe('The "Modified after" cutoff the wizard submits', () => {
+  const checkedAt = Date.parse('2026-11-18T12:00:00.000Z');
+  const submittedAt = checkedAt + 40 * 60 * 1000;
+  const hour = 3600 * 1000;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    graphql.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('is the cutoff the check counted against, not one recomputed at submit', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(checkedAt);
+    const listing = deferredListing();
+    openPatternStep();
+    chooseTimeFilter('24');
+    check();
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+    await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
+
+    now.mockReturnValue(submittedAt);
+    await submit();
+
+    const counted = new Date(checkedAt - 24 * hour).toISOString();
+    expect(cutoffsSent('listBucketFiles')).toEqual([counted]);
+    expect(cutoffsSent('addTestSet')).toEqual([counted]);
+  });
+
+  it('is resolved at submit when nothing was checked', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(submittedAt);
+    deferredListing();
+    openPatternStep();
+    chooseTimeFilter('24');
+
+    await submit();
+
+    expect(cutoffsSent('addTestSet')).toEqual([new Date(submittedAt - 24 * hour).toISOString()]);
+  });
+
+  it('ignores the cutoff of a check whose reply landed after the time filter changed', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(checkedAt);
+    const listing = deferredListing();
+    openPatternStep();
+    chooseTimeFilter('24');
+    check();
+    chooseTimeFilter('168');
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+
+    await submit();
+
+    expect(cutoffsSent('addTestSet')).toEqual([new Date(checkedAt - 168 * hour).toISOString()]);
+  });
+
+  it('follows a time filter changed after the check', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(checkedAt);
+    const listing = deferredListing();
+    openPatternStep();
+    chooseTimeFilter('24');
+    check();
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+    await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
+
+    chooseTimeFilter('168');
+    now.mockReturnValue(submittedAt);
+    await submit();
+
+    expect(cutoffsSent('addTestSet')).toEqual([new Date(submittedAt - 168 * hour).toISOString()]);
   });
 });
