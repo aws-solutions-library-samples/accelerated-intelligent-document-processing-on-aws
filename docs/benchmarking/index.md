@@ -175,8 +175,10 @@ it is deleted with its stack while the S3 artifacts outlive it. So the boundary 
 declared and closed: universe-closure tests over the declared stage constants and
 over the codes `assessment/degradation.py` declares, plus computed checks that the
 module reaches an S3 write only from the function that carries a degrade issue into
-`result.json` and that the only caller of that function hands it the degrade issue, so a third such stage or code — or the
-boundary ceasing to be true — fails a test rather than going quietly unread.
+`result.json`, and that the one caller of that function passes it the issue the
+degrade built. These read source, so a write or a change to the issue reached by a
+route spelled only at run time is not seen. So a third such stage or code — or the
+boundary ceasing to be true in a way the source shows — fails a test rather than going quietly unread.
 
 Scoring is **resolver-free** — it reads S3 output and DynamoDB metering directly, so it
 works on any stack version (useful for cross-release comparisons).

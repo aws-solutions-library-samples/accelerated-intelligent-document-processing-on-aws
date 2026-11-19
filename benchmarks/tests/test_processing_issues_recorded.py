@@ -420,7 +420,8 @@ def _references(tree, names):
     ``names`` in ``tree``: a bare name, an attribute, or a string literal (the
     ``getattr(s3, "write_content")`` spelling). References rather than calls, so an
     alias (``put = s3.write_content``) is found where it is taken, not missed where
-    it is called. Definitions and import statements are not references.
+    it is called, and ``import ... as`` counts too. A definition or a plain import is
+    not a reference.
 
     What this cannot see is a name assembled at run time (``"write_" + "content"``);
     nothing that reads source can, and that is the residual these checks carry.
@@ -430,6 +431,13 @@ def _references(tree, names):
     def visit(node, enclosing):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.Import, ast.ImportFrom)):
+                # A plain import binds the name itself and is not a reference; an
+                # ``import x as y`` is, because it hides every later use of ``x``
+                # behind ``y``.
+                for alias in child.names:
+                    leaf = alias.name.rsplit(".", 1)[-1]
+                    if alias.asname and leaf in names:
+                        found.append((enclosing, leaf))
                 continue
             inner = enclosing
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -485,7 +493,8 @@ def test_only_the_degrade_handler_feeds_that_write():
     tracked production module, ``degradation.py`` included, there must be exactly one
     reference to ``record_no_confidence_in_result`` (definitions and imports aside):
     the Assessment Lambda's call, whose issue argument is the one
-    ``degrade_section_to_no_confidence`` just built. A second caller anywhere, the
+    ``degrade_section_to_no_confidence`` just built, with no attribute assigned on it
+    in between. A second caller anywhere, the
     skip path calling it from inside ``degradation.py``, or the handler passing some
     other issue, fails here."""
     import subprocess
@@ -538,7 +547,19 @@ def test_only_the_degrade_handler_feeds_that_write():
         key=lambda pair: pair[0],
     )
     assert assignments, f"{passed} is never assigned before the call"
-    _, value = assignments[-1]
+    line, value = assignments[-1]
+    # ...and is not changed in place between that assignment and the call: an
+    # ``issue.code = ...`` there would hand the writer a relabelled issue.
+    stores = [
+        n.lineno
+        for n in ast.walk(handler)
+        if isinstance(n, ast.Attribute)
+        and isinstance(n.ctx, ast.Store)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == passed
+        and line < n.lineno < call.lineno
+    ]
+    assert not stores, f"{passed} is modified before the call, at lines {stores}"
     assert (
         isinstance(value, ast.Call)
         and getattr(value.func, "id", None) == "degrade_section_to_no_confidence"
