@@ -649,10 +649,13 @@ way the CloudFormation delete path does, then removes from Terraform state every
 resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 `RetainExceptOnCreate`), and then runs `terraform destroy`. Removing a resource from
 state means Terraform forgets it without deleting it, so the resources CloudFormation
-would retain are retained here too: the logging bucket, the data buckets and the other
-resources the templates mark that way. The command reports which retained resources
-were left, as the CloudFormation path does, naming the Region-wide API Gateway account
-setting for what it is rather than by its identifier.
+would retain are retained here too: the logging bucket, the data buckets, the KMS key
+that encrypts them, and the other resources the templates mark that way. The command
+reports which retained resources were left, as the CloudFormation path does, naming the
+Region-wide API Gateway account setting and the KMS key for what they are rather than
+by their identifiers. For the key it also prints the `aws kms schedule-key-deletion`
+command to run once none of the retained data is needed; the key costs about $1 a
+month until then. See [The retained KMS key](./idp-cli.md#the-retained-kms-key).
 
 It also lists the log groups AWS services created on the deployment's behalf, which
 neither `terraform destroy` nor a CloudFormation stack delete removes, because neither

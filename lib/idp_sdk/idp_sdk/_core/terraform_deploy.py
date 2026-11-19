@@ -1431,12 +1431,20 @@ def _api_gateway_account(vals: Dict[str, Any]) -> str:
     return f"{text} (CloudWatch Logs role {role})" if role else text
 
 
+def _kms_key(vals: Dict[str, Any]) -> str:
+    key = vals.get("key_id") or vals.get("id")
+    return f"KMS key {key}, which encrypts the retained buckets"
+
+
 #: Resources whose only identifier is not a name a reader can act on. The
 #: account-level API Gateway setting's id is the provider's or Cloud Control's
-#: identifier, which says nothing about what was kept.
+#: identifier, which says nothing about what was kept; a KMS key's id says
+#: nothing about why it was kept.
 _DISPLAY_NAMES = {
     "aws_api_gateway_account": _api_gateway_account,
     "awscc_apigateway_account": _api_gateway_account,
+    "aws_kms_key": _kms_key,
+    "awscc_kms_key": _kms_key,
 }
 
 

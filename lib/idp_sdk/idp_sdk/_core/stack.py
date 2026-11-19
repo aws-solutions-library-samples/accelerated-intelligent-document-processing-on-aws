@@ -1770,11 +1770,21 @@ class StackDeployer:
             + len(retained["s3_buckets"])
         )
 
+        # KMS keys are not deleted here: a key can only be scheduled for
+        # deletion, and anything it encrypted that survives this cleanup (a
+        # bucket that failed to delete, an object copied elsewhere) would become
+        # unreadable. They are reported so the caller can say how to do it.
+        kms_keys = [
+            r["physical_id"]
+            for r in retained["other"]
+            if r.get("type") == "AWS::KMS::Key" and r.get("physical_id")
+        ]
+
         if total == 0:
             logger.info(
                 "No retained resources found - CloudFormation deleted everything!"
             )
-            return {"total_deleted": 0, "errors": []}
+            return {"total_deleted": 0, "errors": [], "kms_keys_retained": kms_keys}
 
         logger.info(
             f"Found {total} retained resources: "
@@ -1793,6 +1803,7 @@ class StackDeployer:
             "logs_deleted": [],
             "buckets_deleted": [],
             "errors": [],
+            "kms_keys_retained": kms_keys,
         }
 
         # Phase 1: DynamoDB

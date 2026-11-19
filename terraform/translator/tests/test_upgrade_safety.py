@@ -825,3 +825,32 @@ def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, sc
     assert not set(owned) & set(expected), "a type would be counted twice"
     expected.update(owned)
     assert _emitted_ignore_changes(standard_tree) == expected
+
+
+def test_the_customer_managed_key_is_kept_like_the_buckets_it_encrypts(standard):
+    """#2011: `idp-cli delete --terraform` leaves `retainedAddresses` in place, so
+    the key that encrypts the retained buckets must be listed with them; the
+    alias is destroyed, so a new deployment of the same name can create its own."""
+    meta = json.loads((standard / "idp-terraform.json").read_text())
+    retained = set(meta["retainedAddresses"])
+    key = "awscc_kms_key.customer_managed_encryption_key"
+    assert key in retained
+    assert key in meta["statefulAddresses"]
+    main = (standard / "main.tf").read_text()
+    encrypted = {
+        label
+        for label, body in re.findall(
+            r'^resource "aws_s3_bucket_server_side_encryption_configuration" '
+            r'"(\w+)" \{\n(.*?)^\}',
+            main,
+            re.M | re.S,
+        )
+        if f"{key}." in body
+    }
+    kept = {
+        a.split(".", 1)[1]
+        for a in retained
+        if a.startswith("aws_s3_bucket_server_side_encryption_configuration.")
+    }
+    assert encrypted & kept, "no retained bucket is encrypted with the key"
+    assert not any("kms_alias" in a for a in retained)

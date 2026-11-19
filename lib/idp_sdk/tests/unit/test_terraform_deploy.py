@@ -727,6 +727,17 @@ class TestRetainedReportNames:
             f"API Gateway account settings for this Region (CloudWatch Logs role {role})"
         )
 
+    @pytest.mark.parametrize("tf_type", ["awscc_kms_key", "aws_kms_key"])
+    def test_the_kms_key_says_why_it_was_kept(self, tf_type):
+        key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+        key = _res(tf_type, "customer_managed_encryption_key", id=key_id, key_id=key_id)
+        [entry] = tf.retained_report(_state(key), [key["address"]])["other"]
+        assert entry["physical_id"] == key_id
+        assert entry["type"] == tf_type
+        assert entry["display_name"] == (
+            f"KMS key {key_id}, which encrypts the retained buckets"
+        )
+
     def test_a_named_resource_gets_no_display_name(self):
         role = _res("aws_iam_role", "r", name="tfidp-role")
         [entry] = tf.retained_report(_state(role), [role["address"]])["other"]
