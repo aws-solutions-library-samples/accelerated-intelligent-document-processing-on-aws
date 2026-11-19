@@ -637,7 +637,9 @@ Every source shares three optional fields:
 The **From files already in a bucket** step adds a **Modified after** filter —
 a preset (last hour, 24 hours, 7 days, …) or a custom date and time, which makes
 it easy to pick up only recently reviewed documents — and a **Check matching
-files** button that reports the match count before you commit. When reading from
+files** button that reports the match count before you commit. Changing the
+bucket, the pattern or the time filter clears that count, and a check still
+running when you change one of them is discarded rather than shown. When reading from
 the input bucket, a matching document with no ground truth in the evaluation baseline
 bucket is added **unlabeled**, as it is from every other source: its input is copied
 and it waits for [draft labels](#draft-labeling-unlabeled-documents--ground-truth).
@@ -679,6 +681,12 @@ removed, the set is kept, marked `FAILED` with the reason, and the delete report
 an error; delete it again to finish. The record is kept on purpose: a folder with
 no record is picked up as a [direct upload](#creating-test-sets) and would come
 back as a new set.
+
+When only some of the selected sets go, the Test Sets list reloads at once, so the
+deleted ones disappear, and the error reads **Deleted N of M test sets** followed
+by the reason for each set that was refused or could not be finished. If the
+list cannot be reloaded either, the error says that some sets may not have been
+deleted; refresh the page to see which.
 
 ### Browsing Test Set Documents and Ground Truth
 
