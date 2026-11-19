@@ -225,6 +225,27 @@ another is being handled, so following it would make a deterministic failure rai
 inside an `except` inherit the transience of what was being handled.
 `transient_errors` follows the same rule for the same reason.
 
+### The one `ValidationException` the retry decorators retry
+
+Both `exponential_backoff_retry` and `async_exponential_backoff_retry` retry a
+`ValidationException` only when it is a content-filter block
+(`is_content_filter_block`: the model's reply was withheld, and a regenerated reply
+can pass). Every other `ValidationException` is a refusal of the request itself and is
+raised on the first attempt. Both decorators decide that through one function,
+`is_unretryable_validation_error`, in the `ClientError` branch and, in the async
+decorator, in the branch that sees a Strands-wrapped error too. It compares the code
+case-insensitively and walks the `__cause__` chain, because an error raised inside a
+`ConverseStream` reply carries the event-stream member name, `validationException`,
+as its code, and Strands wraps the Bedrock error in `EventLoopException` from every
+model call after a tool use. Compared case-sensitively, as it was, the in-stream form
+fell through to the case-folded retryable vocabulary, which lists
+`ValidationException`, so an in-stream refusal was retried; on agentic extraction a
+persistent one was sent six times, until the 90-second backoff allowance ran out
+(measured with the harness below, raw and Strands-wrapped alike). The wrapped form was
+retried by substring whatever it said.
+`tests/unit/utils/test_validation_exception_retry_rule.py` measures both forms with a
+real Strands agent over a real botocore client and hand-framed event streams.
+
 ### A retry frees the attempt it replaces (`idp_common.failed_attempt`)
 
 `async_exponential_backoff_retry`, the ladder around the agentic extraction call,
