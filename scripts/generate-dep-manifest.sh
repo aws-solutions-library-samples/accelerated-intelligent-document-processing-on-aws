@@ -2,7 +2,9 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# DEP_MANIFEST_DIR redirects the output; dep_audit.py always reads the default.
+# DEP_MANIFEST_DIR redirects the output (the tests use it). dep_audit.py sets it
+# to the directory it reads, so an inherited value cannot leave it auditing a
+# stale manifest.
 OUTPUT_DIR="${DEP_MANIFEST_DIR:-${REPO_ROOT}/dist/manifests}"
 PYTHON_VERSION="3.12"
 
