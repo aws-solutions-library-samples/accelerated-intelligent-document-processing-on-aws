@@ -214,11 +214,53 @@ def _mappings_indexed_by(scope):
     return out
 
 
-def _resolve(node, constants, dicts, indexed_by):
+def _single_literal_locals(scope):
+    """Names a function binds EXACTLY ONCE, to a string literal: ``code = "x"``.
+
+    This is the one kind of local that is safe to read, and the restriction is the
+    point. :func:`_string_constants` refuses locals because a local reassigned per
+    branch resolves to whichever binding the walk saw last; a name with a single
+    binding in its scope has nothing to choose between. Every binding counts, not
+    only assignments: a loop target, a ``with ... as``, a comprehension variable, a
+    walrus, an augmented assignment or a parameter of the same name all make the
+    name ambiguous, and an ambiguous name is left unresolved rather than guessed.
+    Bindings in nested functions count too, which can only make this more
+    conservative.
+
+    Added for ``classification/service.py::_record_filled_page_issues``, which binds
+    ``code = "classification_page_assigned_to_neighbour"`` once and passes
+    ``code=code``.
+    """
+    bindings: dict[str, list] = {}
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bindings.setdefault(node.id, []).append(node)
+        elif isinstance(node, ast.arg):
+            bindings.setdefault(node.arg, []).append(node)
+    literal = {}
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if len(targets) == 1 and isinstance(targets[0], ast.Name):
+                literal[targets[0].id] = node.value.value
+    return {
+        name: value
+        for name, value in literal.items()
+        if len(bindings.get(name, ())) == 1
+    }
+
+
+def _resolve(node, constants, dicts, indexed_by, singles=None):
     """Every string ``node`` can evaluate to, or ``None`` when it cannot be read.
 
-    Five shapes, which is what the emitting sites actually use: a literal; a
-    module- or class-level constant by name or by ``self.ATTR``; both arms of a
+    Six shapes, which is what the emitting sites actually use: a literal; a local
+    bound exactly once to a literal (:func:`_single_literal_locals`), read before
+    module constants because a local shadows them; a module- or class-level
+    constant by name or by ``self.ATTR``; both arms of a
     conditional severity; a name bound by iterating a code-keyed mapping, resolved
     to that mapping's KEYS; and a ``mapping[code]`` subscript, resolved to its
     VALUES.
@@ -228,6 +270,8 @@ def _resolve(node, constants, dicts, indexed_by):
     if isinstance(node, ast.Constant):
         return {node.value} if isinstance(node.value, str) else None
     if isinstance(node, ast.Name):
+        if singles and node.id in singles:
+            return {singles[node.id]}
         if node.id in constants:
             return {constants[node.id]}
         keys = {
@@ -240,8 +284,8 @@ def _resolve(node, constants, dicts, indexed_by):
     if isinstance(node, ast.Attribute):
         return {constants[node.attr]} if node.attr in constants else None
     if isinstance(node, ast.IfExp):
-        left = _resolve(node.body, constants, dicts, indexed_by)
-        right = _resolve(node.orelse, constants, dicts, indexed_by)
+        left = _resolve(node.body, constants, dicts, indexed_by, singles)
+        right = _resolve(node.orelse, constants, dicts, indexed_by, singles)
         return (left or set()) | (right or set()) if (left or right) else None
     if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
         entry = dicts.get(node.value.id)
@@ -270,6 +314,7 @@ def processing_issue_universe():
         for scope in scopes:
             dicts = _dict_literals(scope)
             indexed_by = _mappings_indexed_by(scope)
+            singles = _single_literal_locals(scope)
             for node in ast.walk(scope):
                 if not isinstance(node, ast.Call):
                     continue
@@ -279,7 +324,9 @@ def processing_issue_universe():
                     continue
                 kwargs = {k.arg: k.value for k in node.keywords}
                 got = {
-                    field: _resolve(kwargs.get(field), constants, dicts, indexed_by)
+                    field: _resolve(
+                        kwargs.get(field), constants, dicts, indexed_by, singles
+                    )
                     for field in ("stage", "severity", "code")
                 }
                 if got["code"] is None:
@@ -347,6 +394,68 @@ def test_discovery_reaches_the_code_this_issue_is_about():
     assert "extraction_rows_below_ocr_estimate" in CODES
     assert "assessment_coverage_incomplete" in CODES
     assert "classification_failed" in CODES
+
+
+def test_discovery_reaches_a_code_bound_once_to_a_local():
+    """``_record_filled_page_issues`` binds its code to a local once and passes
+    ``code=code``. Reading that is what keeps the site off the pass-through list:
+    it is a literal, not a value carried in from elsewhere."""
+    assert "classification_page_assigned_to_neighbour" in CODES
+    assert (
+        "classification/service.py",
+        "_record_filled_page_issues",
+    ) not in UNRESOLVED
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        'if flag:\n        code = "a"\n    else:\n        code = "b"',
+        'code = "a"\n    for code in ("b",):\n        pass',
+        'code = "a"\n    code += "b"',
+        'code = "a"\n    with open(p) as code:\n        pass',
+        'code = "a"\n    [code for code in ("b",)]',
+        'code = "a"\n    (code := "b")',
+    ],
+)
+def test_a_local_bound_more_than_once_is_left_unresolved(rebinding):
+    """The hazard :func:`_string_constants` refuses locals over: a name with two
+    bindings must not resolve to whichever the walk saw last."""
+    source = f"def f(flag, p):\n    {rebinding}\n"
+    (scope,) = ast.parse(source).body
+    assert "code" not in _single_literal_locals(scope)
+
+
+def test_a_parameter_named_like_the_local_is_left_unresolved():
+    (scope,) = ast.parse('def f(code):\n    code = "a"\n').body
+    assert "code" not in _single_literal_locals(scope)
+    (scope,) = ast.parse('def f():\n    code = "a"\n').body
+    assert _single_literal_locals(scope) == {"code": "a"}
+
+
+def test_the_neighbour_page_warning_is_recorded_from_the_real_recorder(tmp_path):
+    """End to end from the emitter: the issue the real
+    ``_record_filled_page_issues`` puts on a section, serialised the way extraction
+    carries other stages' issues into ``metadata.processing_issues``, is counted by
+    the scorer under its own code and severity."""
+    from idp_common.classification.models import Segment
+    from idp_common.classification.service import ClassificationService
+    from idp_common.models import Document, Section
+
+    document = Document(
+        id="d",
+        sections=[Section(section_id="1", classification="W2", page_ids=["1", "2"])],
+    )
+    segments = [Segment(page_ids=["1", "2"], doc_class="W2", filled_page_ids=["2"])]
+    ClassificationService._record_filled_page_issues(document, segments)
+    (issue,) = document.sections[0].processing_issues
+    summary, _ = _written(tmp_path, [_row("c", "d.pdf", [_section(issue)])])
+    (out,) = summary["rows"]
+    assert out["processing_issues"] == 1
+    assert out["processing_issues_by_code"] == {
+        "classification_page_assigned_to_neighbour": 1
+    }
+    assert out["processing_issues_by_severity"] == {"warning": 1}
 
 
 @pytest.mark.parametrize("stage", sorted(SITE_STAGES))
