@@ -395,6 +395,7 @@
         "scripts/sdlc/failure_agent.py": 54.04,
         "scripts/sdlc/generate_api_rbac_manifest.py": 31.87,
         "scripts/sdlc/integration_test_deployment.py": 30.22,
+        "scripts/sdlc/load_probe.py": 77.25,
         "scripts/sdlc/run_stacktest.py": 86.08,
         "scripts/sdlc/sandbox_network_probe.py": 97.78,
         "scripts/sdlc/scan_api_rbac.py": 88.55,
