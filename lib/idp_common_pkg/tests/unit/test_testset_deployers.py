@@ -28,12 +28,31 @@ LAMBDA_ROOT = REPO_ROOT / "src" / "lambda"
 TABLE_NAME = "tracking-for-deployers"
 BUCKET_NAME = "test-set-bucket"
 
-#: deployer directory -> (test set id, extra positional args of create_testset_record)
+#: deployer directory -> (test set id, the `source` already on deployed stacks' rows,
+#: extra positional args of create_testset_record). The source is a literal on
+#: purpose: a deployer whose constant drifted from what its existing rows carry
+#: would read its own row as someone else's set on every later update.
 DEPLOYERS = {
-    "docsplit_testset_deployer": ("docsplit", ({"invoice": 1},)),
-    "fcc_dataset_deployer": ("realkie-fcc-verified", ()),
-    "w2_dataset_deployer": ("fake-w2", ({"train": 1},)),
-    "ocr_benchmark_deployer": ("ocr-benchmark", ({"BANK_CHECK": 1},)),
+    "docsplit_testset_deployer": (
+        "docsplit",
+        "huggingface:jordyvl/rvl_cdip_n_mp",
+        ({"invoice": 1},),
+    ),
+    "fcc_dataset_deployer": (
+        "realkie-fcc-verified",
+        "huggingface:amazon-agi/RealKIE-FCC-Verified",
+        (),
+    ),
+    "w2_dataset_deployer": (
+        "fake-w2",
+        "huggingface:singhsays/fake-w2-us-tax-form-dataset",
+        ({"train": 1},),
+    ),
+    "ocr_benchmark_deployer": (
+        "ocr-benchmark",
+        "huggingface:getomni-ai/ocr-benchmark",
+        ({"BANK_CHECK": 1},),
+    ),
 }
 
 # Imported by a deployer but absent from the test environment; the code under
@@ -92,7 +111,7 @@ def deployer(request):
         "TRACKING_TABLE": TABLE_NAME,
         "TESTSET_BUCKET": BUCKET_NAME,
     }
-    test_set_id, extra = DEPLOYERS[request.param]
+    test_set_id, source, extra = DEPLOYERS[request.param]
     with mock_aws(), patch.dict(os.environ, env):
         module = _load(request.param)
         table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
@@ -117,6 +136,7 @@ def deployer(request):
             yield types.SimpleNamespace(
                 module=module,
                 test_set_id=test_set_id,
+                source=source,
                 extra=extra,
                 table=table,
                 s3=s3,
@@ -134,9 +154,9 @@ def _event(request_type="Update", version="2.0"):
     }
 
 
-def _user_set(d):
+def _user_row(d):
     """A set a user created in Test Studio under the deployer's id."""
-    row = {
+    return {
         "PK": f"testset#{d.test_set_id}",
         "SK": "metadata",
         "ItemType": "testset",
@@ -149,6 +169,10 @@ def _user_set(d):
         "status": "COMPLETED",
         "createdAt": "2026-01-01T00:00:00Z",
     }
+
+
+def _user_set(d):
+    row = _user_row(d)
     d.table.put_item(Item=row)
     return row
 
@@ -162,7 +186,7 @@ def _own_set(d, version="1.0"):
         "id": d.test_set_id,
         "name": "old name",
         "fileCount": 3,
-        "source": d.module.DATASET_SOURCE,
+        "source": d.source,
         "status": "COMPLETED",
         "datasetVersion": version,
         "createdAt": "2026-01-01T00:00:00Z",
@@ -235,6 +259,82 @@ class TestDeployerLeavesAUserSetAlone:
         assert status == d.module.cfnresponse.SUCCESS
         assert data["Status"] == "DEPLOYMENT_FAILED"
 
+    def test_a_set_appearing_before_the_claim_gets_no_files(self, deployer):
+        # The up-front read saw no row; a user's set lands before the claim write.
+        d = deployer
+        original = _user_set(d)
+
+        with (
+            patch.object(d.module, "id_taken_by_another_set", return_value=False),
+            patch.object(
+                d.module,
+                "deploy_dataset",
+                MagicMock(side_effect=_deploy_writes_folder_and_row(d)),
+            ) as deploy,
+        ):
+            d.module.handler(_event(), None)
+
+        assert _row(d) == original
+        assert _folder_keys(d) == []
+        assert d.responses[0][1]["Status"] == "ID_IN_USE"
+        deploy.assert_not_called()
+
+    def test_a_create_during_the_deployment_is_refused_by_the_claim(self, deployer):
+        # Test Studio's create paths write with attribute_not_exists(PK); the claim
+        # is what makes that refuse while the dataset's files are being written.
+        d = deployer
+        seen = {}
+
+        def deploy(version, description):
+            seen["claim"] = _row(d)
+            try:
+                d.table.put_item(
+                    Item={**_user_row(d), "name": "a user's set"},
+                    ConditionExpression="attribute_not_exists(PK)",
+                )
+            except ClientError as e:
+                seen["refused"] = e.response["Error"]["Code"]
+            return _deploy_writes_folder_and_row(d)(version, description)
+
+        with patch.object(d.module, "deploy_dataset", deploy):
+            d.module.handler(_event("Create"), None)
+
+        assert seen["claim"]["status"] == "UPDATING"
+        assert seen["claim"]["source"] == d.source
+        assert seen["refused"] == "ConditionalCheckFailedException"
+        assert _row(d)["status"] == "COMPLETED"
+
+    def test_discovery_during_the_deployment_does_not_lock_it_out(self, deployer):
+        # getTestSets registers a folder that has files and no row, as an upload.
+        # Files land before the final record, so without the claim a poll in that
+        # window would make the deployer's own set look foreign on every update.
+        d = deployer
+
+        def deploy_with_a_poll_mid_run(version, description):
+            d.s3.put_object(
+                Bucket=BUCKET_NAME,
+                Key=f"{d.module.DATASET_PREFIX}input/a.pdf",
+                Body=b"x",
+            )
+            try:
+                d.table.put_item(
+                    Item={**_user_row(d), "name": d.test_set_id},
+                    ConditionExpression="attribute_not_exists(PK)",
+                )
+            except ClientError:
+                pass
+            _create(d, version)
+            return {"DatasetVersion": version}
+
+        with patch.object(d.module, "deploy_dataset", deploy_with_a_poll_mid_run):
+            d.module.handler(_event("Create", version="1.0"), None)
+            d.module.handler(_event("Update", version="2.0"), None)
+
+        row = _row(d)
+        assert row["source"] == d.source
+        assert row["datasetVersion"] == "2.0"
+        assert [r[1].get("Status") for r in d.responses] == [None, None]
+
     def test_the_record_writers_refuse_a_user_set(self, deployer):
         d = deployer
         original = _user_set(d)
@@ -257,8 +357,12 @@ class TestDeployerLeavesAUserSetAlone:
             pytest.skip("this deployer has no description-only refresh")
         original = _user_set(d)
 
-        with pytest.raises(ClientError):
+        with pytest.raises(ClientError) as raised:
             d.module.update_description_only("from the stack")
+
+        assert raised.value.response["Error"]["Code"] == (
+            "ConditionalCheckFailedException"
+        )
 
         assert _row(d) == original
 
@@ -321,7 +425,7 @@ class TestDeployerStillRefreshesItsOwnSet:
         created = _row(d)["source"]
         d.module.create_failed_testset_record("2.0", "boom")
 
-        assert created == _row(d)["source"] == d.module.DATASET_SOURCE
+        assert created == _row(d)["source"] == d.module.DATASET_SOURCE == d.source
         assert d.module.id_taken_by_another_set() is False
 
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 import boto3
+from botocore.exceptions import ClientError
 import requests
 import cfnresponse
 from log_sanitizer import sanitize_event_for_logging
@@ -84,16 +85,7 @@ def handler(event, context):
         logger.info(f"Processing dataset version: {dataset_version}")
         
         if id_taken_by_another_set():
-            # Not ours: leave the set's row and its folder alone rather than
-            # replace it, and do not fail the stack over a name clash.
-            message = (
-                f'A test set with id {TEST_SET_ID} already exists and was not '
-                f'created by this deployer; {DATASET_NAME} was not deployed'
-            )
-            logger.warning(message)
-            cfnresponse.send(event, context, cfnresponse.SUCCESS, {
-                'Status': 'ID_IN_USE', 'Message': message
-            })
+            _report_id_in_use(event, context)
             return
 
         # Check if dataset already exists with this version
@@ -104,6 +96,13 @@ def handler(event, context):
             })
             return
         
+        # Claim the id before the first file lands in its folder. With a row in
+        # place, Test Studio neither registers the folder as an upload nor lets
+        # a user create a set under the id while the dataset is written.
+        if not claim_row(dataset_version):
+            _report_id_in_use(event, context)
+            return
+
         # Download and deploy the dataset
         result = deploy_dataset(dataset_version, dataset_description)
         
@@ -125,6 +124,55 @@ def handler(event, context):
             'Status': 'DEPLOYMENT_FAILED',
             'Message': f'Test set deployment failed (non-blocking): {str(e)[:200]}'
         })
+
+
+def _report_id_in_use(event, context):
+    """Answer CloudFormation when a set this deployer did not create holds the id.
+
+    SUCCESS, so a name clash does not fail the stack; the set's row and folder
+    are left as they are and the dataset is not deployed.
+    """
+    message = (
+        f'A test set with id {TEST_SET_ID} already exists and was not '
+        f'created by this deployer; {DATASET_NAME} was not deployed'
+    )
+    logger.warning(message)
+    cfnresponse.send(
+        event, context, cfnresponse.SUCCESS, {'Status': 'ID_IN_USE', 'Message': message}
+    )
+
+
+def claim_row(version: str) -> bool:
+    """Write this deployer's row as in progress; False if another set holds the id.
+
+    UPDATING is a status the resolver neither reconciles nor overwrites, and its
+    reaper marks the row FAILED if this run dies, which the next run retries.
+    """
+    table = dynamodb.Table(TRACKING_TABLE)  # type: ignore[attr-defined]
+    timestamp = datetime.utcnow().isoformat() + 'Z'
+    item = {
+        'PK': f'testset#{TEST_SET_ID}',
+        'SK': 'metadata',
+        'ItemType': 'testset',
+        'InitialEventTime': timestamp,
+        'id': TEST_SET_ID,
+        'name': DATASET_NAME,
+        'filePattern': '',
+        'fileCount': 0,
+        'status': 'UPDATING',
+        'statusUpdatedAt': timestamp,
+        'createdAt': timestamp,
+        'datasetVersion': version,
+        'source': DATASET_SOURCE,
+        'description': f'Deploying {DATASET_NAME} from its source.',
+    }
+    try:
+        _put_own_row(table, item)
+    except ClientError as e:
+        if e.response.get('Error', {}).get('Code') == 'ConditionalCheckFailedException':
+            return False
+        raise
+    return True
 
 
 def id_taken_by_another_set() -> bool:
