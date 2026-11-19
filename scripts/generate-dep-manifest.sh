@@ -2,7 +2,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUTPUT_DIR="${REPO_ROOT}/dist/manifests"
+# DEP_MANIFEST_DIR redirects the output; dep_audit.py always reads the default.
+OUTPUT_DIR="${DEP_MANIFEST_DIR:-${REPO_ROOT}/dist/manifests}"
 PYTHON_VERSION="3.12"
 
 mkdir -p "$OUTPUT_DIR"
@@ -294,23 +295,41 @@ echo "  -> $OUTPUT_DIR/python-packages.txt ($PYTHON_COUNT packages)"
 # ===== NODE MANIFEST =====
 echo "Generating Node dependency manifest..."
 
-NODE_LOCKFILES=(
-    "$REPO_ROOT/src/ui/package-lock.json"
-    "$REPO_ROOT/docs-site/package-lock.json"
-    "$REPO_ROOT/scripts/ux_runner/package-lock.json"
-)
+# Every package-lock.json in the repository is read, discovered the same way the
+# Python half discovers its files: `git ls-files`, tracked plus
+# untracked-but-not-ignored, so a new lockfile is audited without being listed
+# here and a gitignored copy (a staged build tree, node_modules) is not. Every
+# feature-platform UI carries its own lockfile, so a list kept by hand misses
+# whichever one was added last. A failing `git ls-files` is fatal for the same
+# reason it is in the Python half: guessing would audit the wrong set.
+NODE_LOCKFILES=()
+if ! NODE_LOCKFILE_LIST="$(git -C "$REPO_ROOT" ls-files -z --cached --others \
+        --exclude-standard -- ':(glob)**/package-lock.json' | tr '\0' '\n')"; then
+    echo "ERROR: \`git ls-files\` failed in $REPO_ROOT, so the Node lockfiles to audit" >&2
+    echo "       cannot be told apart from gitignored copies." >&2
+    exit 1
+fi
+while IFS= read -r rel; do
+    # A tracked file deleted in the working tree is still listed by --cached.
+    if [ -n "$rel" ] && [ -f "$REPO_ROOT/$rel" ]; then
+        NODE_LOCKFILES+=("$rel")
+    fi
+done < <(printf '%s\n' "$NODE_LOCKFILE_LIST" | sort -u)
+
+if [ "${#NODE_LOCKFILES[@]}" -eq 0 ]; then
+    # Not fatal here: dep_audit.py refuses an empty Node manifest as a broken
+    # audit, which is the gate this file feeds.
+    echo "  WARNING: no package-lock.json found by git ls-files" >&2
+fi
 
 {
-    for lockfile in "${NODE_LOCKFILES[@]}"; do
-        if [ -f "$lockfile" ]; then
-            jq -r '
-                .packages | to_entries[]
-                | select(.key != "")
-                | (.key | split("node_modules/") | last) + "@" + .value.version
-            ' "$lockfile"
-        else
-            echo "  [skipped] $lockfile (not found)" >&2
-        fi
+    for rel in ${NODE_LOCKFILES[@]+"${NODE_LOCKFILES[@]}"}; do
+        echo "  [read] $rel" >&2
+        jq -r '
+            .packages | to_entries[]
+            | select(.key != "")
+            | (.key | split("node_modules/") | last) + "@" + .value.version
+        ' "$REPO_ROOT/$rel"
     done
 } | sort -u > "$OUTPUT_DIR/node-packages.txt"
 
