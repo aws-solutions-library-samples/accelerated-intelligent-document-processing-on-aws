@@ -5488,6 +5488,7 @@ def _claim_test_set_for_deletion(test_set_id):
     busy = [f":busy{i}" for i in range(len(in_progress))]
     values = dict(zip(busy, in_progress))
     values[":deleting"] = DELETING_TEST_SET_STATUS
+    values[":queued"] = "QUEUED"
     values[":now"] = datetime.utcnow().isoformat() + "Z"
     key = {"PK": f"testset#{test_set_id}", "SK": "metadata"}
     try:
@@ -5497,8 +5498,13 @@ def _claim_test_set_for_deletion(test_set_id):
             expression_attribute_names={"#st": "status"},
             expression_attribute_values=values,
             return_values="NONE",
+            # A busy row with no statusUpdatedAt (other than QUEUED, which is aged
+            # by createdAt) is one the reaper can never fail, written before the
+            # stamp existed; refusing it would make that set undeletable for good,
+            # so it is deleted as it was before this check.
             condition_expression=(
-                f"attribute_exists(PK) AND NOT (#st IN ({', '.join(busy)}))"
+                f"attribute_exists(PK) AND (NOT (#st IN ({', '.join(busy)})) OR "
+                "(attribute_not_exists(statusUpdatedAt) AND #st <> :queued))"
             ),
         )
         return True
@@ -6701,7 +6707,8 @@ LABEL_STATE_PROBE_BUDGET_SECONDS = 5
 # S3 is not evidence about the set's real label state. Used to skip reconciliation
 # rather than act on a half-copied prefix, and by deleteTestSets to refuse a set a job
 # is still writing. Every member needs a window in STALE_STATUS_HOURS: a status nothing
-# can age out would make a set whose job died undeletable.
+# can age out would make a set whose job died undeletable. (A row with no
+# statusUpdatedAt cannot be aged either; deleteTestSets lets those through.)
 IN_FLUX_TEST_SET_STATUSES = frozenset({"UPDATING", "COPYING", "GENERATING", "QUEUED"})
 
 
@@ -6843,7 +6850,11 @@ def _reconcile_label_state(items):
         # set. It self-heals — fileCount changes at COMPLETED, which invalidates the
         # marker and forces a re-probe — but the user watching the list sees the badge
         # flip and flip back, and the probes spent to get there are wasted.
-        if item.get("status") in IN_FLUX_TEST_SET_STATUSES:
+        # Nor is one being deleted: its folder is emptying, and the unconditional
+        # labelState write below could recreate a stub row after the delete.
+        if item.get("status") in IN_FLUX_TEST_SET_STATUSES or (
+            item.get("status") == DELETING_TEST_SET_STATUS
+        ):
             continue
         test_set_id = item.get("id") or item.get("PK", "").replace("testset#", "")
         if not test_set_id:

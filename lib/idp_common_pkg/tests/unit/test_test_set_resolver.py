@@ -9931,6 +9931,15 @@ def _put_set_files(s3, test_set_id="my-set", count=3):
     return keys
 
 
+def _busy(row, status):
+    """``row`` as a job that is still running holds it: in ``status``, stamped now."""
+    return {
+        **row,
+        "status": status,
+        "statusUpdatedAt": datetime.utcnow().isoformat() + "Z",
+    }
+
+
 def _in_progress_statuses():
     statuses = sorted(test_set_index.IN_FLUX_TEST_SET_STATUSES)
     # Non-empty, or the parametrised refusal below collects as a skip.
@@ -9954,7 +9963,7 @@ class TestDeletingATestSet:
     @pytest.mark.parametrize("status", _in_progress_statuses())
     def test_a_set_in_progress_is_refused_and_left_whole(self, create_env, status):
         table, _sqs, _queue_url, s3 = create_env
-        original = {**_existing_set(table), "status": status}
+        original = _busy(_existing_set(table), status)
         table.put_item(Item=original)
         keys = _put_set_files(s3)
 
@@ -9969,7 +9978,7 @@ class TestDeletingATestSet:
         # must come from the conditional write, or a copier starting between a read
         # and the delete would have its files deleted underneath it.
         table, _sqs, _queue_url, s3 = create_env
-        original = {**_existing_set(table), "status": "COPYING"}
+        original = _busy(_existing_set(table), "COPYING")
         table.put_item(Item=original)
         keys = _put_set_files(s3)
         stale = {**original, "status": "COMPLETED"}
@@ -10007,7 +10016,7 @@ class TestDeletingATestSet:
 
     def test_the_refusal_reaches_the_caller_as_a_bad_argument(self, create_env):
         table, _sqs, _queue_url, _s3 = create_env
-        table.put_item(Item={**_existing_set(table), "status": "UPDATING"})
+        table.put_item(Item=_busy(_existing_set(table), "UPDATING"))
         event = {
             "info": {"fieldName": "deleteTestSets"},
             "arguments": {"testSetIds": ["my-set"]},
@@ -10114,9 +10123,60 @@ class TestDeletingATestSet:
 
         assert _row(table)["status"] == "FAILED"
 
+    @pytest.mark.parametrize(
+        "status", [s for s in _in_progress_statuses() if s != "QUEUED"]
+    )
+    def test_a_busy_row_the_reaper_can_never_age_is_still_deletable(
+        self, create_env, status
+    ):
+        # No statusUpdatedAt: written before the stamp existed, so the reaper
+        # leaves it alone forever. Refusing it would make the set undeletable.
+        table, _sqs, _queue_url, s3 = create_env
+        row = {**_existing_set(table), "status": status}
+        assert "statusUpdatedAt" not in row
+        table.put_item(Item=row)
+        _put_set_files(s3)
+
+        test_set_index.get_test_sets()
+        assert _row(table)["status"] == status  # the reaper did not move it
+
+        assert self._delete("my-set") is True
+        assert _row(table) is None
+        assert _set_files(s3) == []
+
+    def test_an_unstamped_queued_row_is_still_refused(self, create_env):
+        # QUEUED is aged by createdAt, so it does not need the way through.
+        table, _sqs, _queue_url, s3 = create_env
+        row = {**_existing_set(table), "status": "QUEUED"}
+        table.put_item(Item=row)
+        keys = _put_set_files(s3)
+
+        with pytest.raises(ValueError, match="busy \\(QUEUED\\)"):
+            self._delete("my-set")
+
+        assert _row(table) == row
+        assert _set_files(s3) == sorted(keys)
+
+    def test_a_batch_with_a_failure_and_a_refusal_is_a_server_error(self, create_env):
+        # The fault outranks the bad argument, and both are reported.
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item=_busy(_existing_set(table), "COPYING"))
+        _existing_set(table, "other")
+        _put_set_files(s3, "other")
+        failure = ClientError({"Error": {"Code": "InternalError"}}, "DeleteObjects")
+
+        with (
+            patch.object(s3, "delete_objects", side_effect=failure),
+            pytest.raises(test_set_index.ReportedServerError) as raised,
+        ):
+            self._delete("my-set", "other")
+
+        assert "'other'" in str(raised.value)
+        assert "'my-set' is busy" in str(raised.value)
+
     def test_one_busy_set_does_not_stop_the_others(self, create_env):
         table, _sqs, _queue_url, s3 = create_env
-        table.put_item(Item={**_existing_set(table), "status": "GENERATING"})
+        table.put_item(Item=_busy(_existing_set(table), "GENERATING"))
         _existing_set(table, "other")
         _put_set_files(s3, "other")
 
@@ -10161,6 +10221,21 @@ class TestDeletingATestSet:
         test_set_index.get_test_sets()
 
         assert _row(table)["description"] == "the original"
+
+    def test_getTestSets_does_not_probe_labels_of_a_set_being_deleted(self, create_env):
+        # Reconciliation writes labelState unconditionally; on a set mid-delete
+        # that write could recreate a stub row once the delete finishes.
+        table, _sqs, _queue_url, s3 = create_env
+        table.put_item(Item={**_existing_set(table), "status": "DELETING"})
+        s3.put_object(Bucket="test-set-bucket", Key="my-set/input/a.pdf", Body=b"x")
+        _existing_set(table, "other")
+        s3.put_object(Bucket="test-set-bucket", Key="other/input/a.pdf", Body=b"x")
+
+        test_set_index.get_test_sets()
+
+        # Non-vacuous: the set not being deleted is probed.
+        assert "labelProbedFileCount" in _row(table, "other")
+        assert "labelProbedFileCount" not in _row(table)
 
     def test_getTestSets_removes_a_deleting_row_whose_folder_is_gone(self, create_env):
         # A delete that died after its files went and before the row did.

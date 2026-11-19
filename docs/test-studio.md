@@ -670,7 +670,9 @@ or a pre-deployed dataset being refreshed) or `GENERATING` — cannot be deleted
 until that job finishes; the delete is refused with the set's status, and any
 other selected sets are still deleted. A set whose job died is moved to `FAILED`
 after a while (two hours for a copy, twelve for a generation) and can then be
-deleted.
+deleted. A set left in one of those statuses by an older release, which recorded
+no time for the status and so is never moved to `FAILED`, can be deleted
+directly.
 
 While its files are being removed a set shows `DELETING`. If some files cannot be
 removed, the set is kept, marked `FAILED` with the reason, and the delete reports
