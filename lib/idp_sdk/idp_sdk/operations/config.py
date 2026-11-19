@@ -147,22 +147,19 @@ class ConfigOperation:
         Region, so `config-download` from an EU stack wrote `us.` profiles into
         the file, which a re-upload then stores as explicit values.
 
-        The Region bridged is read from a client built exactly as the lookup
-        below builds its own (`_cloudformation_client`: `--region` when given,
-        otherwise boto3's default session), so it names the Region the stack is
-        actually found in. A fresh `boto3.session.Session()` is not equivalent: it
-        ignores a region given to `boto3.setup_default_session`. A client
-        substituted for boto3's (a test double) carries no real Region, and then
-        nothing is bridged rather than a non-string being written into the
-        environment.
+        The Region bridged is `idp_sdk.resolve_region`'s answer: `--region` when given,
+        otherwise the Region boto3's default session resolves, which is the one
+        the lookup below (`_cloudformation_client`) reaches, so it names the
+        Region the stack is actually found in. When nothing resolves (or a test
+        double stands in for boto3), nothing is bridged.
 
         Returns the configuration table's physical ID.
         """
         import os
 
-        region = self._client._region or self._cloudformation_client().meta.region_name
-        if not isinstance(region, str):
-            region = None
+        from idp_sdk._core.region import resolve_region
+
+        region = resolve_region(self._client._region)
         if region:
             os.environ["AWS_DEFAULT_REGION"] = region
             os.environ["AWS_REGION"] = region

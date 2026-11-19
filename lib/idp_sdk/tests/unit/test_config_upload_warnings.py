@@ -51,6 +51,27 @@ _STACK_RESOURCES = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _contain_the_bridged_environment(monkeypatch):
+    """Restore every variable `upload` writes, including its absence.
+
+    `_configure_config_env` sets the configuration table and bucket and both
+    Region variables with a bare `os.environ[...] = ...`. Setting each through
+    `monkeypatch` first makes it record the prior state, so teardown undoes the
+    write; without that, a later test in the same worker runs with this file's
+    `us-east-1` in `AWS_REGION` and `AWS_DEFAULT_REGION`.
+    """
+    for name in (
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+        "CONFIGURATION_TABLE_NAME",
+        "CONFIGURATION_BUCKET",
+        "STACK_NAME",
+    ):
+        monkeypatch.setenv(name, "set-by-fixture-so-teardown-restores-it")
+        monkeypatch.delenv(name)
+
+
 def _upload(tmp_path, text, **kwargs):
     path = tmp_path / "config.yaml"
     path.write_text(text, encoding="utf-8")
