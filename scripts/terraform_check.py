@@ -295,7 +295,7 @@ def template_variants() -> list[tuple[str, str | None]]:
         sys.path.insert(0, str(TRANSLATOR_DIR))
     from idp_tf.cli import TEMPLATE_VARIANTS  # noqa: PLC0415 - after the path
 
-    return [tuple(v) for v in TEMPLATE_VARIANTS]
+    return [(template, variant) for template, variant in TEMPLATE_VARIANTS]
 
 
 def variant_label(template: str, variant: str | None) -> str:
