@@ -64,6 +64,8 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 
 All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration profile** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles) for details.
 
+Each dataset's test set id is fixed: `realkie-fcc-verified`, `ocr-benchmark`, `docsplit` and `fake-w2`. A stack create or update refreshes the stack's own set under that id, but if you created a set with one of those ids yourself, the deployment leaves your set and its folder untouched and does not deploy that dataset; the stack still updates, and the custom resource's response reports `ID_IN_USE`. To get the dataset, delete your set; the deployer runs again only on a stack update that changes it, such as an upgrade to a release with a changed deployer, and deploys the dataset then.
+
 ---
 
 ### RealKIE-FCC-Verified
