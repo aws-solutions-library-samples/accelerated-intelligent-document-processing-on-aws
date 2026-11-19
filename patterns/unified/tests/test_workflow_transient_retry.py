@@ -34,8 +34,8 @@ _UNQUOTED_PLACEHOLDER_RE = re.compile(r'"\s*:\s*\$\{[^}]+\}')
 # Every task whose Lambda handler re-raises TransientError: the in-process
 # extraction task, the assessment task, all THREE shard-runtime tasks (plan,
 # shard, merge share one handler, so all three must list the name), the three
-# rule-validation tasks (#1101), classification (#2034), and OCR and
-# summarization (#2049).
+# rule-validation tasks (#1101), classification (#2034), and OCR, summarization
+# and evaluation (#2049).
 TASKS = (
     "OCRStep",
     "ClassificationStep",
@@ -48,6 +48,7 @@ TASKS = (
     "RuleValidationStep",
     "RuleValidationOrchestration",
     "SummarizationStep",
+    "EvaluationStep",
 )
 
 # Handler sources that must surface a transient cause under the listed name, one
@@ -65,6 +66,7 @@ HANDLER_SOURCES = (
     "rule-validation-function/index.py",
     "rule-validation-orchestration-function/index.py",
     "summarization_function/index.py",
+    "evaluation_function/index.py",
 )
 
 
@@ -276,28 +278,17 @@ def _can_invoke_a_model(logical_id: str, blocks: dict) -> bool:
 #: go unnoticed. Converting a state is two halves that land together: adding
 #: ``raise_if_transient`` to a handler CONVERTS a modeled ThrottlingException into
 #: TransientError, so doing that without adding the name to the state's Retry list
-#: would REMOVE retryability that exists today. Both members share one Lambda, and
-#: for both the handler half would convert nothing, which is the reason each states.
+#: would REMOVE retryability that exists today.
 TRANSIENT_CONVERSION_EXEMPT = {
-    "EvaluationStep": (
-        "Reaches Bedrock only through the LLM-judge comparator, and no transient "
-        "cause leaves that path as an exception: compare_llm and "
-        "LLMComparator._compare catch every failure, a throttle past the client's "
-        "retries included, and score the field 0.0 without caching the verdict, and "
-        "once the document is loaded the handler's outer except records "
-        "EvaluationStatus FAILED and returns rather than raising. A handler wrapper "
-        "and a Retry entry would therefore retry nothing. Converting it means "
-        "deciding that a throttled judge call fails the evaluation instead of "
-        "scoring the field, which changes Stickler scoring and is left to #2049."
-    ),
     "RecordEvaluationFailure": (
-        "Same Lambda as EvaluationStep, invoked with record_failure_only, a branch "
-        "that makes no model call at all: it loads the document, stamps the "
-        "evaluation status and returns, and its own except returns the document "
-        "too, so it never raises. It is in this universe only because it shares "
-        "EvaluationFunction's Bedrock grant. Its shorter 5/3/2.0 transient tier "
-        "is deliberate, because it runs on the failure path. Tracked with "
-        "EvaluationStep in #2049."
+        "Runs EvaluationFunction with record_failure_only, a branch that makes no "
+        "model call at all: it loads the document, stamps the evaluation status and "
+        "returns, and its own except returns the document too, so it never raises "
+        "and there is no transient cause for a TransientError entry to retry. It is "
+        "in this universe only because the function's Bedrock grant serves the "
+        "LLM-judge calls of EvaluationStep, which does convert. Its shorter 5/3/2.0 "
+        "transient tier is deliberate, because it runs on the failure path. Left "
+        "exempt by the decision recorded on #2049."
     ),
 }
 

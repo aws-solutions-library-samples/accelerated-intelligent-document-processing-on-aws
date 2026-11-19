@@ -724,6 +724,302 @@ def test_rule_validation_orchestration(orchestration_module, rule_config):
     _check("RuleValidationOrchestrationFunction", run)
 
 
+def _is_validation_error(fault: BaseException) -> bool:
+    return (
+        isinstance(fault, ClientError)
+        and fault.response["Error"]["Code"] == "ValidationException"
+    )
+
+
+@pytest.fixture(scope="module")
+def evaluation_module():
+    return _load("evaluation_function/index.py", "evaluation_function_fault_matrix")
+
+
+def test_evaluation(evaluation_module, config):
+    """EvaluationStep: the LLM-judge comparator's Bedrock call, through the real
+    evaluation service and Stickler, for a document of two sections whose one field
+    each is judged by the LLM method. The fault hits one section's judge call while
+    the other answers.
+
+    The deterministic control is stricter than the matrix's: the handler must
+    return normally with the faulted field scored 0.0 and the evaluation recorded
+    COMPLETED, which is today's behaviour for a judge error that a retry cannot
+    fix. A transient fault must leave without a FAILED evaluation having been
+    written first (#2122), since the retry is about to run it again."""
+    module = evaluation_module
+    eval_config = config.model_copy(deep=True)
+    eval_config.evaluation.enabled = True
+    eval_config.classes = [
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "Letter",
+            "x-aws-idp-document-type": "Letter",
+            "type": "object",
+            "properties": {
+                "Agency": {
+                    "type": "string",
+                    "description": "The agency the letter is from.",
+                    "x-aws-idp-evaluation-method": "LLM",
+                }
+            },
+        }
+    ]
+    sides = {"actual": "Different Agency", "expected": "AnyCompany Media"}
+
+    def document(side: str) -> Document:
+        doc = _two_section_document(Status.SUMMARIZING)
+        for section in doc.sections:
+            section.extraction_result_uri = f"s3://out/{side}/{section.section_id}.json"
+        return doc
+
+    def read_json(uri: str):
+        side = uri.split("/")[3]
+        return {"inference_result": {"Agency": sides[side]}}
+
+    outcomes = []
+
+    def run(make):
+        call = make(
+            selects=_first_call_only(),
+            answer=_model_answer('{"match": true, "score": 1.0, "reason": "same"}'),
+        )
+        statuses = []
+        service = MagicMock()
+        service.update_document.side_effect = lambda doc: (
+            statuses.append(doc.evaluation_status) or doc
+        )
+        actual = document("actual")
+        outcomes.append((call, statuses, actual))
+        with (
+            patch.object(module.Document, "load_document", return_value=actual),
+            patch.object(module, "get_config", return_value=eval_config),
+            patch.object(module, "_document_service", service),
+            patch.object(
+                module, "load_baseline_document", return_value=document("expected")
+            ),
+            patch.object(module, "calculate_lambda_metering", return_value={}),
+            patch.object(module, "boto3"),
+            patch("idp_common.bedrock.invoke_model", call),
+            _offline_storage(),
+            patch("idp_common.s3.get_json_content", side_effect=read_json),
+        ):
+            module.handler({"document": {"id": "x"}}, None)
+
+    _check("EvaluationFunction", run)
+
+    wrong = []
+    for call, statuses, actual in outcomes:
+        if call.fault is not None and _is_validation_error(call.fault):
+            scores = (
+                sorted(
+                    attribute.score
+                    for section in actual.evaluation_result.section_results
+                    for attribute in section.attributes
+                )
+                if actual.evaluation_result
+                else None
+            )
+            if scores != [0.0, 1.0] or statuses[-1:] != ["COMPLETED"]:
+                wrong.append(
+                    f"deterministic: expected the faulted field scored 0.0 beside a "
+                    f"1.0 and COMPLETED recorded, got scores {scores}, statuses "
+                    f"{statuses}"
+                )
+        elif "FAILED" in statuses:
+            wrong.append(
+                f"{type(call.fault).__name__}: a FAILED evaluation was recorded "
+                f"before the retry ({statuses})"
+            )
+    assert not wrong, "EvaluationFunction: " + "; ".join(wrong)
+
+
+def _s3_error(code: str, status: int) -> BaseException:
+    return ClientError(
+        {
+            "Error": {"Code": code, "Message": code},
+            "ResponseMetadata": {"HTTPStatusCode": status},
+        },
+        "GetObject",
+    )
+
+
+def test_evaluation_s3_reads(evaluation_module, config):
+    """EvaluationStep's S3 reads, as opposed to its judge call (#2129).
+
+    The handler reads the document it was handed, the baseline document's pages
+    and sections (the real ``Document.from_s3`` over a stubbed listing), and each
+    section's result once for the doc split metrics and once more through
+    ``EvaluationService._prepare_stickler_data`` for the field comparison. A
+    transient failure at any of those reads must leave as ``TransientError``
+    carrying the fault, with no FAILED evaluation written first. Each reader has a
+    fallback for a failed read (empty data, a dropped page or section, a recorded
+    metrics error, or a ``ValueError``), and a transient fault that reaches one
+    produces a COMPLETED evaluation with depressed scores, or a failure with no
+    retry when the ``ValueError`` does not chain its cause for
+    ``is_transient_error`` to find.
+
+    The control is a missing object (``NoSuchKey``) at the same read, which keeps
+    its fallback: an extraction result that is not there scores its section's
+    field as a miss, a baseline section that is not there leaves its actual
+    section unscored, a baseline page or a doc split read that fails changes no
+    field score, and a document that cannot be loaded fails as a ``ValueError``."""
+    module = evaluation_module
+    eval_config = config.model_copy(deep=True)
+    eval_config.evaluation.enabled = True
+    eval_config.classes = [
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "Letter",
+            "x-aws-idp-document-type": "Letter",
+            "type": "object",
+            "properties": {
+                "Agency": {
+                    "type": "string",
+                    "description": "The agency the letter is from.",
+                    "x-aws-idp-evaluation-method": "EXACT",
+                }
+            },
+        }
+    ]
+    key = "run1/packet.pdf"
+    baseline_uri = f"s3://baseline/{key}/sections/1/result.json"
+    actual_uri = "s3://out/actual/1.json"
+    value = {"inference_result": {"Agency": "AnyCompany Media"}}
+
+    def actual_document() -> Document:
+        doc = _two_section_document(Status.SUMMARIZING)
+        for section in doc.sections:
+            section.extraction_result_uri = f"s3://out/actual/{section.section_id}.json"
+        return doc
+
+    def baseline_client():
+        client = MagicMock()
+
+        def paginate(Prefix, **kwargs):
+            kind = Prefix.rstrip("/").rsplit("/", 1)[-1]
+            prefixes = [{"Prefix": f"{key}/{kind}/{n}/"} for n in (1, 2)]
+            return [{"CommonPrefixes": prefixes}]
+
+        client.get_paginator.return_value.paginate.side_effect = paginate
+        return client
+
+    def nth_read_of(uri: str, n: int):
+        seen = []
+
+        def selects(read_uri, *args, **kwargs):
+            if read_uri == uri:
+                seen.append(read_uri)
+                return len(seen) == n
+            return False
+
+        return selects
+
+    # Each result.json is read once per reader, in this order: Document.from_s3
+    # (baseline only), the doc split metrics, then _prepare_stickler_data.
+    sites = {
+        "actual document load": None,
+        "baseline document load": (baseline_uri, 1),
+        "baseline page read": (f"s3://baseline/{key}/pages/1/result.json", 1),
+        "doc split section read": (actual_uri, 1),
+        "actual extraction result": (actual_uri, 2),
+        "baseline extraction result": (baseline_uri, 3),
+    }
+    faults = {
+        "S3 SlowDown": lambda: _s3_error("SlowDown", 503),
+        "bare HTTP 503": lambda: _s3_error("503", 503),
+        "read timeout": lambda: ReadTimeoutError(endpoint_url="https://s3.example"),
+        "NoSuchKey (control)": lambda: _s3_error("NoSuchKey", 404),
+    }
+    # What a missing object yields today at each read: the sorted field scores of a
+    # COMPLETED evaluation, or the exception type the handler fails with.
+    control = {
+        "actual document load": ValueError,
+        "actual extraction result": [0.0, 1.0],
+        "baseline document load": [1.0],
+        "baseline page read": [1.0, 1.0],
+        "doc split section read": [1.0, 1.0],
+        "baseline extraction result": [0.0, 1.0],
+    }
+
+    wrong = []
+    for site, read_at in sites.items():
+        for kind, build in faults.items():
+            fault = build()
+            selects = read_at and nth_read_of(*read_at)
+            read = Injector(
+                fault,
+                selects=selects or (lambda *a, **kw: False),
+                answer=lambda uri: value,
+            )
+            load = (
+                Injector(fault)
+                if selects is None
+                else MagicMock(return_value=actual_document())
+            )
+            statuses = []
+            service = MagicMock()
+            service.update_document.side_effect = lambda doc: (
+                statuses.append(doc.evaluation_status) or doc
+            )
+            outcome = None
+            with (
+                patch.dict(os.environ, {"AWS_XRAY_SDK_ENABLED": "false"}),
+                patch.object(module.Document, "load_document", load),
+                patch.object(module, "BASELINE_BUCKET", "baseline"),
+                patch.object(module, "get_config", return_value=eval_config),
+                patch.object(module, "_document_service", service),
+                patch.object(module, "calculate_lambda_metering", return_value={}),
+                patch.object(module, "boto3"),
+                patch("boto3.client", return_value=baseline_client()),
+                _offline_storage(),
+                patch("idp_common.s3.get_json_content", read),
+            ):
+                try:
+                    module.handler({"document": {"id": "x"}}, None)
+                except Exception as raised:  # noqa: BLE001 - the outcome under test
+                    outcome = raised
+            where = f"{site} / {kind}"
+            injected = load if selects is None else read
+            if not injected.hits:
+                wrong.append(f"{where}: the fault was never raised ({outcome!r})")
+            elif kind.endswith("(control)"):
+                expected = control[site]
+                if isinstance(expected, type):
+                    if type(outcome) is not expected:
+                        wrong.append(
+                            f"{where}: expected {expected.__name__}, got {outcome!r}"
+                        )
+                    continue
+                result = load.return_value.evaluation_result
+                scores = (
+                    sorted(
+                        a.score for s in result.section_results for a in s.attributes
+                    )
+                    if result
+                    else None
+                )
+                if (
+                    outcome is not None
+                    or scores != expected
+                    or statuses[-1:] != ["COMPLETED"]
+                ):
+                    wrong.append(
+                        f"{where}: expected scores {expected} and COMPLETED, got "
+                        f"{outcome!r}, scores {scores}, statuses {statuses}"
+                    )
+            elif not isinstance(outcome, TransientError):
+                wrong.append(
+                    f"{where}: ended with {outcome!r} (statuses {statuses}), not "
+                    "TransientError, so EvaluationStep does not retry"
+                )
+            elif fault not in _causes(outcome):
+                wrong.append(f"{where}: TransientError does not carry the fault")
+            elif "FAILED" in statuses:
+                wrong.append(f"{where}: FAILED was recorded before the retry")
+    assert not wrong, "EvaluationFunction S3 reads:\n" + "\n".join(wrong)
+
+
 # ---------------------------------------------------------------------------
 # Closure: one driver per Lambda in the derived universe, in both directions
 # ---------------------------------------------------------------------------
@@ -740,6 +1036,7 @@ DRIVERS = {
     "RuleValidationFunction": test_rule_validation,
     "RuleValidationOrchestrationFunction": test_rule_validation_orchestration,
     "SummarizationFunction": test_summarization,
+    "EvaluationFunction": test_evaluation,
 }
 
 

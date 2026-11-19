@@ -31,6 +31,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from idp_common.config.models import EvaluationLLMMethodConfig, regional_field_default
 from idp_common.evaluation.contract import _is_match_true
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -139,13 +140,14 @@ _VERDICT_CACHE_MAX = 10_000
 
 
 # Prefixes matching every error-path ``reason`` string ``compare_llm``
-# emits (see the ``error_msg = ...`` assignments at approximately lines
-# 472 / 558 / 596 / 602 below). ``LLMComparator.compare`` skips caching
-# any verdict whose reason starts with one of these — a transient
-# Bedrock throttle / 5xx / JSON-parse error must not poison the (v1, v2)
-# pair for the warm container's lifetime. Update this tuple if a new
-# ``error_msg`` shape is added in compare_llm.
-_TRANSIENT_ERROR_PREFIXES = (
+# emits (the four ``error_msg = ...`` assignments in it below).
+# ``LLMComparator._compare`` skips caching any verdict whose reason starts with
+# one of these, so a failed judge call never fixes the (v1, v2) pair at 0.0 for
+# the warm container's lifetime. A transient failure (a throttle past the
+# client's retries, a bare HTTP 5xx, a read timeout) does not reach this check
+# at all: ``compare_llm`` raises it as ``TransientError`` (#2049). Update this
+# tuple if a new ``error_msg`` shape is added in compare_llm.
+_ERROR_REASON_PREFIXES = (
     "Task prompt formatting error",
     "Error parsing LLM response as JSON",
     "Unexpected error processing LLM response",
@@ -393,23 +395,24 @@ class LLMComparator(BaseComparator):
             )
 
             # Only cache successful verdicts — ``compare_llm`` returns
-            # ``(False, 0.0, err_msg)`` on Bedrock throttle / 5xx / JSON
-            # parse errors, and caching that permanently would freeze the
-            # value pair at 0.0 for the warm container's lifetime after a
-            # single transient failure. Prefixes taken from the four
-            # actual ``error_msg = ...`` sites in ``compare_llm`` below
-            # (lines 472/558/596/602). Update ``_TRANSIENT_ERROR_PREFIXES``
-            # if a new error path is added.
+            # ``(False, 0.0, err_msg)`` on a deterministic failure (a prompt
+            # that cannot be formatted, a reply that is not JSON, a request
+            # Bedrock rejects), and caching that would freeze the value pair
+            # at 0.0 for the warm container's lifetime. A transient failure
+            # raises instead and so is never cached either. Prefixes taken
+            # from the four ``error_msg = ...`` sites in ``compare_llm``
+            # below. Update ``_ERROR_REASON_PREFIXES`` if a new error path is
+            # added.
             # Guard against a Stickler variant emitting ``reason=None``
             # from ``compare_llm`` — plain ``reason.startswith(...)``
             # would crash and the outer except would return 0.0
             # without caching, so every retry re-invokes Bedrock
             # and re-crashes. Coerce to str first.
             reason_str = reason if isinstance(reason, str) else ""
-            is_transient_error = any(
-                reason_str.startswith(p) for p in _TRANSIENT_ERROR_PREFIXES
+            is_error_verdict = any(
+                reason_str.startswith(p) for p in _ERROR_REASON_PREFIXES
             )
-            if not is_transient_error:
+            if not is_error_verdict:
                 with self._verdict_cache_lock:
                     # Recheck after acquiring the lock: another thread may
                     # have scored the same pair while we were waiting on
@@ -423,8 +426,14 @@ class LLMComparator(BaseComparator):
             return score
 
         except Exception as e:
+            # A transient judge failure (a throttle that outlasted the Bedrock
+            # client's retries, a bare HTTP 5xx, a read timeout) leaves as
+            # TransientError, so EvaluationStep retries the document instead of
+            # this field silently scoring 0.0 and depressing its accuracy
+            # (#2049). Nothing is cached on that path.
+            reraise_if_transient(e, where="evaluation")
             logger.error(f"Error in LLM comparison: {str(e)}", exc_info=True)
-            # Return 0.0 score on error to be conservative
+            # A deterministic error scores 0.0, to be conservative.
             return 0.0
 
     def __repr__(self) -> str:
@@ -484,7 +493,14 @@ def compare_llm(
         bedrock_invoker: Function to invoke Bedrock models
 
     Returns:
-        Tuple of (matched, score, reason)
+        Tuple of (matched, score, reason). A deterministic failure returns
+        ``(False, 0.0, <error message>)``.
+
+    Raises:
+        TransientError: When the judge call fails transiently (a throttle that
+            outlasted the Bedrock client's retries, a bare HTTP 5xx, a read
+            timeout or dropped connection), so the caller can retry rather than
+            score the field 0.0.
     """
     if not bedrock_invoker:
         from idp_common import bedrock
@@ -757,6 +773,9 @@ def compare_llm(
             return False, 0.0, error_msg
 
     except Exception as e:
+        # A transient cause propagates; scoring it 0.0 would record a judge that
+        # never answered as a mismatch (#2049).
+        reraise_if_transient(e, where="evaluation")
         error_msg = f"Error in LLM evaluation for {attr_name}: {str(e)}"
         logger.error(error_msg)
         return False, 0.0, error_msg

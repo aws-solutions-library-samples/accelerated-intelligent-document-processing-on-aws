@@ -540,13 +540,55 @@ Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
 memoized per comparator instance.
 
+#### When a judge call fails
+
+A judge call that fails **transiently** (a throttle that outlasted the Bedrock
+client's retries, a bare HTTP 5xx, a read timeout or dropped connection, as
+`idp_common.utils.transient_errors.is_transient_error` judges it) is raised as
+`TransientError` by `compare_llm` and `LLMComparator`, and `evaluate_section` and
+`evaluate_document` let it out instead of recording a failed section or a
+document error. The evaluation Lambda raises it too, without recording a failed
+evaluation, and `EvaluationStep` retries the document. Scoring such a field 0.0
+would have lowered the document's accuracy for a judge that never answered. Any
+other failure (a request Bedrock rejects, a reply that is not JSON, a prompt that
+cannot be formatted) still scores the field 0.0, and `compare_llm` returns
+`(False, 0.0, <reason>)` for it. Neither outcome is memoized, so the next
+comparison of the same pair calls the judge again. A caller that runs the
+service outside the state machine should catch `TransientError` and retry the
+evaluation:
+
+```python
+from idp_common.utils.transient_errors import TransientError
+
+try:
+    document = service.evaluate_document(actual, expected)
+except TransientError:
+    ...  # retry later; the document was not scored
+```
+
+The S3 reads behind an evaluation follow the same rule. A transient failure
+reading a section's extraction result (actual or baseline) in
+`_prepare_stickler_data`, a baseline page or section in `Document.from_s3`, or a
+section for the doc split metrics is raised as `TransientError`, and the
+evaluation Lambda's two document loaders chain their `ValueError` to the cause so
+a transient load is retried too. A missing object or a body that cannot be
+parsed keeps its fallback: empty data (so the section's fields score as misses),
+a skipped baseline page or section, a recorded doc split error, or the loader's
+`ValueError`.
+
 #### Metering of `LLM` comparisons
 
 Every Bedrock call `compare_llm` makes is metered under the `Evaluation`
 context, so its keys read `Evaluation/bedrock/<model>`. `evaluate_document` runs
 the whole evaluation inside `collect_evaluation_metering()` and adds what was
-collected to `actual_document.metering` when it returns, including when the
-evaluation failed, because the calls were billed either way. A call is recorded
+collected to `actual_document.metering` when it returns or raises, because the
+calls were billed either way. That metering is persisted only when the
+evaluation Lambda writes the document: on success, and when it records a failed
+evaluation. When the evaluation fails **transiently** the Lambda raises
+`TransientError` without writing the document, and `EvaluationStep`'s retry
+starts again from the document it was handed, so the failed attempt's calls are
+added in memory and then lost; that gap is tracked in
+[#2122](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2122). A call is recorded
 before its answer is parsed, so an answer that cannot be parsed is still
 counted. A pair that needs no call (both values null, equal after
 case and whitespace folding, or already in the comparator's verdict cache)

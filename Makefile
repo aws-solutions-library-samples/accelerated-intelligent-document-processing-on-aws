@@ -163,15 +163,29 @@ setup: lock-constraints ## Install all packages into current Python environment 
 
 setup-venv: lock-constraints ## Create .venv and install all packages into it, constrained to uv.lock
 	@echo "Creating virtual environment in $(VENV_DIR)..."
-	@PYENV_PYTHON=$$(pyenv which python 2>/dev/null); \
-	SYS_PYTHON=$$(command -v python3 2>/dev/null); \
-	BASE_PYTHON=$${PYENV_PYTHON:-$$SYS_PYTHON}; \
+	@# The first-party packages declare requires-python ">=3.12,<3.14", so the base
+	@# interpreter is the first SUPPORTED one found, not merely the first `python3`
+	@# on PATH: on a host whose `python3` is 3.9, a venv built from it fails much
+	@# later with "No matching distribution found for setuptools>=84.1.0", which
+	@# names a build dependency rather than the interpreter. An existing .venv on an
+	@# unsupported interpreter is rebuilt (--clear), because `python -m venv` on an
+	@# existing directory keeps its old interpreter.
+	@BASE_PYTHON=""; \
+	for c in "$$(pyenv which python 2>/dev/null)" "$$(command -v python3.13 2>/dev/null)" "$$(command -v python3.12 2>/dev/null)" "$$(command -v python3 2>/dev/null)"; do \
+		[ -n "$$c" ] || continue; \
+		if "$$c" -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then BASE_PYTHON="$$c"; break; fi; \
+	done; \
 	if [ -z "$$BASE_PYTHON" ]; then \
-		echo -e "$(RED)ERROR: No python3 or pyenv python found. Install Python 3.12+ first.$(NC)"; \
+		echo -e "$(RED)ERROR: no Python 3.12 or 3.13 found (checked pyenv, python3.13, python3.12, python3$$(command -v python3 >/dev/null && echo " = $$(python3 --version 2>&1)")). Install one first.$(NC)"; \
 		exit 1; \
 	fi; \
 	echo "Using base Python: $$BASE_PYTHON ($$($$BASE_PYTHON --version))"; \
-	$$BASE_PYTHON -m venv $(VENV_DIR)
+	CLEAR=""; \
+	if [ -x $(VENV_DIR)/bin/python ] && ! $(VENV_DIR)/bin/python -c 'import sys; sys.exit(0 if (3, 12) <= sys.version_info[:2] < (3, 14) else 1)' 2>/dev/null; then \
+		echo "Existing $(VENV_DIR) uses $$($(VENV_DIR)/bin/python --version 2>&1), which is unsupported; rebuilding it."; \
+		CLEAR="--clear"; \
+	fi; \
+	$$BASE_PYTHON -m venv $$CLEAR $(VENV_DIR)
 	@echo "Upgrading pip..."
 	$(VENV_DIR)/bin/pip install --upgrade pip
 	@echo "Installing all first-party packages (single resolution pass)..."
@@ -1950,7 +1964,7 @@ ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
 		$(if $(MR),--mr $(MR),--all-open) --dry-run $(EXTRA_ARGS)
 
-# For a laptop: gitlab.aws.dev's REST API sits behind an authenticating proxy
+# For a laptop: code.aws.dev's REST API sits behind an authenticating proxy
 # that redirects every request to federated sign-in, so a PRIVATE-TOKEN alone
 # cannot reach it from here. This form takes the MR head from git over SSH
 # instead — no token, always a dry run, and no MR description/comments/CI status.

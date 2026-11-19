@@ -832,21 +832,28 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. The OCR, classification, extraction, assessment, rule-validation
-and summarization task states additionally list `TransientError`: OCR,
+availability codes. The OCR, classification, extraction, assessment, rule-validation,
+summarization and evaluation task states additionally list `TransientError`: OCR,
 classification, in-process extraction, shard plan, shard, shard merge, assessment,
-policy classification, per-section rule validation, orchestration and
-summarization. That is the one name their handlers re-raise a transient cause under
-when it arrives as an ordinary Python exception (a botocore read or connect timeout,
-a dropped connection, a Strands wrapper around one). This includes a failure the
-service records instead of raising: an OCR page whose Textract or Bedrock call
+policy classification, per-section rule validation, orchestration, summarization
+and evaluation (`EvaluationStep`). That is the one name their handlers re-raise a transient cause
+under when it arrives as an ordinary Python exception (a botocore read or connect
+timeout, a dropped connection, a Strands wrapper around one). This includes a failure
+the service records instead of raising: an OCR page whose Textract or Bedrock call
 failed transiently, and a summarization section whose model call did, now fail
 their step with `TransientError` and are retried, where before the document failed
-with no retry. The two evaluation states do not list it. `EvaluationStep` reaches
-Bedrock only through the LLM-judge comparator, which scores a field 0.0 when its
-call fails rather than raising, and records a failed evaluation rather than failing
-the document. `RecordEvaluationFailure` makes no model call. Whether a failure is
-transient is decided in
+with no retry. In `EvaluationStep` it is an LLM-judge call that failed transiently
+(a throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx, a read
+timeout): the comparator raises it instead of scoring the field 0.0, and the step is
+retried without a failed evaluation being recorded first. A deterministic judge
+error still scores its field 0.0. The same holds for the step's S3 reads: a
+throttled, 5xx or timed-out read of the document, the baseline or a section's
+extraction result is retried, where before it scored the section's fields as
+misses or failed the evaluation with no retry, and a missing object keeps its
+existing outcome. If the retries run out, the step's Catch records
+the evaluation as failed and the document continues. `RecordEvaluationFailure` does
+not list `TransientError`, because it makes no model call and never raises. Whether
+a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says,
 and a bare HTTP 500, 502, 503 or 504 in place of a code is transient),
