@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 from idp_tf.awscc_schema import AwsccSchema
@@ -761,3 +762,348 @@ def test_a_url_that_is_not_s3_is_still_refused(tmp_path):
 
     with pytest.raises(TranslationError, match="cannot read nested TemplateURL"):
         s3_loader(tmp_path)("https://example.com/bkt/abc.template")
+
+
+# ------------------------------------------------------------ template Rules
+def _rules_template(rules: dict, **params) -> dict:
+    return {
+        "Parameters": {
+            "Mode": {"Type": "String", "Default": "a"},
+            "Name": {"Type": "String", "Default": ""},
+            "Ids": {"Type": "CommaDelimitedList", "Default": ""},
+            "Count": {"Type": "Number", "Default": 1},
+            **params,
+        },
+        "Rules": rules,
+        "Resources": {},
+    }
+
+
+def test_each_rule_assertion_becomes_a_plan_time_precondition(schema):
+    files = render(
+        _rules_template(
+            {
+                "NameWhenB": {
+                    "RuleCondition": {"Fn::Equals": [{"Ref": "Mode"}, "b"]},
+                    "Assertions": [
+                        {
+                            "Assert": {
+                                "Fn::Not": [{"Fn::Equals": [{"Ref": "Name"}, ""]}]
+                            },
+                            "AssertDescription": "Name is required when Mode=b",
+                        },
+                        {"Assert": {"Fn::Equals": ["", {"Ref": "Name"}]}},
+                    ],
+                },
+                "Always": {
+                    "Assertions": [
+                        {
+                            "Assert": {"Fn::Equals": [{"Ref": "Count"}, 1]},
+                            "AssertDescription": "Count must be 1",
+                        }
+                    ]
+                },
+            }
+        ),
+        schema,
+    )
+    rules = files["rules.tf"]
+    named = _block(rules, 'resource "terraform_data" "cfn_rule_name_when_b"')
+    checks = re.findall(
+        r"precondition \{\n\s*condition = (.*)\n\s*error_message = (.*)\n", named
+    )
+    assert checks == [
+        (
+            '!(tostring(var.mode) == "b") || !(tostring(var.name) == "")',
+            '"Name is required when Mode=b"',
+        ),
+        (
+            '!(tostring(var.mode) == "b") || ("" == tostring(var.name))',
+            '"Template rule NameWhenB failed."',
+        ),
+    ]
+    always = _block(rules, 'resource "terraform_data" "cfn_rule_always"')
+    assert (
+        "condition = (tostring(var.count) == tostring(1))\n"
+        '      error_message = "Count must be 1"'
+    ) in always
+    assert "rules.tf" not in render(queue(), schema)
+
+
+def test_every_rule_function_the_translator_supports_renders(schema):
+    def one(expr: dict) -> str:
+        files = render(
+            _rules_template({"R": {"Assertions": [{"Assert": expr}]}}), schema
+        )
+        return re.search(r"condition = (.*)\n", files["rules.tf"]).group(1)
+
+    ids = "[for v in var.ids : tostring(v)]"
+    mode_is = {"Fn::Equals": [{"Ref": "Mode"}, "a"]}
+    assert one({"Fn::Contains": [["a", "b"], {"Ref": "Mode"}]}) == (
+        'contains(["a", "b"], tostring(var.mode))'
+    )
+    assert one({"Fn::Contains": [{"Ref": "Ids"}, "x"]}) == f'contains({ids}, "x")'
+    assert one({"Fn::EachMemberEquals": [{"Ref": "Ids"}, "x"]}) == (
+        f'alltrue([for m in {ids} : m == "x"])'
+    )
+    assert one({"Fn::EachMemberIn": [{"Ref": "Ids"}, ["x", "y"]]}) == (
+        f'alltrue([for m in {ids} : contains(["x", "y"], m)])'
+    )
+    assert one({"Fn::And": [mode_is, {"Fn::Or": [mode_is, mode_is]}]}) == (
+        '((tostring(var.mode) == "a") && ((tostring(var.mode) == "a") || '
+        '(tostring(var.mode) == "a")))'
+    )
+    assert one({"Fn::Equals": [{"Ref": "AWS::Region"}, "us-east-1"]}) == (
+        '(tostring(local.pseudo.region) == "us-east-1")'
+    )
+
+
+@pytest.mark.parametrize(
+    ("rule", "message"),
+    [
+        (
+            {"Assertions": [{"Assert": {"Fn::Equals": [{"Fn::RefAll": "x"}, "y"]}}]},
+            "unsupported rule operand",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Fn::ValueOf": ["Name", "Tag"]}}]},
+            "unsupported rule function Fn::ValueOf",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Fn::If": ["C", "a", "b"]}}]},
+            "unsupported rule function Fn::If",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Condition": "C"}}]},
+            "unsupported rule function Condition",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Ref": "Mode"}}]},
+            "unsupported rule function Ref",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Fn::Equals": [{"Ref": "Ids"}, ""]}}]},
+            "Ids is a list",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Fn::Equals": [{"Ref": "Q"}, ""]}}]},
+            "unsupported rule operand",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Fn::Equals": [{"Ref": "AWS::NoValue"}, ""]}}]},
+            "unsupported rule operand",
+        ),
+        (
+            {"Assertions": [{"Assert": {"Fn::Contains": [{"Ref": "Mode"}, "a"]}}]},
+            "unsupported rule list operand",
+        ),
+        ({"Assertions": []}, "a rule needs Assertions"),
+        ({"Assertion": []}, "unsupported rule keys"),
+        ({"Assertions": [{"Description": "x"}]}, "unsupported assertion 0"),
+    ],
+)
+def test_a_rule_the_translator_cannot_render_fails_the_translation(
+    schema, rule, message
+):
+    t = _rules_template({"R": rule})
+    t["Resources"] = queue()["Resources"]
+    with pytest.raises(TranslationError, match=re.escape(message)):
+        render(t, schema)
+
+
+def test_a_rule_resource_name_may_not_shadow_a_resource(schema):
+    t = _rules_template(
+        {"Q": {"Assertions": [{"Assert": {"Fn::Equals": [{"Ref": "Mode"}, "a"]}}]}}
+    )
+    t["Resources"] = {"CfnRuleQ": queue()["Resources"]["Q"]}
+    with pytest.raises(TranslationError, match="also a resource name"):
+        render(t, schema)
+
+
+def _vpc_tree(
+    rules: dict, child_condition: dict, passed: Any, resources: dict | None = None
+) -> str:
+    """The parent's module block for a child whose condition reads VpcId."""
+    child = {
+        "Parameters": {"VpcId": {"Type": "String", "Default": ""}},
+        "Conditions": {"InVpc": child_condition},
+        "Resources": {},
+    }
+    parent = {
+        "Parameters": {
+            "DeployInVPC": {"Type": "String", "Default": "false"},
+            "VpcId": {"Type": "String", "Default": ""},
+        },
+        "Conditions": {"DeployInVPC": {"Fn::Equals": [{"Ref": "DeployInVPC"}, "true"]}},
+        "Rules": rules,
+        "Resources": {
+            "Pattern": {
+                "Type": "AWS::CloudFormation::Stack",
+                "Properties": {
+                    "TemplateURL": "./p/.aws-sam/packaged.yaml",
+                    "Parameters": {"VpcId": passed},
+                },
+            },
+            **(resources or {}),
+        },
+    }
+    from idp_tf.cli import VENDORED_SCHEMA
+
+    tr = Translator(
+        parent, AwsccSchema(VENDORED_SCHEMA), nested_loader=lambda url: child
+    )
+    return _block(tr.render()["main.tf"], 'module "pattern"')
+
+
+NOT_EMPTY = {"Fn::Not": [{"Fn::Equals": [{"Ref": "VpcId"}, ""]}]}
+VPC_RULE = {
+    "RuleCondition": {"Fn::Equals": [{"Ref": "DeployInVPC"}, "true"]},
+    "Assertions": [{"Assert": NOT_EMPTY}],
+}
+PASSED_IF_IN_VPC = {"Fn::If": ["DeployInVPC", {"Ref": "VpcId"}, ""]}
+
+
+def test_a_rule_backed_emptiness_test_gets_a_plan_known_stand_in():
+    """The pattern stack's VpcId: the parent's Rule refuses an empty VpcId when
+    DeployInVPC holds, so the child's only question (is it empty?) is answered
+    by the template and a VPC created in the same apply can be planned."""
+    module = _vpc_tree({"R": VPC_RULE}, NOT_EMPTY, PASSED_IF_IN_VPC)
+    assert 'vpc_id = (local.c_deploy_in_vpc ? var.vpc_id : "")' in module
+    assert 'vpc_id__cond = (local.c_deploy_in_vpc ? "present" : "")' in module
+    # Either operand order, and a rule with no RuleCondition at all.
+    flipped = {"Fn::Not": [{"Fn::Equals": ["", {"Ref": "VpcId"}]}]}
+    always = {"Assertions": [{"Assert": flipped}]}
+    module = _vpc_tree({"R": always}, flipped, {"Ref": "VpcId"})
+    assert 'vpc_id__cond = "present"' in module
+
+
+UNCHANGED = 'vpc_id__cond = (local.c_deploy_in_vpc ? var.vpc_id : "")'
+
+
+@pytest.mark.parametrize(
+    ("rules", "child_condition", "passed", "expected"),
+    [
+        # No rule: nothing guarantees the value.
+        ({}, NOT_EMPTY, PASSED_IF_IN_VPC, UNCHANGED),
+        # The rule applies under a different condition than the branch taken.
+        (
+            {
+                "R": {
+                    "RuleCondition": {"Fn::Equals": [{"Ref": "DeployInVPC"}, "yes"]},
+                    "Assertions": [{"Assert": NOT_EMPTY}],
+                }
+            },
+            NOT_EMPTY,
+            PASSED_IF_IN_VPC,
+            UNCHANGED,
+        ),
+        # The rule asserts something other than non-emptiness.
+        (
+            {
+                "R": {
+                    "RuleCondition": VPC_RULE["RuleCondition"],
+                    "Assertions": [
+                        {"Assert": {"Fn::Equals": [{"Ref": "VpcId"}, "vpc-1"]}}
+                    ],
+                }
+            },
+            NOT_EMPTY,
+            PASSED_IF_IN_VPC,
+            UNCHANGED,
+        ),
+        # The rule's condition is not known to hold where the value is passed.
+        ({"R": VPC_RULE}, NOT_EMPTY, {"Ref": "VpcId"}, "vpc_id__cond = var.vpc_id"),
+        # The value is passed where the rule's condition does NOT hold.
+        (
+            {"R": VPC_RULE},
+            NOT_EMPTY,
+            {"Fn::If": ["DeployInVPC", "", {"Ref": "VpcId"}]},
+            'vpc_id__cond = (local.c_deploy_in_vpc ? "" : var.vpc_id)',
+        ),
+        # The rule guarantees a different parameter.
+        (
+            {
+                "R": {
+                    "RuleCondition": VPC_RULE["RuleCondition"],
+                    "Assertions": [
+                        {
+                            "Assert": {
+                                "Fn::Not": [
+                                    {"Fn::Equals": [{"Ref": "DeployInVPC"}, ""]}
+                                ]
+                            }
+                        }
+                    ],
+                }
+            },
+            NOT_EMPTY,
+            PASSED_IF_IN_VPC,
+            UNCHANGED,
+        ),
+        # The child asks more than whether the value is empty.
+        (
+            {"R": VPC_RULE},
+            {"Fn::Equals": [{"Ref": "VpcId"}, "vpc-1"]},
+            PASSED_IF_IN_VPC,
+            UNCHANGED,
+        ),
+        (
+            {"R": VPC_RULE},
+            {"Fn::And": [NOT_EMPTY, {"Fn::Equals": [{"Ref": "VpcId"}, "vpc-1"]}]},
+            PASSED_IF_IN_VPC,
+            UNCHANGED,
+        ),
+    ],
+)
+def test_an_emptiness_input_without_a_rule_guarantee_keeps_its_value(
+    rules, child_condition, passed, expected
+):
+    assert expected in _vpc_tree(rules, child_condition, passed)
+
+
+def test_a_resource_value_without_a_rule_guarantee_stays_opaque():
+    """A resource's id is never empty, so the stand-in for one with no rule
+    behind it is the opaque placeholder every ``__cond`` input gets."""
+    module = _vpc_tree(
+        {"R": VPC_RULE},
+        NOT_EMPTY,
+        {"Fn::If": ["DeployInVPC", {"Ref": "Vpc"}, ""]},
+        resources={"Vpc": {"Type": "AWS::SQS::Queue", "Properties": {}}},
+    )
+    assert 'vpc_id__cond = (local.c_deploy_in_vpc ? "opaque-Vpc" : "")' in module
+
+
+def test_a_list_parameter_is_never_given_the_emptiness_stand_in():
+    """A list-typed child parameter keeps the text-to-list conversion its
+    ``__cond`` input always had, even when its condition compares it with ""."""
+    child = {
+        "Parameters": {"Ids": {"Type": "CommaDelimitedList", "Default": ""}},
+        "Conditions": {"Has": {"Fn::Not": [{"Fn::Equals": [{"Ref": "Ids"}, ""]}]}},
+        "Resources": {},
+    }
+    parent = {
+        "Parameters": {"Ids": {"Type": "String", "Default": ""}},
+        "Rules": {
+            "R": {
+                "Assertions": [
+                    {"Assert": {"Fn::Not": [{"Fn::Equals": [{"Ref": "Ids"}, ""]}]}}
+                ]
+            }
+        },
+        "Resources": {
+            "Pattern": {
+                "Type": "AWS::CloudFormation::Stack",
+                "Properties": {
+                    "TemplateURL": "./p/.aws-sam/packaged.yaml",
+                    "Parameters": {"Ids": {"Ref": "Ids"}},
+                },
+            }
+        },
+    }
+    from idp_tf.cli import VENDORED_SCHEMA
+
+    tr = Translator(
+        parent, AwsccSchema(VENDORED_SCHEMA), nested_loader=lambda url: child
+    )
+    module = _block(tr.render()["main.tf"], 'module "pattern"')
+    assert 'ids__cond = compact(split(",", var.ids))' in module

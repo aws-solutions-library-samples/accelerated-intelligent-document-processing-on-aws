@@ -350,16 +350,17 @@ created in the same apply) leaves the condition unknown, and `terraform plan` fa
 with `Invalid count argument` or `Invalid for_each argument`.
 
 The same holds for an input that only a nested module's conditions read, which is
-easier to miss because no condition in the root module names it. These root inputs
-are in that position, and each decides whether resources exist inside a nested
-module, so each must be known at plan time:
+easier to miss because no condition in the root module names it. `log_level` and
+`waf_allowed_ipv4_ranges` are in that position: they decide inside the API resolver
+stack whether the API's access logs and its web ACL exist, so each must be known at
+plan time. The headless module has no API resolver stack, so neither applies there.
 
-- `vpc_id`, when `deploy_in_vpc = "true"`: it decides inside the pattern stack
-  whether its VPC-only resources exist, so a VPC created in the same apply cannot
-  supply it.
-- `log_level` and `waf_allowed_ipv4_ranges`: they decide inside the API resolver
-  stack whether the API's access logs and its web ACL exist. The headless module has
-  no API resolver stack, so there only `vpc_id` applies.
+`vpc_id` can come from a VPC created in the same apply. The pattern stack asks only
+whether it is empty, and the template's `DeployInVPCRequiresParams` rule (below)
+refuses an empty `vpc_id` whenever `deploy_in_vpc = "true"`, so the module answers
+that question without the value: with `deploy_in_vpc = "true"` the pattern stack
+creates its VPC-only resources, and with `"false"` it creates none and is given an
+empty `vpc_id` whatever you set.
 
 The other inputs that only nested conditions read,
 `pattern2_custom_classification_model_arn`, `pattern2_custom_extraction_model_arn`,
@@ -370,13 +371,27 @@ and can come from resources created in the same apply. Create anything whose
 identifier feeds an input listed here in an earlier apply, or, for a value you choose
 yourself such as a bucket name, pass it to the module as a literal.
 
-The module does not enforce the template's `Rules`, the cross-parameter checks
+**The template's `Rules` are refused at plan.** These are the cross-parameter checks
 CloudFormation applies when a stack is submitted, such as "`VpcId` is required when
 `DeployInVPC=true`" and "the S3 VPC endpoint's id and DNS name are supplied
-together". A combination CloudFormation would refuse is planned and applied as
-given, so check those combinations yourself; whether the module should enforce them
-is tracked in
-[#2091](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2091).
+together". Each rule becomes a `terraform_data` resource in the root module's
+`rules.tf`, named `cfn_rule_<rule>`, with one precondition per assertion, so a
+combination CloudFormation refuses fails `terraform plan` with that assertion's
+description as the error, before anything is created:
+
+```text
+Error: Resource precondition failed
+...
+VpcId is required when DeployInVPC=true
+```
+
+Preconditions are used rather than variable validations because a validation that
+reads a second variable needs Terraform 1.9, and the module supports 1.7. A
+precondition whose inputs are not known at plan time, such as a `vpc_id` taken from
+a VPC created in the same apply, is checked during the apply instead. It still
+refuses an empty value then, but by that point resources that do not wait on the
+check may already have been created, so a value that could turn out empty at apply
+is better checked in your own configuration.
 
 The translator declares a variable with the suffix `__cond` for every input a
 condition reads, in each module of the tree, so this lists them (a nested module's
@@ -812,8 +827,8 @@ CloudFormation deployment of the same version, but these things differ:
   with its template and resource directory in that bucket, and the IAM-propagation
   waits.
 - A failed apply is not rolled back, as described under [Deploying](#deploying).
-- The template's `Rules` are not enforced, so a parameter combination CloudFormation
-  refuses at submit is accepted; see
+- The template's `Rules` are checked at plan rather than at submit, and a rule whose
+  inputs are not known until apply is checked during the apply; see
   [Using the module beside your own resources](#using-the-module-beside-your-own-resources).
 - The full stack has been applied, re-planned with no changes, and destroyed with both
   Terraform and OpenTofu, in a development account. The headless and GovCloud
