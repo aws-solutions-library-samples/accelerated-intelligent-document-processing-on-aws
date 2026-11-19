@@ -677,10 +677,277 @@ class TestRetained:
             MANIFEST["retainedAddresses"], STATE_LIST
         )
         report = tf.retained_report(STATE, remove)
-        assert set(report) == {"dynamodb_tables", "log_groups", "s3_buckets", "other"}
+        assert set(report) == {
+            "dynamodb_tables",
+            "log_groups",
+            "s3_buckets",
+            "other",
+            "service_log_groups",
+        }
         assert [r["physical_id"] for r in report["s3_buckets"]] == ["tfidp-logging"]
         assert [r["physical_id"] for r in report["dynamodb_tables"]] == [
             "tfidp-tracking-a"
+        ]
+
+
+def _state(*resources):
+    return {
+        "values": {
+            "root_module": {
+                "child_modules": [
+                    {
+                        "address": "module.idp",
+                        "resources": [{"mode": "managed", **r} for r in resources],
+                    }
+                ]
+            }
+        }
+    }
+
+
+def _res(tf_type, label, **values):
+    return {
+        "address": f"module.idp.{tf_type}.{label}",
+        "type": tf_type,
+        "values": values,
+    }
+
+
+class TestRetainedReportNames:
+    @pytest.mark.parametrize(
+        "tf_type", ["awscc_apigateway_account", "aws_api_gateway_account"]
+    )
+    def test_the_api_gateway_account_setting_is_named_for_what_it_is(self, tf_type):
+        role = "arn:aws:iam::123456789012:role/tfidp-apigw-cw"
+        account = _res(tf_type, "acct", id="Wq3x9", cloudwatch_role_arn=role)
+        report = tf.retained_report(_state(account), [account["address"]])
+        [entry] = report["other"]
+        assert entry["physical_id"] == "Wq3x9"
+        assert entry["display_name"] == (
+            f"API Gateway account settings for this Region (CloudWatch Logs role {role})"
+        )
+
+    def test_a_named_resource_gets_no_display_name(self):
+        role = _res("aws_iam_role", "r", name="tfidp-role")
+        [entry] = tf.retained_report(_state(role), [role["address"]])["other"]
+        assert entry["physical_id"] == "tfidp-role"
+        assert "display_name" not in entry
+
+
+class TestServiceLogGroups:
+    def test_a_function_without_a_declared_group_leaves_lambdas_default(self):
+        # The provider computes log_group to the default when none is set; both
+        # the computed value and an absent block mean the default group.
+        computed = _res(
+            "aws_lambda_function",
+            "a",
+            function_name="tfidp-a",
+            logging_config=[{"log_group": "/aws/lambda/tfidp-a"}],
+        )
+        absent = _res("aws_lambda_function", "b", function_name="tfidp-b")
+        groups = tf.service_log_groups(_state(computed, absent))
+        assert [(g["physical_id"], g["created_for"]) for g in groups] == [
+            ("/aws/lambda/tfidp-a", [computed["address"]]),
+            ("/aws/lambda/tfidp-b", [absent["address"]]),
+        ]
+        assert all(g["status"] == "NOT_MANAGED" for g in groups)
+
+    def test_a_declared_group_is_destroyed_so_it_is_not_listed(self):
+        fn = _res(
+            "aws_lambda_function",
+            "a",
+            function_name="tfidp-a",
+            logging_config=[{"log_group": "/aws/lambda/tfidp-a"}],
+        )
+        lg = _res("aws_cloudwatch_log_group", "a", name="/aws/lambda/tfidp-a")
+        other = _res(
+            "aws_lambda_function",
+            "b",
+            function_name="tfidp-b",
+            logging_config=[{"log_group": "/tfidp/lambda/b"}],
+        )
+        declared = _res("aws_cloudwatch_log_group", "b", name="/tfidp/lambda/b")
+        assert tf.service_log_groups(_state(fn, lg, other, declared)) == []
+
+    def test_a_group_named_elsewhere_is_not_the_deployments(self):
+        fn = _res(
+            "aws_lambda_function",
+            "a",
+            function_name="tfidp-a",
+            logging_config=[{"log_group": "/somebody/else"}],
+        )
+        assert tf.service_log_groups(_state(fn)) == []
+
+    def test_a_retained_function_keeps_its_group(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        assert tf.service_log_groups(_state(fn), [fn["address"]]) == []
+
+    def test_codebuild_default_group_unless_logging_is_off_or_declared(self):
+        default = _res("aws_codebuild_project", "a", name="tfidp-a")
+        off = _res(
+            "aws_codebuild_project",
+            "b",
+            name="tfidp-b",
+            logs_config=[{"cloudwatch_logs": [{"status": "DISABLED"}]}],
+        )
+        named = _res(
+            "aws_codebuild_project",
+            "c",
+            name="tfidp-c",
+            logs_config=[
+                {"cloudwatch_logs": [{"status": "ENABLED", "group_name": "/t/c"}]}
+            ],
+        )
+        lg = _res("aws_cloudwatch_log_group", "c", name="/t/c")
+        groups = tf.service_log_groups(_state(default, off, named, lg))
+        assert [g["physical_id"] for g in groups] == ["/aws/codebuild/tfidp-a"]
+
+    def test_a_crawler_writes_its_streams_to_glues_shared_group(self):
+        config = _res(
+            "awscc_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration={
+                "s3_encryptions": [{"s3_encryption_mode": "SSE-KMS"}],
+                "cloudwatch_encryption": None,
+            },
+        )
+        crawlers = [
+            _res(
+                "awscc_glue_crawler",
+                label,
+                name=f"tfidp-{label}",
+                role="tfidp-crawler-role",
+                crawler_security_configuration="tfidp-sec",
+            )
+            for label in ("one", "two")
+        ]
+        [group] = tf.service_log_groups(_state(config, *crawlers))
+        assert group["physical_id"] == "/aws-glue/crawlers"
+        assert group["shared"] is True
+        assert group["log_streams"] == ["tfidp-one", "tfidp-two"]
+
+    def test_a_crawler_with_encrypted_logs_has_its_own_group(self):
+        config = _res(
+            "awscc_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration={
+                "cloudwatch_encryption": {"cloudwatch_encryption_mode": "SSE-KMS"}
+            },
+        )
+        crawler = _res(
+            "awscc_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="arn:aws:iam::123456789012:role/service-role/tfidp-crawler",
+            crawler_security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers-role/tfidp-crawler-tfidp-sec"
+        assert group["shared"] is False
+        assert "log_streams" not in group
+
+    def test_disabled_log_encryption_means_the_shared_group(self):
+        config = _res(
+            "awscc_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration={
+                "cloudwatch_encryption": {"cloudwatch_encryption_mode": "DISABLED"}
+            },
+        )
+        crawler = _res(
+            "awscc_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="tfidp-crawler",
+            crawler_security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers"
+
+    def test_an_awscc_log_group_counts_as_declared(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        lg = _res("awscc_logs_log_group", "a", log_group_name="/aws/lambda/tfidp-a")
+        assert tf.service_log_groups(_state(fn, lg)) == []
+
+    def test_a_log_group_read_as_data_is_not_declared(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        data = dict(
+            _res("aws_cloudwatch_log_group", "a", name="/aws/lambda/tfidp-a"),
+            mode="data",
+        )
+        state = _state(fn)
+        state["values"]["root_module"]["child_modules"][0]["resources"].append(data)
+        assert [g["physical_id"] for g in tf.service_log_groups(state)] == [
+            "/aws/lambda/tfidp-a"
+        ]
+
+    def test_groups_are_listed_by_name(self):
+        late = _res("aws_lambda_function", "z", function_name="tfidp-z")
+        early = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        groups = tf.service_log_groups(_state(late, early))
+        assert [g["physical_id"] for g in groups] == [
+            "/aws/lambda/tfidp-a",
+            "/aws/lambda/tfidp-z",
+        ]
+
+    def test_the_aws_provider_crawler_reads_security_configuration(self):
+        config = _res(
+            "aws_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration=[
+                {"cloudwatch_encryption": [{"cloudwatch_encryption_mode": "SSE-KMS"}]}
+            ],
+        )
+        crawler = _res(
+            "aws_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="tfidp-crawler",
+            security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers-role/tfidp-crawler-tfidp-sec"
+        assert group["created_for"] == [crawler["address"]]
+
+    def test_a_function_read_as_data_is_not_reported(self):
+        fn = dict(
+            _res("aws_lambda_function", "a", function_name="tfidp-a"), mode="data"
+        )
+        assert tf.service_log_groups(_state(fn)) == []
+
+    def test_codebuild_naming_its_default_group_is_still_the_services(self):
+        project = _res(
+            "aws_codebuild_project",
+            "a",
+            name="tfidp-a",
+            logs_config=[
+                {
+                    "cloudwatch_logs": [
+                        {"status": "ENABLED", "group_name": "/aws/codebuild/tfidp-a"}
+                    ]
+                }
+            ],
+        )
+        groups = tf.service_log_groups(_state(project))
+        assert [g["physical_id"] for g in groups] == ["/aws/codebuild/tfidp-a"]
+
+    def test_the_delete_report_leaves_out_a_retained_functions_group(self):
+        kept = _res("aws_lambda_function", "k", function_name="tfidp-k")
+        gone = _res("aws_lambda_function", "g", function_name="tfidp-g")
+        report = tf.retained_report(_state(kept, gone), [kept["address"]])
+        assert [g["physical_id"] for g in report["service_log_groups"]] == [
+            "/aws/lambda/tfidp-g"
+        ]
+
+    def test_the_delete_report_carries_them(self):
+        fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
+        report = tf.retained_report(_state(fn), [])
+        assert [g["physical_id"] for g in report["service_log_groups"]] == [
+            "/aws/lambda/tfidp-a"
         ]
 
 

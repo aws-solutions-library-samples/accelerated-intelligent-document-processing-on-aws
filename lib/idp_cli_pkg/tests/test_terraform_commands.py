@@ -590,3 +590,81 @@ class TestDeployTerraformFromCode:
         assert result.exit_code == 1
         assert "Build failed: boom" in result.output
         client.stack.deploy_terraform.assert_not_called()
+
+
+class TestRetainedReportOutput:
+    """`_print_retained` over a report the SDK built from a state, so the CLI is
+    tested against the shape the SDK produces rather than a hand-written one."""
+
+    @staticmethod
+    def _output(report):
+        import io
+
+        from rich.console import Console
+
+        buf = io.StringIO()
+        with patch.object(
+            cli_module, "console", Console(file=buf, width=400, color_system=None)
+        ):
+            cli_module._print_retained(report)
+        return buf.getvalue()
+
+    @staticmethod
+    def _report(*resources, retained=()):
+        from idp_sdk._core import terraform_deploy as tf
+
+        state = {
+            "values": {
+                "root_module": {
+                    "resources": [
+                        {
+                            "address": f"module.idp.{t}.{label}",
+                            "mode": "managed",
+                            "type": t,
+                            "values": values,
+                        }
+                        for t, label, values in resources
+                    ]
+                }
+            }
+        }
+        return tf.retained_report(state, [f"module.idp.{a}" for a in retained])
+
+    def test_the_api_gateway_account_entry_says_what_it_is(self):
+        role = "arn:aws:iam::123456789012:role/tfidp-apigw"
+        out = self._output(
+            self._report(
+                (
+                    "awscc_apigateway_account",
+                    "acct",
+                    {"id": "Wq3x9", "cloudwatch_role_arn": role},
+                ),
+                retained=["awscc_apigateway_account.acct"],
+            )
+        )
+        assert "API Gateway account settings for this Region" in out
+        assert role in out
+        assert "Wq3x9" not in out
+
+    def test_service_created_log_groups_are_listed(self):
+        out = self._output(
+            self._report(
+                ("aws_lambda_function", "fn", {"function_name": "tfidp-fn"}),
+                (
+                    "awscc_glue_crawler",
+                    "c",
+                    {"name": "tfidp-crawler", "role": "tfidp-crawler-role"},
+                ),
+            )
+        )
+        assert "No resources were retained." in out
+        assert "- /aws/lambda/tfidp-fn" in out
+        assert "/aws-glue/crawlers (shared by every Glue crawler" in out
+        assert "log streams: tfidp-crawler" in out
+        assert "Log groups AWS services created for the deployment's resources" in out
+        assert "Each exists only if its resource ran at least once" in out
+        assert "Delete them manually if no longer needed." in out
+
+    def test_nothing_left_says_so_and_nothing_else(self):
+        out = self._output(self._report())
+        assert out.strip() == "No resources were retained."
