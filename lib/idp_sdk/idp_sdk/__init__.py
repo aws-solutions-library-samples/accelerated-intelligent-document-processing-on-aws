@@ -24,6 +24,7 @@ Example:
 """
 
 from ._core import terraform_stack as _terraform_stack
+from ._core.region import resolve_region
 from ._core.terraform_deploy import (
     default_pointer_url as default_terraform_pointer_url,
 )
@@ -162,6 +163,7 @@ from idp_common.review_queues.statuses import ReviewStatus  # noqa: E402
 __all__ = [
     # Client
     "IDPClient",
+    "resolve_region",
     # Exceptions
     "IDPError",
     "IDPConfigurationError",

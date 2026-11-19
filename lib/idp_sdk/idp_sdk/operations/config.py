@@ -70,15 +70,19 @@ class ConfigOperation:
     def __init__(self, client):
         self._client = client
 
-    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
-        """Physical IDs for the requested logical IDs, in one pass over the stack."""
+    def _cloudformation_client(self):
+        """The CloudFormation client every stack lookup here uses."""
         import boto3
 
+        # Enhancement 8: use self._client._region consistently
+        return boto3.client("cloudformation", region_name=self._client._region)
+
+    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
+        """Physical IDs for the requested logical IDs, in one pass over the stack."""
         wanted = set(logical_ids)
         found: dict = {}
 
-        # Enhancement 8: use self._client._region consistently
-        cfn = boto3.client("cloudformation", region_name=self._client._region)
+        cfn = self._cloudformation_client()
         paginator = cfn.get_paginator("list_stack_resources")
 
         for page in paginator.paginate(StackName=stack_name):
@@ -132,19 +136,33 @@ class ConfigOperation:
         validates against on-disk default limits instead of the stack's and can
         reject a config that is legitimately above a default cap.
 
-        `AWS_DEFAULT_REGION` (not `AWS_REGION`) because it is the variable boto3
-        consults for a client built with no explicit region, which is exactly the
-        case being covered. `_core/publish.py` uses the same bridge for the same
-        reason. Only set when a region was actually requested — writing it
-        unconditionally would pin the process to `None`.
+        Both region variables, because the two readers prefer different ones.
+        `AWS_DEFAULT_REGION` is the variable boto3 consults for a client built with
+        no explicit region, which is the client case above (`_core/publish.py`
+        uses the same bridge for the same reason). `AWS_REGION` is the one
+        `idp_common.regional_models.stack_region` reads first, and that answer
+        picks the Region's inference profile for every model key a configuration
+        leaves out (`RegionalModelDefaults`). Bridging only the first left a shell
+        whose `AWS_REGION` names another Region resolving those keys for that
+        Region, so `config-download` from an EU stack wrote `us.` profiles into
+        the file, which a re-upload then stores as explicit values.
+
+        The Region bridged is `idp_sdk.resolve_region`'s answer: `--region` when given,
+        otherwise the Region boto3's default session resolves, which is the one
+        the lookup below (`_cloudformation_client`) reaches, so it names the
+        Region the stack is actually found in. When nothing resolves (or a test
+        double stands in for boto3), nothing is bridged.
 
         Returns the configuration table's physical ID.
         """
         import os
 
-        region = self._client._region
+        from idp_sdk._core.region import resolve_region
+
+        region = resolve_region(self._client._region)
         if region:
             os.environ["AWS_DEFAULT_REGION"] = region
+            os.environ["AWS_REGION"] = region
 
         found = self._lookup_stack_resources(
             stack_name, {"ConfigurationTable", "ConfigurationBucket"}
@@ -712,8 +730,16 @@ class ConfigOperation:
         if isinstance(user_config, dict):
             user_config["managed"] = False
 
+        # The validation warnings travel with every result from here on, success or
+        # not. `validate` already computes them (unread keys with the field they were
+        # meant to be, prompt-cache and fallback-class findings, ...), and before they
+        # were carried here they were dropped on this path: `config-upload` printed
+        # none of them, so a finding added to validate_config reached only callers of
+        # `config-validate`, never the command that stores the configuration.
+        validation_warnings: list[str] = []
         if validate:
             result = self.validate(config_file, pattern=pattern or "pattern-2")
+            validation_warnings = list(result.warnings)
             if not result.valid:
                 # The gate holds either way — an unchecked configuration is not
                 # stored — but the two refusals ask for different things from the
@@ -728,6 +754,7 @@ class ConfigOperation:
                 return ConfigUploadResult(
                     success=False,
                     error=f"{reason}: {'; '.join(result.errors)}",
+                    warnings=validation_warnings,
                 )
 
         self._configure_config_env(name)
@@ -797,9 +824,12 @@ class ConfigOperation:
                 version_created=version_created,
                 revision=revision,
                 error=None if success else "Upload failed",
+                warnings=validation_warnings,
             )
         except Exception as e:
-            return ConfigUploadResult(success=False, error=str(e))
+            return ConfigUploadResult(
+                success=False, error=str(e), warnings=validation_warnings
+            )
 
     def list(
         self,

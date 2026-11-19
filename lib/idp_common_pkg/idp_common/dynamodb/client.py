@@ -22,9 +22,33 @@ logger = logging.getLogger(__name__)
 class DynamoDBError(Exception):
     """Custom exception for DynamoDB errors"""
 
-    def __init__(self, message: str, error_code: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        error_code: str | None = None,
+        item: Dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.error_code = error_code
+        #: The item as the failed condition saw it, when the write asked for it
+        #: with ``ReturnValuesOnConditionCheckFailure=ALL_OLD`` and the item
+        #: existed; None otherwise. Plain Python values, like a successful read.
+        self.item = item
+
+
+def _condition_failure_item(error: ClientError) -> Dict[str, Any] | None:
+    """The item a failed condition was evaluated against, deserialized.
+
+    The resource API deserializes successful responses only, so the ``Item`` on
+    a ``ConditionalCheckFailedException`` arrives in wire format.
+    """
+    raw = error.response.get("Item")
+    if not raw:
+        return None
+    from boto3.dynamodb.types import TypeDeserializer
+
+    deserializer = TypeDeserializer()
+    return {name: deserializer.deserialize(value) for name, value in raw.items()}
 
 
 #: Error code DynamoDB returns when a ConditionExpression evaluates false. Callers
@@ -201,6 +225,7 @@ class DynamoDBClient:
         expression_attribute_values: Optional[Dict[str, Any]] = None,
         return_values: str = "ALL_NEW",
         condition_expression: Optional[str] = None,
+        return_values_on_condition_check_failure: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Update an item in the DynamoDB table.
@@ -219,6 +244,11 @@ class DynamoDBClient:
                 Raises DynamoDBError with error_code
                 ``ConditionalCheckFailedException`` if the condition fails, which
                 is the caller's signal to re-read and retry.
+            return_values_on_condition_check_failure: Optional ``ALL_OLD`` to
+                have a failed condition return the item it was evaluated
+                against, on the raised DynamoDBError's ``item``. That is the
+                state the decision was made on; a read after the failure may
+                already see a newer one.
 
         Returns:
             Dict containing the response from DynamoDB
@@ -242,6 +272,11 @@ class DynamoDBClient:
             if condition_expression:
                 update_params["ConditionExpression"] = condition_expression
 
+            if return_values_on_condition_check_failure:
+                update_params["ReturnValuesOnConditionCheckFailure"] = (
+                    return_values_on_condition_check_failure
+                )
+
             response = self.table.update_item(**update_params)
             logger.debug(f"Successfully updated item with key: {key}")
             return response
@@ -249,7 +284,11 @@ class DynamoDBClient:
             error_code = e.response["Error"]["Code"]
             error_message = e.response["Error"]["Message"]
             _log_client_error("update_item", error_code, error_message)
-            raise DynamoDBError(f"Update item failed: {error_message}", error_code)
+            raise DynamoDBError(
+                f"Update item failed: {error_message}",
+                error_code,
+                item=_condition_failure_item(e),
+            )
         except BotoCoreError as e:
             logger.error(f"BotoCore error during update_item: {str(e)}")
             raise DynamoDBError(f"BotoCore error: {str(e)}")

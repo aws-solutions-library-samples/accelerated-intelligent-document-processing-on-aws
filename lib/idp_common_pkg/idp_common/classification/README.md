@@ -143,8 +143,14 @@ same fold page-level classification uses, so the two granularities cannot
 disagree about how verdicts become segments. **The earlier window wins for an
 overlapping page**: it is the one that saw the pages before them, which is what a
 boundary decision mostly rests on. A single window is used directly rather than
-folded, so the common case is byte-identical to the unwindowed path — unless its
-segments overlap. **Within one call the segment reported first wins**, which is the
+folded, so the common case keeps the model's own segments (their scores and
+candidates) — unless its segments overlap. They are put in page order, by first
+page, because a reply may list documents in any order and sections are numbered
+in segment order; the fold produces page order by construction, so without the
+sort a packet that fits one window was numbered differently from the same packet
+windowed, and evaluation pairs a section with the baseline's by `section_id`. The
+tie-break under `sectionSplitting: disabled` (earliest segment) reads that order
+too. **Within one call the segment reported first wins**, which is the
 order the per-page claim already walks for a windowed packet, so a single call whose
 segments share pages goes through the same claim and fold and every page lands in
 exactly one segment (#1654). A segment that lost pages to an earlier segment of the
@@ -567,7 +573,19 @@ class *and* confidence, so silence does not count as disagreement.
 `document_shape.maxPagesForClassification` applies only under `disabled`. There,
 `_limit_pages_for_classification` classifies the first N pages and the whole document
 takes the class that vote returns; a document at or under the limit is classified in
-full. Under `llm_determined` or `page` the limit is ignored with a warning at
+full. `_apply_limited_classification_to_all_pages` then rebuilds the one section
+over every page and carries the sample's `errors`, metering, metadata and the
+processing issues on the sample's section onto it, so a warning recorded on the
+sample (an out-of-vocabulary class coerced to the fallback, a page with nothing to
+classify) is on the document's section rather than dropped with the sample. A
+content-filter block on the sample still fails the document rather than being
+soft-failed, because the sample's class is extrapolated to pages the model never
+saw: soft-failed, a blocked first page under a limit of 1 completes the whole
+document as `unclassified` with no error and an issue naming only that page.
+Without a limit every page is sent, so a blocked page is outvoted by the pages that
+were classified.
+
+Under `llm_determined` or `page` the limit is ignored with a warning at
 construction, because applying it would collapse only documents longer than N while
 sectioning shorter ones normally.
 
@@ -876,7 +894,10 @@ classification:
   resulting `PageClassification.classification.metadata` then carries a
   `validation_error` string, and a warning-severity
   `classification_invalid_class_fallback` issue is recorded on the section (see
-  below). The document is **not** failed.
+  below). The document is **not** failed. `validate_config` warns when the
+  fallback is neither `unclassified` nor a configured class
+  (`_validate_fallback_class` in `config/merge_utils.py`), because such a page has
+  no extraction schema.
 
 > At **packet granularity** a reply naming an invalid class for any segment
 > re-prompts the whole window, and a segment still invalid after the retries gets
@@ -931,6 +952,33 @@ document-level issue would raise that count and then have no text to show for it
 | `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` |
 | `error` (a content-filter block) | `failed` | `classification_failed` | error | `_classify_pages_multimodal`, for a page whose Bedrock reply a content filter withheld (`_content_filtered_page_result`) |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
+
+The message is chosen per section after the sections are built. When the class the
+page's own result carried (`unclassified`, or the fallback class) is not the class
+its section ended up with, it says the page took the section's class and names it,
+because that page is extracted against the section's schema; when the section's
+class is not in `valid_doc_types` it says instead that there was no schema and
+nothing was extracted, and when the section's class is excluded from processing it
+says that and that nothing was extracted (this runs before `_mark_excluded_sections`,
+so it reads the class's `excluded` flag itself; the ordinary fallback wording, which
+says extraction ran against the fallback's schema, is replaced the same way). Relabelling happens under `sectionSplitting: disabled`, whose
+one section gives every page the winning class, and on a document-name regex match,
+where `_pin_page_class` overwrites every page's class before splitting and keeps the
+class it had in `metadata["class_before_pin"]` (`CLASS_BEFORE_PIN_KEY`), which the
+comparison reads. It is the comparison, not the setting, that picks the wording, so a
+disabled document whose pages all failed, or whose fallback class won the vote, gets
+the ordinary wording.
+
+**The zero-inference short-circuits report an empty page too.** A document-name
+regex match, or a single-class configuration, under a `sectionSplitting` that needs
+no boundary signal goes to `_create_single_class_sections` and calls no model. There
+`_short_circuit_empty_pages` reads each page's text, but only where
+`classify_page_bedrock` would have reported the page (Bedrock backend, combined
+strategy, page granularity, images resolved off; under `maxPagesForClassification`, only the sample `_limit_pages_for_classification` picks), and gives a blank page the same
+`no_content` metadata with `class_before_pin` set to `unclassified`, so the
+recorder words it as a page given the asserted class. A failed read or a missing
+text URI is logged and not reported, and does not fail the document. Everywhere
+else the short-circuits still read nothing.
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.

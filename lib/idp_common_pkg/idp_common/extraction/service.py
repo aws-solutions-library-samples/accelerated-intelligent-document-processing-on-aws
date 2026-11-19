@@ -5301,11 +5301,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if conf_cfg.method == "decision_model":
                 conf_model = function_name(conf_cfg.decision_model.endpoint or "")
                 conf_name = f"decision model {conf_model}".strip()
-                one_pass = f"{conf_cfg.decision_model.input}, one request per page"
+                scoring_detail = (
+                    f"{conf_cfg.decision_model.input}, one request per page"
+                )
             else:
                 conf_model = conf_cfg.model
                 conf_name = conf_cfg.model or "model"
-                one_pass = "1 pass"
+                scoring_detail = "1 pass"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
                 # Report what HAPPENED, not what was configured; the full reason
@@ -5328,7 +5330,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     c_detail += f" · {concurrent}× concurrent"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
             else:
-                c_detail = f"{conf_name} · {one_pass}"
+                c_detail = f"{conf_name} · {scoring_detail}"
                 fan = 0
             stages.append(
                 {

@@ -463,19 +463,44 @@ class TestDeployFromCode:
             project / ".aws-sam" / "idp-main.yaml"
         )
 
-    def test_a_client_without_a_region_falls_back_to_us_west_2(
-        self, deployer, aws_credentials, project, monkeypatch
+    @pytest.mark.parametrize("variable", ["AWS_DEFAULT_REGION", "profile"])
+    def test_a_client_without_a_region_publishes_where_boto3_resolves(
+        self, deployer, aws_credentials, project, monkeypatch, tmp_path, variable
     ):
-        """The publisher requires a region positionally, so there has to be a
-        literal default; this pins which one, because the artifacts land in a
-        region-suffixed bucket and a surprise region is a surprise bucket."""
+        """The artifacts land in a region-suffixed bucket, and a Lambda reads its
+        code only from its own Region, so the publish Region has to be the one the
+        stack is deployed in: boto3's, not a hard-coded `us-west-2`, and not
+        `AWS_REGION`, which boto3 does not read."""
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        if variable == "AWS_DEFAULT_REGION":
+            monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-central-1")
+        else:
+            config = tmp_path / "aws-config"
+            config.write_text("[default]\nregion = eu-central-1\n", encoding="utf-8")
+            monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        # A cached default session holds the profile file it read first.
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
         seen = self._record_subprocess(monkeypatch)
         deployer.deploy_result = {"success": True}
 
         with mock_aws():
             IDPClient(stack_name=STACK_NAME).stack.deploy(from_code=str(project))
 
-        assert seen["cmd"][4] == "us-west-2"
+        assert seen["cmd"][4] == "eu-central-1"
+
+    def test_no_resolvable_region_is_refused_before_publishing(
+        self, deployer, aws_credentials, project, monkeypatch
+    ):
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.delenv("AWS_REGION")
+        seen = self._record_subprocess(monkeypatch)
+
+        with mock_aws():
+            with pytest.raises(IDPStackError, match="Region could not be determined"):
+                IDPClient(stack_name=STACK_NAME).stack.deploy(from_code=str(project))
+
+        assert "cmd" not in seen
 
     def test_a_project_without_publish_py_is_refused(
         self, deployer, aws_credentials, tmp_path, monkeypatch

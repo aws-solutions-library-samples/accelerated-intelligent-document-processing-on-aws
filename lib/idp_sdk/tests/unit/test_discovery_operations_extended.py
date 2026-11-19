@@ -158,6 +158,26 @@ def discovery_env(monkeypatch):
     monkeypatch.delenv("CONFIGURATION_TABLE_NAME")
 
 
+#: The Region the local workers resolve when a test builds `IDPClient()` with
+#: none. Pinned through `AWS_DEFAULT_REGION`, the variable boto3 reads, because
+#: the SDK resolves the Region the way boto3 does and refuses when nothing
+#: resolves; CI runs this suite with no Region at all.
+AMBIENT_REGION = "us-west-2"
+
+
+@pytest.fixture(autouse=True)
+def ambient_region(monkeypatch):
+    monkeypatch.setenv("AWS_DEFAULT_REGION", AMBIENT_REGION)
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    # A default session left by an earlier test keeps the config file it read
+    # first, which on a developer machine names a Region of its own.
+    monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+    # Recorded, so a bridge that writes it during a test is undone afterwards.
+    monkeypatch.setenv("AWS_REGION", "set-by-fixture")
+    monkeypatch.delenv("AWS_REGION")
+
+
 def _pdf(pages: int) -> bytes:
     """A blank multi-page PDF, built with the library production already uses.
 
@@ -702,6 +722,38 @@ class TestRunWithStack:
 
 @pytest.mark.unit
 class TestRunLocal:
+    def test_with_no_region_bedrock_is_called_where_boto3_resolves(
+        self, tmp_path, monkeypatch
+    ):
+        """`AWS_REGION` names another Region; boto3 does not read it."""
+        document = tmp_path / "invoice.pdf"
+        document.write_bytes(_pdf(1))
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-central-1")
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client) as ctor:
+            result = IDPClient().discovery.run(str(document))
+
+        assert result.status == "SUCCESS", result.error
+        assert ctor.call_args.kwargs == {"region": "eu-central-1"}
+
+    def test_with_only_aws_region_set_bedrock_is_called_there(
+        self, tmp_path, monkeypatch
+    ):
+        """A shell that sets only `AWS_REGION` keeps working."""
+        document = tmp_path / "invoice.pdf"
+        document.write_bytes(_pdf(1))
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        client = _bedrock(_converse_response(_fenced(VALID_SCHEMA)))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client) as ctor:
+            result = IDPClient().discovery.run(str(document))
+
+        assert result.status == "SUCCESS", result.error
+        assert ctor.call_args.kwargs == {"region": "eu-central-1"}
+
     def test_the_bedrock_request_is_built_from_the_system_defaults(self, tmp_path):
         """Model, prompts and sampling all come from `discovery.without_ground_truth`.
 
@@ -1422,22 +1474,40 @@ class TestAutoDetectLocal:
         )
         client.invoke_model.assert_not_called()
 
-    def test_the_region_falls_back_to_the_environment(self, tmp_path, monkeypatch):
-        """A client built with no region still has to reach Bedrock.
+    def test_with_no_region_bedrock_is_called_where_boto3_resolves(
+        self, tmp_path, monkeypatch
+    ):
+        """A client built with no region calls Bedrock in boto3's Region.
 
-        `AWS_REGION` is the fallback, and `us-west-2` the last resort — a hard
-        default rather than letting boto3 fail with `NoRegionError` deep in the
-        call.
+        `AWS_REGION` names another Region and is not what boto3 reads, so a
+        worker reading it would call Bedrock somewhere other than where every
+        other client of the same `IDPClient` goes.
         """
         document = tmp_path / "packet.pdf"
         document.write_bytes(_pdf(2))
-        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "eu-central-1")
         client = _bedrock(_converse_response(_fenced([])))
 
         with patch("idp_common.bedrock.BedrockClient", return_value=client) as ctor:
             IDPClient().discovery.auto_detect_sections(str(document))
 
         assert ctor.call_args.kwargs == {"region": "eu-central-1"}
+
+    def test_with_no_region_resolvable_nothing_is_sent(self, tmp_path, monkeypatch):
+        """No hard-coded Region stands in: the run fails, naming the fix."""
+        document = tmp_path / "packet.pdf"
+        document.write_bytes(_pdf(2))
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        client = _bedrock(_converse_response(_fenced([])))
+
+        with patch("idp_common.bedrock.BedrockClient", return_value=client) as ctor:
+            result = IDPClient().discovery.auto_detect_sections(str(document))
+
+        assert result.status == "FAILED"
+        assert result.error is not None
+        assert "Region could not be determined" in result.error
+        ctor.assert_not_called()
 
 
 # --------------------------------------------------------------------------
@@ -1780,6 +1850,76 @@ class TestRunMultiDoc:
             ]
             is callback
         )
+
+    @mock_aws
+    @pytest.mark.parametrize("given", ["client", "call", "neither", "aws_region_only"])
+    def test_the_models_are_called_in_the_region_the_stack_is_saved_into(
+        self, aws_credentials, discovery_env, tmp_path, monkeypatch, given
+    ):
+        """One Region for the Bedrock calls and for the stack the schemas land in.
+
+        `AWS_REGION` names a third Region (except where it is the only source),
+        and the stack exists only
+        in `eu-central-1`, so a lookup in any other Region fails and a pipeline
+        built for any other Region is visible in its `region`.
+        """
+        stack_region = "eu-central-1"
+        table = _create_stack(stack_region)
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        if given == "aws_region_only":
+            # boto3 resolves nothing, so the stack lookup must be handed the
+            # Region rather than left to find it.
+            monkeypatch.setenv("AWS_REGION", stack_region)
+            monkeypatch.delenv("AWS_DEFAULT_REGION")
+            client = IDPClient(stack_name=STACK)
+            kwargs = {}
+        elif given == "neither":
+            monkeypatch.setenv("AWS_DEFAULT_REGION", stack_region)
+            client = IDPClient(stack_name=STACK)
+            kwargs = {}
+        elif given == "client":
+            client = IDPClient(stack_name=STACK, region=stack_region)
+            kwargs = {}
+        else:
+            # The client names another Region; the per-call override wins for
+            # the save as well as for the models.
+            client = IDPClient(stack_name=STACK, region="us-east-1")
+            kwargs = {"region": stack_region}
+        pipeline = _multi_doc(_pipeline_result([]))
+
+        with patch(
+            "idp_common.discovery.multi_document_discovery.MultiDocumentDiscovery",
+            pipeline,
+        ):
+            result = client.discovery.run_multi_doc(
+                document_dir=str(tmp_path),
+                save_to_config=True,
+                config_version="v3",
+                **kwargs,
+            )
+
+        assert result.status == "SUCCESS", result.error
+        assert pipeline.call_args.kwargs["region"] == stack_region
+        assert os.environ["CONFIGURATION_TABLE_NAME"] == table
+        assert os.environ["AWS_REGION"] == stack_region
+
+    def test_with_no_region_resolvable_the_pipeline_is_not_built(
+        self, tmp_path, monkeypatch
+    ):
+        """No hard-coded Region stands in: the run fails, naming the fix."""
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        pipeline = _multi_doc(_pipeline_result([]))
+
+        with patch(
+            "idp_common.discovery.multi_document_discovery.MultiDocumentDiscovery",
+            pipeline,
+        ):
+            result = IDPClient().discovery.run_multi_doc(document_dir=str(tmp_path))
+
+        assert result.status == "FAILED"
+        assert result.error is not None
+        assert "Region could not be determined" in result.error
+        pipeline.assert_not_called()
 
     @mock_aws
     def test_saving_to_a_stack_exports_the_config_table_and_pins_the_profile(

@@ -3,7 +3,7 @@
 
 /**
  * The Check Files preview counts what the copier would add, so its rules are the
- * copier's: an Input-bucket `.zip` is left out, and so is a file the set holds.
+ * copier's: a `.zip` from either bucket is left out, and so is a file the set holds.
  */
 
 import { readFileSync } from 'node:fs';
@@ -23,10 +23,10 @@ describe('splitPatternMatches', () => {
     expect(split.alreadyInSet).toEqual([]);
   });
 
-  it('keeps a .zip from the Test Set bucket, which the copier does not filter', () => {
-    const split = splitPatternMatches('testset', ['other/input/a.zip']);
-    expect(split.documents).toEqual(['other/input/a.zip']);
-    expect(split.archives).toEqual([]);
+  it('leaves a .zip from the Test Set bucket out too, as the copier does', () => {
+    const split = splitPatternMatches('testset', ['other/input/a.zip', 'other/input/b.pdf']);
+    expect(split.documents).toEqual(['other/input/b.pdf']);
+    expect(split.archives).toEqual(['other/input/a.zip']);
   });
 
   it('leaves out a match the set already holds, by the name it would land under', () => {
@@ -78,10 +78,14 @@ describe('formatLeftOut', () => {
 });
 
 describe('the copier these rules come from', () => {
-  it('filters on the same suffix, case-insensitively, for the Input bucket only', () => {
+  it('filters on the same suffix, case-insensitively, for either bucket', () => {
     expect(COPIER).toContain(`ZIP_EXTRACTOR_SUFFIX = "${ARCHIVE_SUFFIX}"`);
     expect(COPIER).toContain('if file_key.lower().endswith(ZIP_EXTRACTOR_SUFFIX):');
-    expect(COPIER).toMatch(/if bucket_type == "input":\n\s+matching_files, not_documents = _split_documents\(matching_files\)/);
+    // Unconditional: directly after the empty-match check, not under a bucket test.
+    expect(COPIER).toMatch(
+      /raise ValueError\(f"No files found matching pattern: \{file_pattern\}"\)\n(?:\s+#[^\n]*\n)*\s+matching_files, not_documents = _split_documents\(matching_files\)/,
+    );
+    expect(COPIER).not.toMatch(/if bucket_type == "input":\n\s+matching_files, not_documents = _split_documents/);
   });
 
   it('names members by the path after <set>/input/ for the Test Set bucket', () => {

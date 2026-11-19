@@ -125,14 +125,13 @@ class SynthesisResult:
 def _import_generator():
     """Import the SEED generator module, or raise ImportError.
 
-    Indirected so the packaging mechanism is isolated. The published package is
-    ``seed-data`` (module ``seed_data``); the legacy ``doc_gen_agent`` name is
-    kept as a transitional fallback for older/vendored builds.
+    Indirected so the packaging mechanism is isolated. The generator is the
+    published ``seed-data`` package (module ``seed_data``) and nothing else:
+    :func:`synthesize` and the helpers beside it import ``seed_data`` by name,
+    so a module importable under any other name could pass this probe and then
+    fail mid-run.
     """
-    try:
-        import seed_data  # type: ignore  # noqa: F401
-    except ImportError:
-        import doc_gen_agent as seed_data  # type: ignore  # noqa: F401
+    import seed_data  # type: ignore  # noqa: F401
 
     # Require the typed Generator facade (seed-data >= 0.0.5). An older build
     # that only exposed run_batch would import fine but fail in synthesize(), so

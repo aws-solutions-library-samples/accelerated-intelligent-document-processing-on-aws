@@ -1302,8 +1302,12 @@ Four notes on reading that:
   carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
   call per section that always returns one class, so the per-segment `_packet`
   variants would never be read.
-- **`fallback_class` is not validated against your class list.** It accepts any
-  string; the built-in value is `unclassified`. Pointing it at one of your own
+- **`fallback_class` should be `unclassified` or one of your classes.** The
+  built-in value is `unclassified`. Any other string is stored as written, and a
+  page given it has no extraction schema, so nothing is extracted from it;
+  `idp-cli config-validate` warns when the fallback names no configured class
+  (comparing names exactly, and suggesting the nearest class name), without
+  failing validation, so the configuration still uploads. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
   document whose class could not actually be decided — which may be what you
   want, or may not.

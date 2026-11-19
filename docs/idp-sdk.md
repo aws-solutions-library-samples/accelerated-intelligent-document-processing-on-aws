@@ -183,6 +183,18 @@ client.stack_name = "new-stack"
 | `stack_name` | str | No | CloudFormation stack name |
 | `region` | str | No | AWS region (defaults to boto3 default) |
 
+With no `region`, the client uses the Region boto3's default session resolves:
+`AWS_DEFAULT_REGION`, then the `region` of the selected profile, or a Region given
+to `boto3.setup_default_session`. Operations that work out the Region before
+calling AWS (configuration operations that read a stack, discovery,
+`stack.deploy()` including its `from_code` build and the upload of a local
+`custom_config`, `publish.build()`, and `batch.reprocess()` and
+`document.reprocess()`) then fall back to `AWS_REGION`, which boto3 itself
+does not read, and pass the Region to every client they build. No operation falls
+back to a hard-coded Region; one that needs a Region and finds none says so.
+`idp_sdk.resolve_region(region)` returns that answer (explicit Region, then
+boto3's, then `AWS_REGION`, else `None`).
+
 ### Terraform deployments
 
 `stack_name` also accepts the name of a [Terraform deployment](./terraform.md)
@@ -1570,6 +1582,17 @@ For GovCloud, use `region="us-gov-west-1"` with either `govcloud=True` (full Web
 
 Operations for managing IDP configurations.
 
+The operations that read a stack (`download`, `upload`, `list`, `activate`,
+`delete` and the others that take a stack name) set environment variables in
+your process and leave them set: `CONFIGURATION_TABLE_NAME` and
+`CONFIGURATION_BUCKET` name the stack's configuration table and bucket, and
+`AWS_REGION` and `AWS_DEFAULT_REGION` both name the Region the stack was found
+in. The Region is set because a model setting a configuration leaves out
+resolves to that Region's inference profile (see
+[EU Region Model Support](eu-region-model-support.md)), and that lookup reads
+`AWS_REGION` first. If your process works with stacks in more than one Region,
+each operation sets the variables again for its own stack.
+
 ### config.create()
 
 Generate an IDP configuration template.
@@ -1680,7 +1703,14 @@ Upload configuration to a deployed stack.
 - `created_by` (str, optional): Recorded as the revision's author and shown as **By** in the revision history. The Web UI derives this from the caller's Cognito identity; an SDK caller has none, so it defaults to `system` — set it to something that identifies your automation if you want its saves attributable.
 - `revision_notes` (str, optional): What this upload changed, recorded on the revision and shown as **Notes** in the revision history. Distinct from `description`, which belongs to the profile and is overwritten by every save.
 
-**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, and `error`
+**Returns:** `ConfigUploadResult` with `success`, `version` (the profile name), `version_created` (whether the profile was newly created), `revision`, `error`, and `warnings`
+
+`warnings` holds the non-fatal findings validation produced for the file, the
+same list `config.validate()` returns in `ConfigValidationResult.warnings`. It is
+filled when validation refuses the upload as well as when the upload succeeds. It
+is empty with `validate=False`, and for a refusal that comes before validation
+runs (a file that does not load, or one marked `managed: true`), because nothing
+was checked. A warning never makes `success` false.
 
 `revision` is the revision number this upload produced — pass it as
 `config_revision=` to pin processing to exactly what was just uploaded. It is
@@ -2151,7 +2181,7 @@ Discover document classes from a collection of documents using embedding-based c
 - `save_to_config` (bool, optional): Save discovered schemas to the stack's configuration (default: False)
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to save schemas to (required with `save_to_config`)
 - `progress_callback` (callable, optional): Callback function for pipeline progress updates
-- `region` (str, optional): AWS region
+- `region` (str, optional): AWS region. Overrides the client's for this call, for both the Bedrock calls and the stack the schemas are saved into
 
 **Returns:** `MultiDocDiscoveryResult` with `status` (SUCCESS/PARTIAL/FAILED), `discovered_classes` (list of `DiscoveredClassResult`), `reflection_report`, `total_documents`, `total_clusters`, `noise_documents`, `config_version`, and `error`
 
