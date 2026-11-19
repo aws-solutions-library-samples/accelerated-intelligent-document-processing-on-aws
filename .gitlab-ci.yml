@@ -63,6 +63,12 @@ variables:
   KUBERNETES_MEMORY_REQUEST: "8Gi"
   KUBERNETES_MEMORY_LIMIT: "8Gi"
   KUBERNETES_EPHEMERAL_STORAGE_REQUEST: "20Gi"
+  # The helper container (credential vendor setup, artifact/cache upload) defaults
+  # to 256Mi on code.aws.dev and was OOMKilled uploading static_checks' reports.
+  KUBERNETES_HELPER_MEMORY_REQUEST: "2Gi"
+  KUBERNETES_HELPER_MEMORY_LIMIT: "2Gi"
+  KUBERNETES_HELPER_CPU_REQUEST: "1"
+  KUBERNETES_HELPER_CPU_LIMIT: "2"
 stages:
   - fast_checks
   - deployment_validation
