@@ -5871,6 +5871,15 @@ Resources:
             # docs/reporting-sql-layer.md §10.
             - Name: document_class
               Type: string
+            # The workflow execution the row's usage was incurred in, and how it
+            # ended (SUCCEEDED, FAILED, TIMED_OUT, ABORTED). An execution that did
+            # not succeed reports its partial usage too, so totals are actual
+            # spend; filter on execution_status to break failed attempts out.
+            # NULL on rows written before these columns existed.
+            - Name: execution_arn
+              Type: string
+            - Name: execution_status
+              Type: string
           Compressed: true
         PartitionKeys:
           - Name: date

@@ -64,7 +64,7 @@ def test_handler_success(
     )
     # No review-queue info on the event: the reporter is told so explicitly.
     mock_reporter.save.assert_called_once_with(
-        mock_document, ["evaluation_results"], review=None
+        mock_document, ["evaluation_results"], review=None, execution_status=None
     )
 
 

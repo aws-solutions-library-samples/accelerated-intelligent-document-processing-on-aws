@@ -571,6 +571,7 @@ class SaveReportingData:
         data_to_save: List[str],
         *,
         review: Any = None,
+        execution_status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Save document data based on the data_to_save list.
@@ -581,6 +582,10 @@ class SaveReportingData:
             review: Optional ``idp_common.review_queues.models.ReviewReportingInfo``
                 for a document routed to a review queue. Only then do section
                 rows carry review columns and ``document_reviews`` get a row.
+            execution_status: The terminal status of the workflow execution the
+                metering belongs to (``SUCCEEDED``, ``FAILED``, ``TIMED_OUT``,
+                ``ABORTED``), written to every metering row. See
+                :meth:`save_metering_data`.
 
         Returns:
             List of results from each save operation
@@ -597,7 +602,9 @@ class SaveReportingData:
 
         if "metering" in data_to_save:
             logger.info("Processing metering data")
-            result = self.save_metering_data(document)
+            result = self.save_metering_data(
+                document, execution_status=execution_status
+            )
             if result:
                 results.append(result)
 
@@ -1208,12 +1215,27 @@ class SaveReportingData:
         self._pricing_cache = None
         logger.info("Pricing cache cleared")
 
-    def save_metering_data(self, document: Document) -> Optional[Dict[str, Any]]:
+    def save_metering_data(
+        self, document: Document, execution_status: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Save metering data for a document to the reporting bucket.
 
+        One workflow execution writes one metering file. When the document carries
+        its ``workflow_execution_arn`` the file name is derived from the execution
+        rather than from the write time, so writing the same execution's usage
+        again in the same hour replaces the file instead of adding a second copy
+        (the workflow tracker also records that an execution's usage was written,
+        so a redelivery in a later hour is not written at all). Every row carries
+        ``execution_arn`` and ``execution_status``, so a failed attempt's usage is
+        counted in totals and can be broken out with
+        ``WHERE execution_status <> 'SUCCEEDED'``.
+
         Args:
             document: Document object containing metering data
+            execution_status: Terminal status of the execution the usage belongs
+                to, or None when the caller does not know it (the column is then
+                NULL, as it is on rows written before the column existed).
 
         Returns:
             Dict with status and message, or None if no metering data
@@ -1259,6 +1281,13 @@ class SaveReportingData:
                 # falls back to a ``document_sections_*`` JOIN when this
                 # is NULL. See docs/reporting-sql-layer.md §10.
                 ("document_class", pa.string()),
+                # The workflow execution the row's usage was incurred in, and how
+                # that execution ended. A failed, timed-out or aborted execution
+                # writes its partial usage too, so totals are actual spend; these
+                # two columns are what separate a failed attempt from the run
+                # that later succeeded. NULL on rows written before they existed.
+                ("execution_arn", pa.string()),
+                ("execution_status", pa.string()),
             ]
         )
 
@@ -1432,6 +1461,8 @@ class SaveReportingData:
                     "initial_event_time": initial_event_time,
                     "config_version": document.config_version or "default",
                     "document_class": document_class,
+                    "execution_arn": document.workflow_execution_arn or None,
+                    "execution_status": execution_status,
                 }
                 metering_records.append(metering_record)
 
@@ -1461,9 +1492,16 @@ class SaveReportingData:
         # so the tier picker's <2h tail query can prune to the current hour
         # instead of scanning the whole day (see docs/reporting-sql-layer.md §2).
         if metering_records:
+            # Keyed by execution when it is known, so the same execution's usage
+            # written twice in one hour lands on one object, not two. Without an
+            # execution, the write time keeps names unique as before.
+            run_suffix = timestamp_str
+            if document.workflow_execution_arn:
+                execution_name = document.workflow_execution_arn.rsplit(":", 1)[-1]
+                run_suffix = "exec_" + re.sub(r"[^A-Za-z0-9._-]", "_", execution_name)
             metering_key = (
                 f"metering/date={date_partition}/hour={hour_partition}/"
-                f"{escaped_doc_id}_{timestamp_str}_results.parquet"
+                f"{escaped_doc_id}_{run_suffix}_results.parquet"
             )
             self._save_records_as_parquet(
                 metering_records, metering_key, metering_schema

@@ -120,12 +120,20 @@ This real-time cost tracking helps you monitor actual usage patterns and optimiz
 extraction, adds the tokens of every model call it completed to the document's
 metering under its step. The case you will see in the estimate is a failed
 [validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation): it keeps the original result, the document
-continues, and the escalation's calls appear under `ExtractionEscalation`. Two
-cases are not counted. A document whose workflow fails records no cost in the
-reports at all, for any step, because the tracker saves metering only from a
-workflow that succeeded. And when an extraction attempt fails with a transient
-error and Step Functions retries it, the calls of the failed attempt are not
-counted; only the attempt that finishes is.
+continues, and the escalation's calls appear under `ExtractionEscalation`. When an
+extraction attempt fails with a transient error and Step Functions retries it, the
+calls of the failed attempt are not counted; only the attempt that finishes is.
+
+**A workflow that fails still reports what it spent.** A workflow execution that
+ends `FAILED`, `TIMED_OUT` or `ABORTED` writes its usage to the reporting `metering`
+table like one that succeeds, with `execution_status` saying how it ended, so the
+reports show actual spend including failed attempts. Its usage is what the stages
+that ran had recorded on the document's tracking record: the step that failed, and
+the shards of a section map that finished before another shard failed, are not in
+it. Each execution is reported once, under its `execution_arn`, and reprocessing a
+failed document is a new execution with a record of its own. To see the failed
+attempts on their own, filter on `execution_status`; see
+[Reporting Database](reporting-database.md#metering-table).
 
 **Advanced-mode extraction counts the calls that compact its conversation.** When an
 agentic extraction's conversation grows too large for the model's context window,
