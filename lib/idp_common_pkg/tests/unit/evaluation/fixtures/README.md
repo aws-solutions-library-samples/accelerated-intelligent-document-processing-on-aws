@@ -4,7 +4,7 @@ These fixtures gate every scoring-behavior change against the currently-pinned
 `stickler-eval==1.0.1`. The goldens were regenerated in the Stickler 1.0
 migration from 0.5.0 (Hungarian FD/FN accounting, threshold-reach and
 object-level-threshold changes upstream shift counts on structured-list
-evaluations); 1.0.1 leaves them unchanged. Each `.input.json` describes one call to
+evaluations). Each `.input.json` describes one call to
 `EvaluationService.evaluate_section` (config + section + expected/actual dicts).
 The corresponding `.golden.json` under `section_goldens/` is the exact
 JSON-serialized `SectionEvaluationResult` that call produces today, including
