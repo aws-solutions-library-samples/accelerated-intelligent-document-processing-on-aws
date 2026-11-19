@@ -719,22 +719,45 @@ To upgrade, point the module at the new release's URL and apply:
 The label stack's description and metadata move to the new version in the same apply.
 With `idp-cli`, run `idp-cli deploy --terraform` again with the same `--stack-name`
 and `--terraform-dir`, and the new `--terraform-module-url` (or none, for the latest).
-You do not need to repeat the `--parameters` you passed before: `idp-cli` remembers
-them, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
-directory, and applies the parameters you pass now over them. A remembered parameter
-the new module no longer has is dropped with a warning.
+You do not need to repeat the `--parameters` you passed before: as a CloudFormation
+update does, the upgrade keeps the value the deployment has for every parameter you
+do not pass, whether you set it or it took the default, and applies the parameters
+you pass now over them. A parameter that is new in the release takes its default.
 
-⚠️ `idp-cli` remembers only the values that were passed, not the defaults that were
-in effect, so a parameter you have never passed takes the new module's default. This
-differs from a CloudFormation update through `idp-cli`, which keeps the previous value
-of every parameter it is not given. When a release changes a parameter's default, the
-upgrade applies the new default unless you pass the old value. For example, release
-0.6.15 changed the default of `EnableMCP` from `true` to `false`, so upgrading a
-deployment from an earlier release without `--parameters EnableMCP=true` removes its
-MCP integration. Read the release's `CHANGELOG.md` for changed defaults before
-upgrading. The same applies to your own root configuration: a variable you do not set
-takes the new module's default. The deploy runs `init -upgrade` because the
-module source changed, and refuses the plan if it would delete or replace a stateful
+The values come from the deployment's [label stack](#the-read-only-label-stack),
+whose parameters Terraform writes at every apply with each parameter's value in
+effect. The label stack lives with the deployment rather than in your directory, so
+a second operator who deploys from another directory against the same state backend
+gets the deployment's current settings rather than the module's defaults. It is
+also what lets a deployment made with an earlier `idp-cli`, which recorded only the
+values that were passed, keep its defaulted values on its first upgrade: in
+particular, release 0.6.15 changed the default of `EnableMCP` from `true` to
+`false`, and a deployment that never passed it keeps `EnableMCP=true`. The label
+stack leaves `NoEcho` parameters out, so their values come only from the directory's
+`idp-cli-parameters.json`; a second operator must pass any that the deployment set.
+If the label stack and the directory disagree (another operator changed a setting
+since), the label stack's value is used, because it is the value last applied.
+
+After each apply, `idp-cli-parameters.json` records every parameter's value in
+effect, defaulted ones included, so a later upgrade from that directory keeps them
+even where the label stack cannot be read. Before the plan, the output lists the
+values the upgrade kept that differ from the new module's defaults, and the new
+parameters that took their defaults. A parameter no longer in the new module is
+dropped with a message.
+
+⚠️ Without a label stack (`enable_cfn_stack_label = false`), a deployment whose directory has only the passed
+values, as an earlier `idp-cli` wrote it, falls back to those: every parameter never
+passed takes the new module's default. The deploy then prints a warning naming each
+such parameter whose default differs between the installed module and the new one,
+so you can pass the old value with `--parameters`. A second operator in a fresh
+directory without the label stack gets the module's defaults with no warning,
+because nothing distinguishes that from a first deploy; pass every setting the
+deployment has.
+
+Your own root configuration does not get this: a variable you do not set takes the
+new module's default, so read the release's `CHANGELOG.md` for changed defaults
+before upgrading it. The `idp-cli` deploy runs `init -upgrade` because the module
+source changed, and refuses the plan if it would delete or replace a stateful
 or retained resource (see
 [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
 

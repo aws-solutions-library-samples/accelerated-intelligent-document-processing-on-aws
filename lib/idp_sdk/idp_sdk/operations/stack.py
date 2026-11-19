@@ -292,6 +292,14 @@ class StackOperation:
         directory unless a backend is configured in another file there.
         Always waits.
 
+        A parameter not in ``parameters`` keeps the value the deployment has,
+        as on a CloudFormation update: the label stack records every
+        parameter's value in effect, so a second operator deploying from
+        another directory gets the same settings. A parameter new in the module
+        takes its default. The values kept and the new parameters' defaults are
+        logged before the plan, and after the apply ``idp-cli-parameters.json``
+        records every value in effect (see ``write_root_config``).
+
         Args:
             stack_name: Deployment name (the label stack's name, at most 25
                 characters).
@@ -361,7 +369,11 @@ class StackOperation:
             previous_manifest = tf.read_manifest_from_dir(directory)
         except IDPConfigurationError:
             previous_manifest = {}
-        tf.write_root_config(
+        previous_defaults = tf.read_module_defaults_from_dir(directory)
+        # The label stack records every parameter's value in effect, so a
+        # parameter not passed keeps it, as on a CloudFormation update, and a
+        # second operator deploying from another directory reads the same values.
+        values = tf.write_root_config(
             directory,
             region=region,
             module_url=module_url,
@@ -370,10 +382,16 @@ class StackOperation:
             parameters=parameters or {},
             manifest=manifest,
             assume_role_arn=assume_role_arn,
+            recorded=tf.label_parameter_values(stack),
         )
         operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
         runner.init(upgrade=tf.needs_upgrade(directory, module_url))
         tf.record_module_source(directory, module_url)
+        defaults = tf.read_module_defaults_from_dir(directory)
+        for level, line in tf.parameter_report(
+            values, manifest, defaults, previous_defaults
+        ):
+            logger.log(level, "%s", line)
         protected = tf.protected_addresses(manifest, previous_manifest)
         allow = allow_replace_stateful or allow_replace_retained
         plan_path = directory / tf.PLAN_FILE
@@ -389,6 +407,7 @@ class StackOperation:
             runner.apply_plan(tf.PLAN_FILE)
         finally:
             plan_path.unlink(missing_ok=True)
+        tf.record_effective_parameters(directory, manifest, values, defaults)
 
         outputs: Dict[str, str] = {}
         stack = self._describe_stack(deployer, name)
