@@ -1106,6 +1106,17 @@ you switch to a larger-context model. Set a positive value only when you
 deliberately want to cap output *below* the model maximum (e.g. to bound cost
 or latency on a task with short responses).
 
+The cap also decides how much of your tokens-per-minute quota a request holds
+while it runs: Amazon Bedrock deducts the request's input tokens plus its
+`max_tokens` when the request starts and returns the unused part when it
+finishes ([How tokens are counted in Amazon Bedrock](https://docs.aws.amazon.com/bedrock/latest/userguide/quotas-token-burndown.html)).
+A model with a large output limit therefore runs fewer requests at once within
+the same quota. Amazon Nova 2 Lite, the shipped model for classification, Bedrock
+OCR and evaluation, allows 64,000 output tokens, so a short classification call with
+`max_tokens` empty holds 64,000 tokens of quota beyond its input. If those steps
+are throttled, set their `max_tokens` to a value closer to the longest response
+they produce.
+
 ```yaml
 # Recommended: leave empty to use the model's full output budget
 max_tokens: ""
