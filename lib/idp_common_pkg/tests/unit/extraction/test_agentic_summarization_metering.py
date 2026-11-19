@@ -31,10 +31,11 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import boto3
@@ -264,6 +265,48 @@ def test_a_summarization_agent_is_refused():
         cm.MeteredSummarizingConversationManager(summarization_agent=helper)
 
 
+def test_a_summarization_agent_set_later_is_refused_too():
+    """Strands reads the attribute at summary time, so assignment is a route in."""
+    helper = Agent(model=_SummaryModel(), callback_handler=None)
+    manager = cm.MeteredSummarizingConversationManager()
+    with pytest.raises(ValueError, match="summarization_agent"):
+        manager.summarization_agent = helper  # pyright: ignore[reportAttributeAccessIssue]
+    assert manager.summarization_agent is None
+
+
+def test_outside_an_invocation_the_summary_adds_to_an_existing_total(caplog):
+    """The fallback adds token counts and skips Bedrock's ``cacheDetails`` list."""
+
+    class _DetailedModel(_SummaryModel):
+        async def stream(self, messages, tool_specs=None, system_prompt=None, **kw):
+            self.calls.append({"messages": messages, "system_prompt": system_prompt})
+            for chunk in _text_chunks("The summary.", _SUMMARY_USAGE):
+                if "metadata" in chunk:
+                    # First, so a list that broke the loop would lose every count.
+                    usage = chunk["metadata"]["usage"]
+                    chunk["metadata"]["usage"] = {
+                        "cacheDetails": [{"ttl": "5m", "inputTokens": 11}],
+                        **usage,
+                    }
+                yield chunk
+
+    model = _DetailedModel()
+    agent = _agent_with(
+        cm.MeteredSummarizingConversationManager(
+            summary_ratio=0.5, preserve_recent_messages=2
+        ),
+        model,
+    )
+    cast(dict, agent.event_loop_metrics.accumulated_usage).update(_TURN_USAGE)
+    with caplog.at_level("WARNING"):
+        agent.conversation_manager.reduce_context(agent)
+    assert "Could not record" not in caplog.text
+    assert len(model.calls) == 1
+    assert dict(agent.event_loop_metrics.accumulated_usage) == _plus(
+        _TURN_USAGE, _SUMMARY_USAGE
+    )
+
+
 # ------------------------------------------ the whole agentic extraction, end to end
 
 
@@ -429,30 +472,71 @@ _REPO = Path(__file__).resolve().parents[5]
 _OWNER = "lib/idp_common_pkg/idp_common/agents/utils/conversation_manager.py"
 
 
-def _unmetered_summarizer_uses(source: str) -> list[int]:
-    """Lines that can build a Strands summarizing manager other than the metered one.
+#: Every word that names a way into Strands' unmetered summarization: the manager
+#: (class and module), the helper it calls, the method this package overrides, the
+#: ``Agent(context_manager=...)`` facade and the package behind it.
+_SUMMARIZER_WORDS = frozenset(
+    {
+        "SummarizingConversationManager",
+        "summarizing_conversation_manager",
+        "generate_summary",
+        "context_compression",
+        "_generate_summary_with_model",
+        "context_manager",
+        "_context_manager",
+    }
+)
 
-    Two routes reach one: naming ``SummarizingConversationManager`` (import,
-    attribute or call), and an ``Agent(context_manager=...)`` facade, which Strands
-    resolves to a ``SummarizingConversationManager`` internally.
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"\w+", text))
+
+
+def _unmetered_summarizer_uses(source: str) -> list[int]:
+    """Lines that reach Strands' summarization by any name the source spells.
+
+    The rule is about the words, not about call shapes: a hit is any identifier,
+    attribute, keyword argument, definition, import (module path or name) or
+    string constant that contains one of ``_SUMMARIZER_WORDS``. So a dict of
+    ``Agent`` keyword arguments, ``getattr``, ``importlib``, ``__dict__`` lookups,
+    an import of the helper and an override of the metered method are all read,
+    because each has to write one of those words somewhere. Docstrings are not
+    read. What it cannot read is a name assembled at run time from pieces, or
+    arguments loaded from data.
     """
-    lines: list[int] = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.ImportFrom):
-            if any(a.name == "SummarizingConversationManager" for a in node.names):
-                lines.append(node.lineno)
-        elif isinstance(node, ast.Name) and node.id == "SummarizingConversationManager":
-            lines.append(node.lineno)
-        elif (
-            isinstance(node, ast.Attribute)
-            and node.attr == "SummarizingConversationManager"
-        ):
-            lines.append(node.lineno)
-        elif isinstance(node, ast.Call) and any(
-            k.arg == "context_manager" for k in node.keywords
-        ):
-            lines.append(node.lineno)
-    return lines
+    tree = ast.parse(source)
+    # A bare string statement (a docstring) is prose; it cannot be passed to
+    # anything, so it is the one string constant not read.
+    prose = {
+        id(stmt.value)
+        for stmt in ast.walk(tree)
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant)
+    }
+    lines: set[int] = set()
+    for node in ast.walk(tree):
+        if id(node) in prose:
+            continue
+        words: set[str] = set()
+        if isinstance(node, ast.Name):
+            words = {node.id}
+        elif isinstance(node, ast.Attribute):
+            words = {node.attr}
+        elif isinstance(node, ast.keyword) and node.arg:
+            words = {node.arg}
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            words = {node.name}
+        elif isinstance(node, ast.ImportFrom):
+            words = _words(node.module or "")
+            for alias in node.names:
+                words |= {alias.name, alias.asname or ""}
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                words |= _words(alias.name) | {alias.asname or ""}
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            words = _words(node.value)
+        if words & _SUMMARIZER_WORDS:
+            lines.add(getattr(node, "lineno", 0))
+    return sorted(lines)
 
 
 def _production_python() -> list[str]:
@@ -473,20 +557,38 @@ def _production_python() -> list[str]:
 
 
 def test_the_rule_reads_every_route_it_names():
-    """Each route is caught on its own, so a green scan is not a blind one."""
+    """Each spelling is caught on its own, so a green scan is not a blind one."""
     samples = [
         "from strands.agent.conversation_manager import SummarizingConversationManager",
-        "import strands\nm = strands.agent.conversation_manager."
+        "from x import SummarizingConversationManager as S",
+        "import strands\nstrands.agent.conversation_manager."
         "SummarizingConversationManager()",
         "from strands import Agent\nAgent(context_manager='auto')",
-        "from x import SummarizingConversationManager as S",
+        "Agent(**{'context_manager': 'auto'})",
+        "kw = {}\nkw['context_manager'] = 'agentic'\nAgent(**kw)",
+        "dict(context_manager='auto')",
+        "getattr(cm, 'SummarizingConversationManager')",
+        "import importlib\nimportlib.import_module("
+        "'strands.agent.conversation_manager.summarizing_conversation_manager')",
+        "cm.__dict__['SummarizingConversationManager']",
+        "from strands.agent.conversation_manager.compression.context_compression "
+        "import generate_summary",
+        "from strands.agent.conversation_manager.compression import generate_summary",
+        "from strands._context_manager.modes import agentic",
+        "import strands._context_manager.modes.agentic as m",
+        "x = 1\n'''SummarizingConversationManager''' + ''\n",
+        "class M(Metered):\n    def _generate_summary_with_model(self, m, a):\n"
+        "        return None",
     ]
     for sample in samples:
         assert _unmetered_summarizer_uses(sample), sample
     assert not _unmetered_summarizer_uses(
+        '"""Uses SummarizingConversationManager and context_manager in prose."""\n'
+    )
+    assert not _unmetered_summarizer_uses(
         "from idp_common.agents.utils.conversation_manager import "
         "MeteredSummarizingConversationManager\n"
-        "MeteredSummarizingConversationManager()"
+        "MeteredSummarizingConversationManager(summary_ratio=0.5)"
     )
 
 
