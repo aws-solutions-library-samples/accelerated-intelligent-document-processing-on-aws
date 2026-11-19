@@ -409,6 +409,47 @@ class TestDeployerStillRefreshesItsOwnSet:
         assert row["status"] == "FAILED"
         assert row["source"] == d.module.DATASET_SOURCE
 
+    def test_a_run_that_died_mid_deployment_is_redeployed(self, deployer):
+        # A Lambda timeout reaches neither the error path nor CloudFormation, so
+        # the claim stays UPDATING with some files in place. The retry at the same
+        # version must deploy again, not read that as a finished deployment.
+        d = deployer
+
+        def dies_after_one_file(version, description):
+            d.s3.put_object(
+                Bucket=BUCKET_NAME,
+                Key=f"{d.module.DATASET_PREFIX}input/a.pdf",
+                Body=b"x",
+            )
+            raise SystemExit("timed out")
+
+        with patch.object(d.module, "deploy_dataset", dies_after_one_file):
+            with pytest.raises(SystemExit):
+                d.module.handler(_event(version="2.0"), None)
+        assert _row(d)["status"] == "UPDATING"
+
+        deploy = MagicMock(side_effect=_deploy_writes_folder_and_row(d))
+        with patch.object(d.module, "deploy_dataset", deploy):
+            d.module.handler(_event(version="2.0"), None)
+
+        deploy.assert_called_once()
+        assert _row(d)["status"] == "COMPLETED"
+
+    def test_a_finished_deployment_at_the_same_version_is_not_redone(self, deployer):
+        # The other half: only COMPLETED is skipped, and it still is.
+        d = deployer
+        _own_set(d, version="2.0")
+        d.s3.put_object(
+            Bucket=BUCKET_NAME, Key=f"{d.module.DATASET_PREFIX}input/a.pdf", Body=b"x"
+        )
+
+        deploy = MagicMock()
+        with patch.object(d.module, "deploy_dataset", deploy):
+            d.module.handler(_event(version="2.0"), None)
+
+        deploy.assert_not_called()
+        assert _row(d)["status"] == "COMPLETED"
+
     def test_a_description_refresh_updates_its_own_row(self, deployer):
         d = deployer
         if not hasattr(d.module, "update_description_only"):

@@ -166,8 +166,9 @@ def _report_id_in_use(event, context):
 def claim_row(version: str) -> bool:
     """Write this deployer's row as in progress; False if another set holds the id.
 
-    UPDATING is a status the resolver neither reconciles nor overwrites, and its
-    reaper marks the row FAILED if this run dies, which the next run retries.
+    UPDATING is a status the resolver neither reconciles nor overwrites. If this
+    run dies, the row stays UPDATING, which check_existing_version does not
+    count as deployed, so the next run deploys again.
     """
     table = dynamodb.Table(TRACKING_TABLE)  # type: ignore[attr-defined]
     timestamp = datetime.utcnow().isoformat() + 'Z'
@@ -230,8 +231,10 @@ def check_existing_version(version: str) -> bool:
             # Check if version matches, status is not FAILED, and files exist
             if existing_version == version:
                 existing_status = response['Item'].get('status', '')
-                if existing_status == 'FAILED':
-                    logger.info("Previous deployment failed, retrying deployment")
+                # Only a finished deployment counts: UPDATING is the claim of a run
+                # that died before its final record, and FAILED is one that failed.
+                if existing_status != 'COMPLETED':
+                    logger.info(f"Previous deployment is {existing_status}, retrying deployment")
                     return False
                 # Verify at least some files exist in S3
                 try:
