@@ -90,6 +90,10 @@ logger = logging.getLogger(__name__)
 UNCLASSIFIED_FAILED = "failed"
 UNCLASSIFIED_NO_CONTENT = "no_content"
 
+# ``metadata`` key on a page classification pinned to a document-name regex
+# class: the class the page had before the pin (see ``_pin_page_class``).
+CLASS_BEFORE_PIN_KEY = "class_before_pin"
+
 # Which call's configuration is being resolved. These are not three
 # classification *methods* — they are the one call of the combined strategy, and
 # the two calls of the split-then-classify strategy, which need different prompts,
@@ -1164,6 +1168,16 @@ class ClassificationService:
                 page_result.classification.doc_type,
                 class_name,
             )
+        if page_result.classification.doc_type != class_name:
+            # Kept so _record_unclassified_page_issues can tell a page that had
+            # no class, or the fallback, from one whose class was asserted: it
+            # compares this with the section's class to word the issue. Only
+            # the first pin records it; a cached result pinned again keeps it.
+            metadata = page_result.classification.metadata
+            if metadata is not None:
+                metadata.setdefault(
+                    CLASS_BEFORE_PIN_KEY, page_result.classification.doc_type
+                )
         page_result.classification.doc_type = class_name
         page_result.classification.confidence = 1.0
         return page_result
@@ -3408,6 +3422,17 @@ class ClassificationService:
         ids listed, rather than one per page, so a 50-page section cannot produce
         50 identical rows.
 
+        The message describes the page's outcome, not the setting that produced
+        it. A page can end up with a class its own result did not have — under
+        ``sectionSplitting: disabled`` every page takes the one section's winning
+        class, and a document-name regex match pins every page to the matched
+        class — and such a page is extracted against that class's schema (when it
+        has one), not left ``unclassified`` and not extracted against the
+        fallback's. So the
+        wording is chosen per section by comparing the class classification gave
+        the page with the class its section ended up with, which is known here
+        because this runs after the sections are built.
+
         Severity follows what happened, which is also what keeps this usable:
 
         * a classification that **failed** or exhausted its retries → ``error``;
@@ -3465,6 +3490,14 @@ class ClassificationService:
         # one of them for all of them — which listing the page ids beside it turns
         # from a vague message into an actively wrong one.
         by_reason: Dict[str, Dict[str, str]] = {}
+        # page_id -> the class classification itself gave the page. The page may
+        # then carry another class: ``sectionSplitting: disabled`` gives every
+        # page the one section's winning class, and a document-name regex match
+        # pins every page to the matched class before splitting (the class it
+        # had is kept under CLASS_BEFORE_PIN_KEY). The message has to say which
+        # of the two the page ended up with, so it is compared with the section
+        # below.
+        own_class: Dict[str, str] = {}
         for result in all_page_results:
             metadata = result.classification.metadata or {}
             error_message = metadata.get("error")
@@ -3497,6 +3530,11 @@ class ClassificationService:
             by_reason.setdefault(code, {})[str(result.page_id)] = detail[
                 :_MAX_ISSUE_DETAIL_CHARS
             ]
+            own_class[str(result.page_id)] = str(
+                metadata.get(CLASS_BEFORE_PIN_KEY)
+                or result.classification.doc_type
+                or ""
+            )
 
         if not by_reason:
             return
@@ -3506,6 +3544,12 @@ class ClassificationService:
             "classification_page_no_content": "warning",
             "classification_invalid_class_fallback": "warning",
         }
+        # Two wordings per code, chosen per section from what actually happened
+        # rather than from the configured mode: the page kept the class
+        # classification gave it (its own section, or a section of that class),
+        # or it sits in a section of another class and was relabelled with it.
+        # Only the second is extracted against the section's schema, so a
+        # message written for the first is false there.
         messages = {
             "classification_failed": (
                 "Classification did not produce a class for {count} page(s) "
@@ -3528,6 +3572,56 @@ class ClassificationService:
                 "model's answer, and extraction ran against the fallback's schema."
             ),
         }
+        # The relabelled wording: what classification found, then which class
+        # the page was given, then what that meant for extraction. The section's
+        # class has a schema only when it is a configured class; with
+        # ``enforceValidClasses`` off, or a fallback that is not configured, the
+        # one section can carry a class extraction has no schema for.
+        found = {
+            "classification_failed": (
+                "Classification did not produce a class for {count} page(s) ({pages})."
+            ),
+            "classification_page_no_content": (
+                "{count} page(s) ({pages}) had nothing to classify — no usable "
+                "OCR text, and no page image was loaded or images are not sent."
+            ),
+            "classification_invalid_class_fallback": (
+                "The model returned a class outside the configured vocabulary for "
+                "{count} page(s) ({pages}) after every retry, so the configured "
+                "fallback class was assigned."
+            ),
+        }
+        given = (
+            " They are in a section whose class is '{section_class}', so they "
+            "were given that class"
+        )
+        extracted = {
+            "classification_failed": (
+                " and extracted against its schema with the rest of the section, "
+                "although classification never established that they belong to it."
+            ),
+            "classification_page_no_content": (
+                " and extracted with the rest of the section, with no OCR text of "
+                "their own. Check the OCR step for those pages unless they are "
+                "genuinely empty."
+            ),
+            "classification_invalid_class_fallback": (
+                " instead and extraction ran against its schema, not the "
+                "fallback's. Neither class is the model's answer for them."
+            ),
+        }
+        no_schema = (
+            ". '{section_class}' is not a configured class, so there is no "
+            "extraction schema for it and nothing was extracted from the section."
+        )
+        # A class configured with ``x-aws-idp-exclude-from-processing`` is
+        # skipped by extraction (``_mark_excluded_sections`` flags the section
+        # after this runs), so neither wording that says the pages were
+        # extracted is true for it.
+        excluded = (
+            " '{section_class}' is excluded from processing by its configuration, "
+            "so nothing was extracted from the section."
+        )
 
         for code, detail_by_page in by_reason.items():
             for section in document.sections:
@@ -3552,14 +3646,38 @@ class ClassificationService:
                 root_cause = "; ".join(shown)
                 if len(seen_details) > len(shown):
                     root_cause += f"; and {len(seen_details) - len(shown)} more"
+                relabelled = any(
+                    own_class[pid] != str(section.classification or "")
+                    for pid in section_pages
+                )
+                section_type = self.get_doc_type(section.classification)
+                is_excluded = bool(section_type and section_type.excluded)
+                if not relabelled:
+                    if is_excluded and code == "classification_invalid_class_fallback":
+                        # The ordinary wording says extraction ran against the
+                        # fallback's schema; for an excluded fallback it did not.
+                        template = (
+                            found[code]
+                            + " The stored class is not the model's answer."
+                            + excluded
+                        )
+                    else:
+                        template = messages[code]
+                elif is_excluded:
+                    template = found[code] + given + "." + excluded
+                elif section.classification in self.valid_doc_types:
+                    template = found[code] + given + extracted[code]
+                else:
+                    template = found[code] + given + no_schema
                 issue = ProcessingIssue(
                     stage="classification",
                     severity=severities[code],
                     code=code,
-                    message=messages[code].format(
+                    message=template.format(
                         count=len(section_pages),
                         pages=", ".join(section_pages),
                         unclassified=UNCLASSIFIED_CLASS,
+                        section_class=section.classification,
                     ),
                     root_cause=f"{root_cause} (pages {', '.join(section_pages)})",
                     section_id=section.section_id,
