@@ -77,12 +77,12 @@ class ConfigOperation:
         # Enhancement 8: use self._client._region consistently
         return boto3.client("cloudformation", region_name=self._client._region)
 
-    def _lookup_stack_resources(self, stack_name: str, logical_ids, cfn=None) -> dict:
+    def _lookup_stack_resources(self, stack_name: str, logical_ids) -> dict:
         """Physical IDs for the requested logical IDs, in one pass over the stack."""
         wanted = set(logical_ids)
         found: dict = {}
 
-        cfn = cfn or self._cloudformation_client()
+        cfn = self._cloudformation_client()
         paginator = cfn.get_paginator("list_stack_resources")
 
         for page in paginator.paginate(StackName=stack_name):
@@ -147,24 +147,28 @@ class ConfigOperation:
         Region, so `config-download` from an EU stack wrote `us.` profiles into
         the file, which a re-upload then stores as explicit values.
 
-        The Region bridged is the one the CloudFormation client of the lookup
-        below was built for (`--region` when given, otherwise boto3's default
-        session), read from that client rather than resolved a second time, so it
-        names the Region the stack is actually found in. A fresh
-        `boto3.session.Session()` is not equivalent: it ignores a region given to
-        `boto3.setup_default_session`.
+        The Region bridged is read from a client built exactly as the lookup
+        below builds its own (`_cloudformation_client`: `--region` when given,
+        otherwise boto3's default session), so it names the Region the stack is
+        actually found in. A fresh `boto3.session.Session()` is not equivalent: it
+        ignores a region given to `boto3.setup_default_session`. A client
+        substituted for boto3's (a test double) carries no real Region, and then
+        nothing is bridged rather than a non-string being written into the
+        environment.
 
         Returns the configuration table's physical ID.
         """
         import os
 
-        cfn = self._cloudformation_client()
-        region = cfn.meta.region_name
-        os.environ["AWS_DEFAULT_REGION"] = region
-        os.environ["AWS_REGION"] = region
+        region = self._client._region or self._cloudformation_client().meta.region_name
+        if not isinstance(region, str):
+            region = None
+        if region:
+            os.environ["AWS_DEFAULT_REGION"] = region
+            os.environ["AWS_REGION"] = region
 
         found = self._lookup_stack_resources(
-            stack_name, {"ConfigurationTable", "ConfigurationBucket"}, cfn=cfn
+            stack_name, {"ConfigurationTable", "ConfigurationBucket"}
         )
 
         config_table = found.get("ConfigurationTable")
