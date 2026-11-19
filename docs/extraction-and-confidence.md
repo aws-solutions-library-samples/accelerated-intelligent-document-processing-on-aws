@@ -2645,7 +2645,10 @@ reports the section as unscored with the same reason. ⚠️ Because the section
 no fields and no confidence scores, it raises no confidence alert and no
 missing-required-field reason, so it does **not** send the document to human
 review on its own; find such documents by the section's **Failed** status, and
-expect evaluation to score that section's fields as missed. This applies to extraction run inside the extraction function. A block
+expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
+handle a block on their own model call the same way: see
+[Classification](./classification.md#pages-classification-could-not-classify) and
+[Summarization Configuration](./configuration.md#summarization-configuration). This applies to extraction run inside the extraction function. A block
 inside one shard of a section sharded through the Distributed Map
 (`ExtractionShardMap`) still fails the document, as any failed shard does.
 

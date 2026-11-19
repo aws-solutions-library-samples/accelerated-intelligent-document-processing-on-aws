@@ -896,8 +896,9 @@ page-granularity path, immediately after section splitting, and
 turns each page classification that carries an `error` or a `validation_error` into
 a `ProcessingIssue` on the section holding that page.
 
-⚠️ **It has one call site, in `_classify_pages_multimodal`.**
-`packet_classify_document` does not call it and records none of these: it decides
+⚠️ **It is called from `_classify_pages_multimodal` and from
+`split_then_classify_document`** (for the segments whose section classification
+failed). `packet_classify_document` does not call it and records none of these: it decides
 per *segment* rather than per page and never builds the `List[PageClassification]`
 this takes, so covering it is real work rather than an extra call. A page that
 falls inside no segment's range is not lost: it joins a neighbouring segment and
@@ -928,20 +929,37 @@ document-level issue would raise that count and then have no text to show for it
 | `error` | `no_content`, `page_empty` true or absent | `classification_page_no_content` | warning | `classify_page_bedrock` |
 | `error` | `no_content`, `page_empty` false | `classification_failed` | error | `classify_page_bedrock` (a read failed or an artifact is missing) |
 | `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` |
+| `error` (a content-filter block) | `failed` | `classification_failed` | error | `_classify_pages_multimodal`, for a page whose Bedrock reply a content filter withheld (`_content_filtered_page_result`) |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
 
-**On the Bedrock backend `classification_failed` comes only from a page that could
-not be read.** A no-content result whose `page_empty` is false gets the error code,
-because the page may have content nobody looked at. All four default-reason call
-sites are in `classify_page_sagemaker`; `classify_page_bedrock`
-re-raises from its `except`, and the thread-pool handler that catches it does not
-append the page to `all_page_results`, so this function never sees it. No signal is
-lost — that path marks the document `FAILED`, and `document.errors` *is* read on a
-failed document — so apart from read failures the error-severity code is a
-UDOP-backend code in practice.
+**On the Bedrock backend's page path `classification_failed` comes from two
+cases: a page that could not be read, and a content-filter block.** A no-content
+result whose `page_empty` is false gets the error code, because the page may have
+content nobody looked at. The four default-reason call sites of
+`_create_unclassified_result` are in `classify_page_sagemaker`. `classify_page_bedrock` re-raises from its `except`, and
+for any error but one the thread-pool handler that catches it does not append the
+page to `all_page_results`, so this function never sees it. No signal is lost — that
+path marks the document `FAILED`, and `document.errors` *is* read on a failed
+document. The one exception is a reply Amazon Bedrock's content filter withheld
+(`bedrock_utils.is_content_filter_block`): the handler builds an unclassified result
+for that page with the block as its `error`,
+appends it to `all_page_results`, and keeps it out of `document.errors` and
+`failed_page_exceptions`, so the page's section carries the error and the rest of the
+document completes. Retrying the step would send the same page to the same filter.
+Two cases keep failing the document instead: a document-name class pin
+(`forced_class`), where `unclassified` would split the asserted document around
+the page, and a page-limited sample (`content_filter_fails_document=True` from
+`classify_document`), because `_apply_limited_classification_to_all_pages` rebuilds
+the sections and carries only `document.errors` across, so an issue on the sample
+would be lost and the block recorded nowhere.
+Split-then-classify treats a blocked section classification call the same way in
+`_classify_segments`: the segment is labelled `unclassified` and gets the issue, and
+the block is not added to the errors that fail the document. A blocked packet window
+or splitting call is not covered: its pages belong to no segment, so there is no unit
+to mark, and the failure still fails the document.
 Note that a test mocking `classify_page`'s **return value** cannot surface this,
 since a returned unclassified result is SageMaker-shaped by construction.
 
