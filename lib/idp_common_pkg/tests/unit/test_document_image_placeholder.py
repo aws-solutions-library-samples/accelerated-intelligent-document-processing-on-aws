@@ -612,6 +612,49 @@ class TestClassConfidenceBlockIsCounted:
         assert isinstance(outcome, Document) and "classification" in stages
         assert _validate(user) == []
 
+    def test_a_placeholder_in_a_block_comment_is_not_counted_both_sides(self):
+        block = (
+            "<class-confidence>Rank the classes. {# " + _IMG + " #}</class-confidence>"
+        )
+        user = _combined_user(_CLASSIFICATION_PROMPTS["once"][0], block)
+        outcome, _, stages = _run_merged_classification(user)
+        assert isinstance(outcome, Document) and "classification" in stages
+        assert _validate(user) == []
+
+    def test_section_classification_counts_its_own_block_both_sides(self):
+        """Section classification splices the block from its own call's
+        ``confidence``, not the combined call's."""
+        prompt = _defaults_cls()["split_then_classify"]["section_classification"][
+            "llm"
+        ]["task_prompt"]
+        from idp_common.prompt_comments import strip_prompt_comments
+
+        assert strip_prompt_comments(prompt).count(_IMG) == 1
+        user = _stc_user()
+        user["classification"]["split_then_classify"]["section_classification"] = {
+            "llm": {"confidence": {"mode": "topk", "task_prompt_topk": self._BLOCK}}
+        }
+        outcome, document, stages = _run_merged_classification(user)
+        assert isinstance(outcome, DocumentImagePlaceholderError)
+        assert "section classification task prompt" in str(outcome)
+        assert "section_classification" not in stages
+        errors = _validate(user)
+        assert len(errors) == 1, errors
+        assert errors[0].startswith(
+            "classification.split_then_classify.section_classification.llm."
+        )
+
+    def test_the_combined_block_does_not_reach_section_classification(self):
+        """Control for the case above: the same block on the combined call, which
+        split-then-classify does not make, is counted nowhere."""
+        user = _stc_user()
+        user["classification"]["combined"] = {
+            "llm": {"confidence": {"mode": "topk", "task_prompt_topk": self._BLOCK}}
+        }
+        outcome, _, stages = _run_merged_classification(user)
+        assert isinstance(outcome, Document) and "section_classification" in stages
+        assert _validate(user) == []
+
     def test_mode_off_splices_no_block_so_nothing_is_counted(self):
         user = _combined_user(_CLASSIFICATION_PROMPTS["once"][0], self._BLOCK, "off")
         outcome, _, stages = _run_merged_classification(user)
