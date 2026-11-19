@@ -120,6 +120,7 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import shutil
 import subprocess
 import tempfile
 import tomllib
@@ -1044,6 +1045,46 @@ def test_no_extra_path_is_stale() -> None:
     )
 
 
+def _in_ci() -> bool:
+    """Whether this run is in CI, read when called so the tests below can drive it.
+
+    Both CIs set ``CI`` (GitHub Actions and GitLab each do); the other two names are
+    read as well so a runner that sets only its own is covered. An explicit negative
+    (``CI=false``, ``0``, ``no``, ``off``) counts as not CI.
+    """
+    return any(
+        os.getenv(name, "").strip().lower() not in ("", "0", "false", "no", "off")
+        for name in ("CI", "GITLAB_CI", "GITHUB_ACTIONS")
+    )
+
+
+def _basedpyright() -> str:
+    """The basedpyright executable, or skip locally and fail in CI when it is absent.
+
+    The live probes below need basedpyright on ``PATH``. Without this check a
+    developer machine with no Node toolchain got a ``FileNotFoundError`` per probe,
+    which reads as a broken test rather than a missing tool. Skipping is the right
+    answer there and the wrong one in CI: every CI job that runs this module installs
+    basedpyright (``npm install -g basedpyright`` on GitLab, ``node: "true"`` on
+    GitHub) precisely so these probes run, and a skip would let a job that lost the
+    install report green with the #1109 checks never executed. So the same absence
+    is a skip on a developer machine and a failure in CI.
+    """
+    executable = shutil.which("basedpyright")
+    if executable is not None:
+        return executable
+    reason = (
+        "basedpyright is not on PATH, so the live resolution probes in "
+        "test_pyright_config.py cannot run (install it with `make setup-node` or "
+        "`npm install -g basedpyright`)"
+    )
+    if _in_ci():
+        pytest.fail(
+            f"{reason}. CI must run these probes, so give this job basedpyright."
+        )
+    pytest.skip(reason)
+
+
 def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
     """Names basedpyright cannot resolve, given these search paths.
 
@@ -1077,7 +1118,7 @@ def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
             )
         )
         result = subprocess.run(
-            ["basedpyright", "--outputjson", "--project", str(project)],
+            [_basedpyright(), "--outputjson", "--project", str(project)],
             capture_output=True,
             text=True,
             cwd=project,
@@ -1085,8 +1126,14 @@ def _resolution_probe(extra_paths: list[str], modules: list[str]) -> list[str]:
         )
     try:
         report = json.loads(result.stdout)
-    except json.JSONDecodeError:  # pragma: no cover - basedpyright not installed
-        pytest.skip(f"basedpyright produced no JSON report: {result.stderr[:400]}")
+    except json.JSONDecodeError:
+        # basedpyright is installed (`_basedpyright` checked), so unreadable output
+        # is the probe breaking, not a missing tool. Skipping here would turn the
+        # #1109 checks off whenever basedpyright crashed or changed its output.
+        pytest.fail(
+            f"basedpyright produced no JSON report (exit {result.returncode}): "
+            f"stdout began {result.stdout[:200]!r}; stderr began {result.stderr[:400]!r}"
+        )
     return sorted(
         diagnostic["message"]
         for diagnostic in report.get("generalDiagnostics", [])
@@ -1147,7 +1194,7 @@ def _reported_search_path_blocks() -> list[list[Path]]:
     """
     probe_file = REPO_ROOT / "scripts" / "discover_model_limits.py"
     result = subprocess.run(
-        ["basedpyright", "--verbose", str(probe_file)],
+        [_basedpyright(), "--verbose", str(probe_file)],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,
@@ -1167,8 +1214,10 @@ def _reported_search_path_blocks() -> list[list[Path]]:
                 continue
             current.append(Path(line.strip()))
     blocks = [block for block in blocks if block]
-    if not blocks:  # pragma: no cover - basedpyright missing or output changed
-        pytest.skip(
+    if not blocks:
+        # basedpyright is installed (`_basedpyright` checked), so this is its output
+        # changing shape — a reason to fail, since a skip would hide the check.
+        pytest.fail(
             "could not read any 'Search paths:' block from basedpyright --verbose; "
             f"stdout began {result.stdout[:200]!r}"
         )
@@ -2126,3 +2175,87 @@ def test_the_scope_check_rejects_a_broadened_relaxation(case: str) -> None:
 def test_the_scope_check_accepts_the_live_config() -> None:
     """Control for the scope cases, same reason as the severity control."""
     assert _relaxation_scope_findings(_config()) == []
+
+
+# --------------------------------------------------------------------------- #
+# The probes' own guard. In CI basedpyright is installed and works, so none of
+# the branches below runs there unless it is driven directly: these tests are what
+# keep "skip locally, fail in CI, fail on unreadable output" from regressing
+# unnoticed on every run that has the tool.
+# --------------------------------------------------------------------------- #
+
+_CI_VARIABLES = ("CI", "GITLAB_CI", "GITHUB_ACTIONS")
+
+
+def _outcome(call) -> tuple[str, str]:
+    """``("returned", value)``, ``("skipped", msg)`` or ``("failed", msg)``.
+
+    ``pytest.raises(pytest.fail.Exception)`` cannot be used for these assertions: a
+    ``pytest.skip`` raised inside it escapes and turns the test into a skip, so a
+    fail-to-skip regression would read as green.
+    """
+    try:
+        return ("returned", str(call()))
+    except pytest.skip.Exception as exc:
+        return ("skipped", str(exc))
+    except pytest.fail.Exception as exc:
+        return ("failed", str(exc))
+
+
+def _off_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _CI_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_a_present_basedpyright_is_returned_rather_than_skipped(monkeypatch) -> None:
+    for in_ci in (False, True):
+        _off_ci(monkeypatch)
+        if in_ci:
+            monkeypatch.setenv("CI", "true")
+        monkeypatch.setattr(shutil, "which", lambda name: f"/opt/bin/{name}")
+        assert _outcome(_basedpyright) == ("returned", "/opt/bin/basedpyright")
+
+
+def test_an_absent_basedpyright_skips_off_ci_and_says_why(monkeypatch) -> None:
+    _off_ci(monkeypatch)
+    monkeypatch.setenv("CI", "false")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    kind, message = _outcome(_basedpyright)
+    assert kind == "skipped", (kind, message)
+    assert "basedpyright is not on PATH" in message
+
+
+@pytest.mark.parametrize("variable", _CI_VARIABLES)
+def test_an_absent_basedpyright_fails_in_ci(monkeypatch, variable: str) -> None:
+    _off_ci(monkeypatch)
+    monkeypatch.setenv(variable, "true")
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    kind, message = _outcome(_basedpyright)
+    assert kind == "failed", (kind, message)
+    assert "CI must run these probes" in message
+
+
+def _unreadable_basedpyright(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An installed basedpyright whose output neither parser can read."""
+    monkeypatch.setattr(shutil, "which", lambda name: f"/opt/bin/{name}")
+
+    def run(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="garbage\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+def test_unreadable_probe_output_fails_rather_than_skips(monkeypatch) -> None:
+    _off_ci(monkeypatch)
+    _unreadable_basedpyright(monkeypatch)
+    kind, message = _outcome(lambda: _resolution_probe([], ["idp_common"]))
+    assert kind == "failed", (kind, message)
+    assert "no JSON report" in message
+
+
+def test_unreadable_search_path_output_fails_rather_than_skips(monkeypatch) -> None:
+    _off_ci(monkeypatch)
+    _unreadable_basedpyright(monkeypatch)
+    kind, message = _outcome(_reported_search_path_blocks)
+    assert kind == "failed", (kind, message)
+    assert "Search paths:" in message

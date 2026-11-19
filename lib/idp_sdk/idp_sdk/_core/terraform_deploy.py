@@ -741,9 +741,14 @@ def write_root_config(
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
 
     Refuses a ``main.tf`` that idp-cli did not write. On a later deploy the
-    values from the previous ``terraform.tfvars`` are kept and the new ones
-    applied over them, as a CloudFormation update keeps the parameters it is not
-    given. Returns the variable values written.
+    values the previous deploy wrote are kept and the new ones applied over them:
+    those in ``idp-cli-parameters.json``, by CloudFormation parameter name, or,
+    without that file, those in the previous ``terraform.tfvars``. Only values that
+    were passed are ever written, never the defaults in effect, so a variable that
+    was never passed takes the module's default, which after an upgrade is the new
+    module's default. That differs from a CloudFormation update, which keeps the
+    previous value of every parameter it is not given. Returns the variable values
+    written.
     """
     directory.mkdir(parents=True, exist_ok=True)
     main_tf = directory / "main.tf"
@@ -1022,7 +1027,11 @@ def _category(tf_type: str) -> str:
 
 def retained_report(state: Dict[str, Any], removed: Iterable[str]) -> Dict[str, List]:
     """The retained resources in the shape
-    :meth:`StackDeployer.get_retained_resources_after_deletion` returns."""
+    :meth:`StackDeployer.get_retained_resources_after_deletion` returns, plus
+    ``service_log_groups``: the log groups AWS services created for resources
+    this delete destroys, which are left behind (see :func:`service_log_groups`).
+    An entry whose identifier is not a readable name carries a ``display_name``.
+    """
     report: Dict[str, List] = {
         "dynamodb_tables": [],
         "log_groups": [],
@@ -1039,17 +1048,162 @@ def retained_report(state: Dict[str, Any], removed: Iterable[str]) -> Dict[str, 
             continue
         vals = res.get("values") or {}
         physical = next((vals[a] for a in _PHYSICAL_ATTRS if vals.get(a)), None)
-        report[_category(res.get("type", ""))].append(
+        entry = {
+            "logical_id": res["address"],
+            "physical_id": physical,
+            "type": res.get("type"),
+            "status": "RETAINED",
+            "status_reason": "Removed from Terraform state before destroy",
+            "stack": "terraform",
+        }
+        describe = _DISPLAY_NAMES.get(str(res.get("type", "")))
+        if describe:
+            entry["display_name"] = describe(vals)
+        report[_category(res.get("type", ""))].append(entry)
+    report["service_log_groups"] = service_log_groups(state, wanted)
+    return report
+
+
+def _api_gateway_account(vals: Dict[str, Any]) -> str:
+    role = vals.get("cloudwatch_role_arn")
+    text = "API Gateway account settings for this Region"
+    return f"{text} (CloudWatch Logs role {role})" if role else text
+
+
+#: Resources whose only identifier is not a name a reader can act on. The
+#: account-level API Gateway setting's id is the provider's or Cloud Control's
+#: identifier, which says nothing about what was kept.
+_DISPLAY_NAMES = {
+    "aws_api_gateway_account": _api_gateway_account,
+    "awscc_apigateway_account": _api_gateway_account,
+}
+
+
+def _block(value: Any) -> Dict[str, Any]:
+    """A nested block from ``terraform show -json``: the aws provider renders one
+    as a list of objects, awscc's single-nested attributes as an object."""
+    if isinstance(value, list):
+        value = value[0] if value else None
+    return value if isinstance(value, dict) else {}
+
+
+def _log_group_names(state: Dict[str, Any]) -> set:
+    names = set()
+    for res in _state_resources(state):
+        if res.get("mode", "managed") != "managed":
+            continue
+        if "log_group" not in str(res.get("type", "")):
+            continue
+        vals = res.get("values") or {}
+        name = vals.get("name") or vals.get("log_group_name")
+        if name:
+            names.add(name)
+    return names
+
+
+def _glue_crawler_log_group(
+    vals: Dict[str, Any], security_configs: Dict[str, Dict[str, Any]]
+) -> tuple:
+    """(log group, shared) for a Glue crawler.
+
+    A crawler writes to ``/aws-glue/crawlers``, which every crawler in the
+    Region shares, unless its security configuration encrypts CloudWatch Logs;
+    then Glue writes to ``/aws-glue/crawlers-role/<role name>-<configuration>``
+    (AWS Glue Developer Guide, "Encrypting logs written to CloudWatch Logs").
+    """
+    config_name = vals.get("crawler_security_configuration") or vals.get(
+        "security_configuration"
+    )
+    config = security_configs.get(config_name or "") or {}
+    encryption = _block(config.get("encryption_configuration"))
+    mode = _block(encryption.get("cloudwatch_encryption")).get(
+        "cloudwatch_encryption_mode"
+    )
+    role = str(vals.get("role") or "").rsplit("/", 1)[-1]
+    if mode and str(mode).upper() != "DISABLED" and role:
+        return f"/aws-glue/crawlers-role/{role}-{config_name}", False
+    return "/aws-glue/crawlers", True
+
+
+def service_log_groups(
+    state: Dict[str, Any], exclude: Iterable[str] = ()
+) -> List[Dict[str, Any]]:
+    """Log groups AWS services create on the deployment's behalf, which neither
+    ``destroy`` nor a CloudFormation stack delete removes.
+
+    Derived from the state: a Lambda function logging to its default
+    ``/aws/lambda/<function>`` group, a CodeBuild project logging to its default
+    ``/aws/codebuild/<project>`` group, and a Glue crawler, when no log group of
+    that name is in the state. The service creates the group the first time the
+    resource runs, so a function or build that never ran left none. A group
+    named explicitly but not in the state is someone else's and is not listed.
+    Resources in ``exclude`` (state addresses, the retained ones) are kept, so
+    their groups are not left behind by this delete.
+    """
+    skip = set(exclude)
+    declared = _log_group_names(state)
+    resources = [
+        r
+        for r in _state_resources(state)
+        if r.get("mode", "managed") == "managed" and r.get("address") not in skip
+    ]
+    security_configs = {}
+    for res in resources:
+        if "glue_security_configuration" in str(res.get("type", "")):
+            vals = res.get("values") or {}
+            for key in ("name", "id"):
+                if vals.get(key):
+                    security_configs[vals[key]] = vals
+
+    found: Dict[str, Dict[str, Any]] = {}
+
+    def add(group: str, res: Dict[str, Any], reason: str, shared: bool = False):
+        if group in declared:
+            return None
+        entry = found.setdefault(
+            group,
             {
                 "logical_id": res["address"],
-                "physical_id": physical,
-                "type": res.get("type"),
-                "status": "RETAINED",
-                "status_reason": "Removed from Terraform state before destroy",
+                "physical_id": group,
+                "type": "aws_cloudwatch_log_group",
+                "status": "NOT_MANAGED",
+                "status_reason": reason,
                 "stack": "terraform",
-            }
+                "created_for": [],
+                "shared": shared,
+            },
         )
-    return report
+        entry["created_for"].append(res["address"])
+        return entry
+
+    for res in resources:
+        tf_type = str(res.get("type", ""))
+        vals = res.get("values") or {}
+        if tf_type == "aws_lambda_function" and vals.get("function_name"):
+            default = f"/aws/lambda/{vals['function_name']}"
+            configured = _block(vals.get("logging_config")).get("log_group")
+            if not configured or configured == default:
+                add(default, res, "Created by Lambda when the function first ran")
+        elif tf_type == "aws_codebuild_project" and vals.get("name"):
+            default = f"/aws/codebuild/{vals['name']}"
+            logs = _block(_block(vals.get("logs_config")).get("cloudwatch_logs"))
+            if str(logs.get("status") or "ENABLED").upper() == "DISABLED":
+                continue
+            configured = logs.get("group_name")
+            if not configured or configured == default:
+                add(default, res, "Created by CodeBuild when a build first ran")
+        elif tf_type in ("aws_glue_crawler", "awscc_glue_crawler"):
+            group, shared = _glue_crawler_log_group(vals, security_configs)
+            entry = add(
+                group, res, "Created by AWS Glue when the crawler first ran", shared
+            )
+            if entry is not None and shared:
+                # The group is not this deployment's; its streams, named after
+                # the crawler, are.
+                entry.setdefault("log_streams", []).append(
+                    vals.get("name") or res["address"]
+                )
+    return sorted(found.values(), key=lambda e: e["physical_id"])
 
 
 # ---------------------------------------------------------------------------

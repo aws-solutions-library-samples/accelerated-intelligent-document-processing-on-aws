@@ -60,7 +60,7 @@ are older than an hour has only the second of them:
 | Step | Minutes |
 |---|---|
 | Plan, retention check, freeze, configuration fix | under 1 |
-| Turn the old agent-jobs time-to-live off ([hazards](#hazards)) | 15, waiting for DynamoDB to accept it: a table whose time-to-live was enabled less than about an hour ago refuses the change (only the test's freshly created deployment meets this) |
+| Turn the old agent-jobs time-to-live off ([step 1a](#1a-turn-off-the-old-agent-jobs-time-to-live)) | 15, waiting for DynamoDB to accept it: a table whose time-to-live was enabled less than about an hour ago refuses the change (only the test's freshly created deployment meets this) |
 | Adopt the user pool | under 1 |
 | Wait before `apply` | 61, because DynamoDB refuses the module's time-to-live setting until about an hour after the disable |
 | `apply` (plan, check, apply) | 33 |
@@ -90,25 +90,49 @@ You need:
   older module plans to replace a pool whose setting differs from its own, which
   would delete every user. The change that prevents this is in [pull request
   #1848](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/pull/1848),
-  which ships in the first release after 0.6.14; no published release has it yet.
-  With an older module the `apply` phase finds the replacement and refuses.
+  which is in release 0.6.15 and later. With an older module the `apply` phase finds
+  the replacement and refuses.
 - A name for the new deployment that no CloudFormation stack uses (at most 25
   characters), and the old deployment's admin username.
 - A maintenance window. From the freeze step on, the old deployment stops taking new
   documents, and nothing processes uploads until the new deployment is applied.
-
-Take backups you can restore without either Terraform state: an on-demand DynamoDB
-backup of each table in the [resource table](#what-happens-to-each-resource) that
-is adopted, and a copy of anything in the adopted buckets you cannot afford to lose.
-Export the old deployment's CloudWatch logs if you need them, because they are
-destroyed with it.
 
 Save the old deployment's state to a file, in its directory:
 
 ```bash
 cd old-idp
 terraform state pull > ../old-idp.tfstate
+cd ..
 ```
+
+Take backups you can restore without either Terraform state: an on-demand DynamoDB
+backup of each table in the [resource table](#what-happens-to-each-resource) that
+is adopted, and a copy of anything in the adopted buckets you cannot afford to lose.
+The old deployment's table and bucket names do not share one prefix (some start with
+the deployment's name, others with `idp-`, `agent-analytics-` or `discovery-`), so
+read them from the saved state rather than filtering by name. These commands list
+every table and every bucket the old state manages, including the ones the new
+deployment recreates rather than adopts, such as the test-sets and discovery tables,
+whose content does not carry over:
+
+```bash
+jq -r '.resources[] | select(.mode == "managed" and .type == "aws_dynamodb_table")
+  | .instances[].attributes.name' old-idp.tfstate > old-tables.txt
+jq -r '.resources[] | select(.mode == "managed" and .type == "aws_s3_bucket")
+  | .instances[].attributes.bucket' old-idp.tfstate > old-buckets.txt
+```
+
+Then back up each table, for example:
+
+```bash
+while IFS= read -r table; do
+  aws dynamodb create-backup --region us-west-2 --table-name "$table" \
+    --backup-name "pre-migration-$(date +%Y%m%d)"
+done < old-tables.txt
+```
+
+Export the old deployment's CloudWatch logs if you need them, because they are
+destroyed with it.
 
 In the examples below the new deployment is called `my-idp`, the region is
 `us-west-2`, the old deployment's directory is `./old-idp`, and the new one's root
@@ -166,13 +190,61 @@ does not take something the new one uses: the KMS key's alias, settings of the
 adopted user pool (UI customisation, resource servers, risk configuration), BDA
 blueprints, and any `aws_lambda_invocation` whose `lifecycle_scope` is not
 `CREATE_ONLY`, because destroying one of those invokes its function with a delete
-action (upstream's BDA OCR project manager does exactly that). Each is detached from
-the old state and left in the account, managed by neither deployment.
+action (upstream's BDA OCR project manager does exactly that). The Region's API
+Gateway account settings (`aws_api_gateway_account`), when the old state holds them,
+are kept too, together with the CloudWatch role they name and that role's policies:
+the setting is shared by every REST API in the Region. Whether destroying it clears
+the logging role for all of them depends on the `hashicorp/aws` version that runs the
+destroy: 6.0.0 and later always clear it, 5.75.1 to 5.100 clear it only when the
+resource sets `reset_on_delete = true`, and 5.75.0 and earlier only remove it from the
+state. Upstream constrains the provider with `>= 5.0.0` and ships no lock file, so a
+directory first initialised after 6.0.0 was released (June 2025), or upgraded with
+`terraform init -upgrade` since, has a 6.x provider; `.terraform.lock.hcl` in the old
+directory names the version it uses. Destroying the role leaves the setting as it was
+under every version, but the setting then names a role that no longer exists, which
+stops logging just the same. Each is detached from the old state and left in the
+account, managed by neither deployment, which is harmless where the destroy would
+have left the setting alone.
 
 Read the printed table before going on. Each adopted resource shows its old and new
 address and whether the live run measured it.
 
 To back out: delete `adopt.tf` and the `genai-idp-terraform-migration` directory.
+
+### 1a. Turn off the old agent-jobs time-to-live
+
+Do this at least an hour before step 6, ideally before the maintenance window. The
+old agent jobs table expires rows on `expiresAfter` and the module sets
+`ExpiresAfter`, and DynamoDB cannot move a table's time-to-live to another attribute
+while it is on (see [Hazards](#hazards)). Nothing else depends on the old setting:
+with it off, the old deployment's agent jobs simply stop expiring.
+
+The table's name does not start with the deployment's name
+(`agent-analytics-<id>-agent-jobs-<id>`), so read it from the saved state, then check
+its time-to-live and turn it off:
+
+```bash
+table=$(jq -r '.resources[] | select(.mode == "managed"
+    and .type == "aws_dynamodb_table" and .name == "agent_jobs")
+  | .instances[].attributes.name' old-idp.tfstate)
+aws dynamodb describe-time-to-live --region us-west-2 --table-name "$table"
+aws dynamodb update-time-to-live --region us-west-2 --table-name "$table" \
+    --time-to-live-specification Enabled=false,AttributeName=expiresAfter
+```
+
+If the command prints no table, the old deployment has no agent jobs table and there
+is nothing to do. If `describe-time-to-live` reports another attribute name, use that
+one in `update-time-to-live`. Then wait **at least an hour** before step 6: turning
+time-to-live off can take up to an hour, and DynamoDB also refuses a second
+time-to-live change on a table within about an hour of the first ("Time to live has
+been modified multiple times within a fixed interval"), even once
+`describe-time-to-live` reports `DISABLED`. `apply` checks the status, and prints
+these commands with the table's name if time-to-live is still on, but it cannot check
+that interval, so an `apply` run too soon fails part way on this table; run it again
+later.
+
+A table whose time-to-live was turned on less than about an hour ago refuses the
+disable for the same reason; wait and run `update-time-to-live` again.
 
 ### 2. Check what the expiry rules would delete
 
@@ -341,6 +413,11 @@ idp-cli terraform migrate-from-genai-idp-terraform apply \
     --stack-name my-idp --region us-west-2 --apply
 ```
 
+When the old deployment has an agent jobs table, both runs also need
+`--accept-change module.idp.aws_dynamodb_table.agent_table:ttl-changed`, the
+time-to-live rename described under [Hazards](#hazards), and the disable in
+[step 1a](#1a-turn-off-the-old-agent-jobs-time-to-live) must be at least an hour old.
+
 `apply` first checks the earlier phases again: no kept bucket would expire objects
 (unless accepted with `--accept-expiry`), the old upload rule exists and is disabled,
 nothing is in flight or awaiting review (but the documents named with
@@ -410,6 +487,15 @@ that has revisions but no pre-migration one (the first deploy could not record i
 a finding naming the `fix-config` backup file, which is then the only copy of the old
 content. Without `--apply` it lists what it would restore.
 
+When the old configuration table had no revision counters, `fix-config` has nothing
+to change and writes no backup. `restore-config` then checks every profile in the
+configuration table against its revision history instead. A profile with no
+pre-migration revision whose history starts at revision 1, as for a profile the new
+deployment created, is listed as having nothing to restore. One whose history starts
+later is a finding, because a revision number was used before it and the old content
+may have been replaced; if `fix-config` ran with another `--terraform-dir`, its backup
+is there.
+
 In the measured run the `default` profile was the one replaced, and a configuration
 edit made on the old deployment was missing from the new one until this phase ran.
 
@@ -429,9 +515,15 @@ Before you detach anything, check:
   An [evaluation](./evaluation.md) against your baselines is the most reliable check.
 - The new deployment's alerts subscription is confirmed (see
   [Who receives the alerts](./monitoring.md#who-receives-the-alerts)).
-- The knowledge base, if you use it, is re-synced from the adopted output bucket. It
-  is a new knowledge base on S3 Vectors, so it starts empty; start an ingestion job
-  on its data source to index existing documents. This step is unverified.
+- The knowledge base, if you use it, indexes the adopted output bucket. It is a new
+  knowledge base on S3 Vectors and starts empty, but its data source covers the whole
+  output bucket, the deployment starts an ingestion job when it creates that data
+  source, and a schedule starts another every 30 minutes, so documents processed
+  before the migration are indexed without a manual job. This is read from the
+  templates, not measured in a migration run; the data source's ingestion jobs in the
+  Amazon Bedrock console show whether it ran. If the first job failed (the deployment
+  only logs that), the next scheduled one runs it again, or start one on the data
+  source yourself.
 
 ### 8. Detach the adopted resources from the old state
 
@@ -474,17 +566,96 @@ empty object), a plan Terraform marked as errored, a plan with any change other 
 a delete, and a plan none of whose deletions is an address `plan` recorded for the old
 deployment. It then fails if the plan deletes anything the migration kept: an address
 that was to be detached (the detach did not run), an adopted or kept bucket, table,
-key, user pool, or BDA project, a setting on one of those, or a user or group
-membership in the adopted pool. It also fails on a deletion of an address `plan`
+key, user pool, or BDA project, a setting on one of those, a user or group
+membership in the adopted pool, or the Region's API Gateway account settings, the
+CloudWatch role they name or one of that role's policies. The role is identified
+from the destroy plan's own values, or, when the settings are no longer in the destroy
+plan, from the copy of the old state saved in the migration directory before the
+detach (`detach --apply` and the commands `plan` prints both save one), so this holds
+when `plan` ran with an earlier version. If the settings were removed from the old
+state by hand and no such copy exists, nothing names the role and its deletion is not
+caught. It also fails on a deletion of an address `plan`
 never saw, because nothing decided whether that may be destroyed; run `plan` again.
 The old deployment's own app client, identity pool and WAF association are expected
 in the plan. When it passes, apply the saved destroy plan in the old directory
 (`terraform apply destroy.tfplan`).
 
+Destroying the old deployment leaves the Region's API Gateway logging role in place:
+step 8 detached the old API Gateway account settings and the CloudWatch role they
+name, so there is nothing to set again afterwards. A destroy plan made after a detach
+by an earlier version of `idp-cli`, which did not detach them, still deletes them, and
+`check-destroy` then fails and says to run `plan` again with this version and then
+`detach --apply`. The old CloudWatch role stays in the account, managed by neither
+deployment. When the new deployment logs API access (its `LogLevel` is `INFO` or
+`DEBUG`), its module sets the Region's setting to a role of its own; read the role
+the setting names now with `aws apigateway get-account --region us-west-2` before
+you delete the old one.
+
 The upstream repository documents how its resources are deleted, including deletion
 protection on its Cognito resources. The adopted pool is no longer in the old state,
 so its deletion protection does not matter here. This step cannot be undone, which
 is why the backups under [Before you start](#before-you-start) matter.
+
+## Moving the deployment into your own root configuration
+
+After the migration the new deployment lives in the directory `idp-cli` wrote,
+`./idp-terraform/my-idp` here, with its state kept locally in that directory unless
+you added a backend there. You can
+keep it there and update it with `idp-cli deploy --terraform`; to keep that state in a
+remote backend, put a `terraform { backend "s3" { ... } }` block in a file of its own
+in the directory (not in `main.tf`, which `idp-cli` rewrites) and run
+`terraform init -migrate-state` there, which copies the local state into the backend.
+
+To manage it from a root configuration of your own instead, such as one in an
+infrastructure repository, move the `module "idp"` block and its state. Do this only
+after step 9: until then the migration phases read the new deployment's directory and
+state.
+
+1. Add a `module "idp"` block to your root configuration with the same `source` as
+   the one in the `idp-cli` directory's `main.tf`, and the same inputs. That `main.tf`
+   passes each input as `<name> = var.<name>`, and `terraform.tfvars` beside it holds
+   the values, some of which can be sensitive. Keep the block's name `idp`, so that
+   every resource keeps its `module.idp.` address. Configure the `aws` and `awscc`
+   providers for the same Region, and with the same `assume_role` if `main.tf` has
+   one. The module's provider constraints then apply to your whole root (see
+   [Using the module beside your own resources](./terraform.md#using-the-module-beside-your-own-resources)).
+2. Save the deployment's state from the `idp-cli` directory:
+
+   ```bash
+   (cd idp-terraform/my-idp && terraform state pull) > idp.tfstate
+   ```
+
+3. Move it into your root's state. If your root has no state yet, run
+   `terraform init` there and push the file as it is:
+
+   ```bash
+   terraform state push idp.tfstate
+   ```
+
+   If your root already has state, move the module into a copy of it, then push the
+   copy back:
+
+   ```bash
+   terraform state pull > root.tfstate
+   terraform state mv -state=idp.tfstate -state-out=root.tfstate module.idp module.idp
+   terraform state push root.tfstate
+   ```
+
+4. Run `terraform plan` in your root. It should plan no change under `module.idp`; a
+   change there means the `source` or an input differs from what the `idp-cli`
+   directory applied, so fix that before you apply anything.
+5. Stop using the `idp-cli` directory. Its state still records every resource, so an
+   `idp-cli deploy --terraform` or `delete --terraform` against it would act on the
+   deployment your root now manages. Keep it, with `idp.tfstate`, only as a backup
+   until you are sure of the move, and run nothing in it.
+
+From then on, upgrade and delete the deployment as for any deployment from your own
+root configuration (see [Upgrading](./terraform.md#upgrading) and
+[Deleting](./terraform.md#deleting)). The `idp-cli` commands that take
+`--stack-name`, such as `process` and `config-upload`, keep working, because they find
+the deployment through its label stack, which moves with the module. These steps are
+ordinary Terraform state operations and have not been run against a migrated
+deployment; keep the backups until `terraform plan` in your root is clean.
 
 ## What happens to each resource
 
@@ -519,11 +690,12 @@ unmanaged** means it stays in the account, managed by neither.
 | Concurrency table | Recreate | | measured |
 | Queues | Recreate, after `freeze` drains them | | measured |
 | Web UI bucket, app client, identity pool, settings parameters | Recreate | | measured |
-| Knowledge base (OpenSearch Serverless collection and index) | Recreate on S3 Vectors; re-sync from the output bucket | | measured |
+| Knowledge base (OpenSearch Serverless collection and index) | Recreate on S3 Vectors, which indexes the output bucket again | | measured |
 | Reporting Glue database and tables | Recreate (catalog metadata only) | | measured |
 | Installed-features table | Recreate; features installed on the old deployment do not carry over | | measured |
 | Test-sets table | Recreate; test-set definitions do not carry over, their documents stay in the adopted bucket | | measured |
 | BDA project | Keep unmanaged; the `bda` configuration row names it | none | measured |
+| API Gateway account settings (the Region's CloudWatch logging role), and the role they name with its policies | Keep unmanaged; destroying the role, or the settings with `hashicorp/aws` 6.0 or later (5.75.1 to 5.100 with `reset_on_delete = true`), would stop API Gateway logging for every API in the Region | none | inferred |
 | Fine-tuning data bucket, hosted-UI domain | Not handled; `plan` refuses | | |
 
 Functions, roles, policies, log groups, the state machine, event rules and the other
@@ -549,18 +721,12 @@ one.
   until you accept it with `--accept-change
   module.idp.aws_dynamodb_table.agent_table:ttl-changed`. DynamoDB cannot move a
   table's time-to-live from one attribute to another while it is on, so `apply` also
-  refuses until the old setting is off, and prints the command: `aws dynamodb
-  update-time-to-live --table-name <agent jobs table> --time-to-live-specification
-  Enabled=false,AttributeName=expiresAfter`. Then wait **at least an hour** before
-  `apply`: turning it off can take up to an hour, and DynamoDB also refuses a second
-  time-to-live change on a table within about an hour of the first ("Time to live has
-  been modified multiple times within a fixed interval"), even once
-  `aws dynamodb describe-time-to-live` reports `DISABLED`. `apply` can check the
-  status but not that interval, so an `apply` run too soon fails part way on this
-  table; run it again later. Disable it before the maintenance window, since nothing
-  else depends on it: the old deployment's agent jobs simply stop expiring early.
+  refuses until the old setting is off, and the disable needs about an hour to settle
+  before the module's setting is accepted. [Step 1a](#1a-turn-off-the-old-agent-jobs-time-to-live)
+  turns it off and says how long to wait.
 - **Some history does not carry over**: discovery jobs, test-set definitions,
-  installed features, and the old knowledge base's index (re-sync it).
+  installed features, and the old knowledge base's index (the new knowledge base
+  builds its own from the output bucket; see [step 7](#7-verify-the-new-deployment)).
 
 ## Backing out
 

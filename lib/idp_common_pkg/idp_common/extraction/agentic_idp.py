@@ -27,7 +27,6 @@ from botocore.config import Config
 from PIL import Image
 from pydantic import BaseModel, Field
 from strands import Agent, tool
-from strands.agent.conversation_manager import SummarizingConversationManager
 from strands.models import BedrockModel
 from strands.types.agent import AgentInput
 from strands.types.content import (
@@ -43,6 +42,9 @@ from strands.types.media import (
 )
 
 from idp_common.agents.common.strands_bedrock_model import strands_guardrail_kwargs
+from idp_common.agents.utils.conversation_manager import (
+    MeteredSummarizingConversationManager,
+)
 from idp_common.bedrock.client import (
     ASTRA_EFFORT_LEVELS,
     CACHEPOINT_SUPPORTED_MODELS,
@@ -2635,7 +2637,10 @@ async def structured_output_async(
             ),
             "extraction_schema_json": schema_json,  # Store for schema reminder tool
         },
-        conversation_manager=SummarizingConversationManager(
+        # Metered: Strands' own manager summarizes with a direct model call that
+        # the agent loop never records, so its tokens would be missing from the
+        # usage read below on both the success and the failure path (#1952).
+        conversation_manager=MeteredSummarizingConversationManager(
             summary_ratio=summary_ratio, preserve_recent_messages=preserve_recent
         ),
         # With ``strands_throttle_retries=False`` (agentic extraction, the caller that

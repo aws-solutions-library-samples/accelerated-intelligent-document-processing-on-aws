@@ -69,10 +69,28 @@ was.
 
 `modality` flags are tri-state. `None` — the default — means *infer from this
 call's own task prompt placeholders*. Setting one explicitly rewrites that
-prompt to match: `_apply_modality_to_prompt` removes a placeholder together with
-its wrapping element when that element held nothing else, or appends a wrapped
-placeholder when the prompt has none. Both directions are logged with the
-call's path.
+prompt to match: `_apply_modality_to_prompt` removes every occurrence of the
+placeholder, taking a wrapping element with it when that element held nothing else
+(`strip_placeholder`), or appends a wrapped placeholder when the prompt has none.
+Both directions are logged with the call's path.
+
+Every call's task prompt is assembled by the module-level
+`classification_task_prompt_as_sent`: the modality rewrite
+(`apply_modality_to_prompt`), then the class-confidence splice
+(`compose_class_confidence_prompt`). `validate_config` calls the same function, so
+it counts `{DOCUMENT_IMAGE}` in the prompt the service sends, including one written
+inside the confidence block.
+
+`{DOCUMENT_IMAGE}` may appear at most once in a prompt. The three content builders
+(`_build_content`, `_build_context_content`, `_build_packet_content`) refuse a
+repeat with `DocumentImagePlaceholderError` before splitting on
+`{FEW_SHOT_EXAMPLES}`, so one placeholder either side of the examples counts as
+two. Section classification checks its prompt once, in `_classify_segments`,
+before the per-segment calls, because a refusal inside one of them would be
+recorded as that segment's failure and the document would carry on unclassified.
+The rule is `check_document_image_placeholder` in
+`idp_common/document_image_placeholder.py`, shared with extraction, the confidence
+pass and `validate_config`.
 
 A model that does not accept images refuses the request without naming the
 setting that sent them, so `_invoke_bedrock_model` appends a sentence naming the
@@ -136,6 +154,38 @@ is the leading overlap, and the pages after it continue that window's document. 
 fold carries no `candidates`, so a merged segment built entirely from one reported
 segment gets that segment's list back, and one assembled from several gets none.
 
+**No page the model was shown is dropped (#2037).** Nothing obliges a packet
+call's ranges to cover every page it was shown, and the commonest omission is the
+last page. After the merge, `_place_pages_no_segment_holds` joins each such page to
+the segment of the page before it **in a call that was shown both**, or, when no
+page precedes it in that call, to the segment of the page after it. The neighbour is
+bounded to one call so that a page never joins a document across a window that
+failed, or across a window junction with no overlap, where "the page before it" was
+answered by a different call that never saw it. The earliest answering window
+holding the page decides, as in the merge. A run of several missing pages goes the
+same way as a whole. This covers the single-window return as well as the fold, and
+the splitting call at packet granularity as well as the combined call, since both
+go through `_packet_segments`. The joined pages are listed in the segment's
+`filled_page_ids`, and once sections exist `_record_filled_page_issues` records a
+`classification_page_assigned_to_neighbour` warning on each section that received
+one, naming the pages. A page carries its segment's class and confidence like any
+other page of it, which is the reading `_single_section_from_segments` gives a page
+with no verdict of its own. Two cases are not placed, and one stage treats a
+placed page differently:
+
+- a page whose every window **failed**: no call decided anything about it, and the
+  failure is already in `document.errors`;
+- any page under **`sectionSplitting: disabled`**: the one section already holds
+  every page, so nothing is lost, and placing them would only add them to the
+  page-weighted vote for the document's class;
+- section classification under split-then-classify: `labeling.pages: first` and
+  `first_k` skip a segment's filled pages when choosing which pages to send, so a
+  cover or separator sheet the splitting call left out does not decide the class
+  (`all` still sends every page).
+
+Re-asking the model about the missing pages is the alternative. It was not chosen
+because it costs another call per occurrence and can return the same omission.
+
 A window the model refuses as too long (`is_input_token_overflow`), or as carrying
 too many images (`is_image_count_rejection`: the per-request image cap, and the
 tighter dimension cap Bedrock applies only to many-image requests; the Claude
@@ -186,6 +236,8 @@ class Segment:
     page_ids: List[str]
     doc_class: Optional[str] = None   # None until section classification fills it
     confidence: Optional[float] = None
+    candidates: List[Dict[str, Any]] = field(default_factory=list)
+    filled_page_ids: List[str] = field(default_factory=list)  # placed by the service, not the model
 ```
 
 `_sections_from_segments(document, segments, page_results=None)` is the only
@@ -844,13 +896,14 @@ page-granularity path, immediately after section splitting, and
 turns each page classification that carries an `error` or a `validation_error` into
 a `ProcessingIssue` on the section holding that page.
 
-⚠️ **It has one call site, in `_classify_pages_multimodal`.**
-`packet_classify_document` does not call it and records none of these: it decides
+⚠️ **It is called from `_classify_pages_multimodal` and from
+`split_then_classify_document`** (for the segments whose section classification
+failed). `packet_classify_document` does not call it and records none of these: it decides
 per *segment* rather than per page and never builds the `List[PageClassification]`
 this takes, so covering it is real work rather than an extra call. A page that
-falls inside no segment's range is appended to no section either, producing
-neither data nor a record; the range is now *logged* when it covers no page of
-the document, but the per-page issue is still follow-up work.
+falls inside no segment's range is not lost: it joins a neighbouring segment and
+its section records `classification_page_assigned_to_neighbour` (see
+[Windowing and merging](#windowing-and-merging)).
 
 **Why it exists.** Nothing in this service produced a `ProcessingIssue` before, and
 neither of the two places the reason was written reaches a user:
@@ -876,20 +929,37 @@ document-level issue would raise that count and then have no text to show for it
 | `error` | `no_content`, `page_empty` true or absent | `classification_page_no_content` | warning | `classify_page_bedrock` |
 | `error` | `no_content`, `page_empty` false | `classification_failed` | error | `classify_page_bedrock` (a read failed or an artifact is missing) |
 | `error` | `failed` (the default) | `classification_failed` | error | `classify_page_sagemaker` |
+| `error` (a content-filter block) | `failed` | `classification_failed` | error | `_classify_pages_multimodal`, for a page whose Bedrock reply a content filter withheld (`_content_filtered_page_result`) |
 | `validation_error` | — | `classification_invalid_class_fallback` | warning | `classify_page_bedrock` |
 
 `_create_unclassified_result` sets `unclassified_reason`, defaulting to `failed` so
 a call site added later is loud rather than quiet by omission.
 
-**On the Bedrock backend `classification_failed` comes only from a page that could
-not be read.** A no-content result whose `page_empty` is false gets the error code,
-because the page may have content nobody looked at. All four default-reason call
-sites are in `classify_page_sagemaker`; `classify_page_bedrock`
-re-raises from its `except`, and the thread-pool handler that catches it does not
-append the page to `all_page_results`, so this function never sees it. No signal is
-lost — that path marks the document `FAILED`, and `document.errors` *is* read on a
-failed document — so apart from read failures the error-severity code is a
-UDOP-backend code in practice.
+**On the Bedrock backend's page path `classification_failed` comes from two
+cases: a page that could not be read, and a content-filter block.** A no-content
+result whose `page_empty` is false gets the error code, because the page may have
+content nobody looked at. The four default-reason call sites of
+`_create_unclassified_result` are in `classify_page_sagemaker`. `classify_page_bedrock` re-raises from its `except`, and
+for any error but one the thread-pool handler that catches it does not append the
+page to `all_page_results`, so this function never sees it. No signal is lost — that
+path marks the document `FAILED`, and `document.errors` *is* read on a failed
+document. The one exception is a reply Amazon Bedrock's content filter withheld
+(`bedrock_utils.is_content_filter_block`): the handler builds an unclassified result
+for that page with the block as its `error`,
+appends it to `all_page_results`, and keeps it out of `document.errors` and
+`failed_page_exceptions`, so the page's section carries the error and the rest of the
+document completes. Retrying the step would send the same page to the same filter.
+Two cases keep failing the document instead: a document-name class pin
+(`forced_class`), where `unclassified` would split the asserted document around
+the page, and a page-limited sample (`content_filter_fails_document=True` from
+`classify_document`), because `_apply_limited_classification_to_all_pages` rebuilds
+the sections and carries only `document.errors` across, so an issue on the sample
+would be lost and the block recorded nowhere.
+Split-then-classify treats a blocked section classification call the same way in
+`_classify_segments`: the segment is labelled `unclassified` and gets the issue, and
+the block is not added to the errors that fail the document. A blocked packet window
+or splitting call is not covered: its pages belong to no segment, so there is no unit
+to mark, and the failure still fails the document.
 Note that a test mocking `classify_page`'s **return value** cannot surface this,
 since a returned unclassified result is SageMaker-shaped by construction.
 

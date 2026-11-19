@@ -1012,7 +1012,7 @@ trace, by construction rather than by convention:
 
 | Cause | Entry point | Issue code |
 |---|---|---|
-| The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901) | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
+| The pass ran and failed **deterministically** — the confidence model rejecting the input outright, most often `ValidationException: Input is too long for requested model.` (#901), or Amazon Bedrock's content filter withholding its reply, in which case the issue's remedy names the block rather than the input size | `degrade_section_to_no_confidence`, called from the Assessment Lambda's non-transient branch | `assessment_failed_confidence_unavailable` |
 | The pass **never ran**: the section had no `extraction_result_uri`, no `page_ids`, an extraction result whose `inference_result` was empty, or none of its pages present in the document (#1006) | `skip_section_no_confidence`, called from `process_document_section`'s early returns | `assessment_skipped_confidence_unavailable` |
 
 Neither fails the document. For the first that is #901's deliberate trade — the

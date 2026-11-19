@@ -1166,7 +1166,7 @@ Resources:
                       model:
                         type: string
                         title: "Model ID"
-                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                        description: "Model for the classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                         enum:
                           - "LambdaHook"
                           - !If
@@ -1547,7 +1547,7 @@ Resources:
                           model:
                             type: string
                             title: "Model ID"
-                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the splitting calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If
@@ -1791,7 +1791,7 @@ Resources:
                           model:
                             type: string
                             title: "Model ID"
-                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model (us.amazon.nova-2-lite-v1:0), with a warning in the log, because every call needs a model id to send."
+                            description: "Model for the section classification calls. Select 'LambdaHook' to use a custom Lambda function for inference. Clearing it does not turn the call off: an empty model falls back to the default classification model, Amazon Nova 2 Lite (us.amazon.nova-2-lite-v1:0, or eu.amazon.nova-2-lite-v1:0 in an EU Region), with a warning in the log, because every call needs a model id to send."
                             enum:
                               - "LambdaHook"
                               - !If

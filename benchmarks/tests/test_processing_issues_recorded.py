@@ -147,7 +147,8 @@ CODES_EXCLUDED_FROM_RESULT_JSON = {
 # best-effort write is skipped or fails. The write is made by the assessment
 # handler's degrade branch (patterns/unified/src/assessment_function/index.py),
 # which lib/idp_common_pkg/tests/unit/lambdas/test_assessment_function_degradation.py
-# drives end to end, asserting the result.json write.
+# drives end to end, asserting the result.json write; the tests below also drive the
+# real writer into the real reader, and pin the handler as the writer's only caller.
 CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON = {
     "assessment_failed_confidence_unavailable",
 }
@@ -183,6 +184,40 @@ def _string_constants(tree):
             for target in targets:
                 if isinstance(target, ast.Name):
                     out[target.id] = node.value.value
+    return out
+
+
+def _imported_constants(tree):
+    """String constants a module imports BY NAME from another ``idp_common`` module.
+
+    ``from idp_common.extraction.failure import EXTRACTION_FAILED_CODE`` followed by
+    ``code=EXTRACTION_FAILED_CODE`` is a literal declared one module away, not a
+    value carried in from a caller, so it is resolved against the declaring module's
+    own :func:`_string_constants`. Imports anywhere in the tree count, function-level
+    ones included, because that is where ``extraction/service.py`` takes them; an
+    ``as`` alias is honoured. Only names the other module binds to a string literal
+    resolve, so anything else stays unresolved and is still caught by the pin below.
+
+    Added for ``extraction/service.py::_handle_content_filtered``.
+    """
+    out = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level or not node.module:
+            continue
+        parts = node.module.split(".")
+        if parts[0] != "idp_common":
+            continue
+        base = IDP_COMMON.joinpath(*parts[1:])
+        source = next(
+            (c for c in (base.with_suffix(".py"), base / "__init__.py") if c.is_file()),
+            None,
+        )
+        if source is None:
+            continue
+        declared = _string_constants(ast.parse(source.read_text("utf-8")))
+        for alias in node.names:
+            if alias.name in declared:
+                out[alias.asname or alias.name] = declared[alias.name]
     return out
 
 
@@ -222,11 +257,53 @@ def _mappings_indexed_by(scope):
     return out
 
 
-def _resolve(node, constants, dicts, indexed_by):
+def _single_literal_locals(scope):
+    """Names a function binds EXACTLY ONCE, to a string literal: ``code = "x"``.
+
+    This is the one kind of local that is safe to read, and the restriction is the
+    point. :func:`_string_constants` refuses locals because a local reassigned per
+    branch resolves to whichever binding the walk saw last; a name with a single
+    binding in its scope has nothing to choose between. Every binding counts, not
+    only assignments: a loop target, a ``with ... as``, a comprehension variable, a
+    walrus, an augmented assignment or a parameter of the same name all make the
+    name ambiguous, and an ambiguous name is left unresolved rather than guessed.
+    Bindings in nested functions count too, which can only make this more
+    conservative.
+
+    Added for ``classification/service.py::_record_filled_page_issues``, which binds
+    ``code = "classification_page_assigned_to_neighbour"`` once and passes
+    ``code=code``.
+    """
+    bindings: dict[str, list] = {}
+    for node in ast.walk(scope):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bindings.setdefault(node.id, []).append(node)
+        elif isinstance(node, ast.arg):
+            bindings.setdefault(node.arg, []).append(node)
+    literal = {}
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, (ast.Assign, ast.AnnAssign))
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if len(targets) == 1 and isinstance(targets[0], ast.Name):
+                literal[targets[0].id] = node.value.value
+    return {
+        name: value
+        for name, value in literal.items()
+        if len(bindings.get(name, ())) == 1
+    }
+
+
+def _resolve(node, constants, dicts, indexed_by, singles=None):
     """Every string ``node`` can evaluate to, or ``None`` when it cannot be read.
 
-    Five shapes, which is what the emitting sites actually use: a literal; a
-    module- or class-level constant by name or by ``self.ATTR``; both arms of a
+    Six shapes, which is what the emitting sites actually use: a literal; a local
+    bound exactly once to a literal (:func:`_single_literal_locals`), read before
+    module constants because a local shadows them; a module- or class-level
+    constant by name or by ``self.ATTR``; both arms of a
     conditional severity; a name bound by iterating a code-keyed mapping, resolved
     to that mapping's KEYS; and a ``mapping[code]`` subscript, resolved to its
     VALUES.
@@ -236,6 +313,8 @@ def _resolve(node, constants, dicts, indexed_by):
     if isinstance(node, ast.Constant):
         return {node.value} if isinstance(node.value, str) else None
     if isinstance(node, ast.Name):
+        if singles and node.id in singles:
+            return {singles[node.id]}
         if node.id in constants:
             return {constants[node.id]}
         keys = {
@@ -248,8 +327,8 @@ def _resolve(node, constants, dicts, indexed_by):
     if isinstance(node, ast.Attribute):
         return {constants[node.attr]} if node.attr in constants else None
     if isinstance(node, ast.IfExp):
-        left = _resolve(node.body, constants, dicts, indexed_by)
-        right = _resolve(node.orelse, constants, dicts, indexed_by)
+        left = _resolve(node.body, constants, dicts, indexed_by, singles)
+        right = _resolve(node.orelse, constants, dicts, indexed_by, singles)
         return (left or set()) | (right or set()) if (left or right) else None
     if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
         entry = dicts.get(node.value.id)
@@ -269,7 +348,8 @@ def processing_issue_universe():
     codes, severities, stages, unresolved = set(), set(), set(), set()
     for path in sorted(IDP_COMMON.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        constants = _string_constants(tree)
+        # The module's own constants shadow an imported name of the same spelling.
+        constants = {**_imported_constants(tree), **_string_constants(tree)}
         scopes = [
             node
             for node in ast.walk(tree)
@@ -278,6 +358,7 @@ def processing_issue_universe():
         for scope in scopes:
             dicts = _dict_literals(scope)
             indexed_by = _mappings_indexed_by(scope)
+            singles = _single_literal_locals(scope)
             for node in ast.walk(scope):
                 if not isinstance(node, ast.Call):
                     continue
@@ -287,7 +368,9 @@ def processing_issue_universe():
                     continue
                 kwargs = {k.arg: k.value for k in node.keywords}
                 got = {
-                    field: _resolve(kwargs.get(field), constants, dicts, indexed_by)
+                    field: _resolve(
+                        kwargs.get(field), constants, dicts, indexed_by, singles
+                    )
                     for field in ("stage", "severity", "code")
                 }
                 if got["code"] is None:
@@ -355,6 +438,83 @@ def test_discovery_reaches_the_code_this_issue_is_about():
     assert "extraction_rows_below_ocr_estimate" in CODES
     assert "assessment_coverage_incomplete" in CODES
     assert "classification_failed" in CODES
+
+
+def test_discovery_reaches_a_code_bound_once_to_a_local():
+    """``_record_filled_page_issues`` binds its code to a local once and passes
+    ``code=code``. Reading that is what keeps the site off the pass-through list:
+    it is a literal, not a value carried in from elsewhere."""
+    assert "classification_page_assigned_to_neighbour" in CODES
+    assert (
+        "classification/service.py",
+        "_record_filled_page_issues",
+    ) not in UNRESOLVED
+
+
+def test_discovery_reaches_a_code_imported_from_its_declaring_module():
+    """``_handle_content_filtered`` imports ``EXTRACTION_FAILED_CODE`` inside the
+    function and passes it by name. That is a declared literal, so the site must
+    resolve rather than join the pass-through list."""
+    assert ("extraction/service.py", "_handle_content_filtered") not in UNRESOLVED
+    tree = ast.parse(
+        "def f():\n"
+        "    from idp_common.extraction.failure import EXTRACTION_FAILED_CODE as c\n"
+    )
+    assert _imported_constants(tree) == {"c": "extraction_failed"}
+    # A name the other module does not bind to a literal does not resolve.
+    tree = ast.parse("from idp_common.extraction.failure import nothing_here\n")
+    assert _imported_constants(tree) == {}
+
+
+@pytest.mark.parametrize(
+    "rebinding",
+    [
+        'if flag:\n        code = "a"\n    else:\n        code = "b"',
+        'code = "a"\n    for code in ("b",):\n        pass',
+        'code = "a"\n    code += "b"',
+        'code = "a"\n    with open(p) as code:\n        pass',
+        'code = "a"\n    [code for code in ("b",)]',
+        'code = "a"\n    (code := "b")',
+    ],
+)
+def test_a_local_bound_more_than_once_is_left_unresolved(rebinding):
+    """The hazard :func:`_string_constants` refuses locals over: a name with two
+    bindings must not resolve to whichever the walk saw last."""
+    source = f"def f(flag, p):\n    {rebinding}\n"
+    (scope,) = ast.parse(source).body
+    assert "code" not in _single_literal_locals(scope)
+
+
+def test_a_parameter_named_like_the_local_is_left_unresolved():
+    (scope,) = ast.parse('def f(code):\n    code = "a"\n').body
+    assert "code" not in _single_literal_locals(scope)
+    (scope,) = ast.parse('def f():\n    code = "a"\n').body
+    assert _single_literal_locals(scope) == {"code": "a"}
+
+
+def test_the_neighbour_page_warning_is_recorded_from_the_real_recorder(tmp_path):
+    """End to end from the emitter: the issue the real
+    ``_record_filled_page_issues`` puts on a section, serialised the way extraction
+    carries other stages' issues into ``metadata.processing_issues``, is counted by
+    the scorer under its own code and severity."""
+    from idp_common.classification.models import Segment
+    from idp_common.classification.service import ClassificationService
+    from idp_common.models import Document, Section
+
+    document = Document(
+        id="d",
+        sections=[Section(section_id="1", classification="W2", page_ids=["1", "2"])],
+    )
+    segments = [Segment(page_ids=["1", "2"], doc_class="W2", filled_page_ids=["2"])]
+    ClassificationService._record_filled_page_issues(document, segments)
+    (issue,) = document.sections[0].processing_issues
+    summary, _ = _written(tmp_path, [_row("c", "d.pdf", [_section(issue)])])
+    (out,) = summary["rows"]
+    assert out["processing_issues"] == 1
+    assert out["processing_issues_by_code"] == {
+        "classification_page_assigned_to_neighbour": 1
+    }
+    assert out["processing_issues_by_severity"] == {"warning": 1}
 
 
 @pytest.mark.parametrize("stage", sorted(SITE_STAGES))
@@ -485,6 +645,160 @@ def test_the_premise_behind_that_boundary_is_computed_not_asserted():
     ), (
         "S3_WRITE_MARKERS matches nothing even where a write exists, so the check above is vacuous"
     )
+
+
+def _references(tree, names):
+    """``(innermost enclosing function, name)`` for every REFERENCE to one of
+    ``names`` in ``tree``: a bare name, an attribute, or a string literal (the
+    ``getattr(s3, "write_content")`` spelling). References rather than calls, so an
+    alias (``put = s3.write_content``) is found where it is taken, not missed where
+    it is called, and ``import ... as`` counts too. A definition or a plain import is
+    not a reference.
+
+    What this cannot see is a name assembled at run time (``"write_" + "content"``);
+    nothing that reads source can, and that is the residual these checks carry.
+    """
+    found = []
+
+    def visit(node, enclosing):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                # A plain import binds the name itself and is not a reference; an
+                # ``import x as y`` is, because it hides every later use of ``x``
+                # behind ``y``.
+                for alias in child.names:
+                    leaf = alias.name.rsplit(".", 1)[-1]
+                    if alias.asname and leaf in names:
+                        found.append((enclosing, leaf))
+                continue
+            inner = enclosing
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner = child.name
+            hit = None
+            if isinstance(child, ast.Name):
+                hit = child.id
+            elif isinstance(child, ast.Attribute):
+                hit = child.attr
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                hit = child.value
+            if hit in names:
+                found.append((enclosing, hit))
+            visit(child, inner)
+
+    visit(tree, None)
+    return found
+
+
+def test_only_the_degrade_handler_feeds_that_write():
+    """The other half of the write's premise: which issues reach it. Across every
+    tracked production module, ``degradation.py`` included, there must be exactly one
+    reference to ``record_no_confidence_in_result`` (definitions and imports aside):
+    the Assessment Lambda's call, whose issue argument is the one
+    ``degrade_section_to_no_confidence`` just built, with no attribute assigned on it
+    in between. A second caller anywhere, the
+    skip path calling it from inside ``degradation.py``, or the handler passing some
+    other issue, fails here."""
+    import subprocess
+
+    repo = IDP_COMMON.parents[2]
+    files = subprocess.run(
+        ["git", "ls-files", "*.py"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    target = "record_no_confidence_in_result"
+    sites = []
+    for f in files:
+        if "/tests/" in f or f.startswith(("tests/", "benchmarks/")):
+            continue
+        text = (repo / f).read_text("utf-8")
+        if target not in text:
+            continue
+        sites += [(f, fn) for fn, _ in _references(ast.parse(text), {target})]
+    assert len(sites) == 1, sites
+    ((path, function),) = sites
+    assert path == "patterns/unified/src/assessment_function/index.py", sites
+
+    # The issue it is handed: the call's second argument is a bare name, and the
+    # nearest assignment to that name before the call, in the same function, is the
+    # degrade's return value.
+    tree = ast.parse((repo / path).read_text("utf-8"))
+    (handler,) = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function
+    ]
+    (call,) = [
+        n
+        for n in ast.walk(handler)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == target
+    ]
+    assert len(call.args) == 2 and isinstance(call.args[1], ast.Name), ast.dump(call)
+    passed = call.args[1].id
+    assignments = sorted(
+        (
+            (n.lineno, n.value)
+            for n in ast.walk(handler)
+            if isinstance(n, ast.Assign)
+            and n.lineno < call.lineno
+            and any(isinstance(t, ast.Name) and t.id == passed for t in n.targets)
+        ),
+        key=lambda pair: pair[0],
+    )
+    assert assignments, f"{passed} is never assigned before the call"
+    line, value = assignments[-1]
+    # ...and is not changed in place between that assignment and the call: an
+    # ``issue.code = ...`` there would hand the writer a relabelled issue.
+    stores = [
+        n.lineno
+        for n in ast.walk(handler)
+        if isinstance(n, ast.Attribute)
+        and isinstance(n.ctx, ast.Store)
+        and isinstance(n.value, ast.Name)
+        and n.value.id == passed
+        and line < n.lineno < call.lineno
+    ]
+    assert not stores, f"{passed} is modified before the call, at lines {stores}"
+    assert (
+        isinstance(value, ast.Call)
+        and getattr(value.func, "id", None) == "degrade_section_to_no_confidence"
+    ), f"the issue handed to {target} comes from {ast.unparse(value)}"
+
+
+def test_the_degrade_code_reaches_the_recorder_through_the_real_writer(monkeypatch):
+    """The property CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON claims, measured end to end: the
+    issue ``degrade_section_to_no_confidence`` builds, written by
+    ``record_no_confidence_in_result`` into an extraction result.json, is counted by
+    ``score_processing_issues`` reading that file. Every code in the set must come out
+    of the real degrade, so the set cannot name a code the degrade does not build."""
+    from idp_common import s3
+    from idp_common.assessment import degradation
+    from idp_common.models import Document, Section
+
+    document = Document(id="d", sections=[Section(section_id="1", classification="X")])
+    issue = degradation.degrade_section_to_no_confidence(
+        document, "1", ValueError("Input is too long for requested model.")
+    )
+    assert {issue.code} == CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON
+
+    extraction_result = _section(_issue("extraction_rows_below_ocr_estimate"))
+    written = []
+    monkeypatch.setattr(s3, "get_json_content", lambda uri: extraction_result)
+    monkeypatch.setattr(
+        s3, "write_content", lambda content, *a, **kw: written.append(content)
+    )
+    assert degradation.record_no_confidence_in_result(
+        "s3://bucket/d/sections/1/result.json", issue
+    )
+    (on_disk,) = written
+    scored = analyze.score_processing_issues([json.loads(json.dumps(on_disk))])
+    assert scored["processing_issues_by_code"] == {
+        "extraction_rows_below_ocr_estimate": 1,
+        "assessment_failed_confidence_unavailable": 1,
+    }
+    assert scored["processing_issues_by_severity"].get("error") == 1
 
 
 def test_every_skip_site_returns_before_the_result_json_write():

@@ -64,6 +64,8 @@ The accelerator automatically deploys **four benchmark datasets** from HuggingFa
 
 All datasets are deployed automatically with zero manual steps required. Each test set has a corresponding **managed configuration profile** (e.g., `fake-w2`, `docsplit`) that is auto-selected in Test Studio when the test set is chosen. See [Configuration — Managed Configuration Profiles](configuration.md#managed-configuration-profiles) for details.
 
+Each dataset's test set id is fixed: `realkie-fcc-verified`, `ocr-benchmark`, `docsplit` and `fake-w2`. A stack create or update refreshes the stack's own set under that id, but if you created a set with one of those ids yourself, the deployment leaves your set and its folder untouched and does not deploy that dataset; the stack still updates, and the custom resource's response reports `ID_IN_USE`. To get the dataset, delete your set; the deployer runs again only on a stack update that changes it, such as an upgrade to a release with a changed deployer, and deploys the dataset then.
+
 ---
 
 ### RealKIE-FCC-Verified
@@ -622,7 +624,11 @@ documents and is immediately usable as a destination for any of the sources unde
 Every source shares three optional fields:
 
 - **Name** — letters, numbers, spaces, hyphens and underscores (max 50). Becomes
-  the test set id.
+  the test set id, lowercased with spaces replaced by hyphens, so `My Set` and
+  `my-set` are the same id. Uploading, starting from bucket files and starting
+  empty all refuse a name whose id is already taken rather than replacing that
+  set; to grow an existing set, use
+  [Adding Documents](#adding-documents-to-existing-test-sets).
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
@@ -655,6 +661,24 @@ Once a set exists, select it and use **Actions** to browse its documents, annota
 its ground truth, add more documents, edit its details, or delete it. Opening the
 set — by clicking its name, or **Actions** → **Browse documents** — is where you
 generate draft labels, annotate, prune documents and publish a version.
+
+#### Deleting test sets
+
+Deleting a set removes every file under its folder and then its record. A set that
+a job is still writing — status `QUEUED`, `COPYING`, `UPDATING` (adding documents,
+or a pre-deployed dataset being refreshed) or `GENERATING` — cannot be deleted
+until that job finishes; the delete is refused with the set's status, and any
+other selected sets are still deleted. A set whose job died is moved to `FAILED`
+after a while (two hours for a copy, twelve for a generation) and can then be
+deleted. A set left in one of those statuses by an older release, which recorded
+no time for the status and so is never moved to `FAILED`, can be deleted
+directly.
+
+While its files are being removed a set shows `DELETING`. If some files cannot be
+removed, the set is kept, marked `FAILED` with the reason, and the delete reports
+an error; delete it again to finish. The record is kept on purpose: a folder with
+no record is picked up as a [direct upload](#creating-test-sets) and would come
+back as a new set.
 
 ### Browsing Test Set Documents and Ground Truth
 
