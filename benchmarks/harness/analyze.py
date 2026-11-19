@@ -883,29 +883,26 @@ def score_processing_issues(sections):
     the difference matters more than the mechanisms do.
 
     ⚠️ **What this cannot see, and why a ``0`` here is not a clean bill of health.**
-    Everything below records onto the section's DynamoDB record and, except where
-    the degrade paragraph says otherwise, never into the S3 object this reads,
-    because nothing rewrites ``result.json`` afterwards:
+    Everything below records onto the section's DynamoDB record, and reaches the S3
+    object this reads only partly or not at all:
 
-    * ``assessment``'s **skip** code — ``assessment_skipped_confidence_unavailable``,
-      declared in ``assessment/degradation.py``, whose five
+    * ``assessment``'s **skip** code, ``assessment_skipped_confidence_unavailable``,
+      declared in ``assessment/degradation.py``. Its five
       ``skip_section_no_confidence`` call sites in ``assessment/service.py`` each
-      ``return document`` before the write. This is the one to worry about: it is
-      **error** severity on a document that **completes** — not failing it is the
-      whole point of the path — so a section whose confidence pass never ran reads
-      here as ``processing_issues: 0, success: true``, with no ``status`` to fall
-      back on. And it is live where it counts: over the committed
+      ``return document`` before the write, and nothing rewrites the file
+      afterwards. This is the one to worry about: it is **error** severity on a
+      document that **completes** — not failing it is the whole point of the path —
+      so a section that came back with no confidence scores at all reads here as
+      ``processing_issues: 0, success: true``, with no ``status`` to fall back on.
+      And it is live where it counts: over the committed
       ``results/v0.6.11/*/summary.json`` rows, ``resolved.assessment`` is
       ``separate`` on 4,192 rows against 516 ``integrated`` and 257 ``off``, and the
       skip sites are on the standalone path.
-
-      Its sibling, the **degrade** code ``assessment_failed_confidence_unavailable``,
-      *is* read here in the ordinary case: after a deterministic assessment failure
-      the Assessment Lambda calls ``record_no_confidence_in_result``, which merges
-      the issue into this file. That write is best effort and is not made when the
-      result already holds the pass's scores (nor when the section has no readable
-      result, in which case there is nothing here to read), so a ``0`` is not proof
-      that no degrade fired either.
+    * ``assessment``'s **degrade** code, ``assessment_failed_confidence_unavailable``,
+      is written into ``result.json`` best effort by
+      ``degradation.record_no_confidence_in_result``, so it is usually read here. It
+      is missed when that file already holds the confidence pass's scores, or when
+      the write fails.
     * ``rule_validation`` and ``postprocessing``, recorded through
       ``document_failure.record_section_failure`` from the handlers in
       ``patterns/unified/src/``. Smaller, because these accompany a document the
@@ -917,9 +914,9 @@ def score_processing_issues(sections):
     scans, and it is deleted with its stack (three release stacks already are) where
     the S3 artifacts outlive it. So the boundary is **declared and closed** instead:
     ``test_processing_issues_recorded.py`` partitions every declared stage and every
-    code declared in ``degradation.py`` across what reaches ``result.json`` and a
-    named boundary list, and computes the premise behind each side, so a *third*
-    such stage or a *third* such code fails there rather than going quietly unread.
+    code declared in ``degradation.py`` across what reaches ``result.json``, what
+    reaches it best effort, and a named boundary list, so a *third* such stage or a
+    *third* such code fails there rather than going quietly unread.
 
     Nothing here enumerates issue types. The tallies are keyed on each issue's own
     ``severity``/``code``/``stage``, and ``processing_issue_detail`` carries the
