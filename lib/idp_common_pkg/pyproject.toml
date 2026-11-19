@@ -118,7 +118,7 @@ extraction = [
 # Assessment module dependencies
 assessment = [
   "Pillow==13.0.0",               # For image handling
-  "aws-lambda-powertools>=3.2.0", # Structured logging and observability
+  "aws-lambda-powertools>=3.35.0", # Structured logging and observability
 ]
 
 # Evaluation module dependencies
@@ -268,7 +268,7 @@ test = [
   # --check` on ~49 README/skill-file snippets during CodeBuild publish.
   "ruff>=0.14.0,<0.16",
   "deepdiff>=6.0.0",                    # Required for BDA blueprint service tests
-  "datamodel-code-generator>=0.81.0",   # Required for schema/pydantic generator tests
+  "datamodel-code-generator>=0.84.0",   # Required for schema/pydantic generator tests
   "mypy-boto3-bedrock-runtime>=1.39.0", # Required for bedrock_utils tests
   # Evaluation module dependencies (from evaluation group)
   "stickler-eval[docsplit]==1.0.0",
@@ -358,8 +358,8 @@ agentic-extraction = [
   "pypdfium2>=5.5.0",  # Apache-2.0 OR BSD-3-Clause licensed (replaces AGPL-licensed PyMuPDF)
   "email-validator>=2.3.0",
   "tabulate>=0.9.0",
-  "aws-lambda-powertools>=3.2.0",                          # Structured logging and observability
-  "datamodel-code-generator>=0.81.0",                      # Generate Pydantic models from JSON Schema
+  "aws-lambda-powertools>=3.35.0",                          # Structured logging and observability
+  "datamodel-code-generator>=0.84.0",                      # Generate Pydantic models from JSON Schema
   "mypy-boto3-bedrock-runtime>=1.39.0",                    # Type stubs for bedrock_utils.py
 ]
 
