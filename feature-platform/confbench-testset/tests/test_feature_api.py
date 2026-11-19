@@ -87,7 +87,8 @@ def api(monkeypatch):
             state["job_items"][Item["jobId"]] = Item
 
         def get_item(self, Key):  # noqa: N803
-            item = state["job_items"].get(Key["jobId"])
+            # Also serves the host-record ownership read, which has no jobId.
+            item = state["job_items"].get(Key.get("jobId"))
             return {"Item": item} if item else {}
 
         def update_item(self, **kw):
@@ -99,7 +100,7 @@ def api(monkeypatch):
         def scan(self, **kw):
             return {"Items": list(state["job_items"].values())}
 
-        def delete_item(self, Key):  # noqa: N803
+        def delete_item(self, Key, **kw):  # noqa: N803
             state["ddb_deletes"].append(Key)
 
     class FakeDdb:

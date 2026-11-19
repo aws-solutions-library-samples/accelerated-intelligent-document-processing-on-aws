@@ -106,6 +106,14 @@ bucket — never the whole bucket. `DELETE /dataset` additionally validates the 
 against this extension's own test-set ids, so the route cannot be turned into an
 arbitrary-prefix delete against another test set.
 
+The test-set ids are fixed, so a user can create a set called `confbench` (or one
+of the other ids) in Test Studio. ConfBench tells its own host record apart by its
+`source` (`huggingface:amazon/ConfBench`) and leaves anyone else's alone: `POST
+/ingest` answers 409, an ingest that finds the id taken when it starts fails
+before writing any file, and `DELETE /dataset` answers 409 rather than deleting
+that set. `DELETE /dataset` also keeps the record, and answers 500, when some
+files could not be deleted; call it again to finish.
+
 ## Tests
 
 ```bash

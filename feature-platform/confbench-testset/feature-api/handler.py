@@ -54,6 +54,31 @@ _OWNED_TEST_SET_IDS = frozenset(
 
 _JOB_ID_RE = re.compile(r"^[0-9a-f-]{36}$")
 
+#: The ``source`` the ingest stamps on its host test-set record (see
+#: ``ingest/planner.py``). A record with any other source is a set somebody else
+#: created in Test Studio under one of these fixed ids.
+_DATASET_SOURCE = f"huggingface:{variant_catalog.HF_REPO_ID}"
+
+
+def _foreign_test_set(test_set_id: str) -> bool:
+    """Whether the host holds a record for this id that ConfBench did not write."""
+    item = (
+        _ddb.Table(_HOST_TRACKING_TABLE)
+        .get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"})
+        .get("Item")
+    )
+    return bool(item) and item.get("source") != _DATASET_SOURCE
+
+
+def _id_in_use(test_set_id: str) -> Dict[str, Any]:
+    return _response(
+        409,
+        {
+            "error": f"Test set {test_set_id!r} already exists in Test Studio and "
+            "was not created by ConfBench. Delete or rename it there first."
+        },
+    )
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -176,6 +201,11 @@ def _start_ingest(body: Dict[str, Any]) -> Dict[str, Any]:
             },
         )
 
+    # Early, friendly answer only; the ingest's own conditional claim is what
+    # actually keeps a set created after this read.
+    if _foreign_test_set(test_set_id):
+        return _id_in_use(test_set_id)
+
     job_id = str(uuid.uuid4())
     item = {
         "jobId": job_id,
@@ -283,10 +313,31 @@ def _delete_dataset(test_set_id: str) -> Dict[str, Any]:
             {"error": f"An ingest for {test_set_id} is still running."},
         )
 
-    deleted = _delete_prefix(f"{test_set_id}/")
+    # The id being on the list is not enough: a user can create a set with it in
+    # Test Studio, and this route must not delete that set's files.
+    if _foreign_test_set(test_set_id):
+        return _id_in_use(test_set_id)
+
     try:
+        deleted = _delete_prefix(f"{test_set_id}/")
+    except _ObjectsNotDeleted as exc:
+        # The record stays: without it Test Studio would register the leftover
+        # folder as a user upload, and the next ingest would find its id taken.
+        logger.error("Delete of %s stopped partway: %s", test_set_id, exc)
+        return _response(
+            500,
+            {
+                "error": f"Deleting {test_set_id} stopped partway: {exc}. Some files "
+                "remain; delete it again."
+            },
+        )
+    try:
+        # Conditional, so a record somebody else wrote since the check is kept.
         _ddb.Table(_HOST_TRACKING_TABLE).delete_item(
-            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"}
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            ConditionExpression="attribute_not_exists(PK) OR #source = :source",
+            ExpressionAttributeNames={"#source": "source"},
+            ExpressionAttributeValues={":source": _DATASET_SOURCE},
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Could not delete host test-set record: %s", exc)
@@ -295,6 +346,10 @@ def _delete_dataset(test_set_id: str) -> Dict[str, Any]:
     return _response(
         200, {"testSetId": test_set_id, "objectsDeleted": deleted, "status": "DELETED"}
     )
+
+
+class _ObjectsNotDeleted(RuntimeError):
+    """DeleteObjects reported keys it did not delete."""
 
 
 def _delete_prefix(prefix: str) -> int:
@@ -318,8 +373,17 @@ def _delete_prefix(prefix: str) -> int:
         ]
         for i in range(0, len(batch), 1000):
             chunk = batch[i : i + 1000]
-            _s3.delete_objects(Bucket=_TESTSET_BUCKET, Delete={"Objects": chunk})
-            deleted += len(chunk)
+            result = _s3.delete_objects(
+                Bucket=_TESTSET_BUCKET, Delete={"Objects": chunk}
+            )
+            # A 200 can still carry per-key failures; only Errors says so.
+            errors = result.get("Errors") or []
+            deleted += len(chunk) - len(errors)
+            if errors:
+                raise _ObjectsNotDeleted(
+                    f"{len(errors)} object(s) could not be deleted (first: "
+                    f"{errors[0].get('Key')}: {errors[0].get('Code')})"
+                )
         token = resp.get("NextContinuationToken")
         if not resp.get("IsTruncated"):
             return deleted
