@@ -2079,6 +2079,30 @@
     "defaultMessage": "None of the {count, plural, one {# matching file} other {# matching files}} would be added ({leftOut}).",
     "description": "Warning when Check Files matched files but the add would copy none of them. {leftOut} says why, e.g. \"1 already in the set\"."
   },
+  "testStudio.results.aurocIncludingEmpty": {
+    "defaultMessage": "AUROC incl. Empty Values",
+    "description": "Metric name: AUROC computed over all fields, including fields the extractor returned empty."
+  },
+  "testStudio.results.confidencePrefix": {
+    "defaultMessage": "Confidence:",
+    "description": "Prefix before a confidence calibration metric name in the test run breakdown table."
+  },
+  "testStudio.results.emptyPredictions": {
+    "defaultMessage": "Empty Predictions",
+    "description": "Metric name: fields the extractor returned no value for."
+  },
+  "testStudio.results.emptyPredictionsValue": {
+    "defaultMessage": "{count} ({wrong} wrong)",
+    "description": "{count} is the number of empty predictions; {wrong} is how many of them had a value in the ground truth."
+  },
+  "testStudio.results.emptyPredictionsValueWithAuroc": {
+    "defaultMessage": "{count} ({wrong} wrong, AUROC {auroc})",
+    "description": "{count} is the number of empty predictions; {wrong} is how many of them were wrong; {auroc} is the formatted AUROC over those fields alone."
+  },
+  "testStudio.results.olderSectionsNotScored": {
+    "defaultMessage": "{sections, plural, one {# older section not scored} other {# older sections not scored}}",
+    "description": "Appended to the empty-predictions value when some sections were evaluated before this measure existed."
+  },
   "testStudio.testSets.delete.notDeleted": {
     "defaultMessage": "Failed to delete test sets: {reason}",
     "description": "Error shown on the Test Sets page when none of the selected test sets was deleted. {reason} is the server’s message."

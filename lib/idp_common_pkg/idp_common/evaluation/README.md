@@ -138,6 +138,31 @@ Bulk evaluation surfaces the standard calibration metrics:
 
 These are computed in the aggregation Lambda via Stickler's `BulkStructuredModelEvaluator` (see `patterns/unified/src/test_execution_aggregation_function/index.py`).
 
+**Empty predictions are reported separately.** `_remove_none_values` drops every `None`
+before the Stickler models are built, so Stickler's `prediction_confidences` has no entry
+for a field the extractor returned as null, and the `overall` and `fields` figures above
+are computed without those fields. A scorer that rates a missed field above correctly
+found values is invisible there (#2033 measured AUROC 0.68 without empty values and 0.56
+with them). `empty_values.py` closes that gap without changing those figures:
+
+- `EvaluationService.evaluate_section` records the confidence of each empty prediction
+  Stickler omitted under `empty_prediction_confidences` in the section's
+  `stickler_comparison_result` (`STICKLER_RESULT_VERSION` 3.1).
+- The aggregation Lambda's `_empty_value_confidence_metrics` writes
+  `confidence_metrics.empty_values`: `count` and `wrong` (every empty prediction and how
+  many had a ground-truth value), `with_confidence`, `overall` (AUROC / ECE / Brier over
+  the empty predictions alone), `including_empty` (the same over every scored field with
+  them added) and `sections_without_record` (sections written before 3.1, whose null
+  predictions are counted but cannot be scored).
+- "Empty" is `contract._is_empty_value`, the predicate that already decides the `tn` /
+  `fn` verdict, exposed as `empty_values.is_empty_prediction`. A row with no string
+  `actual_key` (a ground-truth list item with no predicted counterpart) is not an empty
+  prediction, because no predicted field exists to carry a confidence.
+- The module is standard-library only so that the benchmark harness can import the same
+  predicate: `benchmarks/harness/analyze.py` already counts empty cells in its own
+  calibration join and reports how many it included as `calibration_empty_observations`
+  and `calibration_empty_wrong`.
+
 ### Confidence→accuracy curve and the review-effort estimator
 
 `confidence_curve.py` and `curve_store.py` implement the engine behind Test
