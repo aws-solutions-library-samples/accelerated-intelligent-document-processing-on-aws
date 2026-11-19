@@ -77,7 +77,9 @@ def env(monkeypatch):
         "AWS_DEFAULT_REGION": REGION,
         "AWS_REGION": REGION,
         "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "testing",
+        # A fake credential for moto, not a secret. This file sits in the
+        # function's CodeUri, so Bandit's name heuristic still gates it here.
+        "AWS_SECRET_ACCESS_KEY": "testing",  # nosec B105
         "CONCURRENCY_TABLE": CONCURRENCY,
         "METRIC_NAMESPACE": "TEST_NS",
         "TRACKING_TABLE": TRACKING,
