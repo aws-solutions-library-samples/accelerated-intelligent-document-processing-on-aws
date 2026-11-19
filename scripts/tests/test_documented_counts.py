@@ -369,7 +369,9 @@ DOCUMENTED_COUNTS = (
     DocumentedCount(
         name="pre-existing lint findings",
         derive=derive_lint_debt_findings,
-        patterns=(rf"\b{_NUMBER}\s+pre-existing\s+(?:lint\s+)?findings\b",),
+        # Anchored on "holding", the lint-exclusion wording: a bare "<n> pre-existing
+        # findings" would also match SRT or cfn-lint prose, which is not this count.
+        patterns=(rf"\bholding\s+{_NUMBER}\s+pre-existing\s+(?:lint\s+)?findings\b",),
         probes=("names the files holding {n} pre-existing\nfindings",),
         documents=(),
         why=(
@@ -382,7 +384,7 @@ DOCUMENTED_COUNTS = (
         derive=derive_format_excluded_files,
         patterns=(
             rf"`\[format\] exclude`\s+names\s+{_NUMBER}\s+(?:individual\s+)?files\b",
-            rf"\band\s+{_NUMBER}\s+from the\s+formatter\b",
+            rf"\bfrom the\s+linter\s+and\s+{_NUMBER}\s+from the\s+formatter\b",
         ),
         probes=(
             "and `[format] exclude` names {n} individual files that",
