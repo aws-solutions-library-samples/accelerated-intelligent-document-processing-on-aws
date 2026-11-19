@@ -728,6 +728,53 @@ only by setting `LogLevel=INFO` (or `DEBUG`) and accepting the exposure above:
   default on a new stack or to preserve the current value on an update. Passing
   `--log-level INFO` is honoured; it used to be silently treated as "unset".
 
+### `ManageApiGatewayAccountSettings` — one deployment per Region owns the API Gateway logging role
+
+API Gateway writes REST API stage logs (the access log and the `ERROR`-level
+execution log above) through a CloudWatch role named in the API Gateway
+**account settings**. That is one setting per AWS account and Region, not per
+API, and API Gateway refuses to create a stage with access logging until it is
+set. So at `LogLevel` `INFO` or `DEBUG` a deployment creates an IAM role with the
+`AmazonAPIGatewayPushToCloudWatchLogs` managed policy and points the Region's
+setting at it (`ApiGatewayCloudWatchRole` and `ApiGatewayAccount` in
+`nested/api-resolvers/template.yaml`). At `WARN` or `ERROR` it creates neither and
+the parameter has no effect.
+
+Every deployment that does this points the setting at its **own** role, so two
+deployments in one Region overwrite each other's setting. Logging keeps working,
+because every role grants the same policy, but the Region's logging then depends
+on whichever deployment wrote last, and a Terraform deployment reports the other
+deployment's write as drift on every plan and sets it back on every apply.
+
+The `ManageApiGatewayAccountSettings` parameter (default `true`) decides whether a
+deployment manages the setting. With `true` it behaves as described above. With
+`false` it creates neither the role nor the setting; its stage still has access
+and execution logging configured, and it uses whatever role the Region already
+has. Nothing else in the stack uses that role.
+
+- **Let one deployment per Region manage it**, and deploy every other deployment
+  in that Region with `ManageApiGatewayAccountSettings=false`. The default keeps
+  an existing stack unchanged on update.
+- **A `false` deployment needs the setting to exist already.** At `INFO` or
+  `DEBUG`, if the Region has no API Gateway CloudWatch role set, creating its API
+  stage fails with *CloudWatch Logs role ARN must be set in account settings to
+  enable logging*. Deploy the managing deployment first, or set the role yourself
+  (API Gateway console, **Settings**, or `aws apigateway update-account`).
+- **Deleting the managing deployment leaves the setting working.** Both the role
+  and the setting are retained on stack deletion (`DeletionPolicy: Retain`), and
+  so on switching a stack from `true` to `false`, so the setting keeps naming the
+  retained role and the remaining deployments keep logging. What breaks logging
+  for everyone in the Region is deleting that retained role afterwards.
+- **To hand ownership to another deployment**, update that deployment to
+  `ManageApiGatewayAccountSettings=true` (it creates its own role and points the
+  setting at it), then update or delete the old owner. Only after the setting
+  names the new owner's role is it safe to delete the old owner's retained role.
+  Check which role the setting names with `aws apigateway get-account`.
+
+The same parameter exists in the Terraform module as the variable
+`manage_api_gateway_account_settings`; `idp-cli deploy` takes it as
+`--parameters ManageApiGatewayAccountSettings=false`.
+
 ## X-Ray Tracing
 
 `EnableXRayTracing` (default `true`) controls AWS X-Ray tracing. On `true` each
