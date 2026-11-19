@@ -449,6 +449,14 @@ summarization:
 - No LLM API calls or S3 operations are performed
 - Document processing continues to completion
 
+**When a summary cannot be produced:** if Bedrock refuses the prompt as too long
+for the summarization model's input window, or Bedrock's content filter withholds
+the model's reply, the document still completes, with its extraction results intact.
+The affected summary (one section's, or the whole document's when it has no
+sections) is replaced by a *Summary Unavailable* note saying which of the two
+happened; the other sections are summarized normally. Any other summarization model
+error fails the document.
+
 **Note:** Prior to v0.4.0, this feature was controlled by the `IsSummarizationEnabled` CloudFormation parameter. The configuration-based approach provides runtime control without requiring stack redeployment.
 
 ## Confidence (Assessment) Configuration
@@ -824,13 +832,24 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. The classification, extraction, assessment and rule-validation
-task states additionally list `TransientError`: classification, in-process
-extraction, shard plan, shard, shard merge, assessment, policy classification,
-per-section rule validation and orchestration. That is the one name their handlers
-re-raise a transient cause under when it arrives as an ordinary Python exception (a
-botocore read or connect timeout, a dropped connection, a Strands wrapper around
-one). Whether a failure is transient is decided in
+availability codes. The OCR, classification, extraction, assessment, rule-validation,
+summarization and evaluation task states additionally list `TransientError`: OCR,
+classification, in-process extraction, shard plan, shard, shard merge, assessment,
+policy classification, per-section rule validation, orchestration, summarization
+and evaluation (`EvaluationStep`). That is the one name their handlers re-raise a transient cause
+under when it arrives as an ordinary Python exception (a botocore read or connect
+timeout, a dropped connection, a Strands wrapper around one). This includes a failure
+the service records instead of raising: an OCR page whose Textract or Bedrock call
+failed transiently, and a summarization section whose model call did, now fail
+their step with `TransientError` and are retried, where before the document failed
+with no retry. In `EvaluationStep` it is an LLM-judge call that failed transiently
+(a throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx, a read
+timeout): the comparator raises it instead of scoring the field 0.0, and the step is
+retried without a failed evaluation being recorded first. A deterministic judge
+error still scores its field 0.0. If the retries run out, the step's Catch records
+the evaluation as failed and the document continues. `RecordEvaluationFailure` does
+not list `TransientError`, because it makes no model call and never raises. Whether
+a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says,
 and a bare HTTP 500, 502, 503 or 504 in place of a code is transient),
@@ -1294,8 +1313,12 @@ Four notes on reading that:
   carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
   call per section that always returns one class, so the per-segment `_packet`
   variants would never be read.
-- **`fallback_class` is not validated against your class list.** It accepts any
-  string; the built-in value is `unclassified`. Pointing it at one of your own
+- **`fallback_class` should be `unclassified` or one of your classes.** The
+  built-in value is `unclassified`. Any other string is stored as written, and a
+  page given it has no extraction schema, so nothing is extracted from it;
+  `idp-cli config-validate` warns when the fallback names no configured class
+  (comparing names exactly, and suggesting the nearest class name), without
+  failing validation, so the configuration still uploads. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
   document whose class could not actually be decided — which may be what you
   want, or may not.

@@ -303,7 +303,9 @@ class ProcessingIssue:
             ``"extraction_class_not_configured"`` (the section's class is absent
             from the configuration, so there was no schema to extract against),
             ``"extraction_failed"`` (the section's extraction step RAISED — see
-            ``idp_common.extraction.failure``),
+            ``idp_common.extraction.failure`` — or a content filter withheld its
+            model reply, in which case the section has an empty result and the
+            document still completes),
             ``"rule_validation_failed"`` (the section's rule validation raised, so
             it has no compliance verdict),
             ``"rule_validation_not_consolidated"`` (the section was validated but
@@ -315,7 +317,9 @@ class ProcessingIssue:
             are the set the UI renders as "Failed" rather than "Incomplete", or
             ``"classification_failed"`` / ``"classification_page_no_content"`` /
             ``"classification_invalid_class_fallback"`` (classification produced no
-            usable class for one or more of the section's pages).
+            usable class for one or more of the section's pages), or
+            ``"classification_page_assigned_to_neighbour"`` (a packet call's page
+            ranges left pages out, and they were added to this section).
         message: User-friendly one-liner.
         root_cause: Technical detail — model, output cap, rows affected, geometry
             mode, escalation chain tried.

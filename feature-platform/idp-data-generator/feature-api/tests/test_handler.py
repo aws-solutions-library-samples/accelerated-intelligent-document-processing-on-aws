@@ -100,8 +100,7 @@ class TestTestSetDest:
         with pytest.raises(mod._BadRequest):
             mod._test_set_dest({"testSetId": "a" * 51})
 
-    def test_create_new_valid(self, mod, monkeypatch):
-        monkeypatch.setattr(mod, "_test_set_exists", lambda _id: False)
+    def test_create_new_valid(self, mod):
         dest = mod._test_set_dest({"testSetName": "W2 Synthetic"})
         assert dest == {
             "testSetId": "w2-synthetic",
@@ -109,13 +108,7 @@ class TestTestSetDest:
             "append": False,
         }
 
-    def test_create_new_collision_rejected(self, mod, monkeypatch):
-        monkeypatch.setattr(mod, "_test_set_exists", lambda _id: True)
-        with pytest.raises(mod._BadRequest):
-            mod._test_set_dest({"testSetName": "W2 Synthetic"})
-
-    def test_create_new_bad_name_rejected(self, mod, monkeypatch):
-        monkeypatch.setattr(mod, "_test_set_exists", lambda _id: False)
+    def test_create_new_bad_name_rejected(self, mod):
         with pytest.raises(mod._BadRequest):
             mod._test_set_dest({"testSetName": "bad/name"})
 

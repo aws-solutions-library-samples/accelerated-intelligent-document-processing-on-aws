@@ -20,6 +20,7 @@ from idp_common import get_config, evaluation
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
 from idp_common.utils import calculate_lambda_metering, merge_metering_data
+from idp_common.utils.transient_errors import is_transient_error, raise_if_transient
 
 # Environment variables
 BASELINE_BUCKET = os.environ.get("BASELINE_BUCKET")
@@ -211,6 +212,26 @@ def create_response(
 
 
 def handler(event, context):
+    """Evaluate one document, or record that its evaluation failed. See ``_handle``.
+
+    Transient causes are re-raised as ``TransientError``, the name
+    EvaluationStep's retrier lists beside the modeled throttling codes. The one
+    that matters is an LLM-judge call that failed transiently (a throttle that
+    outlasted the Bedrock client's retries, a bare HTTP 5xx, a read timeout):
+    the comparator raises it rather than scoring the field 0.0, and this handler
+    lets it out rather than recording a FAILED evaluation, so the document is
+    retried and its accuracy is not silently depressed (#2049). Deterministic
+    errors keep their current outcome. The ``record_failure_only`` branch never
+    raises, so the wrapper changes nothing there.
+    """
+    try:
+        return _handle(event, context)
+    except Exception as e:
+        raise_if_transient(e, where="evaluation")
+        raise
+
+
+def _handle(event, context):
     """
     Lambda function handler
 
@@ -513,6 +534,18 @@ def handler(event, context):
     except Exception as e:
         error_msg = f"Error in handler: {str(e)}"
         logger.error(error_msg)
+
+        # A transient failure is retried by EvaluationStep, so it must not be
+        # recorded as a FAILED evaluation first: the document would show as
+        # failed until the retry overwrote it, and returning here would end the
+        # step with nothing to retry. If the retries run out, the state's Catch
+        # routes to RecordEvaluationFailure, which records the failure then.
+        if is_transient_error(e):
+            logger.warning(
+                f"Transient evaluation failure ({type(e).__name__}); raising "
+                "TransientError for a Step Functions retry (NOT recording FAILED)"
+            )
+            raise
 
         # Update document status to FAILED if we have the document
         if actual_document:

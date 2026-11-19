@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -533,6 +534,10 @@ def test_chdir_target_expands_a_home_relative_path() -> None:
         (["merge", "--repo=owner/name", "1050"], "1050"),
         (["merge", "-d", "-s", "1050"], "1050"),
         (["merge", "-Rowner/name", "1050"], "1050"),
+        # gh 2.104+ prints a boolean as `--admin[=true|false]`; the value can only
+        # be attached, so the next token is still the pull request.
+        (["merge", "--admin=true", "1050"], "1050"),
+        (["merge", "-d=false", "--squash", "1050"], "1050"),
     ],
 )
 def test_merge_target(args: list[str], expected: str | None) -> None:
@@ -616,7 +621,105 @@ def test_a_merge_flags_value_is_not_read_as_the_pull_request(flag: str) -> None:
 #: column, so the placeholder that marks an option as value-taking is the token
 #: separated from the option by exactly one space -- ``-b, --body text`` takes a
 #: value and ``--admin    Use administrator...`` does not.
-GH_FLAG_LINE = re.compile(r"^\s+(?:(-\w), )?(--[\w-]+)(?: (?!\s)(\S+))?\s{2,}\S")
+#:
+#: From gh 2.104.0 a boolean option is printed with its optional value attached,
+#: ``--admin[=true|false]``. That bracket is pflag's optional-value form: the value
+#: can only be given as ``--admin=false``, never as the next token, so it does not
+#: make the option value-taking in the sense ``merge_target`` cares about. Before
+#: the bracket was allowed for, no boolean line matched at all and the parse saw
+#: only the value-taking lines, which tripped the non-vacuity floor below.
+GH_FLAG_LINE = re.compile(
+    r"^\s+(?:(-\w), )?(--[\w-]+)(?:\[=[^\]\s]*\])?(?: (?!\s)(\S+))?\s{2,}\S"
+)
+
+#: ``gh pr merge --help`` option blocks, copied verbatim from the two help layouts
+#: gh has used, so the parse is checked against both whichever gh (if any) the
+#: machine running the suite has. 2.103.0 is the last release printing a boolean
+#: option bare; 2.104.0 began printing it as ``--admin[=true|false]``, and 2.105.0
+#: prints the same block.
+GH_MERGE_HELP_2_103 = """\
+FLAGS
+      --admin                   Use administrator privileges to merge a pull request that does not meet requirements
+  -A, --author-email text       Email text for merge commit author
+      --auto                    Automatically merge only after necessary requirements are met
+  -b, --body text               Body text for the merge commit
+  -F, --body-file file          Read body text from file (use "-" to read from standard input)
+  -d, --delete-branch           Delete the local and remote branch after merge
+      --disable-auto            Disable auto-merge for this pull request
+      --match-head-commit SHA   Commit SHA that the pull request head must match to allow merge
+  -m, --merge                   Merge the commits with the base branch
+  -r, --rebase                  Rebase the commits onto the base branch
+  -s, --squash                  Squash the commits into one commit and merge it into the base branch
+  -t, --subject text            Subject text for the merge commit
+
+INHERITED FLAGS
+      --help                     Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+"""
+
+GH_MERGE_HELP_2_105 = """\
+FLAGS
+      --admin[=true|false]           Use administrator privileges to merge a pull request that does not meet requirements
+  -A, --author-email text            Email text for merge commit author
+      --auto[=true|false]            Automatically merge only after necessary requirements are met
+  -b, --body text                    Body text for the merge commit
+  -F, --body-file file               Read body text from file (use "-" to read from standard input)
+  -d, --delete-branch[=true|false]   Delete the local and remote branch after merge
+      --disable-auto[=true|false]    Disable auto-merge for this pull request
+      --match-head-commit SHA        Commit SHA that the pull request head must match to allow merge
+  -m, --merge[=true|false]           Merge the commits with the base branch
+  -r, --rebase[=true|false]          Rebase the commits onto the base branch
+  -s, --squash[=true|false]          Squash the commits into one commit and merge it into the base branch
+  -t, --subject text                 Subject text for the merge commit
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+"""
+
+
+def _parse_merge_help(text: str) -> tuple[set[str], int]:
+    """The value-taking options in ``gh pr merge --help`` text, and lines matched.
+
+    The count is returned so a caller can assert the parse is non-vacuous: matching
+    no line at all yields an empty set, which compares equal to nothing useful and
+    would otherwise read as a finding about the constant rather than the parser.
+    """
+    flags: set[str] = set()
+    seen = 0
+    for line in text.splitlines():
+        match = GH_FLAG_LINE.match(line)
+        if not match:
+            continue
+        seen += 1
+        if match.group(3) is None:
+            continue
+        if match.group(1):
+            flags.add(match.group(1))
+        flags.add(match.group(2))
+    return flags, seen
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "help_text",
+    [GH_MERGE_HELP_2_103, GH_MERGE_HELP_2_105],
+    ids=["gh-2.103-layout", "gh-2.105-layout"],
+)
+def test_the_help_parse_reads_both_gh_layouts(help_text: str) -> None:
+    """Every option line is recognised, and the value-taking set is the hook's.
+
+    The live comparison below skips where there is no ``gh``, so on such a machine
+    this is the only thing checking the parser; and where there is one, it checks
+    only the layout that ``gh`` prints. Every line between the two headings is an
+    option, so ``seen`` must equal that line count exactly.
+    """
+    flags, seen = _parse_merge_help(help_text)
+    option_lines = [
+        line for line in help_text.splitlines() if line.lstrip().startswith("-")
+    ]
+    assert seen == len(option_lines)
+    assert flags == set(check_shared_branch.GH_MERGE_FLAGS_WITH_VALUE)
 
 
 def _gh_flags_taking_a_value() -> tuple[set[str] | None, str]:
@@ -651,18 +754,7 @@ def _gh_flags_taking_a_value() -> tuple[set[str] | None, str]:
             f"`gh pr merge --help` exited {completed.returncode}: "
             f"{completed.stderr.strip()[:200] or '(no stderr)'}"
         )
-    flags: set[str] = set()
-    seen = 0
-    for line in completed.stdout.splitlines():
-        match = GH_FLAG_LINE.match(line)
-        if not match:
-            continue
-        seen += 1
-        if match.group(3) is None:
-            continue
-        if match.group(1):
-            flags.add(match.group(1))
-        flags.add(match.group(2))
+    flags, seen = _parse_merge_help(completed.stdout)
     assert seen >= 8, (
         f"only {seen} option lines were recognised in `gh pr merge --help`, so "
         "its format has changed and this test can no longer see which options "
@@ -695,6 +787,417 @@ def test_every_value_taking_merge_flag_is_listed() -> None:
         f"  gh takes a value for, not listed: {sorted(derived - listed)}\n"
         f"  listed, gh takes no value for:    {sorted(listed - derived)}"
     )
+
+
+def _merge_shorts(help_text: str) -> tuple[list[str], list[str]]:
+    """``(switches, value-taking)`` short options in ``gh pr merge --help`` text."""
+    switches: list[str] = []
+    valued: list[str] = []
+    for line in help_text.splitlines():
+        match = GH_FLAG_LINE.match(line)
+        if match and match.group(1):
+            (valued if match.group(3) else switches).append(match.group(1))
+    return switches, valued
+
+
+def _bundled_merge_cases() -> list[tuple[list[str], str]]:
+    """Every switch bundled with every value-taking short, in every pflag spelling.
+
+    Derived from gh's own help rather than listed, so a short option gh adds is
+    covered without an edit here. pflag's rule: walking a bundle, a value-taking
+    short takes the rest of the bundle if any (``-sbtext``, and ``-sb=text`` with
+    the ``=`` dropped) and otherwise the next argument (``-sb text``).
+    """
+    switches, valued = _merge_shorts(GH_MERGE_HELP_2_105)
+    assert len(switches) >= 3 and len(valued) >= 3, (switches, valued)
+    cases: list[tuple[list[str], str]] = []
+    for switch in switches:
+        for option in valued:
+            bundle = switch + option[1:]
+            cases += [
+                (["merge", bundle, "text", "1050"], "1050"),
+                (["merge", bundle + "text", "1050"], "1050"),
+                (["merge", bundle + "=text", "1050"], "1050"),
+                (["merge", "1050", bundle, "text"], "1050"),
+                (["merge", option + "=text", "1050"], "1050"),
+            ]
+    return cases
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("args", "expected"), _bundled_merge_cases())
+def test_a_bundled_short_options_value_is_not_the_pull_request(
+    args: list[str], expected: str
+) -> None:
+    """``gh pr merge -sb text 12`` is ``-s -b text 12``, and merges pull request 12.
+
+    Read as one unknown flag, the bundle leaves ``text`` as the first positional,
+    ``gh pr checks text`` errors, and the red merge is allowed with nothing
+    printed -- the same silent shape as an unlisted value-taking option.
+    """
+    assert merge_target(args) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        # Each measured on gh 2.105.0 against a pull request number that does not
+        # exist: gh's error names that number, so it is the one being merged.
+        (["merge", "-sb", "text", "1050"], "1050"),
+        (["merge", "-sbtext", "1050"], "1050"),
+        (["merge", "-sb=text", "1050"], "1050"),
+        (["merge", "-b=text", "1050"], "1050"),
+        (["merge", "-s=true", "1050"], "1050"),
+        (["merge", "-dsR", "owner/name", "1050"], "1050"),
+        (["merge", "-sRowner/name", "1050"], "1050"),
+        (["merge", "-dt", "subj", "-b", "body", "1050"], "1050"),
+        # `--` ends the options; what follows is positional even if it looks like
+        # an option.
+        (["merge", "-s", "--", "1050"], "1050"),
+        # A value that looks like an option is still a value.
+        (["merge", "-b", "-s", "1050"], "1050"),
+        (["merge", "-sb"], None),
+        # pflag's `=` rule applies to a switch too, and `t` is a boolean gh
+        # accepts: `-s=t 1050` merges 1050. Without the rule the `t` reads as
+        # `--subject` and swallows the number.
+        (["merge", "-s=t", "1050"], "1050"),
+        # A lone `-` is a positional, which gh reads as a branch name.
+        (["merge", "-"], "-"),
+    ],
+)
+def test_merge_target_reads_bundles_as_gh_does(
+    args: list[str], expected: str | None
+) -> None:
+    assert merge_target(args) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (["gh", "pr", "merge", "-sR", "owner/name", "1050"], "owner/name"),
+        (["gh", "pr", "merge", "-dsRowner/name", "1050"], "owner/name"),
+        (["gh", "pr", "merge", "-sR=owner/name", "1050"], "owner/name"),
+        # A value is not an option, however it is spelled.
+        (["gh", "pr", "merge", "--body", "-Rx/y", "1050"], None),
+        (["gh", "pr", "merge", "-b", "-Rx/y", "1050"], None),
+        # pflag keeps the last of a repeated option; measured on gh 2.105.0.
+        (["gh", "pr", "merge", "-R", "a/b", "-R", "owner/name", "1"], "owner/name"),
+        # `-R=` is the value `=`: pflag needs more than the `=` to strip it, and
+        # gh 2.105.0 answers 'expected the "[HOST/]OWNER/REPO" format, got "="'.
+        (["gh", "pr", "merge", "-R=", "1"], "="),
+    ],
+)
+def test_gh_repo_selector_reads_bundles_as_gh_does(
+    tokens: list[str], expected: str | None
+) -> None:
+    assert gh_repo_selector(tokens) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr merge -sb text 1050",
+        "gh pr merge -sbtext 1050",
+        "gh pr merge -db=text 1050",
+        "gh pr merge -dst subject 1050",
+    ],
+)
+def test_a_bundled_red_merge_is_refused(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    """End to end: the checks read are pull request 1050's, and they are red."""
+    asked: list[str | None] = []
+
+    def _reader(
+        pr: str | None, _repo: Path, _selector: str | None = None
+    ) -> list[str] | None:
+        asked.append(pr)
+        return ["developer_tests"] if pr == "1050" else None
+
+    monkeypatch.setattr(check_shared_branch, "failing_checks", _reader)
+    assert decide(_bash(command, cwd=repo)) is not None
+    assert asked == ["1050"]
+
+
+#: An option line in ``git <command> -h``. git prints ``-b <branch>``, ``-c,
+#: --[no-]create <branch>``, ``--[no-]conflict <style>``, ``--[no-]recurse-
+#: submodules (check|on-demand|no)`` for a required value and ``-t,
+#: --[no-]track[=(direct|inherit)]`` for an optional one, which can only be
+#: attached. Groups: short, long (without ``[no-]``), optional-value marker,
+#: required-value placeholder.
+GIT_HELP_OPTION_LINE = re.compile(
+    r"^ {4}(?:(-\w)(?:, )?)?(?:--(?:\[no-\])?([\w-]+))?(\[=[^\]]*\])?"
+    r"(?: (<[^>]*>|\([^)]*\)))?(?: {2,}\S|$)"
+)
+
+
+def _git_value_options(*commands: str) -> tuple[set[str], set[str]]:
+    """``(required, optional-short)`` value options of ``git <command> -h``.
+
+    git is always present where this suite runs, so unlike the gh comparison this
+    is never skipped. ``-h`` exits 129 by design, so the exit status is not read;
+    the non-vacuity floor is what catches a format change.
+    """
+    required: set[str] = set()
+    optional: set[str] = set()
+    seen = 0
+    for command in commands:
+        completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            ["git", command, "-h"], capture_output=True, text=True, check=False
+        )
+        for line in completed.stdout.splitlines():
+            match = GIT_HELP_OPTION_LINE.match(line)
+            if not match or not (match.group(1) or match.group(2)):
+                continue
+            seen += 1
+            short, long, optional_marker, placeholder = match.groups()
+            names = {name for name in (short, long and f"--{long}") if name}
+            if placeholder:
+                required |= names
+            elif optional_marker and short:
+                optional.add(short)
+    assert seen >= 15, f"only {seen} option lines recognised in git {commands} -h"
+    return required, optional
+
+
+@pytest.mark.unit
+def test_push_value_options_match_git() -> None:
+    """A push option git takes a value for, unlisted, turns its value into the remote.
+
+    ``git push --recurse-submodules check origin`` from ``develop`` is a bare push
+    to ``develop``; read with ``check`` as the remote it names the refspec
+    ``origin`` instead, which is no shared branch.
+    """
+    required, optional = _git_value_options("push")
+    assert required == set(check_shared_branch.PUSH_FLAGS_WITH_VALUE)
+    # No push short takes an optional value, so a bundle never ends early there.
+    assert optional == set()
+
+
+@pytest.mark.unit
+def test_switch_value_options_match_git() -> None:
+    required, optional = _git_value_options("switch", "checkout")
+    assert required == set(check_shared_branch.SWITCH_FLAGS_WITH_VALUE)
+    assert optional == set(check_shared_branch.SWITCH_SHORTS_OPTIONAL_VALUE)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        # git's parse-options bundles the same way, each measured on git 2.50.1:
+        # `-qbbase2` and `fix/old -qb feat2` create and land on the named branch.
+        (["checkout", "-qbdevelop"], (True, "develop")),
+        (["checkout", "-bdevelop"], (True, "develop")),
+        (["checkout", "fix/old", "-qb", "develop"], (True, "develop")),
+        (["switch", "-qcmain"], (True, "main")),
+        (["switch", "-fC", "main", "origin/main"], (True, "main")),
+        (["checkout", "-qfB", "main", "origin/main"], (True, "main")),
+        # `-qt origin/develop` lands on local develop.
+        (["checkout", "-qt", "origin/develop"], (True, "develop")),
+        # `-qd` detaches, so a commit after it is not on the named branch.
+        (["switch", "-qd", "develop"], (True, None)),
+        # git has no `=` rule for a short option: `-b=x` creates a branch `=x`.
+        (["checkout", "-b=develop"], (True, "=develop")),
+        # A separated value of a non-create option is not the branch.
+        (["checkout", "--conflict", "diff3", "fix/x"], (True, "fix/x")),
+        # `-t`'s value is optional, so it takes the rest of the bundle: `-tdirect`
+        # is `--track=direct`, not `-t -d -i ...`, which would read as a detach.
+        # Measured on git 2.50.1 against a real remote: both land on the leaf.
+        (["checkout", "-tdirect", "origin/develop"], (True, "develop")),
+        (["checkout", "-qtdirect", "origin/develop"], (True, "develop")),
+        (["switch", "--create="], (True, None)),
+        # git takes a unique prefix of a long option, measured on git 2.50.1:
+        # `--tr origin/x` tracks, `--cre=x` and `--orph x` create, `--det x`
+        # detaches.
+        (["switch", "--tr", "origin/develop"], (True, "develop")),
+        (["checkout", "--tra", "origin/develop"], (True, "develop")),
+        (["switch", "--cre", "develop"], (True, "develop")),
+        (["switch", "--cre=develop"], (True, "develop")),
+        (["checkout", "--orph", "develop"], (True, "develop")),
+        (["switch", "--det", "develop"], (True, None)),
+        (["checkout", "--confl", "diff3", "fix/x"], (True, "fix/x")),
+    ],
+)
+def test_switch_target_reads_bundles_as_git_does(
+    args: list[str], expected: tuple[bool, str | None]
+) -> None:
+    assert switch_target(args) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git checkout -qbdevelop && git commit -m x",
+        "git checkout feature/thing -qb develop && git commit -m x",
+        "git checkout -qt origin/develop && git commit -m x",
+        "git switch -qcmain && git commit -m x",
+    ],
+)
+def test_a_bundled_switch_onto_a_shared_branch_is_seen(
+    repo: Path, command: str
+) -> None:
+    _checkout(repo, "feature/thing", "origin/feature/thing")
+    result = _run_hook(_bash(command, cwd=repo))
+    assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Measured on git 2.50.1: `git push -n -fo opt origin` is a bare push to
+        # origin, so the destination is the branch's own -- develop.
+        "git push -fo opt origin",
+        "git push -uo opt origin",
+        "git push --recurse-submodules check origin",
+        # An abbreviation of it, which git accepts while it is unique.
+        "git push --recurse check origin",
+        "git push --recurse-sub check origin",
+    ],
+)
+def test_a_push_whose_remote_hides_behind_an_option_is_refused(
+    repo: Path, command: str
+) -> None:
+    _checkout(repo, "develop", "origin/develop")
+    result = _run_hook(_bash(command, cwd=repo))
+    assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "flag", ["--all", "--branches", "--mirror", "--al", "--bra", "--mirr"]
+)
+def test_pushing_every_branch_from_a_feature_branch_is_refused(
+    repo: Path, flag: str
+) -> None:
+    """``--branches`` is git's alias of ``--all``, so it sends develop too.
+
+    From a feature branch is the case that tells: read as an ordinary flag, the
+    push is a bare one and resolves to ``feature/thing``.
+    """
+    _checkout(repo, "feature/thing", "origin/feature/thing")
+    result = _run_hook(_bash(f"git push {flag} origin", cwd=repo))
+    assert result.returncode == 2, result.stderr
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("command", sorted(check_shared_branch.GIT_LONG_OPTIONS))
+def test_git_long_options_cover_git(command: str) -> None:
+    """Every long option the installed git lists for ``command`` is in the set.
+
+    A name missing from the set is the direction that matters: the abbreviation
+    of the option it shadows looks unique here when git calls it ambiguous, or an
+    abbreviation of the missing option is not recognised at all. The set may hold
+    names an older git lacks (``--branches`` arrived in git 2.46), so only this
+    direction is asserted.
+    """
+    completed = subprocess.run(  # noqa: S603 - fixed argv, no shell
+        ["git", command, "-h"], capture_output=True, text=True, check=False
+    )
+    derived = set()
+    for line in completed.stdout.splitlines():
+        match = GIT_HELP_OPTION_LINE.match(line)
+        if match and match.group(2):
+            derived.add(f"--{match.group(2)}")
+    assert len(derived) >= 10, completed.stdout
+    missing = derived - check_shared_branch.GIT_LONG_OPTIONS[command]
+    assert not missing, f"git {command} has long options the hook lacks: {missing}"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("--mirr", "--mirror"),
+        ("--mirror", "--mirror"),
+        ("--no-verify", "--no-verify"),
+        ("--no-thi", "--no-thin"),
+        # Ambiguous in git ("could be --recurse-submodules or --receive-pack"),
+        # which refuses it, so it is left as an unknown option.
+        ("--re", "--re"),
+        ("--rec", "--rec"),
+        ("--nonsense", "--nonsense"),
+    ],
+)
+def test_a_long_abbreviation_resolves_as_git_resolves_it(
+    name: str, expected: str
+) -> None:
+    longs = check_shared_branch.GIT_LONG_OPTIONS["push"]
+    assert check_shared_branch._expand_long(name, longs) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `pr` takes `--repo` too, so it may sit between `pr` and `merge`.
+        "gh pr -R owner/name merge 1050",
+        "gh pr --repo owner/name merge -sb text 1050",
+        "gh pr -Rowner/name merge 1050",
+    ],
+)
+def test_a_repo_option_between_pr_and_merge_is_still_a_merge(
+    repo: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    asked: list[tuple[str | None, str | None]] = []
+
+    def _reader(
+        pr: str | None, _repo: Path, selector: str | None = None
+    ) -> list[str] | None:
+        asked.append((pr, selector))
+        return ["developer_tests"]
+
+    monkeypatch.setattr(check_shared_branch, "failing_checks", _reader)
+    assert decide(_bash(command, cwd=repo)) is not None
+    assert asked == [("1050", "owner/name")]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh pr view 1050",
+        "gh pr list --search merge",
+        "gh pr -R owner/name view 1",
+        # Not gh at all, though the words after it match.
+        "echo pr merge 1050",
+    ],
+)
+def test_other_gh_pr_commands_are_not_merges(command: str) -> None:
+    assert check_shared_branch.gh_merge(shlex.split(command)) == (False, None)
+
+
+@pytest.mark.unit
+def test_gh_long_options_are_not_abbreviated() -> None:
+    """pflag has no abbreviation: ``gh pr merge --sub x N`` is "unknown flag"."""
+    assert merge_target(["merge", "--sub", "x", "1050"]) == "x"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("args", "pflag", "expected"),
+    [
+        # `--` ends the options in both parsers.
+        (["--", "-b", "x"], True, [(None, "-b"), (None, "x")]),
+        (["-s", "--", "-R"], True, [("-s", None), (None, "-R")]),
+        (["-"], True, [(None, "-")]),
+        (["-sbx", "y"], True, [("-s", None), ("-b", "x"), (None, "y")]),
+        (["-b=x"], True, [("-b", "x")]),
+        (["-b=x"], False, [("-b", "=x")]),
+        (["--body", "x", "--body=y"], True, [("--body", "x"), ("--body", "y")]),
+        (["-b"], True, [("-b", None)]),
+    ],
+)
+def test_option_walk(
+    args: list[str], pflag: bool, expected: list[tuple[str | None, str | None]]
+) -> None:
+    with_value = frozenset({"-b", "--body", "-R"})
+    assert check_shared_branch.option_walk(args, with_value, pflag=pflag) == expected
 
 
 # --------------------------------------------------------------------------- #

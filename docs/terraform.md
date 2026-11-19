@@ -142,12 +142,35 @@ the UI, has no CloudFront resources, and serves the UI through API Gateway.
 The module source URL is the HTTPS S3 URL of the zip, for example
 `https://s3.us-west-2.amazonaws.com/<bucket>/<prefix>/<version>/terraform/idp-terraform-<version>.zip`.
 Terraform accepts an HTTPS URL ending in `.zip` as a module source, downloads it at
-`terraform init` and extracts it. For the public release, the bucket and prefix per
-Region are the ones in the Launch Stack table of the
-[Deployment Guide](./deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users).
-If `idp-terraform-latest.json` is not present in your Region's bucket, no Terraform
-module has been published there yet; you can build and publish one yourself with
+`terraform init` and extracts it. The public release is published to the same bucket
+and prefix as the Launch Stack templates of the
+[Deployment Guide](./deployment.md#option-1-one-click-cloudformation-console-deployment-recommended-for-first-time-users),
+so for a release `<version>` (for example `0.6.15`) the module source in each Region
+is:
+
+| Region | Module source |
+|---|---|
+| us-west-2 | `https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+| us-east-1 | `https://s3.us-east-1.amazonaws.com/aws-ml-blog-us-east-1/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+| eu-central-1 | `https://s3.eu-central-1.amazonaws.com/aws-ml-blog-eu-central-1/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+| ca-central-1 | `https://s3.ca-central-1.amazonaws.com/aws-bigdata-blog-replica-ca-central-1/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip` |
+
+The newest module's URL in a Region is the `moduleUrl` of the pointer beside it,
+`.../artifacts/genai-idp/terraform/idp-terraform-latest.json` in the same bucket. If
+that pointer is not present in your Region's bucket, no Terraform module has been
+published there yet; you can build and publish one yourself with
 `idp-cli publish --terraform` (see [IDP CLI](./idp-cli.md#publish)).
+
+You do not need a checkout of this repository to deploy a published module from your
+own root configuration. The module declares no provider blocks of its own, so it uses
+the `aws` and `awscc` providers your root configuration sets up (and the `time`
+provider, which needs no settings), as the example under
+[Your own root configuration](#your-own-root-configuration) shows.
+
+The published zip is the only form the module is distributed in. It has no Terraform
+Registry entry, and it cannot be used as a `git::` source, because the module is
+generated from the templates when a release is published and is not committed to
+the repository. Serving the zip from a private module registry has not been tested.
 
 A plain HTTPS module source is fetched without AWS credentials, so it works only for
 an object that is publicly readable. For a module you published to a private bucket,
@@ -216,6 +239,8 @@ terraform {
   }
 
   # Recommended for any deployment you keep. Replace with your own backend.
+  # use_lockfile needs Terraform or OpenTofu 1.10 or later; on 1.7 to 1.9,
+  # replace it with dynamodb_table = "<lock table>".
   # backend "s3" {
   #   bucket       = "<state bucket>"
   #   key          = "idp/terraform.tfstate"
@@ -234,7 +259,7 @@ provider "awscc" {
 }
 
 module "idp" {
-  source = "https://s3.us-west-2.amazonaws.com/<bucket>/<prefix>/<version>/terraform/idp-terraform-<version>.zip"
+  source = "https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/artifacts/genai-idp/<version>/terraform/idp-terraform-<version>.zip"
 
   stack_name  = "idp-tf"
   admin_email = "admin@example.com"
@@ -254,8 +279,12 @@ terraform apply idp.tfplan
 ```
 
 The module's version constraints on the providers apply in addition to yours, so the
-constraints above only need to be compatible with them. The module's outputs keep the
-CloudFormation output names (`module.idp.ApplicationWebURL`,
+constraints above only need to be compatible with them. The S3 backend's
+`use_lockfile` setting is newer than the module's Terraform floor: it needs Terraform
+or OpenTofu 1.10 or later, and an older release refuses the backend block. On 1.7 to
+1.9, lock the state with a DynamoDB table (`dynamodb_table`) instead.
+
+The module's outputs keep the CloudFormation output names (`module.idp.ApplicationWebURL`,
 `module.idp.S3InputBucketName`, `module.idp.StateMachineArn`, and so on); its
 `outputs.tf` lists them all.
 
@@ -268,6 +297,118 @@ A first apply of the full stack takes roughly half an hour. Terraform does not r
 back a failed apply the way CloudFormation rolls back a failed stack: what was created
 stays in state. Fix the cause and run `terraform apply` again, or run
 `terraform destroy`.
+
+#### Reviewing a plan before it is applied
+
+`idp-cli deploy --terraform` plans, checks and applies in one invocation, and has no
+option to stop after the plan. Where a change must be reviewed and approved before it
+is applied, run the steps from your own root configuration and apply the saved plan
+file, so that what is applied is exactly what was reviewed:
+
+```bash
+# Plan job
+terraform init
+terraform plan -out=idp.tfplan
+terraform show -json idp.tfplan > idp-plan.json
+
+# Every planned deletion or replacement of a resource that holds data or that
+# CloudFormation would retain, which is what idp-cli's own check refuses:
+jq -r --slurpfile m .terraform/modules/idp/idp-terraform.json '
+  ($m[0].statefulAddresses + $m[0].retainedAddresses) as $protected
+  | .resource_changes[]
+  | select(.change.actions | index("delete"))
+  | select((.address | gsub("\\[[^]]*\\]"; "") | ltrimstr("module.idp."))
+      as $bare | $protected | index($bare))
+  | "\(.change.actions | join(",")) \(.address)"' idp-plan.json
+
+# Apply job, after approval, from the same configuration and lock file
+terraform init
+terraform apply idp.tfplan
+```
+
+The `jq` command prints nothing when the plan deletes and replaces none of those
+resources; an action of `delete,create` or `create,delete` is a replacement. It
+assumes the module block is named `idp`, as in the example above. Review the rest of
+the plan as for any change (`terraform show idp.tfplan` prints it readably).
+
+A saved plan file holds every input value, sensitive ones included, so store it as a
+protected artifact and delete it after the apply. Terraform refuses to apply a saved
+plan once the state has changed since the plan was made, so a plan that waited for
+approval while something else was applied has to be made again.
+
+#### Using the module beside your own resources
+
+Three things behave differently from an ordinary module when the `module "idp"` block
+shares a root configuration with your own resources.
+
+**Inputs that a template condition reads must be known at plan time.** The
+templates' conditions become `count` and `for_each` expressions, and Terraform must
+know those when it plans. An input such as `reporting_bucket_name` decides whether the
+module creates a bucket of its own, so setting it to an attribute that is not known
+until apply (`reporting_bucket_name = aws_s3_bucket.analytics.id`, for a bucket
+created in the same apply) leaves the condition unknown, and `terraform plan` fails
+with `Invalid count argument` or `Invalid for_each argument`.
+
+The same holds for an input that only a nested module's conditions read, which is
+easier to miss because no condition in the root module names it. These root inputs
+are in that position, and each decides whether resources exist inside a nested
+module, so each must be known at plan time:
+
+- `vpc_id`, when `deploy_in_vpc = "true"`: it decides inside the pattern stack
+  whether its VPC-only resources exist, so a VPC created in the same apply cannot
+  supply it.
+- `log_level` and `waf_allowed_ipv4_ranges`: they decide inside the API resolver
+  stack whether the API's access logs and its web ACL exist. The headless module has
+  no API resolver stack, so there only `vpc_id` applies.
+
+The other inputs that only nested conditions read,
+`pattern2_custom_classification_model_arn`, `pattern2_custom_extraction_model_arn`,
+`enable_ecr_image_scanning` and `s3_vpc_endpoint_dns_name_override`, decide only
+attribute values (a list in a policy or a schema, an image-scanning setting, an
+environment variable), not whether a resource exists. `lambda_subnet_ids` and `lambda_security_group_id` decide nothing
+and can come from resources created in the same apply. Create anything whose
+identifier feeds an input listed here in an earlier apply, or, for a value you choose
+yourself such as a bucket name, pass it to the module as a literal.
+
+The module does not enforce the template's `Rules`, the cross-parameter checks
+CloudFormation applies when a stack is submitted, such as "`VpcId` is required when
+`DeployInVPC=true`" and "the S3 VPC endpoint's id and DNS name are supplied
+together". A combination CloudFormation would refuse is planned and applied as
+given, so check those combinations yourself; whether the module should enforce them
+is tracked in
+[#2091](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2091).
+
+The translator declares a variable with the suffix `__cond` for every input a
+condition reads, in each module of the tree, so this lists them (a nested module's
+variable can be named differently from the root input that feeds it):
+
+```bash
+grep -rho 'variable "[a-z0-9_]*__cond"' --include=variables.tf .terraform/modules/idp | sort -u
+```
+
+Those `__cond` variables are how the module passes known values to its nested
+modules, and setting one yourself is not a dependable way around the rule: it is read
+only by the conditions of the module that declares it, and the input still reaches
+the nested modules with its unknown value, so a condition there stays unknown.
+
+**Do not put `depends_on` on the `module "idp"` block.** The module reads the
+Region, partition and account from data sources, and several conditions compare them
+(whether the partition is GovCloud, for example), so those conditions also decide
+`count`. Terraform defers every data source inside a module that has `depends_on`
+until apply whenever what it depends on has changes to make, which on a first apply is
+always, so those conditions are unknown at plan time and the plan fails the same way.
+Pass the outputs or attributes of the resources the module needs as its inputs
+instead, within the rule above; Terraform orders the work by those references. A resource of yours that
+must wait for the deployment can still carry `depends_on = [module.idp]` itself.
+
+**The module's provider constraints apply to the whole root configuration.**
+Terraform installs one version of each provider for a root configuration, chosen to
+satisfy every constraint in it, so the `aws` and `awscc` constraints in the module's
+`versions.tf` bind every resource in your root, not only the module's. A root that
+pins `aws` to a major version outside the module's range cannot run `terraform init`
+with the module. Deploy the module from a root configuration of its own in that case,
+and read its outputs from your other configurations with a `terraform_remote_state`
+data source.
 
 ### With `idp-cli deploy --terraform`
 
@@ -419,6 +560,42 @@ CloudFormation. Without the label, `idp-cli` and the SDK cannot address the
 deployment, and every operation on this page that takes `--stack-name` stops working
 for it.
 
+## What still uses CloudFormation
+
+A Terraform deployment does not deploy through CloudFormation, but it is not free of
+CloudFormation's API either. Three things use it:
+
+- **The label stack**, the module's one `aws_cloudformation_stack` resource, described
+  in the previous section. It is created, updated and deleted with the credentials
+  Terraform runs with, using the `cloudformation:` stack actions. Setting
+  `enable_cfn_stack_label = false` removes it, and with it the ability of `idp-cli`
+  and the SDK to address the deployment by `--stack-name`. Running `idp-cli` against
+  a deployment that has the label also needs read access to it
+  (`cloudformation:DescribeStacks`).
+- **The Cloud Control API**, through which the `awscc` provider manages the resources
+  that have no `hashicorp/aws` mapping in the translator (queues, state machines,
+  alarms, the KMS key and others; the module's `.tf` files show which). Cloud Control
+  creates no stacks, but its actions are in the `cloudformation:` IAM namespace
+  (`cloudformation:CreateResource`, `GetResource`, `UpdateResource`, `DeleteResource`,
+  `ListResources` and `GetResourceRequestStatus`), so they are needed for every
+  deployment and cannot be turned off.
+- **Feature-platform extensions** (see [Feature Platform](./feature-platform.md)),
+  which install as CloudFormation stacks of their own. The extension templates in this
+  repository read the main deployment's values through CloudFormation exports
+  (`Fn::ImportValue` of `<stack name>-...`), and the Terraform module creates no
+  CloudFormation exports, so those imports have nothing to resolve to. Installing an
+  extension on a Terraform deployment has not been tested. `EnableFeaturePlatform`
+  set to `false` removes the platform.
+
+The CloudFormation custom resources in the templates do not need CloudFormation: the
+module's bridge function calls their handlers itself.
+
+So the module cannot be deployed where every `cloudformation:` action is denied,
+because that denies Cloud Control as well. Where only the stack actions are denied
+and the Cloud Control actions are allowed, the module needs
+`enable_cfn_stack_label = false`, which leaves the deployment without `idp-cli` and
+SDK access by `--stack-name` and without extensions. Neither case has been tried.
+
 ## Using `idp-cli` and the SDK
 
 Pass the deployment name as `--stack-name`, exactly as for a CloudFormation stack:
@@ -459,29 +636,57 @@ resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 state means Terraform forgets it without deleting it, so the resources CloudFormation
 would retain are retained here too: the logging bucket, the data buckets and the other
 resources the templates mark that way. The command reports which retained resources
-were left, as the CloudFormation path does.
+were left, as the CloudFormation path does, naming the Region-wide API Gateway account
+setting for what it is rather than by its identifier.
+
+It also lists the log groups AWS services created on the deployment's behalf, which
+neither `terraform destroy` nor a CloudFormation stack delete removes, because neither
+created them: the `/aws/lambda/<function>` group of each function that logs to Lambda's
+default group (the custom-resource handlers), the `/aws/codebuild/<project>` group of a
+build project that logs to CodeBuild's default, and the Glue crawler's log streams.
+Each group exists only if its resource ran, and the service creates it with no
+retention. The crawler writes to `/aws-glue/crawlers`, which every crawler in the
+Region shares, so delete only the streams named after this deployment's crawler, not
+the group.
 
 If you deployed with your own root configuration, do the same steps yourself. The
 module's `idp-terraform.json` lists the retained resources in `retainedAddresses`,
 relative to the module and without instance keys. After `terraform init` the module is
-normally extracted under `.terraform/modules/idp/`. The following loop removes every
-instance of those resources from state; it does what `idp-cli` does but has not itself
-been run against a live deployment, so check its output before you destroy:
+normally extracted under `.terraform/modules/idp/`. The following commands collect
+every instance of those resources in state into `remove.txt`, then remove them all
+with one `terraform state rm`, as `idp-cli` does; each call reads and writes the
+whole state, so one call per address is slow with a remote backend. They do
+what `idp-cli` does, and select the same addresses as `idp-cli` from a state list
+built from the generated module, but have not themselves been run against a live
+deployment, so read `remove.txt` before you run the last two commands.
 
 ```bash
 jq -r '.retainedAddresses[]' .terraform/modules/idp/idp-terraform.json > retained.txt
-terraform state list | while read -r addr; do
+terraform state list | while IFS= read -r addr; do
   bare=$(printf '%s' "$addr" | sed -E 's/\[[^]]*\]//g')
   if grep -qxF "${bare#module.idp.}" retained.txt; then
-    terraform state rm "$addr"
+    printf '%s\n' "$addr"
   fi
-done
-terraform destroy
+done > remove.txt
+# Read remove.txt, then:
+addrs=(); while IFS= read -r a; do addrs+=("$a"); done < remove.txt
+terraform state rm "${addrs[@]}"
 ```
 
-Empty any bucket that is not retained before `terraform destroy` if it holds objects.
-Retained resources keep running up costs (storage, mostly) until you delete them
-yourself.
+Before `terraform destroy`, empty every bucket it will delete that holds objects, or
+its deletion fails. The module's own custom-resource bridge buckets (`cfn_bridge`)
+are created with `force_destroy` and need nothing. Run after the `terraform state rm`
+above, this lists the module's other buckets still in state, such as the Jobs API
+staging bucket when `EnableJobsApi` is `true`:
+
+```bash
+terraform state list | grep -E '^module\.idp\..*(aws|awscc)_s3_bucket\.' \
+  | grep -v '\.cfn_bridge$'
+```
+
+Buckets of your own in the same root configuration need the same treatment. Then run
+`terraform destroy`. Retained resources keep running up costs (storage, mostly) until
+you delete them yourself.
 
 ## Upgrading
 
@@ -499,11 +704,21 @@ To upgrade, point the module at the new release's URL and apply:
 The label stack's description and metadata move to the new version in the same apply.
 With `idp-cli`, run `idp-cli deploy --terraform` again with the same `--stack-name`
 and `--terraform-dir`, and the new `--terraform-module-url` (or none, for the latest).
-You do not need to repeat `--parameters`: `idp-cli` remembers the values of the
-previous deploy, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
-directory, and applies only the parameters you pass over them, as a CloudFormation
-update keeps the parameters it is not given. A remembered parameter the new module no
-longer has is dropped with a warning. The deploy runs `init -upgrade` because the
+You do not need to repeat the `--parameters` you passed before: `idp-cli` remembers
+them, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
+directory, and applies the parameters you pass now over them. A remembered parameter
+the new module no longer has is dropped with a warning.
+
+⚠️ `idp-cli` remembers only the values that were passed, not the defaults that were
+in effect, so a parameter you have never passed takes the new module's default. This
+differs from a CloudFormation update through `idp-cli`, which keeps the previous value
+of every parameter it is not given. When a release changes a parameter's default, the
+upgrade applies the new default unless you pass the old value. For example, release
+0.6.15 changed the default of `EnableMCP` from `true` to `false`, so upgrading a
+deployment from an earlier release without `--parameters EnableMCP=true` removes its
+MCP integration. Read the release's `CHANGELOG.md` for changed defaults before
+upgrading. The same applies to your own root configuration: a variable you do not set
+takes the new module's default. The deploy runs `init -upgrade` because the
 module source changed, and refuses the plan if it would delete or replace a stateful
 or retained resource (see
 [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
@@ -597,6 +812,9 @@ CloudFormation deployment of the same version, but these things differ:
   with its template and resource directory in that bucket, and the IAM-propagation
   waits.
 - A failed apply is not rolled back, as described under [Deploying](#deploying).
+- The template's `Rules` are not enforced, so a parameter combination CloudFormation
+  refuses at submit is accepted; see
+  [Using the module beside your own resources](#using-the-module-beside-your-own-resources).
 - The full stack has been applied, re-planned with no changes, and destroyed with both
   Terraform and OpenTofu, in a development account. The headless and GovCloud
   modules are validated offline on every pull request, but neither has been applied.

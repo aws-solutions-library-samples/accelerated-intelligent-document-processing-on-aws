@@ -98,6 +98,28 @@ class SummarizationService:
         # store_results parameter controls whether to create and store the markdown report
 ```
 
+When a section's summary fails, `process_document` records the error on the document
+and returns it with status `FAILED`, except for a transient failure (a throttle that
+outlasted the Bedrock client's retries, a read timeout, a bare HTTP 5xx), which it
+raises as `idp_common.utils.transient_errors.TransientError` so the caller can retry
+the document. `SummarizationStep` retries that name. A document with no sections is
+summarized in one call, and any failure of that call is raised as it is.
+
+### When a summary cannot be produced
+
+`process_text` returns a stub summary rather than raising in two cases, so the
+document completes with its extraction intact and without that summary: Bedrock
+refused the prompt as too long for the model's input window (`skip_reason:
+input_token_overflow`), or Bedrock's content filter withheld the model's reply
+(`skip_reason: content_filtered`, judged by `bedrock_utils.is_content_filter_block`).
+The stub's `summary` field says which, and its metadata carries
+`summarization_skipped: true`, the `skip_reason` and the error. Because
+`process_text` is called once per section when the document has sections, a block
+affects only that section's summary; the others are summarized normally. Only the
+whole-document path writes the stub's metadata into `summary.json`; a section's
+summary file holds the stub's `summary` text alone. Every other model error still
+raises and fails the Summarization step.
+
 ## Usage Examples
 
 ### Summarizing Text

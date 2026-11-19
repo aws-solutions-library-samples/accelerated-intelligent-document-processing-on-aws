@@ -854,8 +854,8 @@ check-retired-models: ## Ask Bedrock whether any model this repo offers has been
 # why there is no cheaper CI variant: the PR-scoped form below narrows the file set and
 # therefore cannot see a break your change caused in a file it did not select.
 #
-# It needs NO environment: pyrightconfig.json's `extraPaths` puts the five
-# first-party package roots on the import path, so `idp_common` resolves whatever
+# It needs NO environment: pyrightconfig.json's `extraPaths` puts every
+# first-party package root on the import path, so `idp_common` resolves whatever
 # PYTHONPATH says. Do NOT "fix" resolution by exporting PYTHONPATH here — this
 # machine carries editable installs pointing at a sibling worktree and another
 # project (#1094), so an environment-level answer can type-check somebody else's
@@ -1259,6 +1259,25 @@ ifndef STACK_NAME
 	$(error STACK_NAME is not set. Usage: make stacktest-review-queues STACK_NAME=<stack-name> [REGION=...])
 endif
 	$(RUN_FIRST_PARTY) scripts/review_queues_live_check.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(CHECK_EVENTS),--check-events,)
+
+# Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=<region>] [DRY_RUN=1]
+#        [LOAD_PROBE_ARGS="--docs-per-arm 8 --max-cost-usd 25 --cleanup on-pass ..."]
+# Load probe against an EXISTING stack: uploads one NEW configuration profile per
+# arm (split-then-classify, holistic packet classification, agentic extraction,
+# and decision-model confidence when --decision-model-endpoint is given), submits
+# a few dozen sample packets at once, waits with a deadline, and fails on any
+# document failed for a transient (or unreadable) cause and on any section with
+# values but no confidence score. Step retries are reported as a trend, not
+# asserted. Refuses before creating anything when the document cap or the
+# estimated-cost cap is exceeded. DRY_RUN=1 validates the plan and configurations
+# offline and touches nothing. Exit 0 = PASS, 1 = FAIL, 2 = could not run.
+# Report: ./scratch/load-probe/<run id>/report.json. Also the GitLab `load_probe`
+# job, on its own schedule only (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+stacktest-load: ## Load probe: a few dozen packets at once against an existing stack, under a document and dollar cap (STACK_NAME=...; DRY_RUN=1 touches nothing)
+ifndef STACK_NAME
+	$(error STACK_NAME is not set. Usage: make stacktest-load STACK_NAME=<stack-name> [REGION=...] [DRY_RUN=1])
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/load_probe.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(DRY_RUN),--dry-run,) $(LOAD_PROBE_ARGS)
 
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state

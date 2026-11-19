@@ -25,6 +25,7 @@ from idp_common.models import Document, Status
 from idp_common.summarization.markdown_formatter import SummaryMarkdownFormatter
 from idp_common.summarization.models import DocumentSummarizationResult, DocumentSummary
 from idp_common.utils import extract_json_from_text
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,14 @@ def _is_input_token_overflow(error: Exception) -> bool:
     from idp_common.utils.bedrock_utils import is_input_token_overflow
 
     return is_input_token_overflow(error)
+
+
+def _is_content_filter_block(error: Exception) -> bool:
+    """A reply Bedrock's content filter withheld — the shared matcher in
+    ``bedrock_utils``."""
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
 
 
 class SummarizationService:
@@ -445,6 +454,34 @@ class SummarizationService:
                     metadata={
                         "summarization_skipped": True,
                         "skip_reason": "input_token_overflow",
+                        "error": str(e),
+                    },
+                )
+            # The same degradation for a reply the content filter withheld: the
+            # summary is advisory, extraction already succeeded, and a retry sends
+            # the same text to the same filter, so the document completes with a
+            # stub that says why there is no summary.
+            if _is_content_filter_block(e):
+                logger.warning(
+                    "Amazon Bedrock's content filter withheld the summarization "
+                    "model's reply (%s); returning a summary stub so the document "
+                    "completes with extraction intact.",
+                    e,
+                )
+                return DocumentSummary(
+                    content={
+                        "summary": (
+                            "## Summary Unavailable\n\n"
+                            "No summary was produced because Amazon Bedrock's "
+                            "content filter withheld the summarization model's "
+                            "reply. Extraction results are available and "
+                            "unaffected. To get a summary, use a different "
+                            "summarization model."
+                        )
+                    },
+                    metadata={
+                        "summarization_skipped": True,
+                        "skip_reason": "content_filtered",
                         "error": str(e),
                     },
                 )
@@ -939,6 +976,12 @@ class SummarizationService:
                 )
 
         except Exception as e:
+            # A section's transient failure (a throttle past the client's retries,
+            # a read timeout, a bare HTTP 5xx) must reach the Lambda as
+            # TransientError, which SummarizationStep retries. Recorded as a FAILED
+            # document instead, the Lambda could only raise an untyped error and
+            # the document failed with no retry.
+            reraise_if_transient(e, where="summarization")
             error_msg = f"Error summarizing document: {str(e)}"
             logger.error(error_msg)
             document = self._update_document_status(

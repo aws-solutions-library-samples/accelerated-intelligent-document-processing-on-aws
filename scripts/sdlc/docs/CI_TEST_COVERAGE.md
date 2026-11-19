@@ -24,6 +24,7 @@ its `make` target and the skill that documents how to run it.
 | APIGateway PRIVATE (VPC) hosting | `make stacktest-hosting-private VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
 | Jobs API (VPC) | `make stacktest-jobsapi VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
 | Tenant isolation (`TenantIsolationMode=Strict`) | `make stacktest-tenancy` · against an existing Strict stack: `make verify-tenant-isolation STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
+| Load probe: a few dozen packets at once against an existing stack (also on its own weekly schedule, while it is active) | `make stacktest-load STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests.md` |
 | List deploy-variant stack-tests | `make stacktest-list` | `.claude/skills/run-stack-tests.md` |
 | Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
 | In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |
@@ -99,7 +100,8 @@ payload-robustness corpus covers that goal directly. See
 The GitLab pipeline's stages are below. Every gate a merge request runs is in the
 first one; the two deploy stages are **scheduled plus a manual button** (the nightly runs
 the primary suite, a second nightly schedule runs it against a Terraform deployment,
-and separate weekly schedules run the probes and the other regions), and the
+and separate weekly schedules run the probes and the other regions, and the load
+probe against an existing stack), and the
 advisory `ux_review` stage runs only on a merge request that changes `src/ui/` or
 `CHANGELOG.md`. The advisory `ux_nightly` stage comes last, after `notify`, on the
 nightly schedule or on request.
@@ -110,6 +112,7 @@ nightly schedule or on request.
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
+| **integration_tests** (`load_probe`) | The load probe against an existing stack, only on the **weekly load-probe schedule** (`IDP_RUN_LOAD_PROBE=true`); that schedule runs no deploy — see "Weekly load probe" below | Yes (processes documents; deploys nothing) | under an hour, capped by an estimated-cost limit |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
 | **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe or region schedules, nor the nightly Terraform schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
@@ -636,6 +639,100 @@ itself fails, the stack sweep keeps every Terraform-labelled run, and a migratio
 run whose new deployment never reached its label stack is not among those, so its
 `-iam` pre-stack can be reaped by name before its teardown has run.
 
+### Weekly load probe: real volume and concurrency against an existing stack
+
+The failures that occur in one call out of a few hundred, only under throttling, or
+only with one model's reply habits are invisible to the unit suites, which use
+fakes, and to the primary suite, which processes a handful of documents at low
+concurrency. The load probe is the tier that can see them. It is
+`scripts/sdlc/load_probe.py`, run by `make stacktest-load STACK_NAME=…` on demand
+and by the GitLab `load_probe` job on a schedule of its own. It is not a merge gate.
+
+**What it does.** Against an **existing** stack (it deploys nothing) it uploads one
+new configuration profile per arm, named `loadprobe-<run id>-<arm>`, never `default`
+and never a name the stack already has. Each arm is a preset from
+`config_library/unified` plus an overlay, with that preset's sample packet:
+
+| Arm | Preset and sample | What the overlay sets |
+|---|---|---|
+| `split-then-classify` | `rvl-cdip-package-sample`, `samples/rvl_cdip_package.pdf` | `classification.strategy: split_then_classify` |
+| `holistic` | `lending-package-sample`, `samples/lending_package.pdf` | `classification.combined.granularity: packet` |
+| `agentic` | `lending-package-sample`, `samples/lending_package.pdf` | `extraction.mode: advanced` |
+| `decision-model` | `lending-package-sample`, `samples/lending_package.pdf` | `extraction.confidence.method: decision_model`; runs only when a decider Lambda ARN is given, and is reported as skipped otherwise |
+
+Every arm also sets the extraction model to a fast model prone to throttling
+(`--fast-model`, default Claude Haiku 4.5), confidence mode `separate`, HITL and
+summarization off and `use_bda: false`, so the probe measures those features rather
+than whatever the stack's default profile enables. The configurations are validated
+offline with `IDPConfig` before anything is uploaded. All arms' documents are then
+submitted back to back, so they reach the queue together and the stack processes
+them at its own `MaxConcurrentWorkflows`, which the report records.
+
+**What it asserts**, failing the run (exit 1) on any of these:
+
+- no document failed for a transient cause. The cause is read from the execution
+  history's last task failure, because the workflow's catch-all `FailState` replaces
+  the error on the execution itself, and judged with
+  `idp_common.utils.transient_errors` plus the Step Functions error names
+  (`States.Timeout`, `Sandbox.Timedout`, `Lambda.*` service errors). A failure whose
+  cause cannot be read, or a Map-run tolerance failure whose child cause is not
+  visible from the parent, is **unclassified** and fails the run too, because it
+  cannot be shown to be non-transient;
+- every document settled before the deadline;
+- in every arm whose configuration asks for confidence, every section that
+  extracted at least one value carries at least one confidence score.
+
+Documents failed for a deterministic cause are listed in the report but do not fail
+the run. **Step-level retries are reported, never asserted**: per state and per
+error name, from the same histories, as a `TREND` line in the job log and in
+`report.json`. Read them across runs; one run's figure is not a verdict. Retries
+inside one Lambda invocation (the Bedrock client's own backoff) and failures inside a
+distributed Map run's child executions are not visible to it.
+
+**Caps.** The defaults are deliberately conservative, and every one is a driver
+option: 8 documents per arm, a hard cap of 40 documents (`--max-documents`), a $25
+cap (`--max-cost-usd`) checked against an **estimate** of pages times $0.10 a page
+(`--cost-per-page-usd`), and a 45-minute deadline (`--deadline-minutes`). The
+estimate is made before anything is created, and the run is refused with exit 2 when
+it is over either cap. ⚠️ The cost cap is not a meter: the per-page figure is an
+unmeasured, pessimistic guess, and nothing stops a run once its documents are
+submitted. With the decision-model arm off, the default plan is 24 documents, 176
+pages and an estimate of $17.60.
+
+**When it runs.** The `load_probe` job's rules admit exactly one trigger: a
+scheduled pipeline carrying `IDP_RUN_LOAD_PROBE=true`. It never runs on a merge
+request, a push, the nightly or any other schedule, and it has no manual button. On
+that schedule `deployment_validation`, `integration_tests`, `nightly_notification`
+and the two nightly story jobs are ruled out, so the pipeline deploys nothing and
+posts nothing to Slack, and a red run is the probe's own result. The `fast_checks`
+jobs still run on it, as on every scheduled pipeline; the probe job has `needs: []`
+and does not wait for them. It holds its own size-1 `load_probe` resource group, not
+`integration_deploy`, because it deploys nothing; two probe runs against one stack
+would share its concurrency. `scripts/sdlc/tests/test_load_probe.py` asserts the
+rules, including that every other job a schedule admits refuses this one first.
+
+**Creating the schedule** is a step in the GitLab project's settings, outside this
+repository, and until somebody takes it nothing runs. In **Build › Pipeline
+schedules › New schedule**: target branch `develop`, a weekly cron at an hour when
+the target stack is otherwise idle, and these variables:
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `IDP_RUN_LOAD_PROBE` | yes, `true` | the selector. Set it on this schedule **only**: as a project or group variable it reaches every schedule, and the rules above would then take the nightly's deploy off all of them |
+| `IDP_LOAD_PROBE_STACK` | yes | the existing stack to probe. There is no default; the job exits 2 without it. Use a stack nothing else writes to during the run, not the UX review stack, which is never written to |
+| `IDP_LOAD_PROBE_REGION` | no, default `us-east-1` | the stack's region |
+| `IDP_LOAD_PROBE_DECIDER_ARN` | no | a `GENAIIDP-` decision-model Lambda ARN; enables the `decision-model` arm |
+| `IDP_LOAD_PROBE_ARGS` | no | extra driver options, for example `--max-cost-usd 15 --docs-per-arm 6` |
+
+The job runs on the runner fleet's own credentials, like `integration_tests`, and
+prints the caller identity before it starts. It passes `--cleanup on-pass`: a green
+run deletes the profiles and documents it created, and a red run keeps them for
+diagnosis. Its report is the job artifact `load-probe/<run id>/report.json`, kept
+for 90 days. To run it on demand inside a pipeline, press **Run** on that schedule;
+outside one, `make stacktest-load STACK_NAME=… DRY_RUN=1` shows the plan and
+validates the configurations without touching AWS, and the same command without
+`DRY_RUN` runs it (`LOAD_PROBE_ARGS="…"` passes driver options).
+
 ### Why fast_checks is eight jobs
 
 It was one `static_checks` job that ran lint, typecheck and every pytest suite in
@@ -690,7 +787,7 @@ down, but it is a real trade.
 the way to check is to read the suites rather than the `script:` line.**
 `package_tests` was first written without Node, on the reasoning that pytest does
 not need it, and went red: `scripts/tests/test_pyright_config.py` runs basedpyright
-**live** — the probe that confirms `pyrightconfig.json`'s five `extraPaths` really
+**live** — the probe that confirms `pyrightconfig.json`'s `extraPaths` really
 resolve the first-party packages instead of merely looking right — so a suite whose
 name says nothing about types reaches an npm package. The fix is to give the job
 the tool, not to let the probe skip when it is missing, which is the whole reason

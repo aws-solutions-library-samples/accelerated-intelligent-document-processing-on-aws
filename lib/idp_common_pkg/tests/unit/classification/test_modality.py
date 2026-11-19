@@ -265,6 +265,28 @@ class TestApplyModalityToPrompt:
             == "before  after"
         )
 
+    @pytest.mark.parametrize(
+        "flag,placeholder,element",
+        [
+            ("images", "{DOCUMENT_IMAGE}", "document-image"),
+            ("text", "{DOCUMENT_TEXT}", "document-ocr-data"),
+        ],
+    )
+    def test_bare_placeholders_beside_a_wrapped_one_are_removed_too(
+        self, flag, placeholder, element
+    ):
+        """Turning a modality off removes every placeholder for it, not only the
+        wrapped one, so none is left for the builder to treat as a content slot."""
+        prompt = (
+            f"a {placeholder}\n<{element}>\n{placeholder}\n</{element}>\n"
+            f"b {placeholder} c"
+        )
+        service = _service(task_prompt=prompt, modality={flag: False})
+        result = service._apply_modality_to_prompt(prompt)
+        assert placeholder not in result
+        assert f"<{element}>" not in result
+        assert result.startswith("a ") and result.endswith(" c")
+
     def test_turning_images_on_appends_a_placeholder_when_there_is_none(self):
         service = _service(task_prompt="{DOCUMENT_TEXT}", modality={"images": True})
         result = service._apply_modality_to_prompt("{DOCUMENT_TEXT}")
@@ -477,15 +499,19 @@ class TestContextPathDefects:
         )
         assert all(block.get("text", "x").strip() for block in content)
 
-    def test_a_repeated_image_placeholder_appends_images_after_the_text(self):
-        service = _service(task_prompt="{DOCUMENT_IMAGE} a {DOCUMENT_IMAGE}")
-        content = service._build_context_content(
-            task_prompt_template="{DOCUMENT_IMAGE} a {DOCUMENT_IMAGE}",
-            document_text="t",
-            image_content=_png(),
-            before_images=[],
-            after_images=[],
-            stage=ClassificationService.STAGE_CLASSIFICATION,
+    def test_a_repeated_image_placeholder_is_refused(self):
+        """As on every other prompt path; see test_document_image_placeholder.py."""
+        from idp_common.document_image_placeholder import (
+            DocumentImagePlaceholderError,
         )
-        assert _image_count(content) == 1
-        assert "{DOCUMENT_IMAGE}" not in _text_of(content)
+
+        service = _service(task_prompt="{DOCUMENT_IMAGE} a {DOCUMENT_IMAGE}")
+        with pytest.raises(DocumentImagePlaceholderError, match="found 2"):
+            service._build_context_content(
+                task_prompt_template="{DOCUMENT_IMAGE} a {DOCUMENT_IMAGE}",
+                document_text="t",
+                image_content=_png(),
+                before_images=[],
+                after_images=[],
+                stage=ClassificationService.STAGE_CLASSIFICATION,
+            )

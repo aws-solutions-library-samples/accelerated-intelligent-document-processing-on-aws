@@ -291,8 +291,8 @@ You don't have to create your entire test set in one go. As you process and revi
 3. Either select your existing test set and choose **Actions** → **Add documents** → **From files in a bucket**, or open the set and use its own **Add documents** menu
 4. Select the **Input Bucket** and enter a file pattern matching your new documents (`*` within a folder, `**` across folders, e.g. `invoices/**/*.pdf`)
 5. From the table, the file pattern is pre-filled from the original test set — adjust if needed
-6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date/time) to easily find recently reviewed documents
-7. Click **Check Files** to preview matches, then **Add Documents**
+6. Optionally use the **Modified after** filter (e.g., "Last 24 hours" or a custom date and time, read as UTC) to easily find recently reviewed documents
+7. Click **Check Files** to see how many files will be added, then **Add Documents**. The count leaves out a document already in the set and a `.zip`, and says how many of each it left out
 
 Files without matching baseline data are added **unlabeled** rather than skipped, so narrow the pattern (or the **Modified after** filter) to the documents you have reviewed if you want the set to stay fully labeled: one unlabeled document makes the whole set read as unlabeled until it is draft-labeled. A document already in the set is skipped, so its labels in the set are kept; to take a newer baseline for it, remove it from the set and add it again. A `.zip` the pattern matches is left out. The test set's file count is updated automatically.
 

@@ -5,7 +5,9 @@
 
 Every extraction failure raises — ``ExtractionInputTooLarge``,
 ``ExtractionImageRejected``, ``ModelInvalidToolUseSequence``,
-``ExtractionOutputIncomplete`` — and both extraction Lambda entry points persist
+``ExtractionOutputIncomplete`` — except a content-filter block, which
+``ExtractionService._handle_content_filtered`` records on the section without
+raising (#2038). Both extraction Lambda entry points persist
 the section to DynamoDB only *after* the call returns. So the write never
 happened on a failure and the section's record still said whatever classification
 left there: no issue, no status icon, nothing in the Sections panel. The
@@ -66,8 +68,9 @@ from idp_common.models import Document, ProcessingIssue
 #: issue below instead of accumulating alongside it.
 EXTRACTION_STAGE = "extraction"
 
-#: The section's extraction step raised. Distinct from the *detection* codes
-#: extraction writes on a section that still succeeded
+#: The section's extraction step failed: it raised, or a content-filter block
+#: was recorded without raising (``_handle_content_filtered``). Distinct from the
+#: *detection* codes extraction writes on a section that still succeeded
 #: (``extraction_incomplete``, ``extraction_rows_below_ocr_estimate``, …): those
 #: flag a result, this one says there is no successful result to flag. The
 #: distinction is load-bearing for ``extraction_rows_below_ocr_estimate``, which

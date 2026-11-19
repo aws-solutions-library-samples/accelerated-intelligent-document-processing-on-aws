@@ -5,7 +5,6 @@
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -357,7 +356,7 @@ class DiscoveryOperation:
             discovery_cfg = defaults.get("discovery", {})
             auto_cfg = discovery_cfg.get("auto_split", {})
 
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
+            region = self._require_region(self._client)
 
             # Caller override wins over system default. The system default and
             # the last resort both go through the Region translation: this path
@@ -588,7 +587,7 @@ class DiscoveryOperation:
                 else discovery_cfg.get("without_ground_truth", {})
             )
 
-            region = self._client._region or os.environ.get("AWS_REGION", "us-west-2")
+            region = self._require_region(self._client)
 
             # Caller override wins over system default. The system default and
             # the last resort both go through the Region translation: this path
@@ -832,9 +831,20 @@ class DiscoveryOperation:
                 "Install them with: make setup (or: pip install -e 'lib/idp_common_pkg[multi_document_discovery]')",
             )
 
-        resolved_region = (
-            region or self._client._region or os.environ.get("AWS_REGION", "us-west-2")
-        )
+        # One Region for the Bedrock calls and for the stack the schemas are saved
+        # into. A per-call `region` that differs from the client's gets a client
+        # of its own, so the stack is looked up where the models are called. A
+        # Region resolved from `AWS_REGION` alone needs no such client: the
+        # configuration bridge hands it to the lookup.
+        client = self._client
+        try:
+            resolved_region = self._require_region_of(region or client._region)
+        except IDPConfigurationError as e:
+            return MultiDocDiscoveryResult(status="FAILED", error=str(e))
+        if region and region != client._region:
+            from idp_sdk.client import IDPClient
+
+            client = IDPClient(stack_name=client._stack_name, region=resolved_region)
 
         # Build config overrides
         config: Dict[str, Any] = {}
@@ -845,7 +855,7 @@ class DiscoveryOperation:
 
         if save_to_config and resolved_stack:
             # ClassesDiscovery saves into the profile, so it needs the bucket too.
-            self._configure_config_env(resolved_stack)
+            client.config._configure_config_env(resolved_stack)
             save_version = config_version
 
         try:
@@ -991,6 +1001,28 @@ class DiscoveryOperation:
             failed=failed,
             results=results,
         )
+
+    @staticmethod
+    def _require_region(client) -> str:
+        """The Region `client`'s calls go to, or a configuration error."""
+        return DiscoveryOperation._require_region_of(client._region)
+
+    @staticmethod
+    def _require_region_of(region: Optional[str]) -> str:
+        """`idp_sdk.resolve_region`, or a configuration error naming the fix.
+
+        Never a hard-coded Region. The answer is passed to every client built
+        from it, which matters when it came from `AWS_REGION`.
+        """
+        from idp_sdk._core.region import resolve_region
+
+        region = resolve_region(region)
+        if not region:
+            raise IDPConfigurationError(
+                "Region could not be determined. Pass a region, or set "
+                "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
+            )
+        return region
 
     def _configure_config_env(self, stack_name: str) -> str:
         """
