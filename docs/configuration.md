@@ -832,13 +832,21 @@ The solution tracks metrics for throttling events and successful retries, viewab
 The state machine retries each processing task on **transient** failures only. Step
 Functions matches the error *name* the Lambda reports (the Python exception class),
 so each task lists the Lambda service errors and the Bedrock throttling /
-availability codes. The classification, extraction, assessment and rule-validation
-task states additionally list `TransientError`: classification, in-process
-extraction, shard plan, shard, shard merge, assessment, policy classification,
-per-section rule validation and orchestration. That is the one name their handlers
-re-raise a transient cause under when it arrives as an ordinary Python exception (a
-botocore read or connect timeout, a dropped connection, a Strands wrapper around
-one). Whether a failure is transient is decided in
+availability codes. The OCR, classification, extraction, assessment, rule-validation
+and summarization task states additionally list `TransientError`: OCR,
+classification, in-process extraction, shard plan, shard, shard merge, assessment,
+policy classification, per-section rule validation, orchestration and
+summarization. That is the one name their handlers re-raise a transient cause under
+when it arrives as an ordinary Python exception (a botocore read or connect timeout,
+a dropped connection, a Strands wrapper around one). This includes a failure the
+service records instead of raising: an OCR page whose Textract or Bedrock call
+failed transiently, and a summarization section whose model call did, now fail
+their step with `TransientError` and are retried, where before the document failed
+with no retry. The two evaluation states do not list it. `EvaluationStep` reaches
+Bedrock only through the LLM-judge comparator, which scores a field 0.0 when its
+call fails rather than raising, and records a failed evaluation rather than failing
+the document. `RecordEvaluationFailure` makes no model call. Whether a failure is
+transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says,
 and a bare HTTP 500, 502, 503 or 504 in place of a code is transient),
