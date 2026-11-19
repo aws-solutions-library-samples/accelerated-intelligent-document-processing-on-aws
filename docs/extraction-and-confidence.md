@@ -2641,11 +2641,13 @@ section, naming the block, and writes an empty result for it. Advanced mode
 regenerates a blocked reply a few times before giving up; Simple mode does not
 retry it. The section shows as **Failed** and has no extracted fields; the other
 sections keep their results and the document completes. The confidence pass
-reports the section as unscored with the same reason. ⚠️ Because the section has
-no fields and no confidence scores, it raises no confidence alert and no
-missing-required-field reason, so it does **not** send the document to human
-review on its own; find such documents by the section's **Failed** status, and
-expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
+reports the section as unscored with the same reason. With human review enabled
+(`hitl.enabled: true`), the failed section holds the document for review: under
+review queues it is an **Extraction failed** review reason on that section, and in
+legacy HITL mode the section is marked pending review. The section has no fields and
+no confidence scores, so this reason is the only thing that holds it. With human
+review off the document completes; find such documents by the section's **Failed**
+status, and expect evaluation to score that section's fields as missed. Classification, the confidence pass and summarization
 handle a block on their own model call the same way: see
 [Classification](./classification.md#pages-classification-could-not-classify) and
 [Summarization Configuration](./configuration.md#summarization-configuration). This applies to extraction run inside the extraction function. A block
