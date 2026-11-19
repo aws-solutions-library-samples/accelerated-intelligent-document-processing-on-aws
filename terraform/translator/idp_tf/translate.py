@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import hcl
+from . import hcl, suppressions
 from .awscc_schema import ANY, AwsccSchema, Hint, awscc_type_name
 
 NO_VALUE = {"Ref": "AWS::NoValue"}
@@ -325,6 +325,9 @@ class Translator:
         self._directory_mode = False
         # Set when an inline function imports CloudFormation's cfnresponse.
         self.needs_cfnresponse = False
+        # Scanner suppressions of the source template by logical id, set by
+        # suppressions.attach; the carried ones are written into each resource.
+        self.suppressions: dict[str, list[Any]] = {}
         self.plans: dict[str, Plan] = {}
         self._refs: set[str] = set()
         self._current: str = ""
@@ -1113,8 +1116,13 @@ class Translator:
                     chunk = self.emit_module(plan, res)
                 else:
                     chunk = self.mappers[plan.cfn_type].emit(self, plan, res)
-                resources.append(chunk)
+                # The completeness check reads ``emitted``, so it gets the chunk
+                # before the skip comments: their reason text must not make a
+                # value that was dropped appear present.
                 self.emitted[lid] = chunk
+                resources.append(
+                    suppressions.annotate(chunk, self.suppressions.get(lid, []))
+                )
             except (TranslationError, KeyError) as exc:
                 if not self.survey:
                     raise
