@@ -1942,7 +1942,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped(
             "components/agent-chat/AgentChatHistoryDropdown.tsx",
             "Delete chat session: Where do I start?",
-            source="`Delete chat session: ${displayText}`",
+            source="defaultMessage: 'Delete chat session: {title}'",
         ),
     ),
     "DeleteConfigPrefixMapping": (Shipped(_MAPPINGS, "Delete"),),

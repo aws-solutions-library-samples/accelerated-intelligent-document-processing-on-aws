@@ -1,4 +1,88 @@
 {
+  "agentChat.bedrockError.details": {
+    "defaultMessage": "Details: {details}",
+    "description": "Line in the error card's technical details. {details} is the error text of the AI model service, as it arrives."
+  },
+  "agentChat.bedrockError.errorType": {
+    "defaultMessage": "Error Type: {type}",
+    "description": "Line in the error card's technical details. {type} is the error's code, such as rate_limit, as it arrives."
+  },
+  "agentChat.bedrockError.retries": {
+    "defaultMessage": "(After {count, plural, one {# retry attempt} other {# retry attempts}})",
+    "description": "Shown beside the title of the Agent Chat error card. {count} is how many times the request was retried before the error."
+  },
+  "agentChat.bedrockError.retryAttempts": {
+    "defaultMessage": "Retry Attempts: {count}",
+    "description": "Line in the error card's technical details. {count} is how many times the request was retried."
+  },
+  "agentChat.bedrockError.technicalDetails": {
+    "defaultMessage": "Technical Details",
+    "description": "Header of the expandable section of the Agent Chat error card that shows the technical details."
+  },
+  "agentChat.bedrockError.title.accessDenied": {
+    "defaultMessage": "Access Denied",
+    "description": "Title of the Agent Chat error card when the AI model service refused access."
+  },
+  "agentChat.bedrockError.title.default": {
+    "defaultMessage": "Service Error",
+    "description": "Title of the Agent Chat error card for any other error from the AI model service."
+  },
+  "agentChat.bedrockError.title.modelUnavailable": {
+    "defaultMessage": "AI Model Unavailable",
+    "description": "Title of the Agent Chat error card when the AI model is not available."
+  },
+  "agentChat.bedrockError.title.quotaExceeded": {
+    "defaultMessage": "Usage Quota Exceeded",
+    "description": "Title of the Agent Chat error card when the account's usage quota for the AI model service is used up."
+  },
+  "agentChat.bedrockError.title.rateLimit": {
+    "defaultMessage": "Rate Limit Exceeded",
+    "description": "Title of the Agent Chat error card when the AI model service refused the request because too many were sent."
+  },
+  "agentChat.bedrockError.title.serviceUnavailable": {
+    "defaultMessage": "Service Temporarily Unavailable",
+    "description": "Title of the Agent Chat error card when the AI model service is temporarily unavailable."
+  },
+  "agentChat.bedrockError.title.timeout": {
+    "defaultMessage": "Request Timeout",
+    "description": "Title of the Agent Chat error card when the request to the AI model service timed out."
+  },
+  "agentChat.bedrockError.title.validationError": {
+    "defaultMessage": "Request Validation Error",
+    "description": "Title of the Agent Chat error card when the AI model service rejected the request as invalid."
+  },
+  "agentChat.bedrockError.whatYouCanDo": {
+    "defaultMessage": "What you can do:",
+    "description": "Heading above the suggestions in the Agent Chat error card. The suggestions are shown as they arrive."
+  },
+  "agentChat.history.button": {
+    "defaultMessage": "Load previous chat",
+    "description": "Button that opens the list of previous Agent Chat sessions."
+  },
+  "agentChat.history.deleteAriaLabel": {
+    "defaultMessage": "Delete chat session: {title}",
+    "description": "Screen-reader label of the button that deletes a previous session from the Agent Chat history. {title} is the session title, cut to its first 50 characters."
+  },
+  "agentChat.history.empty": {
+    "defaultMessage": "No previous chat sessions found",
+    "description": "The only entry of the Agent Chat history list when the user has no previous session."
+  },
+  "agentChat.history.selected": {
+    "defaultMessage": "Selected chat",
+    "description": "Label of the Agent Chat history button when the selected session has no title to show."
+  },
+  "agentChat.history.sessionMeta": {
+    "defaultMessage": "{date} • {count, plural, one {# message} other {# messages}}",
+    "description": "Line under the title of a previous session in the Agent Chat history list. {date} is when the session was last used; {count} is how many messages it holds."
+  },
+  "agentChat.history.unknownDate": {
+    "defaultMessage": "Unknown date",
+    "description": "Shown in place of the date of a previous Agent Chat session when the date cannot be read."
+  },
+  "agentChat.history.untitled": {
+    "defaultMessage": "Untitled Chat",
+    "description": "Shown in the Agent Chat history list in place of the title of a session that has none."
+  },
   "agentChat.layout.enableExternalMcpAgents": {
     "defaultMessage": "Enable External MCP agents",
     "description": "Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers."
@@ -6,6 +90,102 @@
   "agentChat.layout.thirdPartyNotice": {
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
+  },
+  "agentChat.tool.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the dialog showing a tool's input and output."
+  },
+  "agentChat.tool.codeLabel.fromPython": {
+    "defaultMessage": "JSON (converted from Python)",
+    "description": "Label above a tool's input or output that arrived as Python data and is shown as JSON. JSON and Python are format names."
+  },
+  "agentChat.tool.codeLabel.pythonDict": {
+    "defaultMessage": "JSON (Python dict)",
+    "description": "Label above a tool's input or output that arrived as a Python dictionary and is shown as JSON. JSON and Python are format names."
+  },
+  "agentChat.tool.detailsTitle": {
+    "defaultMessage": "{toolName} Details",
+    "description": "Title of the dialog that shows a tool's input and output. {toolName} is the tool's name, as the agent reports it."
+  },
+  "agentChat.tool.executing": {
+    "defaultMessage": "Executing tool...",
+    "description": "Shown in the Execution Details tab of the tool dialog while the tool runs."
+  },
+  "agentChat.tool.logs.events": {
+    "defaultMessage": "Log Events",
+    "description": "Heading above the log events a CloudWatch log search found, grouped by log group."
+  },
+  "agentChat.tool.logs.filterPattern": {
+    "defaultMessage": "Filter Pattern:",
+    "description": "Label before the CloudWatch filter pattern of the log search, such as ERROR, shown as it arrives."
+  },
+  "agentChat.tool.logs.groupEvents": {
+    "defaultMessage": "{logGroup} ({count, plural, one {# event} other {# events}})",
+    "description": "Heading of one CloudWatch log group in the search results. {logGroup} is its name; {count} is how many events it holds."
+  },
+  "agentChat.tool.logs.groupsSearched": {
+    "defaultMessage": "Log Groups Searched:",
+    "description": "Label before the count of CloudWatch log groups searched, shown as \"searched / found\"."
+  },
+  "agentChat.tool.logs.noEvents": {
+    "defaultMessage": "No {filterPattern} events found in the searched time period.",
+    "description": "Shown when the CloudWatch log search found nothing. {filterPattern} is the filter pattern searched for, such as ERROR, as it arrives."
+  },
+  "agentChat.tool.logs.stack": {
+    "defaultMessage": "Stack:",
+    "description": "Label before the name of the CloudFormation stack whose logs were searched. The name is shown as it arrives."
+  },
+  "agentChat.tool.logs.summary": {
+    "defaultMessage": "Search Summary",
+    "description": "Heading of the summary of a CloudWatch log search, in an Agent Chat tool's details."
+  },
+  "agentChat.tool.logs.totalEvents": {
+    "defaultMessage": "Total Events Found:",
+    "description": "Label before the number of log events the CloudWatch log search found."
+  },
+  "agentChat.tool.noExecutionDetails": {
+    "defaultMessage": "No execution details available",
+    "description": "Shown in the Execution Details tab of the tool dialog when the tool has no input to show."
+  },
+  "agentChat.tool.noResults": {
+    "defaultMessage": "No results available yet",
+    "description": "Shown in the Results tab of the tool dialog before the tool has returned anything."
+  },
+  "agentChat.tool.processingResults": {
+    "defaultMessage": "Processing results...",
+    "description": "Shown in the Results tab of the tool dialog while the tool's results are read."
+  },
+  "agentChat.tool.status.completed": {
+    "defaultMessage": "Completed",
+    "description": "Status of a tool an Agent Chat agent uses: the tool returned its results."
+  },
+  "agentChat.tool.status.executing": {
+    "defaultMessage": "Executing...",
+    "description": "Status of a tool an Agent Chat agent uses: the tool is running."
+  },
+  "agentChat.tool.status.executionCompleted": {
+    "defaultMessage": "Execution completed",
+    "description": "Status of a tool an Agent Chat agent uses: the tool ran and has no results yet."
+  },
+  "agentChat.tool.status.processingResults": {
+    "defaultMessage": "Processing results...",
+    "description": "Status of a tool an Agent Chat agent uses: the tool's results are being read."
+  },
+  "agentChat.tool.status.starting": {
+    "defaultMessage": "Starting...",
+    "description": "Status of a tool an Agent Chat agent uses: the tool has not started yet."
+  },
+  "agentChat.tool.tab.execution": {
+    "defaultMessage": "Execution Details",
+    "description": "Tab of the tool dialog that shows the input the agent gave the tool."
+  },
+  "agentChat.tool.tab.results": {
+    "defaultMessage": "Results",
+    "description": "Tab of the tool dialog that shows what the tool returned."
+  },
+  "agentChat.tool.viewDetails": {
+    "defaultMessage": "View Details",
+    "description": "Button beside the name of a tool an Agent Chat agent used. It opens the tool input and output."
   },
   "agents.jobStatus.completed": {
     "defaultMessage": "Processing complete",
