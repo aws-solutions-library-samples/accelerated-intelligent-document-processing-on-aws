@@ -1160,7 +1160,13 @@ def test_a_repo_option_between_pr_and_merge_is_still_a_merge(
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "command",
-    ["gh pr view 1050", "gh pr list --search merge", "gh pr -R owner/name view 1"],
+    [
+        "gh pr view 1050",
+        "gh pr list --search merge",
+        "gh pr -R owner/name view 1",
+        # Not gh at all, though the words after it match.
+        "echo pr merge 1050",
+    ],
 )
 def test_other_gh_pr_commands_are_not_merges(command: str) -> None:
     assert check_shared_branch.gh_merge(shlex.split(command)) == (False, None)
