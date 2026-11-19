@@ -9,7 +9,7 @@
  * routes through here so the flows cannot drift apart.
  */
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { defineMessages, FormattedMessage, useIntl, type MessageTag } from 'react-intl';
 import {
   Alert,
@@ -39,6 +39,7 @@ import { getErrorMessage } from '../../utils/errorUtils';
 import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
 import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
+import { createLatestResponseGuard } from './latestResponseOnly';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -126,6 +127,9 @@ const CreateTestSetWizard = ({
   const [fileCount, setFileCount] = useState(0);
   const [leftOut, setLeftOut] = useState('');
   const [isChecking, setIsChecking] = useState(false);
+  // A check's reply describes the bucket, pattern and time filter it was sent
+  // with; one landing after any of them changed must not set the count.
+  const checkGuard = useRef(createLatestResponseGuard());
 
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -141,7 +145,19 @@ const CreateTestSetWizard = ({
   // drift. Gated on the branch: inactive it fetches no estimates or test sets.
   const generateForm = useGenerateSyntheticForm({ active: visible && isGenerate });
 
+  /**
+   * A changed bucket, pattern or time filter makes the last check's count stale,
+   * and its message too ("No files matched", "None of the N ...").
+   */
+  const clearCheck = () => {
+    checkGuard.current.claim();
+    setFileCount(0);
+    setLeftOut('');
+    setError('');
+  };
+
   const reset = () => {
+    checkGuard.current.claim();
     setActiveStep(0);
     setSource('upload-labeled');
     setName('');
@@ -177,6 +193,7 @@ const CreateTestSetWizard = ({
       setError('Enter a file pattern first');
       return;
     }
+    const isCurrent = checkGuard.current.claim();
     setIsChecking(true);
     setError('');
     try {
@@ -188,6 +205,7 @@ const CreateTestSetWizard = ({
           modifiedAfter: getModifiedAfter(),
         },
       });
+      if (!isCurrent()) return;
       const matched = (result.data?.listBucketFiles ?? []).filter((f): f is string => f !== null);
       // A new set holds nothing yet, so only the .zip matches are left out.
       const split = splitPatternMatches(bucket.value ?? '', matched);
@@ -200,7 +218,7 @@ const CreateTestSetWizard = ({
       }
     } catch (err) {
       logger.error('Error checking files:', err);
-      setError(`Could not check files: ${getErrorMessage(err)}`);
+      if (isCurrent()) setError(`Could not check files: ${getErrorMessage(err)}`);
     } finally {
       setIsChecking(false);
     }
@@ -478,28 +496,59 @@ const CreateTestSetWizard = ({
       {source === 'existing-files' && (
         <>
           <FormField label="Bucket" description="Where to look for the documents.">
-            <Select selectedOption={bucket} onChange={({ detail }) => setBucket(detail.selectedOption)} options={BUCKET_OPTIONS} />
+            <Select
+              selectedOption={bucket}
+              onChange={({ detail }) => {
+                setBucket(detail.selectedOption);
+                clearCheck();
+              }}
+              options={BUCKET_OPTIONS}
+            />
           </FormField>
           <FormField
             label="File pattern"
             description="* matches within one folder, ** matches any depth, ? matches one character; the folder path before the first wildcard is exact, the rest ignores case. For example *.pdf, invoices/2024-*.pdf, or invoices/**/*.pdf"
           >
-            <Input value={filePattern} onChange={({ detail }) => setFilePattern(detail.value)} placeholder="*.pdf" />
+            <Input
+              value={filePattern}
+              onChange={({ detail }) => {
+                setFilePattern(detail.value);
+                clearCheck();
+              }}
+              placeholder="*.pdf"
+            />
           </FormField>
           <FormField label="Modified after — optional" description="Useful for picking up only recently reviewed documents.">
             <Select
               selectedOption={timeFilter}
-              onChange={({ detail }) => setTimeFilter(detail.selectedOption)}
+              onChange={({ detail }) => {
+                setTimeFilter(detail.selectedOption);
+                clearCheck();
+              }}
               options={TIME_FILTER_OPTIONS}
             />
           </FormField>
           {timeFilter.value === 'custom' && (
             <ColumnLayout columns={2}>
               <FormField label="Date">
-                <Input value={customDate} onChange={({ detail }) => setCustomDate(detail.value)} placeholder="YYYY-MM-DD" />
+                <Input
+                  value={customDate}
+                  onChange={({ detail }) => {
+                    setCustomDate(detail.value);
+                    clearCheck();
+                  }}
+                  placeholder="YYYY-MM-DD"
+                />
               </FormField>
               <FormField label="Time">
-                <Input value={customTime} onChange={({ detail }) => setCustomTime(detail.value)} placeholder="00:00:00" />
+                <Input
+                  value={customTime}
+                  onChange={({ detail }) => {
+                    setCustomTime(detail.value);
+                    clearCheck();
+                  }}
+                  placeholder="00:00:00"
+                />
               </FormField>
             </ColumnLayout>
           )}

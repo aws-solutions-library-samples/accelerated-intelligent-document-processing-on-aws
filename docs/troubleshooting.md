@@ -164,7 +164,9 @@ Because that section has no confidence values, HITL confidence routing and the U
 threshold signals do not apply to it — the processing issue is the signal. Find it in
 the **Status** column of the Sections panel and in the section's Processing Report
 tab, whose Confidence stage then reads *no confidence scores*. Writing it into the
-report is best effort; if that write fails, the Status column still has it. Transient
+report is best effort; if that write fails, the Status column still has it. A reply Amazon
+Bedrock's content filter withheld degrades the section the same way, and the issue's
+message says so. Transient
 failures (throttling, read timeouts) are unaffected and still retry. To get
 confidence back, reduce the confidence request's size: `geometry.mode: ocr_only`,
 a lower `extraction.confidence.list_batch_size`, or Advanced (agentic) extraction,
@@ -246,17 +248,19 @@ produce a usable class for one or more of the section's pages, so those pages ha
 no extraction schema and nothing was extracted from them. The codes and their
 remedies are tabulated in
 [Classification](./classification.md#pages-classification-could-not-classify).
-Briefly: `classification_failed` is an error worth investigating, but ⚠️ **a stack
-deployed from this repository does not produce it.** Every call site that raises it
-sits in the classification service's SageMaker path, which runs only when a library
-caller constructs `ClassificationService` with `backend="sagemaker"` and an
-endpoint name. The deployed solution creates no inference endpoint and leaves the
-backend at its `bedrock` default, so on a standard deployment this code is
-unreachable and the equivalent Bedrock failure propagates and fails the document
-instead. If you do see it, you are running the SageMaker backend against an
-endpoint you host yourself, and the remedy is about that endpoint — check its
-health, the model access and the quota, alongside the ClassificationFunction log
-group. `classification_page_no_content` is a
+Briefly: `classification_failed` is an error worth investigating. On a stack
+deployed from this repository it comes from three cases, and its root cause says
+which: a page's text or image could not be read, or a page artifact is missing (the
+document also fails); a split-then-classify section classification call failed (the
+document also fails); or Amazon Bedrock's content filter withheld the
+classification model's reply for a page or a split-then-classify section, in which
+case that page or section is `unclassified` and the rest of the document completes.
+Any other Bedrock failure on the page-level path propagates and fails the document
+instead. Otherwise it comes from the classification service's SageMaker path, which
+runs only when a library caller constructs `ClassificationService` with
+`backend="sagemaker"` and an endpoint name against an endpoint you host yourself;
+the remedy is then about that endpoint — check its health, the model access and the
+quota, alongside the ClassificationFunction log group. `classification_page_no_content` is a
 warning meaning the page had **neither** usable OCR text **nor** a loadable page
 image; a blank page normally still has an image, so this points at missing page
 artifacts rather than at an empty page, and the OCR step is the place to look.

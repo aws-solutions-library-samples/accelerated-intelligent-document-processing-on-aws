@@ -385,6 +385,36 @@ def is_content_filter_block(error: BaseException) -> bool:
     return False
 
 
+def _client_error_code(error: BaseException) -> str:
+    """The error code ``error``'s botocore response carries, or ``""``."""
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        return str((response.get("Error") or {}).get("Code") or "")
+    return ""
+
+
+def is_unretryable_validation_error(error: BaseException) -> bool:
+    """True if ``error``, or one it was raised ``from``, is a ``ValidationException``
+    other than a content-filter block.
+
+    The retry decorators' one rule for ``ValidationException``: Bedrock rejected
+    the request itself, so sending it again is refused identically, and the only
+    ``ValidationException`` worth retrying is a reply the content filter withheld
+    (:func:`is_content_filter_block`), because a regenerated reply can pass.
+
+    The code is compared case-insensitively, because an error raised inside a
+    ``ConverseStream`` reply carries the event-stream member name,
+    ``validationException``; compared case-sensitively, such an error missed this
+    rule and was retried by the case-folded retryable vocabulary instead. The
+    explicit ``__cause__`` chain is walked because Strands delivers a Bedrock
+    error wrapped in ``EventLoopException`` from every cycle after a tool use.
+    """
+    for node in _cause_chain(error):
+        if _client_error_code(node).lower() == "validationexception":
+            return not is_content_filter_block(error)
+    return False
+
+
 #: ``stopReason`` values that mean the model stopped because it ran out of OUTPUT
 #: budget rather than because it finished answering.
 #:
@@ -688,11 +718,9 @@ def async_exponential_backoff_retry[T, **P](
                     # Log bedrock invocation details for all errors
                     log_bedrock_invocation_error(e, attempt + 1)
 
-                    if (
-                        error_code == "ValidationException"
-                        and CONTENT_FILTER_BLOCK_MESSAGE
-                        not in e.response.get("Error", {}).get("Message", "")
-                    ):
+                    # One rule for ValidationException in both decorators: only
+                    # a content-filter block is retried.
+                    if is_unretryable_validation_error(e):
                         raise
                     # Any HTTP 500/502/503/504 from Bedrock is retried whatever
                     # its code, as on the Converse ladder in bedrock/client.py
@@ -735,6 +763,13 @@ def async_exponential_backoff_retry[T, **P](
                     # max_retries (50 on the agentic extraction path) before the
                     # caller ever got to classify it (#994).
                     if is_image_request_rejection(e):
+                        log_bedrock_invocation_error(e, attempt + 1)
+                        raise
+                    # The same rule as the ClientError branch, for the wrapped
+                    # form: "ValidationException" is in the retryable vocabulary
+                    # this branch matches by substring, so without it a wrapped
+                    # ValidationException was retried whatever it said.
+                    if is_unretryable_validation_error(e):
                         log_bedrock_invocation_error(e, attempt + 1)
                         raise
                     # A retryable exception type (Strands' ModelThrottledException,
@@ -916,11 +951,9 @@ def exponential_backoff_retry[T, **P](
                     # Log bedrock invocation details for all errors
                     log_bedrock_invocation_error(e, attempt + 1)
 
-                    if (
-                        error_code == "ValidationException"
-                        and CONTENT_FILTER_BLOCK_MESSAGE
-                        not in e.response.get("Error", {}).get("Message", "")
-                    ):
+                    # One rule for ValidationException in both decorators: only
+                    # a content-filter block is retried.
+                    if is_unretryable_validation_error(e):
                         raise
                     # Shares DEFAULT_RETRYABLE_ERRORS with the async decorator so
                     # both paths retry the same conditions; converse_stream is
