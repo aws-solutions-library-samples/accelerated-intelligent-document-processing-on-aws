@@ -533,6 +533,10 @@ def test_chdir_target_expands_a_home_relative_path() -> None:
         (["merge", "--repo=owner/name", "1050"], "1050"),
         (["merge", "-d", "-s", "1050"], "1050"),
         (["merge", "-Rowner/name", "1050"], "1050"),
+        # gh 2.104+ prints a boolean as `--admin[=true|false]`; the value can only
+        # be attached, so the next token is still the pull request.
+        (["merge", "--admin=true", "1050"], "1050"),
+        (["merge", "-d=false", "--squash", "1050"], "1050"),
     ],
 )
 def test_merge_target(args: list[str], expected: str | None) -> None:
@@ -616,7 +620,105 @@ def test_a_merge_flags_value_is_not_read_as_the_pull_request(flag: str) -> None:
 #: column, so the placeholder that marks an option as value-taking is the token
 #: separated from the option by exactly one space -- ``-b, --body text`` takes a
 #: value and ``--admin    Use administrator...`` does not.
-GH_FLAG_LINE = re.compile(r"^\s+(?:(-\w), )?(--[\w-]+)(?: (?!\s)(\S+))?\s{2,}\S")
+#:
+#: From gh 2.104.0 a boolean option is printed with its optional value attached,
+#: ``--admin[=true|false]``. That bracket is pflag's optional-value form: the value
+#: can only be given as ``--admin=false``, never as the next token, so it does not
+#: make the option value-taking in the sense ``merge_target`` cares about. Before
+#: the bracket was allowed for, no boolean line matched at all and the parse saw
+#: only the value-taking lines, which tripped the non-vacuity floor below.
+GH_FLAG_LINE = re.compile(
+    r"^\s+(?:(-\w), )?(--[\w-]+)(?:\[=[^\]\s]*\])?(?: (?!\s)(\S+))?\s{2,}\S"
+)
+
+#: ``gh pr merge --help`` option blocks, copied verbatim from the two help layouts
+#: gh has used, so the parse is checked against both whichever gh (if any) the
+#: machine running the suite has. 2.103.0 is the last release printing a boolean
+#: option bare; 2.104.0 began printing it as ``--admin[=true|false]``, and 2.105.0
+#: prints the same block.
+GH_MERGE_HELP_2_103 = """\
+FLAGS
+      --admin                   Use administrator privileges to merge a pull request that does not meet requirements
+  -A, --author-email text       Email text for merge commit author
+      --auto                    Automatically merge only after necessary requirements are met
+  -b, --body text               Body text for the merge commit
+  -F, --body-file file          Read body text from file (use "-" to read from standard input)
+  -d, --delete-branch           Delete the local and remote branch after merge
+      --disable-auto            Disable auto-merge for this pull request
+      --match-head-commit SHA   Commit SHA that the pull request head must match to allow merge
+  -m, --merge                   Merge the commits with the base branch
+  -r, --rebase                  Rebase the commits onto the base branch
+  -s, --squash                  Squash the commits into one commit and merge it into the base branch
+  -t, --subject text            Subject text for the merge commit
+
+INHERITED FLAGS
+      --help                     Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+"""
+
+GH_MERGE_HELP_2_105 = """\
+FLAGS
+      --admin[=true|false]           Use administrator privileges to merge a pull request that does not meet requirements
+  -A, --author-email text            Email text for merge commit author
+      --auto[=true|false]            Automatically merge only after necessary requirements are met
+  -b, --body text                    Body text for the merge commit
+  -F, --body-file file               Read body text from file (use "-" to read from standard input)
+  -d, --delete-branch[=true|false]   Delete the local and remote branch after merge
+      --disable-auto[=true|false]    Disable auto-merge for this pull request
+      --match-head-commit SHA        Commit SHA that the pull request head must match to allow merge
+  -m, --merge[=true|false]           Merge the commits with the base branch
+  -r, --rebase[=true|false]          Rebase the commits onto the base branch
+  -s, --squash[=true|false]          Squash the commits into one commit and merge it into the base branch
+  -t, --subject text                 Subject text for the merge commit
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+"""
+
+
+def _parse_merge_help(text: str) -> tuple[set[str], int]:
+    """The value-taking options in ``gh pr merge --help`` text, and lines matched.
+
+    The count is returned so a caller can assert the parse is non-vacuous: matching
+    no line at all yields an empty set, which compares equal to nothing useful and
+    would otherwise read as a finding about the constant rather than the parser.
+    """
+    flags: set[str] = set()
+    seen = 0
+    for line in text.splitlines():
+        match = GH_FLAG_LINE.match(line)
+        if not match:
+            continue
+        seen += 1
+        if match.group(3) is None:
+            continue
+        if match.group(1):
+            flags.add(match.group(1))
+        flags.add(match.group(2))
+    return flags, seen
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "help_text",
+    [GH_MERGE_HELP_2_103, GH_MERGE_HELP_2_105],
+    ids=["gh-2.103-layout", "gh-2.105-layout"],
+)
+def test_the_help_parse_reads_both_gh_layouts(help_text: str) -> None:
+    """Every option line is recognised, and the value-taking set is the hook's.
+
+    The live comparison below skips where there is no ``gh``, so on such a machine
+    this is the only thing checking the parser; and where there is one, it checks
+    only the layout that ``gh`` prints. Every line between the two headings is an
+    option, so ``seen`` must equal that line count exactly.
+    """
+    flags, seen = _parse_merge_help(help_text)
+    option_lines = [
+        line for line in help_text.splitlines() if line.lstrip().startswith("-")
+    ]
+    assert seen == len(option_lines)
+    assert flags == set(check_shared_branch.GH_MERGE_FLAGS_WITH_VALUE)
 
 
 def _gh_flags_taking_a_value() -> tuple[set[str] | None, str]:
@@ -651,18 +753,7 @@ def _gh_flags_taking_a_value() -> tuple[set[str] | None, str]:
             f"`gh pr merge --help` exited {completed.returncode}: "
             f"{completed.stderr.strip()[:200] or '(no stderr)'}"
         )
-    flags: set[str] = set()
-    seen = 0
-    for line in completed.stdout.splitlines():
-        match = GH_FLAG_LINE.match(line)
-        if not match:
-            continue
-        seen += 1
-        if match.group(3) is None:
-            continue
-        if match.group(1):
-            flags.add(match.group(1))
-        flags.add(match.group(2))
+    flags, seen = _parse_merge_help(completed.stdout)
     assert seen >= 8, (
         f"only {seen} option lines were recognised in `gh pr merge --help`, so "
         "its format has changed and this test can no longer see which options "
