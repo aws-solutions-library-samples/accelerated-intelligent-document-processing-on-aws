@@ -1891,6 +1891,14 @@
     "defaultMessage": "Skip All Reviews results",
     "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
   },
+  "reviewQueues.reasons.extractionFailed": {
+    "defaultMessage": "Extraction failed",
+    "description": "Chip text of a review reason for a section whose extraction failed and left it with no extracted data (for example, a content filter withheld the model reply). Also the Reason column of a work list."
+  },
+  "reviewQueues.taskContext.extractionFailed": {
+    "defaultMessage": "Extraction failed for this section, so it has no extracted data to check.",
+    "description": "Popover text on an \"Extraction failed\" review reason: the section was held for review because its extraction did not succeed (for example, a content filter withheld the model reply), not because of a field confidence."
+  },
   "reviewQueues.taskContext.sentBy": {
     "defaultMessage": "By {requestedBy}",
     "description": "Body of the Sent to review alert. {requestedBy} is the user (e-mail) who sent the document to review."
