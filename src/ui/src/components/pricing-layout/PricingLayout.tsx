@@ -439,19 +439,6 @@ const PricingLayout = (): React.JSX.Element => {
     }
   };
 
-  // Delete an entire API/service entry
-  const _handleDeleteService = (apiName: string): void => {
-    const newFormValues = JSON.parse(JSON.stringify(formValues));
-    newFormValues.pricing = newFormValues.pricing.filter((e: PricingEntry) => e.name !== apiName);
-    setFormValues(newFormValues);
-    setJsonContent(JSON.stringify(newFormValues, null, 2));
-    try {
-      setYamlContent(yaml.dump(newFormValues));
-    } catch (e) {
-      console.error('Error converting to YAML:', e);
-    }
-  };
-
   // Render pricing table for a service
   const renderServiceTable = (serviceEntries: PricingEntry[]): React.JSX.Element | null => {
     if (!serviceEntries || serviceEntries.length === 0) {
