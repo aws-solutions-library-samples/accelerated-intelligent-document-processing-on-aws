@@ -1028,10 +1028,16 @@ class SticklerConfigMapper:
         Returns:
             Configuration dict with translated schema for JsonSchemaFieldConverter
         """
-        import copy
+        from idp_common.config.class_names import with_uri_safe_schema_ids
 
-        # Make a deep copy to avoid modifying the original
-        schema = copy.deepcopy(document_class_schema)
+        # Deep copy, so the original is not modified, with every ``$id``
+        # percent-encoded. Stickler checks the schema against the JSON Schema
+        # metaschema, where ``$id`` is a URI-reference, so a class named
+        # "Bank Statement" is rejected wherever the optional URI format checker
+        # happens to be installed. Nothing below reads ``$id`` from this copy:
+        # the model name and the judge's document class come from the authored
+        # schema.
+        schema = with_uri_safe_schema_ids(document_class_schema)
 
         # Turn on Stickler 1.0's native comparator inference for any leaf that
         # carries no explicit x-aws-idp-evaluation-method. Stickler picks by
