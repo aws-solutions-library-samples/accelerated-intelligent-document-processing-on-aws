@@ -10514,6 +10514,140 @@ class TestTimestampParsing:
         table.update_item.assert_called_once()
 
 
+# Cutoffs the copier's matcher cannot read: a date in the wrong order, a word, a
+# time with no date, and a number where a string belongs. Each is checked against
+# find_matching_files itself below, so the list cannot hold one the copier accepts.
+_UNREADABLE_CUTOFFS = ["09/01/2026", "yesterday", "12:00", 1756684800]
+# What the UI sends (Date.toISOString), and the no-offset form the matcher reads as UTC.
+_READABLE_CUTOFFS = ["2026-09-01T00:00:00.000Z", "2026-09-01T00:00:00"]
+
+
+@pytest.mark.unit
+class TestAnUnreadableCutoffIsRefusedAtTheApi:
+    """addTestSet and addDocumentsToTestSet refuse a modifiedAfter the copier
+    cannot parse, before any row is written or claimed and before a copy is
+    queued. They used to queue it, so the set went QUEUED or UPDATING and then
+    FAILED in the copier with nothing to say the cutoff was the cause."""
+
+    @pytest.mark.parametrize("cutoff", _UNREADABLE_CUTOFFS)
+    def test_the_matcher_itself_refuses_each_value(self, create_env, cutoff):
+        _table, _sqs, _queue_url, s3 = create_env
+        import idp_common.s3 as s3_module
+
+        # The module's client is a process-wide singleton another test may have
+        # built outside moto, so this one is handed the fixture's.
+        with (
+            patch.object(s3_module, "get_s3_client", return_value=s3),
+            pytest.raises((ValueError, AttributeError)),
+        ):
+            s3_module.find_matching_files(
+                "test-set-bucket", "x/*", modified_after=cutoff
+            )
+
+    @pytest.mark.parametrize("cutoff", _UNREADABLE_CUTOFFS)
+    def test_a_create_is_refused_and_writes_nothing(self, create_env, cutoff):
+        table, sqs, queue_url, _s3 = create_env
+        with pytest.raises(ValueError, match="modifiedAfter"):
+            test_set_index.add_test_set(
+                {
+                    "name": "New Set",
+                    "filePattern": "x/*",
+                    "fileCount": 1,
+                    "bucketType": "input",
+                    "modifiedAfter": cutoff,
+                }
+            )
+        assert _row(table, "new-set") is None
+        assert _queued_messages(sqs, queue_url) == []
+
+    @pytest.mark.parametrize("cutoff", _UNREADABLE_CUTOFFS)
+    def test_an_append_is_refused_and_leaves_the_set_completed(
+        self, create_env, cutoff
+    ):
+        table, sqs, queue_url, _s3 = create_env
+        original = _existing_set(table)
+        with pytest.raises(ValueError, match="modifiedAfter"):
+            test_set_index.add_documents_to_test_set(
+                {
+                    "testSetId": "my-set",
+                    "filePattern": "x/*",
+                    "bucketType": "input",
+                    "fileCount": 1,
+                    "modifiedAfter": cutoff,
+                }
+            )
+        assert _row(table) == original
+        assert _queued_messages(sqs, queue_url) == []
+
+    def test_the_refusal_is_a_bad_request_through_the_handler(self, create_env):
+        with pytest.raises(ValueError, match="not an ISO 8601"):
+            test_set_index.handler(
+                {
+                    "info": {"fieldName": "addTestSet"},
+                    "arguments": {
+                        "name": "New Set",
+                        "filePattern": "x/*",
+                        "fileCount": 1,
+                        "bucketType": "input",
+                        "modifiedAfter": "yesterday",
+                    },
+                },
+                {},
+            )
+
+    @pytest.mark.parametrize("cutoff", ["", None])
+    def test_an_empty_cutoff_still_means_no_cutoff(self, create_env, cutoff):
+        """The UI's "any time" choice sends no cutoff; an empty one is the same."""
+        table, sqs, queue_url, _s3 = create_env
+        test_set_index.add_test_set(
+            {
+                "name": "New Set",
+                "filePattern": "x/*",
+                "fileCount": 1,
+                "bucketType": "input",
+                "modifiedAfter": cutoff,
+            }
+        )
+        (message,) = _queued_messages(sqs, queue_url)
+        assert "modifiedAfter" not in json.loads(message["Body"])
+        assert _row(table, "new-set")["status"] == "QUEUED"
+
+    @pytest.mark.parametrize("cutoff", _READABLE_CUTOFFS)
+    def test_a_readable_cutoff_is_queued_unchanged(self, create_env, cutoff):
+        table, sqs, queue_url, s3 = create_env
+        import idp_common.s3 as s3_module
+
+        # Written now, so after every cutoff above: the matcher reads the value
+        # and keeps the object.
+        s3.put_object(Bucket="test-set-bucket", Key="x/a.pdf", Body=b"%PDF")
+        with patch.object(s3_module, "get_s3_client", return_value=s3):
+            matched = s3_module.find_matching_files("test-set-bucket", "x/*", cutoff)
+        assert matched == ["x/a.pdf"]
+        _existing_set(table)
+        test_set_index.add_test_set(
+            {
+                "name": "New Set",
+                "filePattern": "x/*",
+                "fileCount": 1,
+                "bucketType": "input",
+                "modifiedAfter": cutoff,
+            }
+        )
+        test_set_index.add_documents_to_test_set(
+            {
+                "testSetId": "my-set",
+                "filePattern": "x/*",
+                "bucketType": "input",
+                "fileCount": 1,
+                "modifiedAfter": cutoff,
+            }
+        )
+        bodies = [json.loads(m["Body"]) for m in _queued_messages(sqs, queue_url)]
+        assert [b["modifiedAfter"] for b in bodies] == [cutoff, cutoff]
+        assert _row(table, "new-set")["status"] == "QUEUED"
+        assert _row(table)["status"] == "UPDATING"
+
+
 @pytest.mark.unit
 class TestAppendingRefusesASetThatIsNoLongerCompleted:
     """Both append paths read COMPLETED and then write UPDATING; the write is
