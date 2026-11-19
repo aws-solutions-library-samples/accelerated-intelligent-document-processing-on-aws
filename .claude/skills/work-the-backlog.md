@@ -232,7 +232,9 @@ So two rules, one for each side, and both go into every brief:
 > work is a notification you did not also put a watchdog on.
 >
 > **Before you send your final report, stop every watchdog you started** (record each
-> one's PID when you start it, then `kill <pid>`). A watchdog left running fires after
+> one's PID when you start it, then `kill <pid>`). Never kill by pattern (`pkill -f`, `kill $(pgrep -f "sleep 300")`):
+> every agent and every session on the host runs the same watchdog, and a pattern kill
+> has already terminated other agents' timers. A watchdog left running fires after
 > the work is done and sends the coordinator an empty notification each time.
 
 > **Coordinator rule.** On every heartbeat, measure each fixer's idleness as the later
