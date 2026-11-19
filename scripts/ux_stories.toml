@@ -235,6 +235,28 @@ ui_paths = [
     "src/ui/src/components/genaiidp-layout/navigation.tsx",
 ]
 
+[[stories]]
+id = "take-the-guided-tour"
+title = "Get shown around the console"
+intent = "You were just given access to this application and would like to be shown around its main areas before you start. Have the application walk you through them, all the way to the end."
+kind = "read"
+documented_steps = 2
+as = { new-analyst = "allowed", team-lead = "allowed", platform-admin = "allowed" }
+first_visit = true
+tier = "p0"
+since = "0.6.16"
+origin = "changelog"
+claims = [{ lead = "The guided tour no longer stops partway for an Author or Viewer." }]
+
+[stories.match]
+docs = ["quick-start.md#web-ui"]
+terms = ["guided tour", "side navigation"]
+ui_paths = [
+  "src/ui/src/contexts/guidedTour.tsx",
+  "src/ui/src/contexts/tourHotspots.tsx",
+  "src/ui/src/components/welcome/**",
+]
+
 # ---- p1 ----------------------------------------------------------------------------
 
 [[stories]]
