@@ -115,6 +115,12 @@ def record_confidence_unavailable(
     return issue
 
 
+def _is_content_filter_block(error: BaseException) -> bool:
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
+
+
 def degrade_section_to_no_confidence(
     document: Document,
     section_id: str,
@@ -188,6 +194,12 @@ def degrade_section_to_no_confidence(
             "failure was not retried. The root cause names the error: check the "
             "function ARN (its name must start with GENAIIDP-), the pipeline's "
             "permission to invoke it, and the function's own logs."
+        )
+    elif _is_content_filter_block(error):
+        remedy = (
+            "Amazon Bedrock's content filter withheld the confidence model's "
+            "reply, and a retry would send the same section to the same filter. "
+            "Review the section's pages, or use a different confidence model."
         )
     else:
         remedy = (

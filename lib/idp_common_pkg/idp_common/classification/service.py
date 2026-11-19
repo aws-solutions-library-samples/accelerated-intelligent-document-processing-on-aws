@@ -215,6 +215,23 @@ def _looks_like_an_image_refusal(exc: Exception) -> bool:
     )
 
 
+def _is_content_filter_block(error: BaseException) -> bool:
+    """``bedrock_utils.is_content_filter_block``, imported where it is used as the
+    other ``bedrock_utils`` matchers in this module are."""
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
+
+
+def _content_filter_detail(error: BaseException) -> str:
+    """The issue text for a classification reply a content filter withheld."""
+    return (
+        "Amazon Bedrock's content filter withheld the classification model's "
+        f"reply ({type(error).__name__}: {error}). Review the page(s), or use a "
+        "different classification model"
+    )
+
+
 def _count_image_blocks(content: Any) -> int:
     """Image blocks in a Bedrock request body, at any nesting this builder emits."""
     if isinstance(content, dict):
@@ -724,6 +741,13 @@ class ClassificationService:
         """
         if not classified_document.sections:
             logger.warning("No sections found in classified document")
+            # The sample's failures still belong to the document: returned
+            # without them, a sample whose every page failed completed with
+            # no error recorded anywhere.
+            original_document.errors.extend(classified_document.errors)
+            if classified_document.metadata:
+                original_document.metadata = original_document.metadata or {}
+                original_document.metadata.update(classified_document.metadata)
             return original_document
 
         # Get the most common classification from the limited pages
@@ -981,7 +1005,10 @@ class ClassificationService:
             page.document_boundary = str(boundary).lower()
 
     def _classify_pages_multimodal(
-        self, document: Document, forced_class: Optional[str] = None
+        self,
+        document: Document,
+        forced_class: Optional[str] = None,
+        content_filter_fails_document: bool = False,
     ) -> Document:
         """
         Classify pages using multimodal page-level classification.
@@ -1150,6 +1177,36 @@ class ClassificationService:
                                 combined_metering, page_metering
                             )
                         except Exception as e:
+                            if (
+                                _is_content_filter_block(e)
+                                and not forced_class
+                                and not content_filter_fails_document
+                            ):
+                                # Fails this page only, the way an empty page is
+                                # handled above: unclassified, an error-severity
+                                # classification_failed issue on its section, and
+                                # NOT in document.errors, which ProcessResults
+                                # fails the whole document on. Retrying the step
+                                # would send the same page to the same filter.
+                                # Not under a document-name class pin, where the
+                                # page's class is asserted and 'unclassified'
+                                # would split the asserted document around it,
+                                # nor on a page-limited sample, whose section
+                                # issues are not carried to the full document:
+                                # both keep failing the document as before.
+                                page_result = self._content_filtered_page_result(
+                                    page_id, document.pages.get(page_id), e
+                                )
+                                all_page_results.append(page_result)
+                                # The section builder writes the page's
+                                # declared fields from all_page_results.
+                                if page_id in document.pages:
+                                    setattr(
+                                        document.pages[page_id],
+                                        "metadata",
+                                        page_result.classification.metadata,
+                                    )
+                                continue
                             # Capture exception details in the document object instead of raising
                             error_msg = f"Error classifying page {page_id}: {str(e)}"
                             logger.error(error_msg)
@@ -3249,6 +3306,30 @@ class ClassificationService:
             raw_text_uri=raw_text_uri,
         )
 
+    def _content_filtered_page_result(
+        self, page_id: str, page: Any, error: BaseException
+    ) -> PageClassification:
+        """The result for a page whose classification reply a content filter withheld.
+
+        Unclassified, with the block as the error ``_record_unclassified_page_issues``
+        reports. The caller keeps it out of ``document.errors``.
+        """
+        logger.error(
+            "Content filter blocked classification of page %s; labelling it '%s' "
+            "and continuing with the rest of the document: %s",
+            page_id,
+            UNCLASSIFIED_CLASS,
+            error,
+        )
+        return self._create_unclassified_result(
+            page_id=page_id,
+            image_uri=getattr(page, "image_uri", None),
+            text_uri=getattr(page, "parsed_text_uri", None),
+            raw_text_uri=getattr(page, "raw_text_uri", None),
+            error_message=_content_filter_detail(error),
+            reason=UNCLASSIFIED_FAILED,
+        )
+
     def _record_unclassified_page_issues(
         self, document: Document, all_page_results: List[PageClassification]
     ) -> None:
@@ -3754,8 +3835,15 @@ class ClassificationService:
                 # under sectionSplitting "disabled" (see __init__), so collapsing
                 # the result into one all-pages section is what that setting asks.
                 if self.strategy == self.STRATEGY_SPLIT_THEN_CLASSIFY:
+                    # A blocked page or segment is NOT soft-failed on the sample:
+                    # _apply_limited_classification_to_all_pages rebuilds the
+                    # sections and keeps only document.errors, so an issue on the
+                    # sample would be dropped and the document complete with the
+                    # block recorded nowhere.
                     classified_limited = self.split_then_classify_document(
-                        limited_document, forced_class=forced_class
+                        limited_document,
+                        forced_class=forced_class,
+                        content_filter_fails_document=True,
                     )
                 elif self.granularity == self.GRANULARITY_PACKET:
                     logger.info(
@@ -3768,7 +3856,9 @@ class ClassificationService:
                     )
                 else:
                     classified_limited = self._classify_pages_multimodal(
-                        limited_document, forced_class=forced_class
+                        limited_document,
+                        forced_class=forced_class,
+                        content_filter_fails_document=True,
                     )
 
                 # Apply results to all pages in original document
@@ -6082,7 +6172,10 @@ class ClassificationService:
         )
 
     def split_then_classify_document(
-        self, document: Document, forced_class: Optional[str] = None
+        self,
+        document: Document,
+        forced_class: Optional[str] = None,
+        content_filter_fails_document: bool = False,
     ) -> Document:
         """Classify by finding boundaries first, then labeling each segment.
 
@@ -6197,7 +6290,11 @@ class ClassificationService:
                     segment.confidence = None
             else:
                 segments, label_metering, label_errors, label_issues = (
-                    self._classify_segments(document, segments)
+                    self._classify_segments(
+                        document,
+                        segments,
+                        content_filter_fails_document=content_filter_fails_document,
+                    )
                 )
                 document.metering = utils.merge_metering_data(
                     document.metering, label_metering
@@ -6448,7 +6545,10 @@ class ClassificationService:
         return segments, metering, errors
 
     def _classify_segments(
-        self, document: Document, segments: List[Segment]
+        self,
+        document: Document,
+        segments: List[Segment],
+        content_filter_fails_document: bool = False,
     ) -> tuple[List[Segment], Dict[str, Any], List[str], Dict[int, Dict[str, str]]]:
         """Section classification: one call per segment to decide its class.
 
@@ -6579,6 +6679,27 @@ class ClassificationService:
                     if is_transient_error(e) and not isinstance(e, DecisionModelError):
                         # Raised after the pool, so the step is retried (#2034).
                         transient.record(where, e)
+                        continue
+                    if (
+                        _is_content_filter_block(e)
+                        and not content_filter_fails_document
+                    ):
+                        # The segment is labelled unclassified with an
+                        # error-severity classification_failed issue, as a
+                        # failed call is, but the document is not failed: the
+                        # other segments' classes stand, and a retry would send
+                        # the same pages to the same filter.
+                        logger.error(
+                            "%s was withheld by a content filter; labelling the "
+                            "segment '%s': %s",
+                            where,
+                            UNCLASSIFIED_CLASS,
+                            e,
+                        )
+                        with lock:
+                            issues[index] = {
+                                "error": f"{where}: {_content_filter_detail(e)}"
+                            }
                         continue
                     error_msg = (
                         f"Section classification failed for segment {index + 1} "
