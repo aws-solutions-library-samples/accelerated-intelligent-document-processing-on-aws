@@ -519,7 +519,7 @@ def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
     model's own defaults, and writes nothing. Recording the resolution (what the
     stack deployment does) cuts r2, made by `system`, and publishes it, so a
     document submitted now runs `default`'s value, the head matches the published
-    revision, and r1 is still readable as it was.
+    revision, and r1 is still stored as it was.
     """
     from idp_common.config.configuration_manager import _stored_content_hash
 
@@ -566,8 +566,12 @@ def test_resolving_against_default_is_recorded_as_the_revision_documents_run(
         assert manager.head_matches_published(PROFILE) is True
         runs = get_config(as_model=True, version=PROFILE, revision=2)
         assert runs.summarization.enabled is False
+        # r1 is stored as it was, without the section; a document pinned to it
+        # runs it resolved against `default`, as the head is (#1955).
+        r1 = manager.get_revision(PROFILE, 1)
+        assert r1 is not None and "summarization" not in r1
         before = get_config(as_model=True, version=PROFILE, revision=1)
-        assert before.summarization.enabled is True
+        assert before.summarization.enabled is False
 
         # Recording it again changes nothing, so it cuts nothing.
         assert manager.record_resolution_against_default(PROFILE) is None

@@ -212,6 +212,22 @@ profile is chosen you can instead pin an earlier one:
 The revision picker appears only when the profile actually has history — a
 dropdown whose only entry is "Current" is noise rather than a choice.
 
+A pinned revision is read the way the profile itself is read. Every setting the
+revision holds is used as saved, an empty one included: a revision that stored an
+empty `max_tokens` still requests the model's maximum output. A setting the revision
+does not have, which is usually one a later release added, takes the current
+`default` profile's value instead of the code's built-in default, which for a prompt
+is empty. Two things follow:
+
+- The stored revision is never changed. Revision History, **Compare** and
+  `idp-cli config-download --config-revision` show it as it was saved.
+- A pinned revision reproduces every setting it holds exactly. A setting it lacks
+  follows `default`, so changing that setting in `default` changes it for documents
+  and test runs pinned to the revision too.
+
+**Restore** saves the revision as a pinned read runs it, so the restored profile
+includes the settings filled in from `default`.
+
 ### Revisions from the CLI and SDK
 
 Everything above is also reachable programmatically, which is what lets an
@@ -368,8 +384,10 @@ editor, the history and what new documents run stay the same configuration.
 Some things follow from that:
 
 - Documents submitted after the new revision use `default`'s values for the
-  filled-in settings. Documents already pinned to the earlier revision keep it, and
-  so does a Test Studio run.
+  filled-in settings. Documents and Test Studio runs already pinned to the earlier
+  revision keep it, and read it with the same fill-in
+  ([see above](#selecting-a-revision-for-processing-or-testing)), so they run the
+  same values until `default` changes again.
 - Once recorded, those values belong to the profile. A later change to the same
   settings in `default` no longer reaches it, the way it reaches a setting the
   profile still lacks. To take a later `default` value, set it on the profile
