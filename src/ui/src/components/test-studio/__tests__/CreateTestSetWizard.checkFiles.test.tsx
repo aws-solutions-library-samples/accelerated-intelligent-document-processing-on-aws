@@ -36,27 +36,39 @@ vi.mock('../useGenerateSyntheticForm', () => ({
 import CreateTestSetWizard from '../CreateTestSetWizard';
 
 /** A listBucketFiles reply the test releases by hand, so it can land after an edit. */
-const deferredListing = (): { resolve: (files: string[]) => void } => {
-  let release: (files: string[]) => void = () => undefined;
+const deferredListing = (): { resolve: (files: string[]) => void; fail: (message: string) => void } => {
+  let settle = { resolve: (_files: string[]): void => undefined, fail: (_message: string): void => undefined };
   graphql.mockImplementation(({ query }: { query: string }) => {
     if (query !== 'listBucketFiles') return Promise.resolve({ data: {} });
-    return new Promise((resolve) => {
-      release = (files) => resolve({ data: { listBucketFiles: files } });
+    return new Promise((resolve, reject) => {
+      settle = {
+        resolve: (files) => resolve({ data: { listBucketFiles: files } }),
+        fail: (message) => reject(new Error(message)),
+      };
     });
   });
-  return { resolve: (files) => release(files) };
+  return { resolve: (files) => settle.resolve(files), fail: (message) => settle.fail(message) };
 };
 
-const openPatternStep = (): void => {
+const renderWizard = (): void => {
   render(
     <IntlProvider locale="en" defaultLocale="en">
       <CreateTestSetWizard visible onDismiss={vi.fn()} onCreated={vi.fn()} generatorAvailable={false} onGenerationStarted={vi.fn()} />
     </IntlProvider>,
   );
+};
+
+/** From the source step: choose "From files in S3", go on, and enter a pattern. */
+const goToPatternStep = (): void => {
   const wrapper = createWrapper(document.body);
   act(() => wrapper.findTiles()!.findItemByValue('existing-files')!.findNativeInput().click());
   act(() => wrapper.findWizard()!.findPrimaryButton().click());
   fireEvent.change(screen.getByPlaceholderText('*.pdf'), { target: { value: 'inv-*.pdf' } });
+};
+
+const openPatternStep = (): void => {
+  renderWizard();
+  goToPatternStep();
 };
 
 const check = (): void => {
@@ -104,6 +116,51 @@ describe('Check matching files in the create wizard', () => {
     expect(screen.queryByText('2 files to add')).toBeNull();
   });
 
+  it('clears the count when the time filter changes', async () => {
+    const listing = deferredListing();
+    openPatternStep();
+    check();
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+    await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
+
+    const timeFilter = createWrapper(document.body).findWizard()!.findContent()!.findAllSelects()[2];
+    act(() => timeFilter.openDropdown());
+    act(() => timeFilter.selectOptionByValue('24'));
+
+    expect(screen.queryByText('2 files to add')).toBeNull();
+  });
+
+  it.each([
+    ['date', 'YYYY-MM-DD', '2026-11-01'],
+    ['time', '00:00:00', '12:00:00'],
+  ])('clears the count when the custom %s changes', async (_field, placeholder, value) => {
+    const listing = deferredListing();
+    openPatternStep();
+    const timeFilter = createWrapper(document.body).findWizard()!.findContent()!.findAllSelects()[2];
+    act(() => timeFilter.openDropdown());
+    act(() => timeFilter.selectOptionByValue('custom'));
+    check();
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+    await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
+
+    fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
+
+    expect(screen.queryByText('2 files to add')).toBeNull();
+    expect(screen.getByDisplayValue(value)).toBeTruthy();
+  });
+
+  it('clears a "no files matched" result when the pattern changes', async () => {
+    const listing = deferredListing();
+    openPatternStep();
+    check();
+    await act(async () => listing.resolve([]));
+    await waitFor(() => expect(screen.getByText('No files matched that pattern')).toBeTruthy());
+
+    fireEvent.change(screen.getByPlaceholderText('*.pdf'), { target: { value: 'inv-2*.pdf' } });
+
+    expect(screen.queryByText('No files matched that pattern')).toBeNull();
+  });
+
   it('discards a reply that lands after the pattern was edited', async () => {
     const listing = deferredListing();
     openPatternStep();
@@ -125,5 +182,32 @@ describe('Check matching files in the create wizard', () => {
     await act(async () => listing.resolve([]));
 
     expect(screen.queryByText(/No files matched/)).toBeNull();
+  });
+
+  it('discards a failure that lands after the pattern was edited', async () => {
+    const listing = deferredListing();
+    openPatternStep();
+    check();
+    fireEvent.change(screen.getByPlaceholderText('*.pdf'), { target: { value: 'inv-2*.pdf' } });
+
+    await act(async () => listing.fail('throttled'));
+
+    expect(screen.queryByText(/Could not check files/)).toBeNull();
+  });
+
+  it('discards a reply that lands after the wizard was cancelled', async () => {
+    const listing = deferredListing();
+    openPatternStep();
+    check();
+    act(() => createWrapper(document.body).findWizard()!.findCancelButton().click());
+
+    await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
+    // Back to the pattern step without typing, which would clear the count itself.
+    const wrapper = createWrapper(document.body);
+    act(() => wrapper.findTiles()!.findItemByValue('existing-files')!.findNativeInput().click());
+    act(() => wrapper.findWizard()!.findPrimaryButton().click());
+
+    expect(screen.getByPlaceholderText('*.pdf')).toBeTruthy();
+    expect(screen.queryByText('2 files to add')).toBeNull();
   });
 });
