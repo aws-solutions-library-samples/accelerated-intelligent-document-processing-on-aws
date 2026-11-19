@@ -741,9 +741,14 @@ def write_root_config(
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
 
     Refuses a ``main.tf`` that idp-cli did not write. On a later deploy the
-    values from the previous ``terraform.tfvars`` are kept and the new ones
-    applied over them, as a CloudFormation update keeps the parameters it is not
-    given. Returns the variable values written.
+    values the previous deploy wrote are kept and the new ones applied over them:
+    those in ``idp-cli-parameters.json``, by CloudFormation parameter name, or,
+    without that file, those in the previous ``terraform.tfvars``. Only values that
+    were passed are ever written, never the defaults in effect, so a variable that
+    was never passed takes the module's default, which after an upgrade is the new
+    module's default. That differs from a CloudFormation update, which keeps the
+    previous value of every parameter it is not given. Returns the variable values
+    written.
     """
     directory.mkdir(parents=True, exist_ok=True)
     main_tf = directory / "main.tf"

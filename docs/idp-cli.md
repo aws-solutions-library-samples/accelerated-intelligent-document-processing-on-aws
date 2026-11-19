@@ -928,21 +928,29 @@ changes something only lists the changes unless given `--apply`, and every phase
 | `plan` | Local files only: `main.tf`, `terraform.tfvars`, `adopt.tf` and `genai-idp-terraform-migration/`; runs `terraform init` | `--old-state` (the old `terraform.tfstate` or `terraform state pull` output), `--admin-email` (an existing user of exactly this name in the old pool is adopted), `--parameters`, `--terraform-module-url` (default: the region's latest module), `--terraform-bin`, `--terraform-assume-role-arn` |
 | `check-retention` | Nothing (lists every object, and every object version of a versioned bucket, in each kept bucket) | `--accept-expiry KIND` (repeatable) |
 | `freeze` | Disables the old deployment's EventBridge upload rule | `--apply`, `--wait`, `--timeout` (seconds, default 1800), `--ignore-document KEY` (repeatable) |
-| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>` |
+| `fix-config` | Backs up, then removes `LatestRevision` and `PublishedRevision` from the old `Config#` rows | `--apply`, `--restore <backup>`, `--restore-after-apply` (with `--restore`, once the first apply has run) |
 | `adopt-user-pool` | `terraform import` of the user pool, then a backed-up rewrite of its `schema` in the new state | `--apply`, `--terraform-bin` |
 | `apply` | Applies the checked adoption plan | `--apply`, `--accept-expiry KIND`, `--accept-change ADDRESS:RULE`, `--ignore-document KEY` (all repeatable), `--terraform-bin` |
-| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset | `--apply` |
+| `restore-config` | Restores, as a new revision, each kept configuration profile the first deploy replaced with the module preset. Without a `fix-config` backup in the migration directory it checks every profile in the configuration table against its revision history | `--apply` |
 | `detach` | Backs up the old state, then removes the adopted and kept resources from it | `--old-terraform-dir` (required), `--apply`, `--terraform-bin` |
 | `check-destroy` | Nothing | `--destroy-plan` (`terraform show -json` of the old deployment's `terraform plan -destroy -out=<file>`) |
 
 ```bash
 idp-cli terraform migrate-from-genai-idp-terraform plan --stack-name my-idp \
     --region us-west-2 --old-state old-idp.tfstate --admin-email admin@example.com
+# Turn off the old agent-jobs table's time-to-live at least an hour before `apply`
+# (see step 1a of the migration guide for finding the table's name):
+aws dynamodb update-time-to-live --region us-west-2 --table-name <agent jobs table> \
+    --time-to-live-specification Enabled=false,AttributeName=expiresAfter
 idp-cli terraform migrate-from-genai-idp-terraform check-retention --stack-name my-idp --region us-west-2
 idp-cli terraform migrate-from-genai-idp-terraform freeze --stack-name my-idp --region us-west-2 --apply --wait
 idp-cli terraform migrate-from-genai-idp-terraform fix-config --stack-name my-idp --region us-west-2 --apply
 idp-cli terraform migrate-from-genai-idp-terraform adopt-user-pool --stack-name my-idp --region us-west-2 --apply
-idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 --apply
+# An hour or more after the time-to-live disable; without an agent jobs table, omit
+# --accept-change:
+idp-cli terraform migrate-from-genai-idp-terraform apply --stack-name my-idp --region us-west-2 \
+    --accept-change module.idp.aws_dynamodb_table.agent_table:ttl-changed --apply
+idp-cli terraform migrate-from-genai-idp-terraform restore-config --stack-name my-idp --region us-west-2 --apply
 idp-cli terraform migrate-from-genai-idp-terraform detach --stack-name my-idp --region us-west-2 \
     --old-terraform-dir ./old-idp --apply
 idp-cli terraform migrate-from-genai-idp-terraform check-destroy --stack-name my-idp \
