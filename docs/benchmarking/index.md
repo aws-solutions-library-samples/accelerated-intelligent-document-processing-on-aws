@@ -158,12 +158,13 @@ rewrites it afterwards except where the degrade entry says so, so a
   with no `status` to fall back on. And it is live in what you measure: across
   `results/v0.6.11/`, `resolved.assessment` is `separate` on 4,192 rows against 516
   `integrated` and 257 `off`, and the skip path is the standalone one.
-- **The assessment degrade code, in two cases** —
+- **The assessment degrade code, when its write does not happen** —
   `assessment_failed_confidence_unavailable` normally *is* recorded, because after a
   deterministic assessment failure the Assessment Lambda writes the issue into the
   section's `result.json`. That write is best effort, and it is not made when the
-  result already holds the pass's scores, so in those two cases the degrade is on
-  the tracking record only.
+  result already holds the pass's scores, so in those cases the degrade is on the
+  tracking record only. (It is also not made when the section has no readable
+  result, but then there is nothing here to read either.)
 - **`rule_validation` and `postprocessing`** — smaller, because these accompany a
   document the harness already records as failed, so what is lost is the reason
   rather than the event.
@@ -173,8 +174,8 @@ the S3 copy of everything earlier, it is another large attribute fetched per run
 it is deleted with its stack while the S3 artifacts outlive it. So the boundary is
 declared and closed: universe-closure tests over the declared stage constants and
 over the codes `assessment/degradation.py` declares, plus computed checks that the
-module's only S3 write is the one that carries a degrade issue into `result.json`
-and that only the degrade path feeds it, so a third such stage or code — or the
+module reaches an S3 write only from the function that carries a degrade issue into
+`result.json` and that the only caller of that function hands it the degrade issue, so a third such stage or code — or the
 boundary ceasing to be true — fails a test rather than going quietly unread.
 
 Scoring is **resolver-free** — it reads S3 output and DynamoDB metering directly, so it

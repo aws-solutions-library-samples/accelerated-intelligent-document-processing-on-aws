@@ -415,70 +415,79 @@ def test_the_degradation_codes_are_partitioned_across_the_two_sets():
     assert partition <= CODES
 
 
-def _s3_write_calls(tree):
-    """``(innermost enclosing function, marker)`` for every S3 write call in ``tree``.
+def _references(tree, names):
+    """``(innermost enclosing function, name)`` for every REFERENCE to one of
+    ``names`` in ``tree``: a bare name, an attribute, or a string literal (the
+    ``getattr(s3, "write_content")`` spelling). References rather than calls, so an
+    alias (``put = s3.write_content``) is found where it is taken, not missed where
+    it is called. Definitions and import statements are not references.
 
-    A call at module scope is reported with the enclosing name ``None``.
+    What this cannot see is a name assembled at run time (``"write_" + "content"``);
+    nothing that reads source can, and that is the residual these checks carry.
     """
     found = []
 
     def visit(node, enclosing):
         for child in ast.iter_child_nodes(node):
-            inner = (
-                child.name
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-                else enclosing
-            )
-            if isinstance(child, ast.Call):
-                name = getattr(child.func, "attr", None) or getattr(
-                    child.func, "id", None
-                )
-                if name and f"{name}(" in S3_WRITE_MARKERS:
-                    found.append((enclosing, name))
+            if isinstance(child, (ast.Import, ast.ImportFrom)):
+                continue
+            inner = enclosing
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                inner = child.name
+            hit = None
+            if isinstance(child, ast.Name):
+                hit = child.id
+            elif isinstance(child, ast.Attribute):
+                hit = child.attr
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                hit = child.value
+            if hit in names:
+                found.append((enclosing, hit))
             visit(child, inner)
 
     visit(tree, None)
     return found
 
 
-def test_the_premise_behind_that_boundary_is_computed_not_asserted():
-    """The partition holds *because* ``degradation.py`` writes to S3 in exactly one
-    place, the function that carries a degrade issue into result.json. That is
-    computable, so it is computed: a write anywhere else in the module could carry the
-    skip code too, and this entry would then under-report.
+S3_WRITE_NAMES = {m.rstrip("(") for m in S3_WRITE_MARKERS}
 
-    Two probes, so neither is vacuous: the raw-text marker scan must agree with the
-    AST walk (a write the walk missed would show up as a marker it cannot place), and
-    the same walk must find a write in a module that definitely has one.
+
+def test_the_premise_behind_that_boundary_is_computed_not_asserted():
+    """The partition holds *because* ``degradation.py`` reaches an S3 write from
+    exactly one function, the one that carries a degrade issue into result.json. That
+    is computable, so it is computed: a write reachable from anywhere else in the
+    module could carry the skip code too, and this entry would then under-report.
+
+    Non-vacuous twice over: the module must have such a reference at all, and the same
+    walk must find one in a module that definitely writes.
     """
     source = (IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8")
-    writes = _s3_write_calls(ast.parse(source))
+    writes = _references(ast.parse(source), S3_WRITE_NAMES)
     assert writes, (
         "degradation.py has no S3 write, so the degrade code cannot reach result.json"
     )
     assert {fn for fn, _ in writes} == {"record_no_confidence_in_result"}, (
-        f"assessment/degradation.py writes to S3 from {sorted(set(writes))}. A write "
-        "outside record_no_confidence_in_result may carry the skip code into result.json, "
-        "so re-check CODES_EXCLUDED_FROM_RESULT_JSON, the recorder's docstring and "
-        "docs/benchmarking/index.md."
+        f"assessment/degradation.py reaches an S3 write from {sorted(set(writes))}. A "
+        "write outside record_no_confidence_in_result may carry the skip code into "
+        "result.json, so re-check CODES_EXCLUDED_FROM_RESULT_JSON, the recorder's "
+        "docstring and docs/benchmarking/index.md."
     )
-    textual = sum(source.count(m) for m in S3_WRITE_MARKERS)
-    assert textual == len(writes), (
-        f"{textual} write markers in the text against {len(writes)} calls the AST walk "
-        "placed, so a write is reachable some way the walk does not see"
-    )
-    assert _s3_write_calls(
-        ast.parse((IDP_COMMON / "extraction" / "service.py").read_text("utf-8"))
+    assert _references(
+        ast.parse((IDP_COMMON / "extraction" / "service.py").read_text("utf-8")),
+        S3_WRITE_NAMES,
     ), (
-        "S3_WRITE_MARKERS matches nothing even where a write exists, so the check above is vacuous"
+        "the write names match nothing even where a write exists, so the check above is vacuous"
     )
 
 
 def test_only_the_degrade_handler_feeds_that_write():
-    """The other half of the write's premise: which issues reach it. The only
-    production caller must be the Assessment Lambda's degrade branch, and the skip
-    path in ``assessment/service.py`` must not call it, or the skip code would reach
-    the file through the same function."""
+    """The other half of the write's premise: which issues reach it. Across every
+    tracked production module, ``degradation.py`` included, there must be exactly one
+    reference to ``record_no_confidence_in_result`` (definitions and imports aside):
+    the Assessment Lambda's call, whose issue argument is the one
+    ``degrade_section_to_no_confidence`` just built. A second caller anywhere, the
+    skip path calling it from inside ``degradation.py``, or the handler passing some
+    other issue, fails here."""
     import subprocess
 
     repo = IDP_COMMON.parents[2]
@@ -489,24 +498,51 @@ def test_only_the_degrade_handler_feeds_that_write():
         text=True,
         check=True,
     ).stdout.split()
-    callers = sorted(
-        f
-        for f in files
-        if "/tests/" not in f
-        and not f.startswith(("tests/", "benchmarks/"))
-        and not f.endswith("assessment/degradation.py")
-        and "record_no_confidence_in_result(" in (repo / f).read_text("utf-8")
+    target = "record_no_confidence_in_result"
+    sites = []
+    for f in files:
+        if "/tests/" in f or f.startswith(("tests/", "benchmarks/")):
+            continue
+        text = (repo / f).read_text("utf-8")
+        if target not in text:
+            continue
+        sites += [(f, fn) for fn, _ in _references(ast.parse(text), {target})]
+    assert len(sites) == 1, sites
+    ((path, function),) = sites
+    assert path == "patterns/unified/src/assessment_function/index.py", sites
+
+    # The issue it is handed: the call's second argument is a bare name, and the
+    # nearest assignment to that name before the call, in the same function, is the
+    # degrade's return value.
+    tree = ast.parse((repo / path).read_text("utf-8"))
+    (handler,) = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function
+    ]
+    (call,) = [
+        n
+        for n in ast.walk(handler)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == target
+    ]
+    assert len(call.args) == 2 and isinstance(call.args[1], ast.Name), ast.dump(call)
+    passed = call.args[1].id
+    assignments = sorted(
+        (
+            (n.lineno, n.value)
+            for n in ast.walk(handler)
+            if isinstance(n, ast.Assign)
+            and n.lineno < call.lineno
+            and any(isinstance(t, ast.Name) and t.id == passed for t in n.targets)
+        ),
+        key=lambda pair: pair[0],
     )
-    assert callers == ["patterns/unified/src/assessment_function/index.py"], callers
-    handler = (repo / callers[0]).read_text("utf-8")
-    # The issue it passes is the one the degrade built, in the same branch.
-    degrade = handler.index("degrade_section_to_no_confidence(updated_document")
-    record = handler.index("record_no_confidence_in_result(", degrade)
-    assert "skip_section_no_confidence" not in handler[degrade:record]
-    assert "issue = degrade_section_to_no_confidence(" in handler[degrade - 40 : record]
-    assert "record_no_confidence_in_result" not in (
-        IDP_COMMON / "assessment" / "service.py"
-    ).read_text("utf-8")
+    assert assignments, f"{passed} is never assigned before the call"
+    _, value = assignments[-1]
+    assert (
+        isinstance(value, ast.Call)
+        and getattr(value.func, "id", None) == "degrade_section_to_no_confidence"
+    ), f"the issue handed to {target} comes from {ast.unparse(value)}"
 
 
 def test_the_degrade_code_reaches_the_recorder_through_the_real_writer(monkeypatch):

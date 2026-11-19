@@ -903,8 +903,9 @@ def score_processing_issues(sections):
       *is* read here in the ordinary case: after a deterministic assessment failure
       the Assessment Lambda calls ``record_no_confidence_in_result``, which merges
       the issue into this file. That write is best effort and is not made when the
-      result already holds the pass's scores, so a ``0`` is not proof that no
-      degrade fired either.
+      result already holds the pass's scores (nor when the section has no readable
+      result, in which case there is nothing here to read), so a ``0`` is not proof
+      that no degrade fired either.
     * ``rule_validation`` and ``postprocessing``, recorded through
       ``document_failure.record_section_failure`` from the handlers in
       ``patterns/unified/src/``. Smaller, because these accompany a document the
