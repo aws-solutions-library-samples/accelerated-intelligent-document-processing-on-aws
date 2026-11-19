@@ -655,6 +655,68 @@ class TestClassConfidenceBlockIsCounted:
         assert isinstance(outcome, Document) and "section_classification" in stages
         assert _validate(user) == []
 
+    def test_an_empty_section_prompt_is_judged_as_the_shipped_one_both_sides(self):
+        """An empty stage prompt is sent as the shipped prompt, which carries one
+        placeholder, so the block's makes two on both sides."""
+        user = _stc_user()
+        user["classification"]["split_then_classify"]["section_classification"] = {
+            "llm": {
+                "task_prompt": "",
+                "confidence": {"mode": "topk", "task_prompt_topk": self._BLOCK},
+            }
+        }
+        outcome, _, stages = _run_merged_classification(user)
+        assert isinstance(outcome, DocumentImagePlaceholderError)
+        assert "section_classification" not in stages
+        errors = _validate(user)
+        assert len(errors) == 1, errors
+        assert "section_classification" in errors[0]
+
+    def test_an_empty_packet_prompt_is_judged_as_the_shipped_one_both_sides(self):
+        user = {
+            "classes": [_class("invoice"), _class("receipt")],
+            "classification": {
+                "combined": {
+                    "granularity": "packet",
+                    "packet": {"task_prompt": ""},
+                    "llm": {
+                        "confidence": {
+                            "mode": "topk",
+                            "task_prompt_topk_packet": self._BLOCK,
+                        }
+                    },
+                }
+            },
+        }
+        _, document, stages = _run_merged_classification(user)
+        assert stages == []
+        assert "classification packet task prompt" in " ".join(document.errors)
+        errors = _validate(user)
+        assert len(errors) == 1, errors
+        assert errors[0].startswith("classification.combined.packet.task_prompt: ")
+
+    def test_an_empty_combined_page_prompt_gets_no_shipped_stand_in(self):
+        """The combined page prompt has no shipped fallback: the service refuses it
+        as missing, so the placeholder rule is not judged on a prompt never sent."""
+        user = _combined_user("", self._BLOCK)
+        _, document, stages = _run_merged_classification(user)
+        assert stages == []
+        assert "No task_prompt found" in " ".join(document.errors)
+        assert _validate(user) == []
+
+    def test_an_appended_placeholder_and_the_blocks_are_both_counted(self):
+        """``modality.images: true`` appends a placeholder to a prompt without one
+        BEFORE the block is spliced in, so the block's placeholder is a second one
+        and both sides refuse. Splicing first would put the images at the block's
+        placeholder instead and accept the prompt."""
+        user = _combined_user(_PAGE, self._BLOCK)
+        user["classification"]["combined"]["llm"]["modality"] = {"images": True}
+        _, document, stages = _run_merged_classification(user)
+        assert stages == []
+        assert "classification page task prompt" in " ".join(document.errors)
+        errors = _validate(user)
+        assert len(errors) == 1 and "found 2 occurrences" in errors[0], errors
+
     def test_mode_off_splices_no_block_so_nothing_is_counted(self):
         user = _combined_user(_CLASSIFICATION_PROMPTS["once"][0], self._BLOCK, "off")
         outcome, _, stages = _run_merged_classification(user)

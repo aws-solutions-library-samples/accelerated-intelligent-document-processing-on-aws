@@ -256,6 +256,22 @@ def compose_class_confidence_prompt(
     return composed
 
 
+def shipped_classification_prompt(*path: str) -> str:
+    """One prompt from the shipped ``classification`` defaults, by path, or ``""``.
+
+    What the service sends for a stage prompt left empty (``_stage_prompt``), so
+    ``validate_config`` reads the same text for one.
+    """
+    node: Any = ClassificationService._shipped_classification_defaults()
+    for key in path:
+        if not isinstance(node, dict):
+            return ""
+        node = node.get(key)
+    # The shipped defaults carry their contract as prompt comments, and this
+    # read bypasses the runtime config reader that removes them elsewhere.
+    return strip_prompt_comments(node) if isinstance(node, str) else ""
+
+
 def classification_task_prompt_as_sent(
     task_prompt: str, classification: Any, stage: str, num_classes: int
 ) -> str:
@@ -1817,14 +1833,7 @@ class ClassificationService:
         to this service directly, a revision pinned to pre-upgrade content, and a
         field cleared to empty by hand.
         """
-        node: Any = self._shipped_classification_defaults()
-        for key in path:
-            if not isinstance(node, dict):
-                return ""
-            node = node.get(key)
-        # The shipped defaults carry their contract as prompt comments, and this
-        # read bypasses the runtime config reader that removes them elsewhere.
-        return strip_prompt_comments(node) if isinstance(node, str) else ""
+        return shipped_classification_prompt(*path)
 
     # ── Which block a call reads its settings from ──────────────────────────
     # Config format 0.9 nests every setting inside the call that uses it. These
@@ -2024,7 +2033,7 @@ class ClassificationService:
 
     @staticmethod
     def _strip_placeholder(template: str, placeholder: str, element: str) -> str:
-        """Remove ``placeholder``, and its wrapping ``<element>`` if that is all it held."""
+        """Remove every ``placeholder``; see ``strip_placeholder``."""
         return strip_placeholder(template, placeholder, element)
 
     def _prepare_prompt_from_template(

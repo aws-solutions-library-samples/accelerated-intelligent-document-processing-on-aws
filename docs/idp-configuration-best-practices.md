@@ -1309,6 +1309,9 @@ each step that reads the prompt:
   attached either, and the agent is given no `view_image` tool.
 - **The confidence pass** (`extraction.confidence.task_prompt`) sends the text
   alone. Removing the placeholder is the documented way to make it text-only.
+  This applies to the LLM method only: `extraction.confidence.method:
+  decision_model` sends no task prompt, and its own `decision_model.input` setting
+  decides what it receives.
 - **Classification** infers each call's `modality.images` from its task prompt, so
   the call sends the text alone. Setting that call's `modality.images: true` is the
   exception: it appends a wrapped placeholder to the end of the prompt, so the

@@ -1729,7 +1729,9 @@ def _validate_document_image_placeholders(
       block it splices in are counted exactly as the service counts them. The
       section-classification prompt is skipped when the decision model labels
       every section (``section_prompt_can_be_sent``), because it is then never
-      sent.
+      sent. An empty prompt is judged as the shipped one the service sends in its
+      place (``shipped_classification_prompt``), except the combined page prompt,
+      which has no such fallback.
     - extraction: the prompt ``select_extraction_task_prompt`` chooses, both with
       and without integrated confidence (a Simple section on a class with list
       fields falls back to the plain prompt), and each class's
@@ -1740,6 +1742,7 @@ def _validate_document_image_placeholders(
         STAGE_SECTION_CLASSIFICATION,
         STAGE_SPLITTING,
         classification_task_prompt_as_sent,
+        shipped_classification_prompt,
     )
     from idp_common.config import without_prompt_comments
     from idp_common.config.schema_constants import (
@@ -1771,6 +1774,10 @@ def _validate_document_image_placeholders(
             stage = STAGE_SPLITTING
         else:
             stage = STAGE_CLASSIFICATION
+        if not prompt and not path.startswith("classification.combined.page."):
+            # An empty stage prompt is sent as the shipped one (``_stage_prompt``);
+            # only the combined page prompt has no fallback.
+            prompt = shipped_classification_prompt(*path.split(".")[1:])
         if prompt:
             # What the service builds from the prompt before sending it.
             prompt = classification_task_prompt_as_sent(
