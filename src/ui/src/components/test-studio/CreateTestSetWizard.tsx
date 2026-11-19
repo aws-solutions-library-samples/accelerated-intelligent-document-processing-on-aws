@@ -40,6 +40,7 @@ import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
 import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
 import { createLatestResponseGuard } from './latestResponseOnly';
+import { modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -188,14 +189,7 @@ const CreateTestSetWizard = ({
     onDismiss();
   };
 
-  const getModifiedAfter = (): string | undefined => {
-    if (!timeFilter.value) return undefined;
-    if (timeFilter.value === 'custom') {
-      return customDate ? new Date(`${customDate}T${customTime}`).toISOString() : undefined;
-    }
-    const hours = parseInt(timeFilter.value, 10);
-    return new Date(Date.now() - hours * 3600 * 1000).toISOString();
-  };
+  const getModifiedAfter = (): string | undefined => resolveModifiedAfter(timeFilter.value, customDate, customTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim()) {
@@ -552,7 +546,7 @@ const CreateTestSetWizard = ({
                   placeholder="YYYY-MM-DD"
                 />
               </FormField>
-              <FormField label="Time">
+              <FormField label="Time" constraintText={intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}>
                 <Input
                   value={customTime}
                   onChange={({ detail }) => {

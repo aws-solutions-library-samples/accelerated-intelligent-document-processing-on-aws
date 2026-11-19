@@ -2051,6 +2051,10 @@
     "defaultMessage": "The saved grouping could not be re-read. Choose Refresh to load it.",
     "description": "Why Edit Page Grouping is unavailable: re-reading the sections after a page grouping was saved failed. Refresh is a button on the same page."
   },
+  "testStudio.modifiedAfter.customTimeIsUtc": {
+    "defaultMessage": "Date and time are in UTC.",
+    "description": "Help text beside the custom date and time of the \"Modified after\" filter when picking files for a test set: the entered date and time are read as UTC, not as the browser's local time."
+  },
   "testStudio.patternPreview.alreadyInSet": {
     "defaultMessage": "{count, number} already in the set",
     "description": "Part of the Check Files result: matching files the set already holds, which the add leaves as they are."
