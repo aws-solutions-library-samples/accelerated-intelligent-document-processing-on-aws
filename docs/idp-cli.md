@@ -2819,6 +2819,15 @@ Nothing is printed when the stack has no revision history. A save that changes
 nothing records no new revision, so the number printed is then the revision
 already current — which is still the correct one to pin.
 
+**Warnings:** when validation runs (the default), the command prints the same
+warnings [`config-validate`](#config-validate) reports for the file, under a
+`Warnings:` heading: for example an unread key, with the field it was probably
+meant to be, or a class whose prompt is too short for prompt caching to engage.
+They are non-fatal. The configuration is stored and the exit code stays 0. When
+validation refuses the upload, the warnings are printed beside the error,
+because an unread key is often the reason a value did not take. With
+`--no-validate`, nothing is checked and no warnings are printed. Both commands print each warning exactly as written, so a key or value containing square brackets is shown verbatim.
+
 ---
 
 ### `config-list`

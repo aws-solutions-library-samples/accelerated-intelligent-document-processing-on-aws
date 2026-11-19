@@ -118,3 +118,52 @@ def test_a_condition_can_require_the_item_to_exist(client):
 
     assert excinfo.value.error_code == "ConditionalCheckFailedException"
     assert client.get_item({"PK": "doc#absent"}) is None
+
+
+def test_a_failed_condition_can_return_the_item_it_saw(client):
+    """``ALL_OLD`` puts the refused item on the error, in plain Python values.
+
+    That is the state the condition was decided on. A read after the failure can
+    already see a newer one, so a message built from it can contradict the refusal.
+    The resource API leaves this ``Item`` in wire format, which is why the value
+    types are asserted rather than only the keys.
+    """
+    client.put_item({"PK": "doc#1", "Version": 3, "Status": "COPYING"})
+
+    with pytest.raises(DynamoDBError) as excinfo:
+        client.update_item(
+            key={"PK": "doc#1"},
+            update_expression="SET Body = :b",
+            expression_attribute_values={":b": "ours", ":seen": 1},
+            condition_expression="Version = :seen",
+            return_values_on_condition_check_failure="ALL_OLD",
+        )
+
+    assert excinfo.value.error_code == "ConditionalCheckFailedException"
+    assert excinfo.value.item == {"PK": "doc#1", "Version": 3, "Status": "COPYING"}
+    assert isinstance(excinfo.value.item["Status"], str)
+
+
+def test_a_failed_condition_returns_no_item_unless_asked_or_absent(client):
+    """No ``item`` without the option, and none when there was no item to see."""
+    client.put_item({"PK": "doc#1", "Version": 3})
+
+    with pytest.raises(DynamoDBError) as not_asked:
+        client.update_item(
+            key={"PK": "doc#1"},
+            update_expression="SET Body = :b",
+            expression_attribute_values={":b": "ours", ":seen": 1},
+            condition_expression="Version = :seen",
+        )
+    with pytest.raises(DynamoDBError) as absent:
+        client.update_item(
+            key={"PK": "doc#absent"},
+            update_expression="SET Body = :b",
+            expression_attribute_values={":b": "ours"},
+            condition_expression="attribute_exists(PK)",
+            return_values_on_condition_check_failure="ALL_OLD",
+        )
+
+    assert not_asked.value.item is None
+    assert absent.value.error_code == "ConditionalCheckFailedException"
+    assert absent.value.item is None

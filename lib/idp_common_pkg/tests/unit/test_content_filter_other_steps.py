@@ -254,8 +254,9 @@ class TestClassificationByPage:
 
     @pytest.mark.parametrize(("limit", "page"), [(2, "2"), (1, "1")])
     def test_a_page_limited_sample_still_fails_the_document(self, bedrock, limit, page):
-        """The sample's section issues are not carried to the full document, so a
-        soft failure there would complete it with the block recorded nowhere."""
+        """The sample's class is extrapolated to every page, so a soft failure
+        on a sample of one page would complete the whole document 'unclassified'
+        with no error: the block fails the document."""
         result = _classify_by_page(
             bedrock,
             page,

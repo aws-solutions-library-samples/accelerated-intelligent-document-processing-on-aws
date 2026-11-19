@@ -20,6 +20,7 @@
 
 import { act, render, screen } from '@testing-library/react';
 import React from 'react';
+import { IntlProvider } from 'react-intl';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -163,9 +164,11 @@ const poll = async (polls: number): Promise<void> => {
 
 const mountAndPoll = async (polls: number): Promise<void> => {
   render(
-    <MemoryRouter>
-      <TestSets />
-    </MemoryRouter>,
+    <IntlProvider locale="en" defaultLocale="en">
+      <MemoryRouter>
+        <TestSets />
+      </MemoryRouter>
+    </IntlProvider>,
   );
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
