@@ -303,7 +303,9 @@ class ProcessingIssue:
             ``"extraction_class_not_configured"`` (the section's class is absent
             from the configuration, so there was no schema to extract against),
             ``"extraction_failed"`` (the section's extraction step RAISED — see
-            ``idp_common.extraction.failure``),
+            ``idp_common.extraction.failure`` — or a content filter withheld its
+            model reply, in which case the section has an empty result and the
+            document still completes),
             ``"rule_validation_failed"`` (the section's rule validation raised, so
             it has no compliance verdict),
             ``"rule_validation_not_consolidated"`` (the section was validated but

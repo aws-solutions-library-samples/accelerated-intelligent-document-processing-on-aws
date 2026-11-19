@@ -2110,6 +2110,96 @@ class ExtractionService:
         )
         return document
 
+    def _handle_content_filtered(
+        self,
+        document: Document,
+        section: Any,
+        section_info: SectionInfo,
+        section_id: str,
+        t0: float,
+        error: BaseException,
+    ) -> Document:
+        """Fail one section whose model reply was withheld by a content filter.
+
+        A content-filter block is a verdict on THIS section's content (the
+        agentic path has already regenerated the reply and been refused; the
+        Simple path's client does not retry it), and the other sections'
+        content is unaffected. Raising here failed
+        the ProcessSections Map, and with it the whole document, although every
+        other section extracted normally (#2038).
+
+        So the section is completed the way ``_handle_empty_schema`` completes a
+        section whose class is not configured: an empty result is written with
+        ``metadata.content_filtered`` set, and the section carries an
+        error-severity ``extraction_failed`` issue naming the reason. The section
+        then has no data rather than wrong data, the issue is what the Sections
+        panel renders as Failed, and the rest of the document completes.
+        ``document.errors`` is deliberately not appended to: the collate step fails
+        the whole document on any entry there, which is the outcome this replaces.
+        """
+        from idp_common.extraction.failure import (
+            EXTRACTION_FAILED_CODE,
+            EXTRACTION_STAGE,
+        )
+        from idp_common.models import ProcessingIssue
+
+        class_label = section_info.class_label
+        issue = ProcessingIssue(
+            stage=EXTRACTION_STAGE,
+            severity="error",
+            code=EXTRACTION_FAILED_CODE,
+            message=(
+                "No fields were extracted from this section: Amazon Bedrock's "
+                "content filter withheld the model's reply. "
+                "The rest of the document was processed normally."
+            ),
+            root_cause=(
+                f"{type(error).__name__}: {error}. The block applies to this "
+                f"section's content (class '{class_label}', pages "
+                f"{section_info.start_page}-{section_info.end_page}). Review the "
+                "pages, or reprocess the document with a different extraction "
+                "model."
+            ),
+            section_id=section_id,
+        )
+        logger.error(
+            "Content filter blocked extraction for section %s (class %s); "
+            "recording %s on the section and continuing with the rest of the "
+            "document: %s",
+            section_id,
+            class_label,
+            issue.code,
+            error,
+        )
+        # Replace only this stage's issues, as _save_results and
+        # _handle_empty_schema do: the result they described has been replaced by
+        # the empty one below, and other stages' issues must survive.
+        section.processing_issues = [
+            pi
+            for pi in (section.processing_issues or [])
+            if getattr(pi, "stage", None) != EXTRACTION_STAGE
+        ] + [issue]
+
+        output = {
+            "document_class": {"type": class_label},
+            "split_document": {"page_indices": section_info.page_indices},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": False,
+                "content_filtered": True,
+                "extraction_time_seconds": time.time() - t0,
+                "processing_issues": [pi.to_dict() for pi in section.processing_issues],
+            },
+        }
+        s3.write_content(
+            output,
+            section_info.output_bucket,
+            section_info.output_key,
+            content_type="application/json",
+        )
+        section.extraction_result_uri = section_info.output_uri
+        return document
+
     def _build_extraction_content(
         self,
         document: Document,
@@ -8463,10 +8553,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     document.metering, failed_run_metering
                 )
             from idp_common.utils.bedrock_utils import (
+                is_content_filter_block,
                 is_image_request_rejection,
                 is_input_token_overflow,
             )
 
+            if is_content_filter_block(e):
+                # Fails this section only and returns, so the other sections and
+                # the document complete (#2038). Ahead of the two matchers below
+                # so neither can absorb it; its wording matches neither today.
+                return self._handle_content_filtered(
+                    document, section, section_info, section_id, t0, e
+                )
             if is_image_request_rejection(e):
                 # Checked FIRST so the image case can never be absorbed by the
                 # overflow branch as Bedrock's wording evolves: the two families

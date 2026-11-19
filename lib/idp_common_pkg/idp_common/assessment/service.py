@@ -147,6 +147,19 @@ def _extraction_class_not_configured(extraction_data: Dict[str, Any]) -> bool:
     return metadata.get(EMPTY_SCHEMA_REASON_KEY) == EMPTY_SCHEMA_CLASS_NOT_CONFIGURED
 
 
+def _extraction_content_filtered(extraction_data: Dict[str, Any]) -> bool:
+    """True when extraction recorded that a content filter withheld its reply.
+
+    Written by ``ExtractionService._handle_content_filtered`` (#2038). The empty
+    result is then the filter's doing, not an extraction call that returned no
+    fields, and the section already carries the extraction-stage issue saying so.
+    """
+    if not isinstance(extraction_data, dict):
+        return False
+    metadata = extraction_data.get("metadata") or {}
+    return isinstance(metadata, dict) and metadata.get("content_filtered") is True
+
+
 def _safe_float_conversion(value: Any, default: float = 0.0) -> float:
     """
     Safely convert a value to float, handling strings, None and non-finite values.
@@ -1681,6 +1694,20 @@ class AssessmentService:
                             "the document under the current one. The section also "
                             "carries the extraction_class_not_configured issue from "
                             "the Extraction step."
+                        ),
+                    )
+                    return document
+
+                if _extraction_content_filtered(extraction_data):
+                    skip_section_no_confidence(
+                        document,
+                        section_id,
+                        "Amazon Bedrock's content filter withheld the extraction "
+                        "model's reply for this section, so extraction produced no "
+                        "fields and there were no values to assess.",
+                        remedy=(
+                            "See the extraction_failed issue from the Extraction "
+                            "step, which names the block and the remedy."
                         ),
                     )
                     return document
