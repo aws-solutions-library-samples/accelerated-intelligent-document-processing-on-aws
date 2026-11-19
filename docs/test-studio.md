@@ -622,7 +622,11 @@ documents and is immediately usable as a destination for any of the sources unde
 Every source shares three optional fields:
 
 - **Name** — letters, numbers, spaces, hyphens and underscores (max 50). Becomes
-  the test set id.
+  the test set id, lowercased with spaces replaced by hyphens, so `My Set` and
+  `my-set` are the same id. Uploading, starting from bucket files and starting
+  empty all refuse a name whose id is already taken rather than replacing that
+  set; to grow an existing set, use
+  [Adding Documents](#adding-documents-to-existing-test-sets).
 - **Description** — max 500 characters.
 - **Document classification type** — metadata describing the mix of documents:
   *Unspecified* (default), *Single Class*, *Multi Class*, or *Packet Splitting*
