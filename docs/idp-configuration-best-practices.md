@@ -1318,7 +1318,9 @@ task_prompt: |
   
   Respond with valid JSON containing the extracted values.
 ```
-Images are inserted exactly where `{DOCUMENT_IMAGE}` appears in the prompt.
+Images are inserted exactly where `{DOCUMENT_IMAGE}` appears in the prompt. Use it
+once: extraction, classification and the confidence pass all refuse a prompt that
+contains it more than once, with `found N occurrences, but exactly 1 is required`.
 
 #### Usage Examples
 

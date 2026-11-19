@@ -703,15 +703,13 @@ class AssessmentService:
         Returns:
             List of content items with text and image content properly ordered
         """
-        from idp_common.extraction.prompt_assembly import (
+        from idp_common.document_image_placeholder import (
             DOCUMENT_IMAGE_PLACEHOLDER,
-            document_image_placeholder_error,
+            check_document_image_placeholder,
         )
 
         # The rule validate_config applies to the same prompt.
-        placeholder_error = document_image_placeholder_error(prompt_template)
-        if placeholder_error:
-            raise ValueError(placeholder_error)
+        check_document_image_placeholder(prompt_template)
 
         # Split the prompt at the DOCUMENT_IMAGE placeholder
         parts = prompt_template.split(DOCUMENT_IMAGE_PLACEHOLDER)

@@ -66,6 +66,11 @@ from idp_common.config.schema_constants import (
 )
 from idp_common.config.schema_utils import deref_schema
 from idp_common.decision_model import DecisionModelError
+from idp_common.document_image_placeholder import (
+    check_document_image_placeholder,
+    section_prompt_can_be_sent,
+    strip_placeholder,
+)
 from idp_common.models import Document, ProcessingIssue, Section, Status
 from idp_common.prompt_comments import strip_prompt_comments
 from idp_common.utils import (
@@ -1988,17 +1993,7 @@ class ClassificationService:
     @staticmethod
     def _strip_placeholder(template: str, placeholder: str, element: str) -> str:
         """Remove ``placeholder``, and its wrapping ``<element>`` if that is all it held."""
-        import re
-
-        wrapped = re.compile(
-            rf"[ \t]*<{re.escape(element)}>\s*{re.escape(placeholder)}\s*"
-            rf"</{re.escape(element)}>[ \t]*\n?",
-            re.IGNORECASE,
-        )
-        stripped, count = wrapped.subn("", template)
-        if count:
-            return stripped
-        return template.replace(placeholder, "")
+        return strip_placeholder(template, placeholder, element)
 
     def _prepare_prompt_from_template(
         self,
@@ -2176,20 +2171,8 @@ class ClassificationService:
         # Check if DOCUMENT_IMAGE placeholder is present
         if "{DOCUMENT_IMAGE}" in prompt_template:
             # Split the prompt at the DOCUMENT_IMAGE placeholder
+            # The caller checked the whole template: at most one placeholder.
             parts = prompt_template.split("{DOCUMENT_IMAGE}")
-
-            if len(parts) != 2:
-                logger.warning(
-                    "Invalid DOCUMENT_IMAGE placeholder usage, falling back to standard processing"
-                )
-                # Fallback to standard processing
-                return self._build_content_without_image_placeholder(
-                    prompt_template,
-                    document_text,
-                    class_names_and_descriptions,
-                    image_content,
-                    stage=stage,
-                )
 
             substitutions = self._build_classification_substitutions(
                 document_text, class_names_and_descriptions, stage=stage
@@ -2357,6 +2340,17 @@ class ClassificationService:
 
         return content
 
+    @staticmethod
+    def _check_image_placeholder(
+        template: str, stage: str, *, packet: bool = False
+    ) -> None:
+        """Refuse a template that repeats ``{DOCUMENT_IMAGE}``, naming its call."""
+        call = {
+            STAGE_SPLITTING: "splitting",
+            STAGE_SECTION_CLASSIFICATION: "section classification",
+        }.get(stage, "packet" if packet else "page")
+        check_document_image_placeholder(template, f"classification {call} task prompt")
+
     def _build_content(
         self,
         task_prompt_template: str,
@@ -2386,6 +2380,11 @@ class ClassificationService:
         Returns:
             List of content items with text and image content properly ordered
         """
+        # A repeated {DOCUMENT_IMAGE} is refused on the whole template: the
+        # few-shot split below renders each side separately and would attach the
+        # image once per side.
+        self._check_image_placeholder(task_prompt_template, stage)
+
         # Split the task prompt at the FEW_SHOT_EXAMPLES placeholder
         parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
 
@@ -2472,6 +2471,7 @@ class ClassificationService:
         ``contextPagesCount > 0``, and only the splitting call withholds the
         vocabulary.
         """
+        self._check_image_placeholder(task_prompt_template, stage)
         parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
 
         if len(parts) != 2:
@@ -2541,30 +2541,8 @@ class ClassificationService:
             )
             return [{"text": rendered}] if rendered.strip() else []
 
+        # The caller checked the whole template: at most one placeholder.
         image_parts = prompt_segment.split("{DOCUMENT_IMAGE}")
-        if len(image_parts) != 2:
-            logger.warning(
-                "Invalid DOCUMENT_IMAGE placeholder usage in the context-pages "
-                "prompt (%d occurrences); appending images after the text instead "
-                "of at the placeholder.",
-                len(image_parts) - 1,
-            )
-            rendered = self._prepare_prompt_from_template(
-                prompt_segment.replace("{DOCUMENT_IMAGE}", ""),
-                substitutions,
-                required_placeholders=[],
-            )
-            content: List[Dict[str, Any]] = (
-                [{"text": rendered}] if rendered.strip() else []
-            )
-            content.extend(
-                self._build_images_with_context(
-                    current_image=image_content,
-                    before_images=before_images,
-                    after_images=after_images,
-                )
-            )
-            return content
 
         before_image = self._prepare_prompt_from_template(
             image_parts[0], substitutions, required_placeholders=[]
@@ -5144,6 +5122,7 @@ class ClassificationService:
         so ``stage`` is what decides whether the class vocabulary and the
         examples render.
         """
+        self._check_image_placeholder(task_prompt_template, stage, packet=True)
         parts = task_prompt_template.split("{FEW_SHOT_EXAMPLES}")
 
         if len(parts) != 2:
@@ -5198,24 +5177,8 @@ class ClassificationService:
             )
             return [{"text": rendered}] if rendered.strip() else []
 
+        # The caller checked the whole template: at most one placeholder.
         image_parts = prompt_segment.split("{DOCUMENT_IMAGE}")
-        if len(image_parts) != 2:
-            logger.warning(
-                "Invalid DOCUMENT_IMAGE placeholder usage in the packet prompt "
-                "(%d occurrences); appending page images after the text instead "
-                "of at the placeholder.",
-                len(image_parts) - 1,
-            )
-            rendered = self._prepare_prompt_from_template(
-                prompt_segment.replace("{DOCUMENT_IMAGE}", ""),
-                substitutions,
-                required_placeholders=[],
-            )
-            content: List[Dict[str, Any]] = (
-                [{"text": rendered}] if rendered.strip() else []
-            )
-            content.extend(self._packet_image_blocks(page_images))
-            return content
 
         before_images = self._prepare_prompt_from_template(
             image_parts[0], substitutions, required_placeholders=[]
@@ -6526,6 +6489,16 @@ class ClassificationService:
             if section_cfg.method == "decision_model"
             else None
         )
+        # Checked once, before the pool: a refusal inside a segment's call would be
+        # recorded as that segment's failure and the document would carry on with
+        # every section unclassified. Only when the prompt can be sent: the
+        # decision-model method calls the LLM only for ``on_low_confidence: llm``.
+        if section_prompt_can_be_sent(
+            section_cfg.method, section_cfg.low_confidence.on_low_confidence
+        ):
+            self._check_image_placeholder(
+                config["task_prompt"], self.STAGE_SECTION_CLASSIFICATION
+            )
 
         metering: Dict[str, Any] = {}
         errors: List[str] = []

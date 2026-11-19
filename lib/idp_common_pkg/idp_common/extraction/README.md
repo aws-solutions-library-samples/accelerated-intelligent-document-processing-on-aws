@@ -242,6 +242,12 @@ render the section empty (no content items added). A config that supplies its
 **own** extraction `task_prompt` must include the placeholder itself — exactly
 once, since `_build_prompt_content` splits on it and ignores it otherwise.
 
+`{DOCUMENT_IMAGE}` may appear at most once too, but a repeat is refused rather than
+ignored: `_build_prompt_content` raises `DocumentImagePlaceholderError` (the shared
+rule in `idp_common/document_image_placeholder.py`) for the whole template, before
+the few-shot split, and `_build_extraction_content` lets it out instead of falling
+back to the default prompt as it does for other formatting errors.
+
 Example fields are read under either the `x-aws-idp-*` names or the legacy
 camelCase names (`x-aws-idp-class-prompt` / `x-aws-idp-attributes-prompt` / `x-aws-idp-image-path`). Unreadable
 example images log a warning and the example is sent as text-only rather than

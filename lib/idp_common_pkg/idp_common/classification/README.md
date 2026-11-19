@@ -74,6 +74,17 @@ its wrapping element when that element held nothing else, or appends a wrapped
 placeholder when the prompt has none. Both directions are logged with the
 call's path.
 
+`{DOCUMENT_IMAGE}` may appear at most once in a prompt. The three content builders
+(`_build_content`, `_build_context_content`, `_build_packet_content`) refuse a
+repeat with `DocumentImagePlaceholderError` before splitting on
+`{FEW_SHOT_EXAMPLES}`, so one placeholder either side of the examples counts as
+two. Section classification checks its prompt once, in `_classify_segments`,
+before the per-segment calls, because a refusal inside one of them would be
+recorded as that segment's failure and the document would carry on unclassified.
+The rule is `check_document_image_placeholder` in
+`idp_common/document_image_placeholder.py`, shared with extraction, the confidence
+pass and `validate_config`.
+
 A model that does not accept images refuses the request without naming the
 setting that sent them, so `_invoke_bedrock_model` appends a sentence naming the
 call's `modality.images` path, the image count and the model

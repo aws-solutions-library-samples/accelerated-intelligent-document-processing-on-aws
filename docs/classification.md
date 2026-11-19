@@ -1821,6 +1821,17 @@ classification:
 ```
 Images are inserted exactly where `{DOCUMENT_IMAGE}` appears in the prompt.
 
+Use the placeholder once. A classification prompt that contains it more than once
+(counting both sides of `{FEW_SHOT_EXAMPLES}`) is refused: every page or packet
+call fails with `found N occurrences, but exactly 1 is required`, and
+`idp-cli config-validate` reports the prompt before it is used. This applies to the
+page, context-pages and packet prompts and to both calls of split-then-classify; a
+repeat in the section-classification prompt fails the document before any section
+is labelled, except under `method: decision_model` with an `on_low_confidence` other
+than `llm`, where that prompt is never sent. `modality.images: false` removes the placeholder wrapped in
+`<document-image>` tags, or every placeholder when none is wrapped, so a bare
+repeat beside a wrapped one is still sent and still refused.
+
 ### Usage Examples
 
 **Image Before Text Analysis:**

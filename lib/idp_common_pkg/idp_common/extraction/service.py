@@ -39,6 +39,10 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
 from idp_common.decision_model import function_name
+from idp_common.document_image_placeholder import (
+    DocumentImagePlaceholderError,
+    check_document_image_placeholder,
+)
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -548,6 +552,11 @@ class ExtractionService:
         if "<<CACHEPOINT>>" in prompt_template:
             self._pending_cache_marker_seen = True
 
+        # A repeated {DOCUMENT_IMAGE} is refused, as the confidence pass refuses
+        # it. Checked on the whole template, before the few-shot split renders
+        # each side separately.
+        check_document_image_placeholder(prompt_template, "extraction task prompt")
+
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
             parts = prompt_template.split("{FEW_SHOT_EXAMPLES}")
@@ -592,29 +601,27 @@ class ExtractionService:
 
         # Handle DOCUMENT_IMAGE placeholder
         if "{DOCUMENT_IMAGE}" in prompt_template:
+            # The caller checked the whole template: at most one placeholder.
             parts = prompt_template.split("{DOCUMENT_IMAGE}")
-            if len(parts) == 2:
-                # Add text before image
-                before_text = self._prepare_prompt_from_template(
-                    parts[0], self._substitutions, required_placeholders=[]
-                )
-                if before_text.strip():
-                    content.append({"text": before_text})
+            # Add text before image
+            before_text = self._prepare_prompt_from_template(
+                parts[0], self._substitutions, required_placeholders=[]
+            )
+            if before_text.strip():
+                content.append({"text": before_text})
 
-                # Add images
-                if image_content:
-                    content.extend(self._prepare_image_attachments(image_content))
+            # Add images
+            if image_content:
+                content.extend(self._prepare_image_attachments(image_content))
 
-                # Add text after image
-                after_text = self._prepare_prompt_from_template(
-                    parts[1], self._substitutions, required_placeholders=[]
-                )
-                if after_text.strip():
-                    content.append({"text": after_text})
+            # Add text after image
+            after_text = self._prepare_prompt_from_template(
+                parts[1], self._substitutions, required_placeholders=[]
+            )
+            if after_text.strip():
+                content.append({"text": after_text})
 
-                return content
-            else:
-                logger.warning("Invalid DOCUMENT_IMAGE placeholder usage")
+            return content
 
         # No image placeholder, just text
         task_prompt = self._prepare_prompt_from_template(
@@ -2219,6 +2226,10 @@ class ExtractionService:
             else:
                 try:
                     content = self._build_prompt_content(prompt_template, page_images)
+                except DocumentImagePlaceholderError:
+                    # The configured prompt is wrong for every document; sending
+                    # the default prompt instead would hide that.
+                    raise
                 except ValueError as e:
                     logger.warning(
                         f"Error formatting prompt template: {str(e)}. Using default prompt."
