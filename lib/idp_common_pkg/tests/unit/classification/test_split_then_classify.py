@@ -172,6 +172,7 @@ def _service(
     cfg.update(classification)
     return ClassificationService(
         region="us-west-2",
+        max_workers=1,
         config={
             "classes": _classes(
                 *(classes or ["invoice", "receipt"]), examples=few_shot_examples
@@ -213,6 +214,10 @@ class _Router:
     The stage is on the config dict rather than inferred from the prompt,
     because that is exactly what the production code routes on — the metering
     context, the model and the prompts all come from it.
+
+    Section labels go out in the order the sections ask, so ``_service`` builds
+    the service with one worker: with several, the sections are labelled
+    concurrently and which section asks first is a matter of thread timing.
     """
 
     def __init__(
