@@ -131,11 +131,14 @@ def test_shipped_defaults_reach_the_request() -> None:
     carried topP 0.1 and no temperature.
     """
     default = EvaluationLLMMethodConfig()
-    assert default.top_p == 0.0 and default.max_tokens is None
+    # 10000 keeps Nova 2 Lite (64,000 output tokens) at the request it made
+    # before its limit was recorded (#2048).
+    assert default.top_p == 0.0 and default.max_tokens == 10000
+    assert get_model_max_output_tokens(_NOVA) > default.max_tokens
     (request,) = _converse_requests_through_stickler(_shipped_llm_method())
     assert request["inferenceConfig"] == {
         "temperature": default.temperature,
-        "maxTokens": get_model_max_output_tokens(_NOVA),
+        "maxTokens": 10000,
     }
     # The shipped model has no effort control, so the shipped `medium` adds
     # nothing to the request: only Nova's own topK.
@@ -176,11 +179,15 @@ def test_no_effort_is_sent_for_a_model_without_an_effort_control(model: str) -> 
 def test_unset_numeric_settings_take_the_llm_method_defaults(
     blank: Optional[str],
 ) -> None:
-    """`max_tokens: ""` is what base-evaluation.yaml ships for "use the model max"."""
+    """A blank sampling setting takes the llm_method default.
+
+    `max_tokens` is the exception: blank means "unset", which the client turns
+    into the model's maximum, as the config model and every other step read it.
+    """
     default = EvaluationLLMMethodConfig()
     built = LLMComparator(top_p=blank, max_tokens=blank, temperature=blank, top_k=blank)
     assert built.llm_config["top_p"] == default.top_p
-    assert built.llm_config["max_tokens"] == default.max_tokens
+    assert built.llm_config["max_tokens"] is None
     assert built.llm_config["temperature"] == default.temperature
     assert built.llm_config["top_k"] == default.top_k
     assert LLMComparator(reasoning_effort=blank).llm_config["reasoning_effort"] == (
@@ -193,6 +200,31 @@ def test_string_values_are_converted() -> None:
     assert built.llm_config["top_p"] == 0.4
     assert built.llm_config["max_tokens"] == 321
     assert built.llm_config["reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize(
+    ("stored", "sent"),
+    [(None, 10000), ("", None), ("2048", 2048)],
+    ids=["absent", "empty", "explicit"],
+)
+def test_resolved_profile_max_tokens_reaches_the_request(
+    stored: Optional[str], sent: Optional[int]
+) -> None:
+    """A resolved `evaluation.llm_method` reaches Bedrock with its own max_tokens.
+
+    The comparator receives the profile through `model_dump()`, which turns an
+    explicit `max_tokens: ""` into `None`. Reading that `None` as "take the
+    default" made an empty setting mean 10000 here and the model's maximum in
+    classification and OCR (#2048).
+    """
+    raw: Dict[str, Any] = {} if stored is None else {"max_tokens": stored}
+    dumped = EvaluationLLMMethodConfig(**raw).model_dump()
+    (request,) = _converse_requests_through_stickler(
+        {**_shipped_llm_method(), "max_tokens": dumped["max_tokens"]}
+    )
+    expected = get_model_max_output_tokens(_NOVA) if sent is None else sent
+    assert request["inferenceConfig"]["maxTokens"] == expected
+    assert get_model_max_output_tokens(_NOVA) == 64000
 
 
 @pytest.mark.parametrize(
@@ -258,7 +290,9 @@ def test_compare_llm_parameter_fallbacks_read_the_shared_defaults(
     assert call["temperature"] == 0.11
     assert call["top_k"] == 13.0
     assert call["top_p"] == 0.22
-    assert call["max_tokens"] == 333
+    # An absent max_tokens takes the default; a present None is "unset" (the
+    # model's maximum), which is what model_dump() makes of `max_tokens: ""`.
+    assert call["max_tokens"] == (333 if not llm_config else None)
     assert call["reasoning_effort"] == "xhigh"
 
 

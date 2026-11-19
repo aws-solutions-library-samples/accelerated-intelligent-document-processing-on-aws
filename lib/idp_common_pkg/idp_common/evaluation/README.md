@@ -497,8 +497,11 @@ applies to evaluation on GPT-5.x. Every stored profile holds the field's default
 because the full model dump is stored, so an evaluation on an effort-capable
 model sends `medium` unless the profile sets another value. A setting that is
 absent, `None` or, for the numeric ones and `reasoning_effort`, an empty string
-takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
-requests the model's maximum output. An **empty** `system_prompt` or
+takes the `EvaluationLLMMethodConfig` default. `max_tokens` is the exception: an
+absent one takes the default (10000), while `None` or an empty string requests the
+model's maximum output, as it does for classification and OCR. The two have to be
+kept apart because the service hands the comparator the profile's `model_dump()`,
+which turns an explicit `max_tokens: ""` into `None`. An **empty** `system_prompt` or
 `task_prompt` is refused rather than sent, as summarization and
 classification's combined page prompt refuse one (these prompts have always
 shipped, so an empty one is a broken configuration rather than an old stored
@@ -508,8 +511,9 @@ Stickler model is built, `EvaluationService` records the **whole section** as
 failed (`failure_type: schema_configuration_error`, score 0), its non-`LLM`
 fields included. `compare_llm` called directly returns `(False, 0.0, <reason>)`
 without calling Bedrock. For `compare_llm` itself only an absent or `None`
-setting takes the default; an empty string is passed to the client, which
-treats an empty `top_p`, `max_tokens` or `reasoning_effort` as unset.
+setting takes the default (for `max_tokens`, only an absent one); an empty string
+is passed to the client, which treats an empty `top_p` or `reasoning_effort` as
+unset.
 
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are

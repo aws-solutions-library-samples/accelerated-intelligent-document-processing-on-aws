@@ -29,7 +29,11 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Dict, Optional, Tuple
 
-from idp_common.config.models import EvaluationLLMMethodConfig, regional_field_default
+from idp_common.config.models import (
+    EvaluationLLMMethodConfig,
+    _parse_optional_max_tokens,
+    regional_field_default,
+)
 from idp_common.evaluation.contract import _is_match_true
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,26 @@ _DEFAULT_TOP_K: float = _LLM_METHOD_FIELDS["top_k"].default
 _DEFAULT_TOP_P: float = _LLM_METHOD_FIELDS["top_p"].default
 _DEFAULT_MAX_TOKENS: Optional[int] = _LLM_METHOD_FIELDS["max_tokens"].default
 _DEFAULT_REASONING_EFFORT: str = _LLM_METHOD_FIELDS["reasoning_effort"].default
+
+#: Stands for "no max_tokens was given", which is not the same as an empty one.
+_NO_MAX_TOKENS_ARG: Any = object()
+
+
+def _resolve_max_tokens(value: Any) -> Optional[int]:
+    """``max_tokens`` as the comparison call sends it.
+
+    An absent setting takes the ``evaluation.llm_method`` default (10000). A
+    setting that is present but ``None``, empty or 0 means "unset", which the
+    Bedrock client turns into the model's maximum output, exactly as the config
+    model and the classification and OCR calls read it. The two must stay apart:
+    a resolved configuration reaches this module through ``model_dump()``, which
+    turns an explicit ``max_tokens: ""`` into ``None``, so substituting the
+    default for ``None`` would make an empty setting mean 10000 here and the
+    model's maximum everywhere else.
+    """
+    if value is _NO_MAX_TOKENS_ARG:
+        return _DEFAULT_MAX_TOKENS
+    return _parse_optional_max_tokens(value)
 
 
 def _refuse_empty_prompts(system_prompt: Any, task_prompt: Any) -> None:
@@ -212,7 +236,7 @@ class LLMComparator(BaseComparator):
         temperature: Optional[float] = None,
         top_k: Optional[int] = None,
         top_p: Optional[float] = None,
-        max_tokens: Optional[int] = None,
+        max_tokens: Any = _NO_MAX_TOKENS_ARG,
         reasoning_effort: Optional[str] = None,
         system_prompt: Optional[str] = None,
         task_prompt: Optional[str] = None,
@@ -237,7 +261,8 @@ class LLMComparator(BaseComparator):
             temperature: Temperature for LLM generation (0.0-1.0)
             top_k: Top-k sampling parameter
             top_p: Top-p (nucleus) sampling parameter
-            max_tokens: Maximum tokens for LLM response. ``None`` (or an empty
+            max_tokens: Maximum tokens for LLM response. Not given, it takes the
+                ``evaluation.llm_method`` default (10000); ``None`` (or an empty
                 string) requests the model's maximum output, as everywhere else.
             reasoning_effort: Reasoning effort, forwarded to the Bedrock client,
                 which sends it only to a model with an effort control and drops
@@ -274,17 +299,12 @@ class LLMComparator(BaseComparator):
                 return default
             return float(val) if isinstance(val, str) else val
 
-        def to_int(val, default):
-            if val is None or val == "":
-                return default
-            return int(val) if isinstance(val, str) else val
-
         self.llm_config = {
             "model": model or regional_field_default(_DEFAULT_MODEL),
             "temperature": to_float(temperature, _DEFAULT_TEMPERATURE),
             "top_k": to_float(top_k, _DEFAULT_TOP_K),
             "top_p": to_float(top_p, _DEFAULT_TOP_P),
-            "max_tokens": to_int(max_tokens, _DEFAULT_MAX_TOKENS),
+            "max_tokens": _resolve_max_tokens(max_tokens),
             "reasoning_effort": (
                 str(reasoning_effort)
                 if reasoning_effort not in (None, "")
@@ -450,7 +470,7 @@ def create_llm_comparator_from_config(config: dict) -> LLMComparator:
         temperature=config.get("temperature"),
         top_k=config.get("top_k"),
         top_p=config.get("top_p"),
-        max_tokens=config.get("max_tokens"),
+        max_tokens=config.get("max_tokens", _NO_MAX_TOKENS_ARG),
         reasoning_effort=config.get("reasoning_effort"),
         system_prompt=config.get("system_prompt"),
         task_prompt=config.get("task_prompt"),
@@ -510,7 +530,7 @@ def compare_llm(
         temperature = setting("temperature", _DEFAULT_TEMPERATURE)
         top_k = setting("top_k", _DEFAULT_TOP_K)
         top_p = setting("top_p", _DEFAULT_TOP_P)
-        max_tokens = setting("max_tokens", _DEFAULT_MAX_TOKENS)
+        max_tokens = _resolve_max_tokens(config.get("max_tokens", _NO_MAX_TOKENS_ARG))
         # The client sends it only to a model with an effort control.
         reasoning_effort = setting("reasoning_effort", _DEFAULT_REASONING_EFFORT)
 
