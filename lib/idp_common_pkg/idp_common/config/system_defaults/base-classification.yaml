@@ -19,10 +19,9 @@ classification:
   # confident. Normally one of the configured classes, or the built-in
   # 'unclassified'.
   #
-  # NOT validated against the class list: any string is accepted and stored as
-  # written, and `validate_config` reports no error and no warning for a name no
-  # class declares. Sections then carry that name downstream, where nothing
-  # matches it. Check the spelling yourself against `classes`.
+  # Any other string is accepted and stored as written, and a page given it has no
+  # extraction schema; `validate_config` (idp-cli config-validate) warns when the
+  # name matches no class's x-aws-idp-document-type, but does not reject it.
   fallback_class: unclassified
   # ── strategy: combined ────────────────────────────────────────────────
   # Each prompt below starts with a {# ... #} comment stating its contract; comments
