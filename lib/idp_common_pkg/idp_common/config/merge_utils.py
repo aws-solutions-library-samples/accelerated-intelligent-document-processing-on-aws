@@ -1976,7 +1976,6 @@ def _validate_fallback_class(validated: Any, result: Dict[str, Any]) -> None:
     from difflib import get_close_matches
 
     from idp_common.config.migration import is_legacy_format, migrate_legacy_to_schema
-
     from idp_common.config.schema_constants import (
         UNCLASSIFIED_CLASS,
         X_AWS_IDP_DOCUMENT_TYPE,
