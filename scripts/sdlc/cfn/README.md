@@ -10,8 +10,13 @@ SPDX-License-Identifier: MIT-0
 ## Installation
 * Install the `s3-Sourcecode.yml` cloudformation template.
 * Install the `credential-vendor.yml` cloudformation template.
-    * Enter the gitlab group name (e.g. `genaiic-reusable-assets/engagement-artifacts`)
-    * Enter the gitlap project name (e.g. `genaiic-idp-accelerator`)
+    * Enter the gitlab group name (e.g. `proserve/genaiid/reusable-assets`)
+    * Enter the gitlab project name (e.g. `idp-accelerator`)
+    * The trust policy names the code.aws.dev runner fleet's jump role
+      (`SecondGitLabJumpRoleArn`, default `arn:aws:iam::352364310414:role/prod_jump_role`).
+      The live stack (`genaiic-sdlc-credential-vendor`) still also trusts the old
+      gitlab.aws.dev project through `GitLabGroupName`/`GitLabProjectName` until that
+      trust is removed after the migration.
     * Enter the bucket name created in the last step (e.g. `genaiic-sdlc-source-code-YOUR_AWS_ACCOUNT-YOUR_REGION`)
     * The stack creates two roles: `idp-sdlc-GitLab` for the integration tests and
       the UX test jobs, and the Bedrock-only `idp-sdlc-GitLabReview` for the

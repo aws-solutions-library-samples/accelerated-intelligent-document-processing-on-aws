@@ -1931,7 +1931,7 @@ ai-mr-review-dry: ## Same, but write reviews to ai-reviews/ instead of posting t
 	@$(PYTHON) scripts/sdlc/ai_mr_review.py \
 		$(if $(MR),--mr $(MR),--all-open) --dry-run $(EXTRA_ARGS)
 
-# For a laptop: gitlab.aws.dev's REST API sits behind an authenticating proxy
+# For a laptop: code.aws.dev's REST API sits behind an authenticating proxy
 # that redirects every request to federated sign-in, so a PRIVATE-TOKEN alone
 # cannot reach it from here. This form takes the MR head from git over SSH
 # instead — no token, always a dry run, and no MR description/comments/CI status.

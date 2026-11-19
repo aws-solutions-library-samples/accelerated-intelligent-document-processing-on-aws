@@ -2189,7 +2189,7 @@ SCOPING THE AWS CREDENTIAL
         "--api-url",
         default="",
         help="API base URL. Defaults per --forge: $CI_API_V4_URL or "
-        "https://gitlab.aws.dev/api/v4 for gitlab, $GITHUB_API_URL or "
+        "https://code.aws.dev/api/v4 for gitlab, $GITHUB_API_URL or "
         "https://api.github.com for github",
     )
     parser.add_argument(
@@ -2273,7 +2273,7 @@ SCOPING THE AWS CREDENTIAL
         args.api_url = (
             os.environ.get("GITHUB_API_URL") or "https://api.github.com"
             if args.platform is GITHUB
-            else os.environ.get("CI_API_V4_URL") or "https://gitlab.aws.dev/api/v4"
+            else os.environ.get("CI_API_V4_URL") or "https://code.aws.dev/api/v4"
         )
     return args
 
