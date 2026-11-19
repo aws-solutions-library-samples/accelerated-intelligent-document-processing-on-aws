@@ -16,6 +16,7 @@ import {
   Box,
   Button,
   ColumnLayout,
+  DatePicker,
   ExpandableSection,
   FileUpload,
   FormField,
@@ -27,6 +28,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Tiles,
+  TimeInput,
   Wizard,
 } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
@@ -550,13 +552,14 @@ const CreateTestSetWizard = ({
                 label="Date"
                 errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'date' ? invalidCustomDateTimeText : undefined}
               >
-                <Input
+                <DatePicker
                   value={customDate}
                   onChange={({ detail }) => {
                     setCustomDate(detail.value);
                     clearCheck();
                   }}
-                  placeholder="YYYY-MM-DD"
+                  placeholder="YYYY/MM/DD"
+                  openCalendarAriaLabel={(selectedDate) => `Choose date${selectedDate ? `, selected date is ${selectedDate}` : ''}`}
                 />
               </FormField>
               <FormField
@@ -564,13 +567,14 @@ const CreateTestSetWizard = ({
                 constraintText={intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}
                 errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'time' ? invalidCustomDateTimeText : undefined}
               >
-                <Input
+                <TimeInput
                   value={customTime}
                   onChange={({ detail }) => {
                     setCustomTime(detail.value);
                     clearCheck();
                   }}
-                  placeholder="00:00:00"
+                  format="hh:mm:ss"
+                  placeholder="HH:mm:ss"
                 />
               </FormField>
             </ColumnLayout>
