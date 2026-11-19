@@ -32,6 +32,9 @@ SYNTHESIS_RUNTIME_ARN = os.environ.get("SYNTHESIS_RUNTIME_ARN")
 CONFIGURATION_TABLE_NAME = os.environ.get("CONFIGURATION_TABLE_NAME")
 BOOTSTRAP_TRACKING_TABLE = os.environ.get("BOOTSTRAP_TRACKING_TABLE")
 HOST_TRACKING_TABLE = os.environ.get("HOST_TRACKING_TABLE")
+#: The host record attribute naming the job a new set was claimed for. Written by
+#: the feature API's ``_reserve_test_set``; the two must stay equal.
+CLAIM_ATTRIBUTE = "generatorJobId"
 
 _ddb = boto3.resource("dynamodb")
 
@@ -117,7 +120,7 @@ def _status(
 
 
 def _register_test_set(
-    test_set_id, status, test_set_name=None, document_class_type=None
+    test_set_id, status, test_set_name=None, document_class_type=None, claim_job=None
 ):
     """Register/refresh the host test-set record without clobbering an existing
     set (getTestSets reads ItemType='testset' records).
@@ -125,9 +128,15 @@ def _register_test_set(
     Uses update_item and if_not_exists for name/createdAt/description so appending
     to an existing test set preserves its metadata; only status/id (and, for a
     new set, the defaults) are written by the generator.
+
+    ``claim_job`` is set for a new set the feature API claimed for this job: the
+    write is then conditional on the record still carrying that job's claim, in
+    GENERATING, and False is returned when it does not. A redelivered job must not take over a set
+    created under the same id after its own record was deleted. True otherwise,
+    including when the best-effort write fails for another reason.
     """
     if not (HOST_TRACKING_TABLE and test_set_id):
-        return
+        return True
     import datetime
 
     now = (
@@ -169,15 +178,82 @@ def _register_test_set(
         names["#dct"] = "documentClassType"
         values[":dct"] = document_class_type
         set_clauses.append("#dct = if_not_exists(#dct, :dct)")
+    condition = {}
+    if claim_job:
+        names["#claim"] = CLAIM_ATTRIBUTE
+        values[":claim"] = claim_job
+        values[":generating"] = "GENERATING"
+        # GENERATING too: a duplicate delivery after the set completed, or a late
+        # retry after the host reaper failed the claim, must not generate again.
+        condition["ConditionExpression"] = "#claim = :claim AND #status = :generating"
     try:
         _ddb.Table(HOST_TRACKING_TABLE).update_item(
             Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
             UpdateExpression="SET " + ", ".join(set_clauses),
             ExpressionAttributeNames=names,
             ExpressionAttributeValues=values,
+            **condition,
         )
     except Exception as exc:  # noqa: BLE001 — best-effort
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+        if claim_job and code == "ConditionalCheckFailedException":
+            return False
         logger.warning("Could not register test set %s: %s", test_set_id, exc)
+    return True
+
+
+def _release_reserved_test_set(body, error):
+    """Fail the host record the feature API created for a new set, if still GENERATING.
+
+    The API claims a new set's id by writing its record before it enqueues the job
+    (``_reserve_test_set``), so a job that ends without starting the generator would
+    otherwise leave that record GENERATING, with no documents, until the host's
+    reaper ages it out hours later — and until then the name can be neither reused
+    nor deleted. Only for a set claimed for this job (``claimed``, not ``append``):
+    an existing set's record is not this job's to fail. Conditional on GENERATING
+    and on the record still carrying this job's claim, so a status anything else
+    wrote since, or a set created under the id since, is kept. Called only for an
+    exit SQS does not retry; see ``handler``. Best-effort, like the other host
+    writes here.
+    """
+    test_set_id = body.get("testSetId")
+    job_id = body.get("jobId")
+    if body.get("append") or not body.get("claimed"):
+        return
+    if not (HOST_TRACKING_TABLE and test_set_id and job_id):
+        return
+    import datetime
+
+    now = (
+        datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    )
+    try:
+        _ddb.Table(HOST_TRACKING_TABLE).update_item(
+            Key={"PK": f"testset#{test_set_id}", "SK": "metadata"},
+            UpdateExpression="SET #s = :failed, #e = :error, #u = :now",
+            ConditionExpression="#s = :generating AND #claim = :claim",
+            ExpressionAttributeNames={
+                "#s": "status",
+                "#e": "error",
+                "#u": "statusUpdatedAt",
+                "#claim": CLAIM_ATTRIBUTE,
+            },
+            ExpressionAttributeValues={
+                ":failed": "FAILED",
+                ":generating": "GENERATING",
+                ":error": error,
+                ":now": now,
+                ":claim": job_id,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("Could not release test set %s: %s", test_set_id, exc)
+
+
+_NOT_GENERATED = (
+    "The generation job ended before any documents were generated; its status in "
+    "Test Set Generator says why."
+)
 
 
 def handler(event, context):
@@ -189,17 +265,25 @@ def handler(event, context):
         try:
             body = json.loads(record["body"])
             job_id = body.get("jobId")
-            _process_job(job_id, body)
+            invoked = _process_job(job_id, body)
         except Exception as e:
             logger.error("Error processing bootstrap job: %s", e, exc_info=True)
             batch_item_failures.append({"itemIdentifier": record["messageId"]})
             if job_id:
                 _status(job_id, "FAILED", error=str(e))
+            # Not released: SQS redelivers this message, and the claim is what the
+            # retry generates into. A job that never succeeds leaves its claim
+            # GENERATING until the host reaper ages it out.
+            continue
+        if not invoked:
+            # Finished without generating and not retried, so the claim is unused.
+            _release_reserved_test_set(body, _NOT_GENERATED)
 
     return {"batchItemFailures": batch_item_failures}
 
 
 def _process_job(job_id, body):
+    """Run one job. True when the generator runtime was invoked, else False."""
     # The processor reads/writes config versions in the HOST's Configuration
     # DynamoDB table (gzip-compressed Binary storage format). That storage
     # contract lives in idp_common.config.ConfigurationManager, which this image
@@ -241,7 +325,7 @@ def _process_job(job_id, body):
                 error=f"Class '{request.class_name}' not found in version "
                 f"'{request.config_version}'",
             )
-            return
+            return False
         schema = schema_bridge.config_class_to_generator_schema(target)
         tier = "existing-config"
     else:
@@ -267,7 +351,7 @@ def _process_job(job_id, body):
                     f"configuration. (tier={tier})"
                 ),
             )
-            return
+            return False
 
     target_version = request.target_version or bootstrap_mod._default_version_name(
         schema
@@ -291,7 +375,7 @@ def _process_job(job_id, body):
             message="Config version created (no generation requested)",
             config_version=target_version,
         )
-        return
+        return False
 
     if not SYNTHESIS_RUNTIME_ARN:
         _status(
@@ -303,7 +387,7 @@ def _process_job(job_id, body):
             ),
             config_version=target_version,
         )
-        return
+        return False
 
     # The test set is a distinct identity from the config version: the config
     # version records the class schema, the test set holds the generated docs.
@@ -314,7 +398,19 @@ def _process_job(job_id, body):
 
     schema_prefix = f"bootstrap/{job_id}/schema/"
     _stage_schema_dir(schema, schema_prefix)
-    _register_test_set(test_set_id, "GENERATING", test_set_name=test_set_name)
+    claim_job = job_id if body.get("claimed") and not append else None
+    if not _register_test_set(
+        test_set_id, "GENERATING", test_set_name=test_set_name, claim_job=claim_job
+    ):
+        _status(
+            job_id,
+            "FAILED",
+            error=(
+                f"Test set '{test_set_id}' was deleted, replaced or already finished "
+                "before generation started; nothing was generated into it."
+            ),
+        )
+        return False
     _status(
         job_id,
         "IN_PROGRESS",
@@ -345,6 +441,7 @@ def _process_job(job_id, body):
         contentType="application/json",
         payload=json.dumps(payload).encode("utf-8"),
     )
+    return True
 
 
 def _stage_schema_dir(schema, prefix):
