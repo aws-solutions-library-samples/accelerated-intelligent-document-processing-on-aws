@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" class="viz" width="792" height="446" viewBox="0 0 792 446" role="img"><title>Claude Haiku 5.5: A 10-page window costs 60% less on long packets, and gets at least as many sections right</title><desc>Long packets, 38–40 packets × 3 runs: 20 pages (default) 62% at $103 classification cost per 1,000 packets, 10 pages 67% at $39.0 classification cost per 1,000 packets, 15 pages 60% at $35.7 classification cost per 1,000 packets, 40 pages 59% at $124 classification cost per 1,000 packets; Baseline setup: Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction, and confidence scoring, all on Claude Haiku 5.5, with no escalation to a second scoring model.</desc><style>
+  .viz { --series: #2a78d6; --ring: #ffffff; --ink: #0b0b0b; --ink-2: #52514e;
+         --muted: #898781; --grid: #e1e0d9; --axis: #c3c2b7;
+         --fam-nova: #2a78d6; --fam-claude: #eb6834; --fam-other: #1baf7a; }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) .viz, svg.viz:root { --series: #3987e5;
+      --ring: #17181c; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+      --grid: #2c2c2a; --axis: #383835;
+      --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  }
+  :root[data-theme="dark"] .viz { --series: #3987e5; --ring: #17181c; --ink: #f0efec;
+    --ink-2: #c3c2b7; --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --fam-nova: #3987e5; --fam-claude: #d95926; --fam-other: #199e70; }
+  .viz { max-width: 100%; height: auto; }
+  text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .viz .ctitle { font-size: 15px; font-weight: 600; fill: var(--ink); }
+  .panel { font-size: 13px; font-weight: 600; fill: var(--ink); }
+  .sub { font-size: 12px; fill: var(--muted); }
+  .viz .lead { font-size: 12px; fill: var(--ink); }
+  .label { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel { font-size: 12px; fill: var(--ink-2); }
+  .viz .plabel.dflt, .viz .plabel .dflt { fill: var(--ink); font-weight: 700; }
+  .viz .dot.ref { stroke: var(--ink); stroke-width: 1.5; }
+  .tick { font-size: 11px; fill: var(--muted); font-variant-numeric: tabular-nums; }
+  .none { font-size: 12px; fill: var(--muted); }
+  .grid { stroke: var(--grid); stroke-width: 1; }
+  .axis { stroke: var(--ink-2); stroke-width: 1; }
+  .viz .gap { fill: var(--ring); }
+  .viz .leader { stroke: var(--muted); stroke-width: 1; }
+  .band { fill: var(--series); opacity: 0.12; }
+  .dot { fill: var(--series); stroke: var(--ring); stroke-width: 2; }
+  .axislabel { font-size: 12px; fill: var(--ink-2); }
+  .prices { font-size: 10px; fill: var(--muted); }
+  .num { font-size: 11px; font-weight: 700; fill: var(--ink); }
+  .halo { paint-order: stroke; stroke: var(--ring); stroke-width: 3px;
+          stroke-linejoin: round; }
+  .mcoe { stroke: var(--ink-2); stroke-width: 1; fill: none; }
+  .mcoelabel { font-size: 11px; fill: var(--ink-2); }
+  .viz .ptitle { font-size: 12px; font-weight: 600; fill: var(--ink); }
+  .viz .fam-nova { fill: var(--fam-nova); }
+  .viz .fam-claude { fill: var(--fam-claude); }
+  .viz .fam-other { fill: var(--fam-other); }
+  .viz .baseline { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 5 4; }
+  .viz .baselinelabel { font-size: 11px; fill: var(--ink-2); }
+</style><text class="ctitle" x="0" y="18.0">Claude Haiku 5.5: A 10-page window costs 60% less on long packets, and gets at least as many sections right</text><text class="sub" x="0" y="38.0">Long packets, 38–40 packets × 3 runs · Varies: pages per holistic call · Everything else: baseline setup</text><g transform="translate(0.0 50.0)"><text class="axislabel" x="42" y="13">Sections exactly right (%) ↑</text><line class="grid" x1="46" x2="770" y1="294.0" y2="294.0"/><line class="axis" x1="42" x2="46" y1="294.0" y2="294.0"/><text class="tick" x="39" y="298.0" text-anchor="end">50%</text><line class="grid" x1="46" x2="770" y1="240.0" y2="240.0"/><line class="axis" x1="42" x2="46" y1="240.0" y2="240.0"/><text class="tick" x="39" y="244.0" text-anchor="end">60%</text><line class="grid" x1="46" x2="770" y1="186.0" y2="186.0"/><line class="axis" x1="42" x2="46" y1="186.0" y2="186.0"/><text class="tick" x="39" y="190.0" text-anchor="end">70%</text><line class="grid" x1="46" x2="770" y1="132.0" y2="132.0"/><line class="axis" x1="42" x2="46" y1="132.0" y2="132.0"/><text class="tick" x="39" y="136.0" text-anchor="end">80%</text><line class="grid" x1="46" x2="770" y1="78.0" y2="78.0"/><line class="axis" x1="42" x2="46" y1="78.0" y2="78.0"/><text class="tick" x="39" y="82.0" text-anchor="end">90%</text><line class="grid" x1="46" x2="770" y1="24.0" y2="24.0"/><line class="axis" x1="42" x2="46" y1="24.0" y2="24.0"/><text class="tick" x="39" y="28.0" text-anchor="end">100%</text><line class="axis" x1="46.0" x2="46.0" y1="294" y2="298"/><text class="tick" x="46.0" y="310" text-anchor="middle">$0</text><line class="axis" x1="149.4" x2="149.4" y1="294" y2="298"/><text class="tick" x="149.4" y="310" text-anchor="middle">$20</text><line class="axis" x1="252.9" x2="252.9" y1="294" y2="298"/><text class="tick" x="252.9" y="310" text-anchor="middle">$40</text><line class="axis" x1="356.3" x2="356.3" y1="294" y2="298"/><text class="tick" x="356.3" y="310" text-anchor="middle">$60</text><line class="axis" x1="459.7" x2="459.7" y1="294" y2="298"/><text class="tick" x="459.7" y="310" text-anchor="middle">$80</text><line class="axis" x1="563.1" x2="563.1" y1="294" y2="298"/><text class="tick" x="563.1" y="310" text-anchor="middle">$100</text><line class="axis" x1="666.6" x2="666.6" y1="294" y2="298"/><text class="tick" x="666.6" y="310" text-anchor="middle">$120</text><line class="axis" x1="770.0" x2="770.0" y1="294" y2="298"/><text class="tick" x="770.0" y="310" text-anchor="middle">$140</text><line class="axis" x1="46" x2="770" y1="294" y2="294"/><line class="axis" x1="46" x2="46" y1="24" y2="294"/><text class="axislabel" x="408.0" y="330" text-anchor="middle">Classification cost per 1,000 packets ($) — cheaper ←</text><rect class="band" x="575.9" y="215.5" width="10" height="28.6" rx="5"/><rect class="band" x="242.7" y="186.3" width="10" height="36.2" rx="5"/><rect class="band" x="225.8" y="230.1" width="10" height="15.8" rx="5"/><rect class="band" x="679.7" y="230.2" width="10" height="27.0" rx="5"/><g><title>20 pages (default): Section accuracy 62% ± 3%, $103 classification cost per 1,000 packets</title><circle class="dot ref" cx="580.9" cy="229.8" r="5"/></g><g><title>10 pages: Section accuracy 67% ± 3%, $39.0 classification cost per 1,000 packets</title><circle class="dot" cx="247.7" cy="204.4" r="5"/></g><g><title>15 pages: Section accuracy 60% ± 1%, $35.7 classification cost per 1,000 packets</title><circle class="dot" cx="230.8" cy="238.0" r="5"/></g><g><title>40 pages: Section accuracy 59% ± 3%, $124 classification cost per 1,000 packets</title><circle class="dot" cx="684.7" cy="243.7" r="5"/></g><text class="plabel halo" x="257.7" y="208.4" text-anchor="start">10 pages</text><text class="plabel dflt halo" x="570.9" y="233.8" text-anchor="end">20 pages (default)</text><text class="plabel halo" x="240.8" y="242.0" text-anchor="start">15 pages</text><text class="plabel halo" x="694.7" y="247.7" text-anchor="start">40 pages</text></g><text class="prices" x="0" y="409.0">Baseline setup: Amazon Textract with Layout only; holistic classification reading text and page images, single-pass extraction, and confidence scoring, all</text><text class="prices" x="0" y="423.0">on Claude Haiku 5.5, with no escalation to a second scoring model.</text><text class="prices" x="0" y="441.0">Prices: on-demand, us-east-1, config_library/pricing.yaml as of 2026-11-18</text></svg>

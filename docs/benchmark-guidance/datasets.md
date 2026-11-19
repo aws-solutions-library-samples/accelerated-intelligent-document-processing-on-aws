@@ -112,14 +112,14 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** [DocSplit-Poly-Seq](../idp-fundamentals/benchmark-datasets.md#docsplit-poly-seq)
 - **Preset:** `docsplit`
 - **Test Studio test set:** `docsplit`, 20 documents per run
-- **Used by:** [TR-01](index.md#planned) (planned), [SC-11](splitting-and-classification.md#does-holistic-classification-beat-page-by-page-classification), [SC-02](splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt), [SC-04](splitting-and-classification.md#planned) (planned), [SC-06](splitting-and-classification.md#planned) (planned), [SC-07](splitting-and-classification.md#planned) (planned), [SC-08](splitting-and-classification.md#planned) (planned), [SC-09](splitting-and-classification.md#planned) (planned), [CF-05](confidence-assessment.md#planned) (planned), [TU-02](token-use.md#planned) (planned), [TU-03](token-use.md#planned) (planned)
+- **Used by:** [TR-01](index.md#planned) (planned), [SC-11](splitting-and-classification.md#does-holistic-classification-beat-page-by-page-classification), [SC-06](splitting-and-classification.md#planned) (planned), [SC-07](splitting-and-classification.md#planned) (planned), [SC-08](splitting-and-classification.md#planned) (planned), [SC-09](splitting-and-classification.md#planned) (planned), [CF-05](confidence-assessment.md#planned) (planned), [TU-02](token-use.md#planned) (planned), [TU-03](token-use.md#planned) (planned)
 
 ### DocSplit-Poly-Seq (100 packets)
 
 - **About the dataset:** [DocSplit-Poly-Seq](../idp-fundamentals/benchmark-datasets.md#docsplit-poly-seq)
 - **Preset:** `docsplit`
 - **Test Studio test set:** `docsplit`, 100 documents per run
-- **Used by:** [SC-12](splitting-and-classification.md#can-a-decision-model-classify-the-sections), [SC-13](splitting-and-classification.md#which-way-of-splitting-and-classifying-should-i-use), [SC-14](splitting-and-classification.md#do-long-packets-change-which-approach-to-use)
+- **Used by:** [SC-02](splitting-and-classification.md#do-i-need-page-images-in-the-classification-prompt), [SC-12](splitting-and-classification.md#can-a-decision-model-classify-the-sections), [SC-13](splitting-and-classification.md#which-way-of-splitting-and-classifying-should-i-use), [SC-14](splitting-and-classification.md#do-long-packets-change-which-approach-to-use)
 
 ### DocSplit same-class runs (60 packets)
 
@@ -133,7 +133,7 @@ describes where each dataset comes from and how its ground truth was made.
 - **About the dataset:** 40 packets we built from the pages of DocSplit packets 101 to 500, 1,815 pages and 508 documents in all, 10 packets in each of 30 to 37, 38 to 45, 46 to 53 and 54 to 60 pages. As in DocSplit, no two neighbouring documents share a class. DocSplit reuses a small pool of documents, so many also appear in packets 1 to 100.
 - **Preset:** `docsplit`
 - **Test Studio test set:** `docsplit-long`, 40 documents per run
-- **Used by:** [SC-04](splitting-and-classification.md#planned) (planned), [SC-14](splitting-and-classification.md#do-long-packets-change-which-approach-to-use)
+- **Used by:** [SC-04](splitting-and-classification.md#how-long-a-packet-can-holistic-classification-handle), [SC-14](splitting-and-classification.md#do-long-packets-change-which-approach-to-use)
 
 ## Datasets we haven't built yet
 

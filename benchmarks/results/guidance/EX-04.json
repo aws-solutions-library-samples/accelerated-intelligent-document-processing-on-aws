@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261116-180749, RealKIE-FCC-Verified-20261116-180739, RealKIE-FCC-Verified-20261116-180800, RealKIE-FCC-Verified-20261116-180813, RealKIE-FCC-Verified-20261116-180835, RealKIE-FCC-Verified-20261116-180824, Fake-W2-Tax-Forms-20261116-181532, Fake-W2-Tax-Forms-20261116-181810, Fake-W2-Tax-Forms-20261116-181347, Fake-W2-Tax-Forms-20261116-181835, Fake-W2-Tax-Forms-20261116-182032, Fake-W2-Tax-Forms-20261116-181902",
-  "verdict": "Keep them. On W-2 forms, field descriptions raised the share of forms with every field right from 10% to 75% (weighted accuracy 0.97 to 0.996) at the same cost. On RealKIE invoices they made no difference (0.81 both).",
+  "verdict": "Keep them. On W-2 forms, field descriptions raised the share of forms with every field right from 10% to 75% (weighted accuracy 0.97 to 0.996) for about 4% more. On RealKIE invoices they made no difference (0.81 both).",
   "cells": {
     "realkie|Descriptions as shipped (recommended)|weighted_accuracy": {
       "mean": 0.809178,

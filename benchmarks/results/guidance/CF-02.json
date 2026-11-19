@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261116-172631, RealKIE-FCC-Verified-20261116-172632, RealKIE-FCC-Verified-20261116-172644, RealKIE-FCC-Verified-20261116-172921, RealKIE-FCC-Verified-20261116-173033, RealKIE-FCC-Verified-20261116-173148, RealKIE-FCC-Verified-20261116-172635, RealKIE-FCC-Verified-20261116-172638, RealKIE-FCC-Verified-20261116-172641, RealKIE-FCC-Verified-20261116-172639, RealKIE-FCC-Verified-20261116-172634, Fake-W2-Tax-Forms-20261116-173240, Fake-W2-Tax-Forms-20261116-173357, Fake-W2-Tax-Forms-20261116-173425, Fake-W2-Tax-Forms-20261116-173459, Fake-W2-Tax-Forms-20261116-173428, Fake-W2-Tax-Forms-20261116-173429, Fake-W2-Tax-Forms-20261116-173533, Fake-W2-Tax-Forms-20261116-173554, Fake-W2-Tax-Forms-20261116-173639, Fake-W2-Tax-Forms-20261116-173657, Fake-W2-Tax-Forms-20261116-173711, Fake-W2-Tax-Forms-20261116-173733",
-  "verdict": "Claude Haiku 5.5 is a good place to start: reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as a random 30% review (ECARB) on RealKIE invoices, as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset default, found fewer than a random review (0.6 times). Test it on your own documents.",
+  "verdict": "Claude Haiku 5.5 is a good place to start. On RealKIE invoices, reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as reviewing a random 30% (this ratio is ECARB). That's as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset's default, did worse than a random review (0.6 times). Test it on your own documents.",
   "cells": {
     "realkie|Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.796658,

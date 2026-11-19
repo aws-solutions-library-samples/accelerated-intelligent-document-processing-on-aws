@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs realkie-fcc-long-20261116-210206, realkie-fcc-long-20261116-210241, realkie-fcc-long-20261116-210301, realkie-fcc-long-20261116-210217, realkie-fcc-long-20261116-210227, realkie-fcc-long-20261116-210251 (6 failed documents left out of the scores)",
-  "verdict": "Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more (at least $257 against $210 per 1,000 invoices; agentic calls over 100,000 tokens, which Claude Haiku 5.5 bills at a higher rate, can't be priced from our metering) and took longer. Test it on your own long tables.",
+  "verdict": "Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing on scored no better than with it off (line-item score 52% against 56%), cost more (at least $257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.",
   "cells": {
     "realkie_long|On|weighted_accuracy": {
       "mean": 0.758226,

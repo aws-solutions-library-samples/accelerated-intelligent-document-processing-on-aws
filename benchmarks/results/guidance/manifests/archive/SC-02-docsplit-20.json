@@ -1,0 +1,41 @@
+{
+  "ablation": "SC-02",
+  "verdict": "Text only is a good place to start: holistic Claude Haiku 5.5 got 0.88 of sections exactly right from the OCR text alone, against 0.76 with page images too, and cost less. Test it on your own packets.",
+  "runs": {
+    "docsplit": {
+      "Text only": [
+        "DocSplit-Poly-Seq-20261116-173745",
+        "DocSplit-Poly-Seq-20261116-173756",
+        "DocSplit-Poly-Seq-20261116-173733"
+      ],
+      "Text and images (baseline)": [
+        "DocSplit-Poly-Seq-20261116-173722",
+        "DocSplit-Poly-Seq-20261116-173702",
+        "DocSplit-Poly-Seq-20261116-173712"
+      ],
+      "Images only": [
+        "DocSplit-Poly-Seq-20261116-174557",
+        "DocSplit-Poly-Seq-20261116-174607",
+        "DocSplit-Poly-Seq-20261116-174618"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit": 6
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15.dev1",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Poly-Seq-20261116-173702",
+    "DocSplit-Poly-Seq-20261116-173712",
+    "DocSplit-Poly-Seq-20261116-173722",
+    "DocSplit-Poly-Seq-20261116-173733",
+    "DocSplit-Poly-Seq-20261116-173745",
+    "DocSplit-Poly-Seq-20261116-173756",
+    "DocSplit-Poly-Seq-20261116-174557",
+    "DocSplit-Poly-Seq-20261116-174607",
+    "DocSplit-Poly-Seq-20261116-174618"
+  ]
+}

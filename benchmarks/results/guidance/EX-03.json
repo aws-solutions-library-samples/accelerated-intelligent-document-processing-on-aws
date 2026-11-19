@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261116-182447, RealKIE-FCC-Verified-20261116-182500, RealKIE-FCC-Verified-20261116-182510, RealKIE-FCC-Verified-20261116-182521, RealKIE-FCC-Verified-20261116-182534, RealKIE-FCC-Verified-20261116-182545, RealKIE-FCC-Verified-20261116-182555, RealKIE-FCC-Verified-20261116-182607, RealKIE-FCC-Verified-20261116-182618, Fake-W2-Tax-Forms-20261116-182945, Fake-W2-Tax-Forms-20261116-182956, Fake-W2-Tax-Forms-20261116-183020, Fake-W2-Tax-Forms-20261116-183055, Fake-W2-Tax-Forms-20261116-183119, Fake-W2-Tax-Forms-20261116-183031, Fake-W2-Tax-Forms-20261116-183139, Fake-W2-Tax-Forms-20261116-183153, Fake-W2-Tax-Forms-20261116-183204",
-  "verdict": "Low effort is a good place to start: with Claude Sonnet 5.5, medium and high scored the same on RealKIE invoices, and high cost more on W-2 forms. Test it on your own documents.",
+  "verdict": "Low effort is a good place to start. With Claude Sonnet 5.5, medium and high effort scored no better than low on RealKIE invoices or W-2 forms, and high cost more on both. Test it on your own documents.",
   "cells": {
     "realkie|Low (preset default)|weighted_accuracy": {
       "mean": 0.827037,

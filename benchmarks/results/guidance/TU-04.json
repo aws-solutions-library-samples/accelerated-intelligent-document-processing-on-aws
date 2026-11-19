@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261113-213122, RealKIE-FCC-Verified-20261113-213123, RealKIE-FCC-Verified-20261113-213124, RealKIE-FCC-Verified-20261113-213133, RealKIE-FCC-Verified-20261113-213135, RealKIE-FCC-Verified-20261113-213136, RealKIE-FCC-Verified-20261113-213134, RealKIE-FCC-Verified-20261113-213137, RealKIE-FCC-Verified-20261113-213138, Fake-W2-Tax-Forms-20261113-213138, Fake-W2-Tax-Forms-20261113-213139, Fake-W2-Tax-Forms-20261113-213145, Fake-W2-Tax-Forms-20261113-213146, Fake-W2-Tax-Forms-20261113-213148, Fake-W2-Tax-Forms-20261113-213149, Fake-W2-Tax-Forms-20261113-213147, Fake-W2-Tax-Forms-20261113-213150, Fake-W2-Tax-Forms-20261113-213151",
-  "verdict": "Claude Haiku 5.5 extraction, Textract Layout only, and confidence off or scored by Claude Haiku 5.5 is a good place to start: $21 per 1,000 invoices against $135 for the default, at the same accuracy. Test it on your own documents.",
+  "verdict": "Claude Haiku 5.5 extraction with Textract Layout only is a good place to start. With confidence off it cost $21 per 1,000 invoices, against $135 for the default, at the same weighted accuracy. Scoring confidence with Claude Haiku 5.5 raises that to $28, and it got every field right on more invoices (10% against 3%). Test it on your own documents.",
   "cells": {
     "realkie|Default|weighted_accuracy": {
       "mean": 0.817479,

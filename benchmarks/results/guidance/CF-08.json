@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261117-232503, RealKIE-FCC-Verified-20261117-232513, RealKIE-FCC-Verified-20261117-232523, RealKIE-FCC-Verified-20261117-233028, RealKIE-FCC-Verified-20261117-233016, RealKIE-FCC-Verified-20261117-233048, RealKIE-FCC-Verified-20261117-233327, RealKIE-FCC-Verified-20261117-233422, RealKIE-FCC-Verified-20261117-233538, RealKIE-FCC-Verified-20261117-234954, RealKIE-FCC-Verified-20261117-235104, RealKIE-FCC-Verified-20261117-235241",
-  "verdict": "Not yet: score confidence with an LLM; Claude Haiku 5.5 is a good place to start. The Strands Decider 2B reading page images separated right from wrong values less well (AUROC 0.68 against 0.80), at more than three times the cost ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, a gap within run-to-run variation; Claude Sonnet 5.5 found the most (3.0 times) for $130. Test it on your own documents.",
+  "verdict": "Not yet; score confidence with an LLM, such as Claude Haiku 5.5. The Strands Decider 2B, reading page images, told right values from wrong ones less well (AUROC 0.68 against 0.80) and cost more than three times as much ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, too close to call. Claude Sonnet 5.5 found the most, 3.0 times, for $130. Test it on your own documents.",
   "cells": {
     "realkie|LLM \u00b7 Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.819556,

@@ -1,233 +1,246 @@
 {
-  "release": "0.6.15.dev1",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
   "measured": "November 2026",
   "region": "us-east-1",
-  "source": "Test Studio runs DocSplit-Poly-Seq-20261116-173745, DocSplit-Poly-Seq-20261116-173756, DocSplit-Poly-Seq-20261116-173733, DocSplit-Poly-Seq-20261116-173722, DocSplit-Poly-Seq-20261116-173702, DocSplit-Poly-Seq-20261116-173712, DocSplit-Poly-Seq-20261116-174557, DocSplit-Poly-Seq-20261116-174607, DocSplit-Poly-Seq-20261116-174618 (3 failed documents left out of the scores)",
-  "verdict": "Text only is a good place to start: holistic Claude Haiku 5.5 got 0.88 of sections exactly right from the OCR text alone, against 0.76 with page images too, and cost less. Test it on your own packets.",
+  "source": "Test Studio runs DocSplit-Poly-Seq-20261118-160211, DocSplit-Poly-Seq-20261118-160158, DocSplit-Poly-Seq-20261118-160233, DocSplit-Poly-Seq-20261119-163847, DocSplit-Poly-Seq-20261119-163857, DocSplit-Poly-Seq-20261119-163907, DocSplit-Poly-Seq-20261119-170734, DocSplit-Poly-Seq-20261119-170340, DocSplit-Poly-Seq-20261119-171927 (2 failed documents left out of the scores)",
+  "verdict": "Text only is a good place to start. Holistic classification with Claude Haiku 5.5 got 88% of sections exactly right from the OCR text alone, against 75% with page images as well and 65% with images alone. It also cost a tenth as much: $2.58 against $26 of classification per 1,000 packets. Test it on your own packets.",
   "cells": {
-    "docsplit|Text only|weighted_accuracy": {
-      "mean": 0.318027,
-      "se": 0.031571
+    "docsplit_100|Text and images (baseline)|weighted_accuracy": {
+      "mean": 0.324771,
+      "se": 0.014201
     },
-    "docsplit|Text only|classification_tokens": {
-      "mean": 1201.393736,
-      "se": 20.026025
+    "docsplit_100|Text and images (baseline)|classification_tokens": {
+      "mean": 6168.314239,
+      "se": 3.616741
     },
-    "docsplit|Text only|extraction_tokens": {
-      "mean": 6810.951902,
-      "se": 7.930972
+    "docsplit_100|Text and images (baseline)|extraction_tokens": {
+      "mean": 6636.303691,
+      "se": 7.83637
     },
-    "docsplit|Text only|scoring_tokens": {
-      "mean": 7972.941834,
-      "se": 6.035259
+    "docsplit_100|Text and images (baseline)|scoring_tokens": {
+      "mean": 7988.396715,
+      "se": 10.566198
     },
-    "docsplit|Text only|total_tokens": {
-      "mean": 15985.287472,
-      "se": 27.66685
+    "docsplit_100|Text and images (baseline)|total_tokens": {
+      "mean": 20793.014645,
+      "se": 15.256498
     },
-    "docsplit|Text only|median_seconds": {
-      "mean": 96.669427,
-      "se": 6.250677
+    "docsplit_100|Text and images (baseline)|median_seconds": {
+      "mean": 137.64454,
+      "se": 4.052385
     },
-    "docsplit|Text only|list_precision": {
+    "docsplit_100|Text and images (baseline)|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Text only|all_fields_right": {
+    "docsplit_100|Text and images (baseline)|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Text only|calibration_error": {
-      "mean": 0.88659,
-      "se": 0.000612
+    "docsplit_100|Text and images (baseline)|calibration_error": {
+      "mean": 0.892865,
+      "se": 0.000628
     },
-    "docsplit|Text only|errors_caught_30": {
-      "mean": 0.299154,
-      "se": 0.000322
+    "docsplit_100|Text and images (baseline)|errors_caught_30": {
+      "mean": 0.299644,
+      "se": 3e-05
     },
-    "docsplit|Text only|errors_caught_30_random": {
-      "mean": 0.299154,
-      "se": 0.000322
+    "docsplit_100|Text and images (baseline)|errors_caught_30_random": {
+      "mean": 0.299644,
+      "se": 3e-05
     },
-    "docsplit|Text only|ecarb_30": {
+    "docsplit_100|Text and images (baseline)|ecarb_30": {
       "mean": 1.0,
       "se": 0.0
     },
-    "docsplit|Text only|page_accuracy": {
-      "mean": 0.951902,
-      "se": 0.002959
+    "docsplit_100|Text and images (baseline)|page_accuracy": {
+      "mean": 0.89749,
+      "se": 0.004898
     },
-    "docsplit|Text only|section_accuracy": {
-      "mean": 0.877778,
-      "se": 0.006415
+    "docsplit_100|Text and images (baseline)|section_accuracy": {
+      "mean": 0.745915,
+      "se": 0.01825
     },
-    "docsplit|Text only|grouping_score": {
-      "mean": 0.937806,
-      "se": 0.001216
+    "docsplit_100|Text and images (baseline)|grouping_score": {
+      "mean": 0.911218,
+      "se": 0.005337
     },
-    "docsplit|Text only|boundary_accuracy": {
-      "mean": 0.911668,
-      "se": 0.008333
+    "docsplit_100|Text and images (baseline)|boundary_accuracy": {
+      "mean": 0.803929,
+      "se": 0.017701
     },
-    "docsplit|Text only|label_accuracy": {
-      "mean": 0.963987,
-      "se": 0.007721
+    "docsplit_100|Text and images (baseline)|label_accuracy": {
+      "mean": 0.945179,
+      "se": 0.00756
     },
-    "docsplit|Text only|classification_cost_per_1000_docs": {
-      "mean": 2.551729,
-      "se": 0.025922
+    "docsplit_100|Text and images (baseline)|classification_cost_per_1000_docs": {
+      "mean": 25.644019,
+      "se": 0.260542
     },
-    "docsplit|Text and images (baseline)|weighted_accuracy": {
-      "mean": 0.330417,
-      "se": 0.031236
+    "docsplit_100|Text only|weighted_accuracy": {
+      "mean": 0.315398,
+      "se": 0.013786
     },
-    "docsplit|Text and images (baseline)|classification_tokens": {
-      "mean": 6073.571926,
-      "se": 6.294759
+    "docsplit_100|Text only|classification_tokens": {
+      "mean": 1283.320163,
+      "se": 5.285992
     },
-    "docsplit|Text and images (baseline)|extraction_tokens": {
-      "mean": 6789.638791,
-      "se": 55.689229
+    "docsplit_100|Text only|extraction_tokens": {
+      "mean": 6686.292007,
+      "se": 3.503235
     },
-    "docsplit|Text and images (baseline)|scoring_tokens": {
-      "mean": 7922.242818,
-      "se": 55.338452
+    "docsplit_100|Text only|scoring_tokens": {
+      "mean": 8042.173479,
+      "se": 3.754865
     },
-    "docsplit|Text and images (baseline)|total_tokens": {
-      "mean": 20785.453535,
-      "se": 105.050872
+    "docsplit_100|Text only|total_tokens": {
+      "mean": 16011.785649,
+      "se": 12.217649
     },
-    "docsplit|Text and images (baseline)|median_seconds": {
-      "mean": 125.121221,
-      "se": 6.867862
+    "docsplit_100|Text only|median_seconds": {
+      "mean": 186.922082,
+      "se": 6.549
     },
-    "docsplit|Text and images (baseline)|list_precision": {
+    "docsplit_100|Text only|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Text and images (baseline)|all_fields_right": {
+    "docsplit_100|Text only|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Text and images (baseline)|calibration_error": {
-      "mean": 0.884392,
-      "se": 0.002003
+    "docsplit_100|Text only|calibration_error": {
+      "mean": 0.891734,
+      "se": 0.0008
     },
-    "docsplit|Text and images (baseline)|errors_caught_30": {
-      "mean": 0.299326,
-      "se": 0.000564
+    "docsplit_100|Text only|errors_caught_30": {
+      "mean": 0.299782,
+      "se": 6.6e-05
     },
-    "docsplit|Text and images (baseline)|errors_caught_30_random": {
-      "mean": 0.299326,
-      "se": 0.000564
+    "docsplit_100|Text only|errors_caught_30_random": {
+      "mean": 0.299782,
+      "se": 6.6e-05
     },
-    "docsplit|Text and images (baseline)|ecarb_30": {
+    "docsplit_100|Text only|ecarb_30": {
       "mean": 1.0,
       "se": 0.0
     },
-    "docsplit|Text and images (baseline)|page_accuracy": {
-      "mean": 0.905702,
-      "se": 0.010405
+    "docsplit_100|Text only|page_accuracy": {
+      "mean": 0.949326,
+      "se": 0.000465
     },
-    "docsplit|Text and images (baseline)|section_accuracy": {
-      "mean": 0.758824,
-      "se": 0.018305
+    "docsplit_100|Text only|section_accuracy": {
+      "mean": 0.878268,
+      "se": 0.002162
     },
-    "docsplit|Text and images (baseline)|grouping_score": {
-      "mean": 0.902139,
-      "se": 0.011528
+    "docsplit_100|Text only|grouping_score": {
+      "mean": 0.948545,
+      "se": 0.00134
     },
-    "docsplit|Text and images (baseline)|boundary_accuracy": {
-      "mean": 0.803773,
-      "se": 0.021197
+    "docsplit_100|Text only|boundary_accuracy": {
+      "mean": 0.914075,
+      "se": 0.004027
     },
-    "docsplit|Text and images (baseline)|label_accuracy": {
-      "mean": 0.945833,
-      "se": 0.011024
+    "docsplit_100|Text only|label_accuracy": {
+      "mean": 0.965322,
+      "se": 0.001601
     },
-    "docsplit|Text and images (baseline)|classification_cost_per_1000_docs": {
-      "mean": 23.120588,
-      "se": 0.702006
+    "docsplit_100|Text only|classification_cost_per_1000_docs": {
+      "mean": 2.578929,
+      "se": 0.015206
     },
-    "docsplit|Images only|weighted_accuracy": {
-      "mean": 0.337162,
-      "se": 0.028235
+    "docsplit_100|Images only|weighted_accuracy": {
+      "mean": 0.346944,
+      "se": 0.01472
     },
-    "docsplit|Images only|classification_tokens": {
-      "mean": 5139.28926,
-      "se": 16.219153
+    "docsplit_100|Images only|classification_tokens": {
+      "mean": 5117.18188,
+      "se": 3.441122
     },
-    "docsplit|Images only|extraction_tokens": {
-      "mean": 6784.768937,
-      "se": 40.381995
+    "docsplit_100|Images only|extraction_tokens": {
+      "mean": 6653.126476,
+      "se": 23.895738
     },
-    "docsplit|Images only|scoring_tokens": {
-      "mean": 7898.603475,
-      "se": 113.679065
+    "docsplit_100|Images only|scoring_tokens": {
+      "mean": 7998.162125,
+      "se": 25.165733
     },
-    "docsplit|Images only|total_tokens": {
-      "mean": 19822.661672,
-      "se": 161.103357
+    "docsplit_100|Images only|total_tokens": {
+      "mean": 19768.470481,
+      "se": 51.953987
     },
-    "docsplit|Images only|median_seconds": {
-      "mean": 125.603353,
-      "se": 12.399299
+    "docsplit_100|Images only|median_seconds": {
+      "mean": 200.707663,
+      "se": 50.216619
     },
-    "docsplit|Images only|list_precision": {
+    "docsplit_100|Images only|list_precision": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Images only|all_fields_right": {
+    "docsplit_100|Images only|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "docsplit|Images only|calibration_error": {
-      "mean": 0.881773,
-      "se": 0.00059
+    "docsplit_100|Images only|calibration_error": {
+      "mean": 0.892517,
+      "se": 0.001031
     },
-    "docsplit|Images only|errors_caught_30": {
-      "mean": 0.29842,
-      "se": 0.000452
+    "docsplit_100|Images only|errors_caught_30": {
+      "mean": 0.299698,
+      "se": 4.1e-05
     },
-    "docsplit|Images only|errors_caught_30_random": {
-      "mean": 0.29842,
-      "se": 0.000452
+    "docsplit_100|Images only|errors_caught_30_random": {
+      "mean": 0.299698,
+      "se": 4.1e-05
     },
-    "docsplit|Images only|ecarb_30": {
+    "docsplit_100|Images only|ecarb_30": {
       "mean": 1.0,
       "se": 0.0
     },
-    "docsplit|Images only|page_accuracy": {
-      "mean": 0.877517,
-      "se": 0.023514
+    "docsplit_100|Images only|page_accuracy": {
+      "mean": 0.886797,
+      "se": 0.001815
     },
-    "docsplit|Images only|section_accuracy": {
-      "mean": 0.739657,
-      "se": 0.029264
+    "docsplit_100|Images only|section_accuracy": {
+      "mean": 0.651144,
+      "se": 0.013148
     },
-    "docsplit|Images only|grouping_score": {
-      "mean": 0.882808,
-      "se": 0.006521
+    "docsplit_100|Images only|grouping_score": {
+      "mean": 0.870906,
+      "se": 0.004458
     },
-    "docsplit|Images only|boundary_accuracy": {
-      "mean": 0.748221,
-      "se": 0.024935
+    "docsplit_100|Images only|boundary_accuracy": {
+      "mean": 0.682681,
+      "se": 0.011634
     },
-    "docsplit|Images only|label_accuracy": {
-      "mean": 0.946039,
-      "se": 0.016104
+    "docsplit_100|Images only|label_accuracy": {
+      "mean": 0.932695,
+      "se": 0.009894
     },
-    "docsplit|Images only|classification_cost_per_1000_docs": {
-      "mean": 9.127246,
-      "se": 0.132952
+    "docsplit_100|Images only|classification_cost_per_1000_docs": {
+      "mean": 8.858641,
+      "se": 0.027532
     }
   },
   "sample": {
-    "docsplit|Text only": {
+    "docsplit_100|Text and images (baseline)": {
       "docs": [
-        20,
-        20,
-        20
+        99,
+        100,
+        99
+      ],
+      "failed": [
+        1,
+        0,
+        1
+      ],
+      "runs": 3
+    },
+    "docsplit_100|Text only": {
+      "docs": [
+        100,
+        100,
+        100
       ],
       "failed": [
         0,
@@ -236,35 +249,22 @@
       ],
       "runs": 3
     },
-    "docsplit|Text and images (baseline)": {
+    "docsplit_100|Images only": {
       "docs": [
-        20,
-        19,
-        20
+        100,
+        100,
+        100
       ],
       "failed": [
         0,
-        1,
-        0
-      ],
-      "runs": 3
-    },
-    "docsplit|Images only": {
-      "docs": [
-        19,
-        19,
-        20
-      ],
-      "failed": [
-        1,
-        1,
+        0,
         0
       ],
       "runs": 3
     }
   },
   "models": {
-    "docsplit|Text only": {
+    "docsplit_100|Text and images (baseline)": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic",
       "Extraction": "Claude Haiku 5.5, single-pass",
@@ -281,7 +281,7 @@
         ]
       }
     },
-    "docsplit|Text and images (baseline)": {
+    "docsplit_100|Text only": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic",
       "Extraction": "Claude Haiku 5.5, single-pass",
@@ -298,7 +298,7 @@
         ]
       }
     },
-    "docsplit|Images only": {
+    "docsplit_100|Images only": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic",
       "Extraction": "Claude Haiku 5.5, single-pass",
@@ -317,431 +317,2004 @@
     }
   },
   "usage": {
-    "docsplit|Text only": [
+    "docsplit_100|Text and images (baseline)": [
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 103496.15,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 18841.15,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 104656.55,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11140.9,
-        "textract/analyze_document-Layout|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 33794.7879,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 81884.2727,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 176560.3131,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12238.3232,
+        "textract/analyze_document-Layout|pages": 14.6263
       },
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 80746.45,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 41681.85,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 105262.15,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11226.25,
-        "textract/analyze_document-Layout|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 40453.11,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 74925.93,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 176495.67,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12952.62,
+        "textract/analyze_document-Layout|pages": 14.68
       },
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 77044.55,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 44985.55,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 104313.95,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11146.85,
-        "textract/analyze_document-Layout|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 34866.5859,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 81168.1414,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177186.6465,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12222.1515,
+        "textract/analyze_document-Layout|pages": 14.6869
       }
     ],
-    "docsplit|Text and images (baseline)": [
+    "docsplit_100|Text only": [
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 83738.75,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 39912.7,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 177688.3,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11255.3,
-        "textract/analyze_document-Layout|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 25510.96,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 90834.28,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 105944.78,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12702.65,
+        "textract/analyze_document-Layout|pages": 14.68
       },
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 92783.3158,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 25635.7895,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 172718.8947,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 10546.4737,
-        "textract/analyze_document-Layout|pages": 14.6316
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 21938.82,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 94413.47,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 106109.16,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12927.96,
+        "textract/analyze_document-Layout|pages": 14.68
       },
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 69827.8,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 52031.35,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 176700.7,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 10735.9,
-        "textract/analyze_document-Layout|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 23471.73,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 92775.17,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 105973.09,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12556.97,
+        "textract/analyze_document-Layout|pages": 14.68
       }
     ],
-    "docsplit|Images only": [
+    "docsplit_100|Images only": [
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 54067.4737,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 68754.1053,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 163593.9474,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11938.1053,
-        "textract/analyze_document-Layout|pages": 14.9474
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 24925.85,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 91116.52,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 161058.39,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12927.49,
+        "textract/analyze_document-Layout|pages": 14.68
       },
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 69394.8421,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 48636.3158,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 163105.3684,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 10360.2632,
-        "textract/analyze_document-Layout|pages": 14.9474
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 17760.69,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 98912.76,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 161693.96,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 13232.68,
+        "textract/analyze_document-Layout|pages": 14.68
       },
       {
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 67939.25,
-        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 55216.95,
-        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 163249.9,
-        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 11685.7,
-        "textract/analyze_document-Layout|pages": 14.9
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 18138.86,
+        "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 97373.96,
+        "bedrock/us.anthropic.claude-haiku-5-5|inputTokens": 160729.14,
+        "bedrock/us.anthropic.claude-haiku-5-5|outputTokens": 12733.14,
+        "textract/analyze_document-Layout|pages": 14.49
       }
     ]
   },
   "cost_basis": {
-    "docsplit|Text only": {
+    "docsplit_100|Text and images (baseline)": {
       "mode": "cache-isolated"
     },
-    "docsplit|Text and images (baseline)": {
+    "docsplit_100|Text only": {
       "mode": "cache-isolated"
     },
-    "docsplit|Images only": {
+    "docsplit_100|Images only": {
       "mode": "cache-isolated"
     }
   },
-  "per_doc": {
-    "docsplit|Text only": {
-      "packet_0001.pdf": {
-        "boundary_accuracy": 0.6667,
-        "label_accuracy": 0.75,
-        "weighted_accuracy": 0.418182,
-        "cost": 0.120045
+  "long_context": {
+    "docsplit_100|Text and images (baseline)": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
       },
-      "packet_0002.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.083333,
-        "cost": 0.057235
+      "documents": 298,
+      "long_documents": 86,
+      "requests": 3345,
+      "long_requests": 105,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 298,
+          "long_documents": 11,
+          "requests": 1501,
+          "long_requests": 11,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 298,
+          "long_documents": 86,
+          "requests": 343,
+          "long_requests": 86,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 298,
+          "long_documents": 8,
+          "requests": 1501,
+          "long_requests": 8,
+          "unsized_documents": 0
+        }
       },
-      "packet_0004.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 0.75,
-        "weighted_accuracy": 0.385185,
-        "cost": 0.047879
-      },
-      "packet_0005.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.354167,
-        "cost": 0.028788
-      },
-      "packet_0007.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.347099,
-        "cost": 0.082692
-      },
-      "packet_0008.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.52381,
-        "cost": 0.093039
-      },
-      "packet_0009.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.288889,
-        "cost": 0.055399
-      },
-      "packet_0010.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.289474,
-        "cost": 0.086488
-      },
-      "packet_0011.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 0.904733,
-        "weighted_accuracy": 0.384403,
-        "cost": 0.103904
-      },
-      "packet_0012.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.552632,
-        "cost": 0.099899
-      },
-      "packet_0013.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.236842,
-        "cost": 0.07745
-      },
-      "packet_0014.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.081301,
-        "cost": 0.102125
-      },
-      "packet_0015.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.188889,
-        "cost": 0.054366
-      },
-      "packet_0016.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.372512,
-        "cost": 0.098766
-      },
-      "packet_0017.pdf": {
-        "boundary_accuracy": 0.75,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.441667,
-        "cost": 0.112775
-      },
-      "packet_0018.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.32611,
-        "cost": 0.067326
-      },
-      "packet_0019.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.311111,
-        "cost": 0.102533
-      },
-      "packet_0020.pdf": {
-        "boundary_accuracy": 0.666667,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.138889,
-        "cost": 0.069968
-      }
+      "surcharge": [
+        0.01800281,
+        0.0196888,
+        0.01931588
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
     },
-    "docsplit|Text and images (baseline)": {
+    "docsplit_100|Text only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 300,
+      "long_documents": 14,
+      "requests": 3334,
+      "long_requests": 23,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 300,
+          "long_documents": 14,
+          "requests": 1516,
+          "long_requests": 14,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 300,
+          "long_documents": 0,
+          "requests": 302,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 300,
+          "long_documents": 9,
+          "requests": 1516,
+          "long_requests": 9,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00473968,
+        0.00442179,
+        0.00499179
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "docsplit_100|Images only": {
+      "rules": {
+        "anthropic.claude-haiku-5-5": {
+          "threshold": 100000,
+          "multiplier": 5.0
+        }
+      },
+      "documents": 300,
+      "long_documents": 9,
+      "requests": 3405,
+      "long_requests": 18,
+      "unsized_documents": 0,
+      "by_step": {
+        "Assessment": {
+          "documents": 300,
+          "long_documents": 9,
+          "requests": 1530,
+          "long_requests": 9,
+          "unsized_documents": 0
+        },
+        "Classification": {
+          "documents": 300,
+          "long_documents": 0,
+          "requests": 345,
+          "long_requests": 0,
+          "unsized_documents": 0
+        },
+        "Extraction": {
+          "documents": 300,
+          "long_documents": 9,
+          "requests": 1530,
+          "long_requests": 9,
+          "unsized_documents": 0
+        }
+      },
+      "surcharge": [
+        0.00378692,
+        0.00376471,
+        0.00377778
+      ],
+      "unsized_ceiling": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  },
+  "per_doc": {
+    "docsplit_100|Text and images (baseline)": {
       "packet_0001.pdf": {
-        "boundary_accuracy": 0.6111,
-        "label_accuracy": 0.85,
-        "weighted_accuracy": 0.423737,
-        "cost": 0.184793
+        "boundary_accuracy": 0.444433,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.418182,
+        "cost": 0.190219
       },
       "packet_0002.pdf": {
         "boundary_accuracy": 0.777767,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.15625,
-        "cost": 0.060273
+        "weighted_accuracy": 0.1875,
+        "cost": 0.062825
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 0.875,
+        "label_accuracy": 0.952367,
+        "weighted_accuracy": 0.439541,
+        "cost": 0.095092
       },
       "packet_0004.pdf": {
-        "boundary_accuracy": 0.8,
-        "label_accuracy": 0.75,
-        "weighted_accuracy": 0.377778,
-        "cost": 0.052112
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.766667,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.058183
       },
       "packet_0005.pdf": {
-        "boundary_accuracy": 1.0,
+        "boundary_accuracy": 0.666667,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.347222,
-        "cost": 0.031371
+        "weighted_accuracy": 0.409553,
+        "cost": 0.035094
       },
-      "packet_0007.pdf": {
-        "boundary_accuracy": 0.6,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.350304,
-        "cost": 0.084205
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.466667,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.430556,
+        "cost": 0.177128
       },
       "packet_0008.pdf": {
-        "boundary_accuracy": 1.0,
-        "label_accuracy": 0.666667,
-        "weighted_accuracy": 0.489579,
-        "cost": 0.113153
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.5,
+        "weighted_accuracy": 0.444444,
+        "cost": 0.09686
       },
       "packet_0009.pdf": {
         "boundary_accuracy": 0.5,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.266667,
-        "cost": 0.06383
+        "weighted_accuracy": 0.311111,
+        "cost": 0.064579
       },
       "packet_0010.pdf": {
-        "boundary_accuracy": 0.833333,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.46792,
-        "cost": 0.095844
+        "weighted_accuracy": 0.280702,
+        "cost": 0.100797
       },
       "packet_0011.pdf": {
-        "boundary_accuracy": 0.952367,
+        "boundary_accuracy": 0.8095,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.391304,
-        "cost": 0.113988
+        "weighted_accuracy": 0.304762,
+        "cost": 0.125691
       },
       "packet_0012.pdf": {
         "boundary_accuracy": 0.916667,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.538483,
-        "cost": 0.117357
+        "weighted_accuracy": 0.437343,
+        "cost": 0.120212
       },
       "packet_0013.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.236842,
-        "cost": 0.089529
+        "cost": 0.095326
       },
       "packet_0014.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.081301,
-        "cost": 0.170461
+        "weighted_accuracy": 0.022727,
+        "cost": 0.183124
       },
       "packet_0015.pdf": {
-        "boundary_accuracy": 0.75,
+        "boundary_accuracy": 0.583333,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.188889,
-        "cost": 0.059719
+        "weighted_accuracy": 0.211111,
+        "cost": 0.06208
       },
       "packet_0016.pdf": {
-        "boundary_accuracy": 0.6111,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.474925,
-        "cost": 0.167928
+        "boundary_accuracy": 0.8889,
+        "label_accuracy": 0.944433,
+        "weighted_accuracy": 0.310958,
+        "cost": 0.174231
       },
       "packet_0017.pdf": {
         "boundary_accuracy": 0.75,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.425,
-        "cost": 0.184461
+        "weighted_accuracy": 0.435714,
+        "cost": 0.185625
       },
       "packet_0018.pdf": {
-        "boundary_accuracy": 0.8,
+        "boundary_accuracy": 0.4,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.267974,
-        "cost": 0.075077
+        "weighted_accuracy": 0.290123,
+        "cost": 0.085709
       },
       "packet_0019.pdf": {
-        "boundary_accuracy": 0.714267,
+        "boundary_accuracy": 0.857133,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.324444,
-        "cost": 0.115972
+        "weighted_accuracy": 0.351111,
+        "cost": 0.123697
       },
       "packet_0020.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.078604
+      },
+      "packet_0021.pdf": {
+        "boundary_accuracy": 0.533333,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.431852,
+        "cost": 0.185285
+      },
+      "packet_0022.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.138889,
-        "cost": 0.071337
+        "weighted_accuracy": 0.393939,
+        "cost": 0.053772
+      },
+      "packet_0023.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474747,
+        "cost": 0.186123
+      },
+      "packet_0024.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.162602,
+        "cost": 0.124496
+      },
+      "packet_0025.pdf": {
+        "boundary_accuracy": 0.666633,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.2691,
+        "cost": 0.194364
+      },
+      "packet_0026.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.666667,
+        "weighted_accuracy": 0.6375,
+        "cost": 0.072616
+      },
+      "packet_0027.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.349206,
+        "cost": 0.046354
+      },
+      "packet_0028.pdf": {
+        "boundary_accuracy": 0.875,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.264228,
+        "cost": 0.136804
+      },
+      "packet_0029.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.270833,
+        "cost": 0.100761
+      },
+      "packet_0030.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.336174,
+        "cost": 0.060856
+      },
+      "packet_0031.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.486111,
+        "cost": 0.152055
+      },
+      "packet_0032.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.1875,
+        "cost": 0.082267
+      },
+      "packet_0033.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.269048,
+        "cost": 0.133445
+      },
+      "packet_0034.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.106061,
+        "cost": 0.05711
+      },
+      "packet_0035.pdf": {
+        "boundary_accuracy": 0.4,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.365741,
+        "cost": 0.104039
+      },
+      "packet_0036.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.315789,
+        "cost": 0.221114
+      },
+      "packet_0037.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.274074,
+        "cost": 0.057608
+      },
+      "packet_0038.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.604167,
+        "cost": 0.072987
+      },
+      "packet_0039.pdf": {
+        "boundary_accuracy": 0.8889,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.233766,
+        "cost": 0.076904
+      },
+      "packet_0040.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.435897,
+        "cost": 0.127702
+      },
+      "packet_0041.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.952367,
+        "weighted_accuracy": 0.265,
+        "cost": 0.164685
+      },
+      "packet_0042.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.377193,
+        "cost": 0.123135
+      },
+      "packet_0043.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.5,
+        "cost": 0.091773
+      },
+      "packet_0044.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 0.822233,
+        "weighted_accuracy": 0.383979,
+        "cost": 0.117498
+      },
+      "packet_0045.pdf": {
+        "boundary_accuracy": 0.7778,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.648889,
+        "cost": 0.175987
+      },
+      "packet_0046.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.05666
+      },
+      "packet_0047.pdf": {
+        "boundary_accuracy": 0.933333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.366536,
+        "cost": 0.189928
+      },
+      "packet_0048.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.248227,
+        "cost": 0.190548
+      },
+      "packet_0050.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.246914,
+        "cost": 0.034548
+      },
+      "packet_0051.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.277778,
+        "cost": 0.180659
+      },
+      "packet_0052.pdf": {
+        "list_score": 0.0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.072291
+      },
+      "packet_0053.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.359649,
+        "cost": 0.180815
+      },
+      "packet_0054.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.052083,
+        "cost": 0.034907
+      },
+      "packet_0055.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.35528,
+        "cost": 0.07733
+      },
+      "packet_0056.pdf": {
+        "boundary_accuracy": 0.555567,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.428136,
+        "cost": 0.134929
+      },
+      "packet_0057.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.244444,
+        "cost": 0.064655
+      },
+      "packet_0058.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.193798,
+        "cost": 0.120016
+      },
+      "packet_0059.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.455556,
+        "cost": 0.037811
+      },
+      "packet_0060.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.453333,
+        "cost": 0.079004
+      },
+      "packet_0061.pdf": {
+        "boundary_accuracy": 0.733333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.551282,
+        "cost": 0.059873
+      },
+      "packet_0062.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.061038
+      },
+      "packet_0063.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.325,
+        "cost": 0.152926
+      },
+      "packet_0064.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.233333,
+        "cost": 0.176338
+      },
+      "packet_0065.pdf": {
+        "boundary_accuracy": 0.380967,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.213846,
+        "cost": 0.200798
+      },
+      "packet_0066.pdf": {
+        "boundary_accuracy": 0.6111,
+        "label_accuracy": 0.722233,
+        "weighted_accuracy": 0.32,
+        "cost": 0.128993
+      },
+      "packet_0067.pdf": {
+        "boundary_accuracy": 0.533333,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.245238,
+        "cost": 0.098685
+      },
+      "packet_0068.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.255194,
+        "cost": 0.065512
+      },
+      "packet_0069.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.346667,
+        "cost": 0.073372
+      },
+      "packet_0070.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.426667,
+        "cost": 0.106835
+      },
+      "packet_0071.pdf": {
+        "boundary_accuracy": 0.380933,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.490741,
+        "cost": 0.104314
+      },
+      "packet_0072.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.339744,
+        "cost": 0.191947
+      },
+      "packet_0073.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.206667,
+        "cost": 0.076181
+      },
+      "packet_0074.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.45,
+        "cost": 0.178754
+      },
+      "packet_0075.pdf": {
+        "boundary_accuracy": 0.809533,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.314286,
+        "cost": 0.135994
+      },
+      "packet_0076.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.155556,
+        "cost": 0.11866
+      },
+      "packet_0077.pdf": {
+        "boundary_accuracy": 0.7778,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.166667,
+        "cost": 0.036421
+      },
+      "packet_0078.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.356589,
+        "cost": 0.094135
+      },
+      "packet_0079.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.282828,
+        "cost": 0.138701
+      },
+      "packet_0080.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.408333,
+        "cost": 0.108606
+      },
+      "packet_0081.pdf": {
+        "boundary_accuracy": 0.933333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.132121,
+        "cost": 0.096782
+      },
+      "packet_0082.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.375397,
+        "cost": 0.179598
+      },
+      "packet_0083.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.315789,
+        "cost": 0.182789
+      },
+      "packet_0084.pdf": {
+        "boundary_accuracy": 0.966667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.24937,
+        "cost": 0.181783
+      },
+      "packet_0085.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.142857,
+        "cost": 0.09278
+      },
+      "packet_0086.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.6875,
+        "cost": 0.291886
+      },
+      "packet_0087.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.306452,
+        "cost": 0.062066
+      },
+      "packet_0088.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.307692,
+        "cost": 0.272082
+      },
+      "packet_0089.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 0.2222,
+        "weighted_accuracy": 0.322222,
+        "cost": 0.069425
+      },
+      "packet_0090.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.574603,
+        "cost": 0.193066
+      },
+      "packet_0091.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.341667,
+        "cost": 0.040141
+      },
+      "packet_0092.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.133333,
+        "cost": 0.092513
+      },
+      "packet_0093.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.58331,
+        "cost": 0.080464
+      },
+      "packet_0094.pdf": {
+        "boundary_accuracy": 0.619067,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.465753,
+        "cost": 0.088208
+      },
+      "packet_0095.pdf": {
+        "boundary_accuracy": 0.333333,
+        "label_accuracy": 0.375,
+        "weighted_accuracy": 0.185903,
+        "cost": 0.086767
+      },
+      "packet_0096.pdf": {
+        "boundary_accuracy": 0.444433,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.344444,
+        "cost": 0.049882
+      },
+      "packet_0097.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.122549,
+        "cost": 0.05374
+      },
+      "packet_0098.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.331779,
+        "cost": 0.17586
+      },
+      "packet_0099.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.300939,
+        "cost": 0.064106
+      },
+      "packet_0100.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.564151,
+        "cost": 0.035538
       }
     },
-    "docsplit|Images only": {
+    "docsplit_100|Text only": {
       "packet_0001.pdf": {
-        "boundary_accuracy": 0.388867,
-        "label_accuracy": 0.8889,
-        "weighted_accuracy": 0.423232,
-        "cost": 0.130435
+        "boundary_accuracy": 0.8333,
+        "label_accuracy": 0.8,
+        "weighted_accuracy": 0.422222,
+        "cost": 0.12937
       },
       "packet_0002.pdf": {
-        "boundary_accuracy": 0.555533,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.239583,
-        "cost": 0.061501
+        "weighted_accuracy": 0.125,
+        "cost": 0.06102
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.434783,
+        "cost": 0.088174
       },
       "packet_0004.pdf": {
-        "boundary_accuracy": 0.866667,
-        "label_accuracy": 0.766667,
-        "weighted_accuracy": 0.348148,
-        "cost": 0.055229
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8,
+        "weighted_accuracy": 0.318519,
+        "cost": 0.05567
       },
       "packet_0005.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.354167,
-        "cost": 0.033404
+        "cost": 0.034055
       },
-      "packet_0007.pdf": {
-        "boundary_accuracy": 0.533333,
-        "label_accuracy": 0.833333,
-        "weighted_accuracy": 0.34071,
-        "cost": 0.088706
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.428704,
+        "cost": 0.125753
       },
       "packet_0008.pdf": {
-        "boundary_accuracy": 0.0,
-        "weighted_accuracy": 0.546032,
-        "cost": 0.099493
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.492063,
+        "cost": 0.125116
       },
       "packet_0009.pdf": {
-        "boundary_accuracy": 0.5,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.266667,
-        "cost": 0.065959
+        "weighted_accuracy": 0.333333,
+        "cost": 0.057459
       },
       "packet_0010.pdf": {
-        "boundary_accuracy": 0.75,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.453634,
-        "cost": 0.096705
+        "weighted_accuracy": 0.280702,
+        "cost": 0.089339
       },
       "packet_0011.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 0.904733,
-        "weighted_accuracy": 0.366932,
-        "cost": 0.113258
+        "weighted_accuracy": 0.275676,
+        "cost": 0.113838
       },
       "packet_0012.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.561404,
-        "cost": 0.117796
+        "weighted_accuracy": 0.517544,
+        "cost": 0.116088
       },
       "packet_0013.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
         "weighted_accuracy": 0.236842,
-        "cost": 0.092396
+        "cost": 0.092165
       },
       "packet_0014.pdf": {
-        "boundary_accuracy": 0.666667,
+        "boundary_accuracy": 0.833333,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.162602,
-        "cost": 0.121213
+        "weighted_accuracy": 0.077652,
+        "cost": 0.121445
       },
       "packet_0015.pdf": {
         "boundary_accuracy": 0.75,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.188889,
-        "cost": 0.05662
+        "weighted_accuracy": 0.211111,
+        "cost": 0.060455
       },
       "packet_0016.pdf": {
-        "boundary_accuracy": 0.888867,
+        "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.342769,
-        "cost": 0.114181
+        "weighted_accuracy": 0.316667,
+        "cost": 0.116856
       },
       "packet_0017.pdf": {
         "boundary_accuracy": 0.75,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.434524,
-        "cost": 0.124151
+        "weighted_accuracy": 0.458333,
+        "cost": 0.128406
+      },
+      "packet_0018.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.296296,
+        "cost": 0.078558
+      },
+      "packet_0019.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.315556,
+        "cost": 0.114633
+      },
+      "packet_0020.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.037037,
+        "cost": 0.068581
+      },
+      "packet_0021.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.355556,
+        "cost": 0.124671
+      },
+      "packet_0022.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.383838,
+        "cost": 0.049477
+      },
+      "packet_0023.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.469697,
+        "cost": 0.119763
+      },
+      "packet_0024.pdf": {
+        "boundary_accuracy": 0.7778,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.170732,
+        "cost": 0.124336
+      },
+      "packet_0025.pdf": {
+        "boundary_accuracy": 0.8571,
+        "label_accuracy": 0.944433,
+        "weighted_accuracy": 0.242218,
+        "cost": 0.131502
+      },
+      "packet_0026.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.604167,
+        "cost": 0.060782
+      },
+      "packet_0027.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.347222,
+        "cost": 0.043185
+      },
+      "packet_0028.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.264228,
+        "cost": 0.127519
+      },
+      "packet_0029.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.284722,
+        "cost": 0.093808
+      },
+      "packet_0030.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.375,
+        "cost": 0.0566
+      },
+      "packet_0031.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.512346,
+        "cost": 0.101648
+      },
+      "packet_0032.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.177083,
+        "cost": 0.074886
+      },
+      "packet_0033.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.666667,
+        "weighted_accuracy": 0.234524,
+        "cost": 0.120999
+      },
+      "packet_0034.pdf": {
+        "boundary_accuracy": 0.8889,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.060606,
+        "cost": 0.050421
+      },
+      "packet_0035.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.34537,
+        "cost": 0.099135
+      },
+      "packet_0036.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.307018,
+        "cost": 0.165422
+      },
+      "packet_0037.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.274074,
+        "cost": 0.058322
+      },
+      "packet_0038.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.645833,
+        "cost": 0.066708
+      },
+      "packet_0039.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.262626,
+        "cost": 0.072304
+      },
+      "packet_0040.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.353846,
+        "cost": 0.129193
+      },
+      "packet_0041.pdf": {
+        "boundary_accuracy": 0.8095,
+        "label_accuracy": 0.8968,
+        "weighted_accuracy": 0.322526,
+        "cost": 0.112282
+      },
+      "packet_0042.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.377193,
+        "cost": 0.114777
+      },
+      "packet_0043.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.466667,
+        "cost": 0.089908
+      },
+      "packet_0044.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.866667,
+        "weighted_accuracy": 0.28,
+        "cost": 0.108562
+      },
+      "packet_0045.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.648148,
+        "cost": 0.116858
+      },
+      "packet_0046.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.052012
+      },
+      "packet_0047.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.755567,
+        "weighted_accuracy": 0.435088,
+        "cost": 0.129396
+      },
+      "packet_0048.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.234043,
+        "cost": 0.128124
+      },
+      "packet_0050.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.222222,
+        "cost": 0.031792
+      },
+      "packet_0051.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.271605,
+        "cost": 0.120324
+      },
+      "packet_0052.pdf": {
+        "list_score": 0.0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.062618
+      },
+      "packet_0053.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.342105,
+        "cost": 0.120325
+      },
+      "packet_0054.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0625,
+        "cost": 0.032585
+      },
+      "packet_0055.pdf": {
+        "boundary_accuracy": 0.933333,
+        "label_accuracy": 0.783333,
+        "weighted_accuracy": 0.402451,
+        "cost": 0.072159
+      },
+      "packet_0056.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.323333,
+        "cost": 0.126808
+      },
+      "packet_0057.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.266667,
+        "cost": 0.060731
+      },
+      "packet_0058.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.139535,
+        "cost": 0.109164
+      },
+      "packet_0059.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.433333,
+        "cost": 0.036705
+      },
+      "packet_0060.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.473333,
+        "cost": 0.074886
+      },
+      "packet_0061.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474359,
+        "cost": 0.056286
+      },
+      "packet_0062.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.355556,
+        "cost": 0.06093
+      },
+      "packet_0063.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.101324
+      },
+      "packet_0064.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.233333,
+        "cost": 0.116345
+      },
+      "packet_0065.pdf": {
+        "boundary_accuracy": 0.904733,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.183995,
+        "cost": 0.128375
+      },
+      "packet_0066.pdf": {
+        "boundary_accuracy": 0.8889,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.222222,
+        "cost": 0.120756
+      },
+      "packet_0067.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.334259,
+        "cost": 0.092633
+      },
+      "packet_0068.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.213333,
+        "cost": 0.065308
+      },
+      "packet_0069.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.346667,
+        "cost": 0.068458
+      },
+      "packet_0070.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.5,
+        "cost": 0.093948
+      },
+      "packet_0071.pdf": {
+        "boundary_accuracy": 0.952367,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.321034,
+        "cost": 0.099169
+      },
+      "packet_0072.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.339744,
+        "cost": 0.125023
+      },
+      "packet_0073.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.22,
+        "cost": 0.071023
+      },
+      "packet_0074.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.45,
+        "cost": 0.116287
+      },
+      "packet_0075.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.352381,
+        "cost": 0.128148
+      },
+      "packet_0076.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.155556,
+        "cost": 0.113996
+      },
+      "packet_0077.pdf": {
+        "boundary_accuracy": 0.7778,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.133333,
+        "cost": 0.035034
+      },
+      "packet_0078.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.348837,
+        "cost": 0.089459
+      },
+      "packet_0079.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.292929,
+        "cost": 0.123732
+      },
+      "packet_0080.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.383333,
+        "cost": 0.100099
+      },
+      "packet_0081.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.127273,
+        "cost": 0.090551
+      },
+      "packet_0082.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.392857,
+        "cost": 0.111375
+      },
+      "packet_0083.pdf": {
+        "boundary_accuracy": 0.916667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.280702,
+        "cost": 0.117251
+      },
+      "packet_0084.pdf": {
+        "boundary_accuracy": 0.9,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.238532,
+        "cost": 0.124254
+      },
+      "packet_0085.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.166667,
+        "cost": 0.086542
+      },
+      "packet_0086.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.6875,
+        "cost": 0.236404
+      },
+      "packet_0087.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.301075,
+        "cost": 0.05731
+      },
+      "packet_0088.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.236882
+      },
+      "packet_0089.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.3333,
+        "weighted_accuracy": 0.344444,
+        "cost": 0.06309
+      },
+      "packet_0090.pdf": {
+        "boundary_accuracy": 0.583333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.474603,
+        "cost": 0.131288
+      },
+      "packet_0091.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.325,
+        "cost": 0.037799
+      },
+      "packet_0092.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.125,
+        "cost": 0.091417
+      },
+      "packet_0093.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.449495,
+        "cost": 0.075448
+      },
+      "packet_0094.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.365297,
+        "cost": 0.081547
+      },
+      "packet_0095.pdf": {
+        "boundary_accuracy": 0.866667,
+        "label_accuracy": 0.933333,
+        "weighted_accuracy": 0.174242,
+        "cost": 0.08564
+      },
+      "packet_0096.pdf": {
+        "boundary_accuracy": 0.555567,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.322222,
+        "cost": 0.048141
+      },
+      "packet_0097.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.125,
+        "cost": 0.042041
+      },
+      "packet_0098.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.350427,
+        "cost": 0.112415
+      },
+      "packet_0099.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.35461,
+        "cost": 0.060054
+      },
+      "packet_0100.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.472868,
+        "cost": 0.033057
+      }
+    },
+    "docsplit_100|Images only": {
+      "packet_0001.pdf": {
+        "boundary_accuracy": 0.3333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.460258,
+        "cost": 0.136043
+      },
+      "packet_0002.pdf": {
+        "boundary_accuracy": 0.3333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.3125,
+        "cost": 0.066204
+      },
+      "packet_0003.pdf": {
+        "boundary_accuracy": 0.875,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.429952,
+        "cost": 0.093742
+      },
+      "packet_0004.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.325926,
+        "cost": 0.060926
+      },
+      "packet_0005.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.354167,
+        "cost": 0.035821
+      },
+      "packet_0006.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.363533,
+        "cost": 0.135143
+      },
+      "packet_0008.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.546032,
+        "cost": 0.10315
+      },
+      "packet_0009.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.065784
+      },
+      "packet_0010.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.359649,
+        "cost": 0.100146
+      },
+      "packet_0011.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.952367,
+        "weighted_accuracy": 0.281419,
+        "cost": 0.123835
+      },
+      "packet_0012.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.517544,
+        "cost": 0.123674
+      },
+      "packet_0013.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.236842,
+        "cost": 0.093382
+      },
+      "packet_0014.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.060606,
+        "cost": 0.128644
+      },
+      "packet_0015.pdf": {
+        "boundary_accuracy": 0.583333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.211111,
+        "cost": 0.065437
+      },
+      "packet_0016.pdf": {
+        "boundary_accuracy": 0.777767,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.315947,
+        "cost": 0.124078
+      },
+      "packet_0017.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.516667,
+        "cost": 0.13691
       },
       "packet_0018.pdf": {
         "boundary_accuracy": 0.933333,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.362444,
-        "cost": 0.076178
+        "weighted_accuracy": 0.256932,
+        "cost": 0.084154
       },
       "packet_0019.pdf": {
-        "boundary_accuracy": 0.952367,
-        "label_accuracy": 1.0,
-        "weighted_accuracy": 0.301449,
-        "cost": 0.108884
+        "boundary_accuracy": 0.904733,
+        "label_accuracy": 0.888867,
+        "weighted_accuracy": 0.37287,
+        "cost": 0.121454
       },
       "packet_0020.pdf": {
         "boundary_accuracy": 1.0,
         "label_accuracy": 1.0,
-        "weighted_accuracy": 0.138889,
-        "cost": 0.073686
+        "weighted_accuracy": 0.037037,
+        "cost": 0.081632
+      },
+      "packet_0021.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.385185,
+        "cost": 0.131809
+      },
+      "packet_0022.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.363636,
+        "cost": 0.052047
+      },
+      "packet_0023.pdf": {
+        "boundary_accuracy": 0.8889,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.484848,
+        "cost": 0.127363
+      },
+      "packet_0024.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.162602,
+        "cost": 0.133276
+      },
+      "packet_0025.pdf": {
+        "boundary_accuracy": 0.1429,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.403226,
+        "cost": 0.139353
+      },
+      "packet_0026.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.333333,
+        "weighted_accuracy": 0.641667,
+        "cost": 0.071906
+      },
+      "packet_0027.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.373016,
+        "cost": 0.045698
+      },
+      "packet_0028.pdf": {
+        "boundary_accuracy": 0.833333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.288618,
+        "cost": 0.133646
+      },
+      "packet_0029.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 0.805567,
+        "weighted_accuracy": 0.326389,
+        "cost": 0.097632
+      },
+      "packet_0030.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.318182,
+        "cost": 0.064614
+      },
+      "packet_0031.pdf": {
+        "boundary_accuracy": 0.75,
+        "label_accuracy": 0.6667,
+        "weighted_accuracy": 0.5,
+        "cost": 0.108483
+      },
+      "packet_0032.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.177083,
+        "cost": 0.074049
+      },
+      "packet_0033.pdf": {
+        "boundary_accuracy": 0.266667,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.347287,
+        "cost": 0.129937
+      },
+      "packet_0034.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.057522
+      },
+      "packet_0035.pdf": {
+        "boundary_accuracy": 0.6,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.444444,
+        "cost": 0.102386
+      },
+      "packet_0036.pdf": {
+        "boundary_accuracy": 0.444433,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.421053,
+        "cost": 0.109848
+      },
+      "packet_0037.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.281481,
+        "cost": 0.061568
+      },
+      "packet_0038.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.666667,
+        "weighted_accuracy": 0.595833,
+        "cost": 0.072293
+      },
+      "packet_0039.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.263348,
+        "cost": 0.075033
+      },
+      "packet_0040.pdf": {
+        "boundary_accuracy": 0.714267,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.394872,
+        "cost": 0.141608
+      },
+      "packet_0041.pdf": {
+        "boundary_accuracy": 0.7619,
+        "label_accuracy": 0.833333,
+        "weighted_accuracy": 0.404777,
+        "cost": 0.118571
+      },
+      "packet_0042.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.359649,
+        "cost": 0.1271
+      },
+      "packet_0043.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.483333,
+        "cost": 0.099118
+      },
+      "packet_0044.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8,
+        "weighted_accuracy": 0.311111,
+        "cost": 0.115129
+      },
+      "packet_0045.pdf": {
+        "boundary_accuracy": 0.8889,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.657407,
+        "cost": 0.127557
+      },
+      "packet_0046.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.057521
+      },
+      "packet_0047.pdf": {
+        "boundary_accuracy": 0.766667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.405174,
+        "cost": 0.136797
+      },
+      "packet_0048.pdf": {
+        "boundary_accuracy": 0.583333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.29078,
+        "cost": 0.138429
+      },
+      "packet_0050.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.222222,
+        "cost": 0.033883
+      },
+      "packet_0051.pdf": {
+        "boundary_accuracy": 0.4,
+        "label_accuracy": 0.333333,
+        "weighted_accuracy": 0.308642,
+        "cost": 0.127796
+      },
+      "packet_0052.pdf": {
+        "list_score": 0.0,
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0,
+        "cost": 0.071246
+      },
+      "packet_0053.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.368421,
+        "cost": 0.128436
+      },
+      "packet_0054.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.0625,
+        "cost": 0.034579
+      },
+      "packet_0055.pdf": {
+        "boundary_accuracy": 0.466667,
+        "label_accuracy": 0.666667,
+        "weighted_accuracy": 0.541773,
+        "cost": 0.062139
+      },
+      "packet_0056.pdf": {
+        "boundary_accuracy": 0.944433,
+        "label_accuracy": 0.877767,
+        "weighted_accuracy": 0.324373,
+        "cost": 0.134138
+      },
+      "packet_0057.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.244444,
+        "cost": 0.067627
+      },
+      "packet_0058.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.255814,
+        "cost": 0.119057
+      },
+      "packet_0059.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.455556,
+        "cost": 0.039265
+      },
+      "packet_0060.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.506667,
+        "cost": 0.073839
+      },
+      "packet_0061.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.467949,
+        "cost": 0.060653
+      },
+      "packet_0062.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.355556,
+        "cost": 0.06312
+      },
+      "packet_0063.pdf": {
+        "boundary_accuracy": 0.333333,
+        "label_accuracy": 0.75,
+        "weighted_accuracy": 0.522211,
+        "cost": 0.106037
+      },
+      "packet_0064.pdf": {
+        "boundary_accuracy": 0.166667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.122222,
+        "cost": 0.114121
+      },
+      "packet_0065.pdf": {
+        "boundary_accuracy": 0.1429,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.231301,
+        "cost": 0.13499
+      },
+      "packet_0066.pdf": {
+        "boundary_accuracy": 0.666667,
+        "label_accuracy": 0.7778,
+        "weighted_accuracy": 0.315556,
+        "cost": 0.127881
+      },
+      "packet_0067.pdf": {
+        "boundary_accuracy": 0.333333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.557407,
+        "cost": 0.097234
+      },
+      "packet_0068.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.916667,
+        "weighted_accuracy": 0.27845,
+        "cost": 0.068684
+      },
+      "packet_0069.pdf": {
+        "boundary_accuracy": 0.6667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.36,
+        "cost": 0.073732
+      },
+      "packet_0070.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.444444,
+        "cost": 0.105594
+      },
+      "packet_0071.pdf": {
+        "boundary_accuracy": 0.8095,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.314242,
+        "cost": 0.104678
+      },
+      "packet_0072.pdf": {
+        "boundary_accuracy": 0.8,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.314103,
+        "cost": 0.133227
+      },
+      "packet_0073.pdf": {
+        "boundary_accuracy": 0.583333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.262946,
+        "cost": 0.075732
+      },
+      "packet_0074.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.4,
+        "cost": 0.125753
+      },
+      "packet_0075.pdf": {
+        "boundary_accuracy": 0.904767,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.328571,
+        "cost": 0.136737
+      },
+      "packet_0076.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.155556,
+        "cost": 0.120914
+      },
+      "packet_0077.pdf": {
+        "boundary_accuracy": 0.7778,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.183333,
+        "cost": 0.038413
+      },
+      "packet_0078.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.534884,
+        "cost": 0.10015
+      },
+      "packet_0079.pdf": {
+        "boundary_accuracy": 0.222233,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.424242,
+        "cost": 0.13508
+      },
+      "packet_0080.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.391667,
+        "cost": 0.10663
+      },
+      "packet_0081.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.133333,
+        "cost": 0.09644
+      },
+      "packet_0082.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.535714,
+        "cost": 0.131923
+      },
+      "packet_0083.pdf": {
+        "boundary_accuracy": 0.166667,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.421053,
+        "cost": 0.126296
+      },
+      "packet_0084.pdf": {
+        "boundary_accuracy": 0.766667,
+        "label_accuracy": 0.952367,
+        "weighted_accuracy": 0.28035,
+        "cost": 0.123669
+      },
+      "packet_0085.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.154762,
+        "cost": 0.091914
+      },
+      "packet_0086.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.666667,
+        "cost": 0.242691
+      },
+      "packet_0087.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.295699,
+        "cost": 0.061831
+      },
+      "packet_0088.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.307692,
+        "cost": 0.24476
+      },
+      "packet_0089.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 0.444433,
+        "weighted_accuracy": 0.297778,
+        "cost": 0.068014
+      },
+      "packet_0090.pdf": {
+        "boundary_accuracy": 0.25,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.580952,
+        "cost": 0.140774
+      },
+      "packet_0091.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.333333,
+        "cost": 0.039213
+      },
+      "packet_0092.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.241667,
+        "cost": 0.099041
+      },
+      "packet_0093.pdf": {
+        "boundary_accuracy": 0.5,
+        "label_accuracy": 0.8889,
+        "weighted_accuracy": 0.65202,
+        "cost": 0.078962
+      },
+      "packet_0094.pdf": {
+        "boundary_accuracy": 0.952367,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.378995,
+        "cost": 0.085742
+      },
+      "packet_0095.pdf": {
+        "boundary_accuracy": 0.266667,
+        "label_accuracy": 0.83335,
+        "weighted_accuracy": 0.181818,
+        "cost": 0.095418
+      },
+      "packet_0096.pdf": {
+        "boundary_accuracy": 0.3333,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.3,
+        "cost": 0.051507
+      },
+      "packet_0097.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.3125,
+        "cost": 0.052413
+      },
+      "packet_0098.pdf": {
+        "boundary_accuracy": 0.0,
+        "weighted_accuracy": 0.466977,
+        "cost": 0.123459
+      },
+      "packet_0099.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.361702,
+        "cost": 0.064704
+      },
+      "packet_0100.pdf": {
+        "boundary_accuracy": 1.0,
+        "label_accuracy": 1.0,
+        "weighted_accuracy": 0.465116,
+        "cost": 0.034884
       }
     }
   },
   "unfinished": {
-    "docsplit|Text and images (baseline)": {
-      "packet_0006.pdf": {
+    "docsplit_100|Text and images (baseline)": {
+      "packet_0007.pdf": {
         "runs": 1,
         "of": 3,
         "status": [
           "FAILED"
         ]
-      }
-    },
-    "docsplit|Images only": {
-      "packet_0003.pdf": {
-        "runs": 2,
+      },
+      "packet_0049.pdf": {
+        "runs": 1,
         "of": 3,
         "status": [
           "FAILED"
@@ -750,149 +2323,9 @@
     }
   },
   "pages_per_doc": {
-    "docsplit": 14.9
+    "docsplit_100": 14.6327
   },
   "sections_per_doc": {
-    "docsplit": 4.5
-  },
-  "long_context": {
-    "docsplit|Text only": {
-      "rules": {
-        "anthropic.claude-haiku-5-5": {
-          "threshold": 100000,
-          "multiplier": 5.0
-        }
-      },
-      "documents": 60,
-      "long_documents": 0,
-      "requests": 761,
-      "long_requests": 0,
-      "unsized_documents": 0,
-      "by_step": {
-        "Assessment": {
-          "documents": 60,
-          "long_documents": 0,
-          "requests": 350,
-          "long_requests": 0,
-          "unsized_documents": 0
-        },
-        "Classification": {
-          "documents": 60,
-          "long_documents": 0,
-          "requests": 61,
-          "long_requests": 0,
-          "unsized_documents": 0
-        },
-        "Extraction": {
-          "documents": 60,
-          "long_documents": 0,
-          "requests": 350,
-          "long_requests": 0,
-          "unsized_documents": 0
-        }
-      },
-      "surcharge": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "unsized_ceiling": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    "docsplit|Text and images (baseline)": {
-      "rules": {
-        "anthropic.claude-haiku-5-5": {
-          "threshold": 100000,
-          "multiplier": 5.0
-        }
-      },
-      "documents": 59,
-      "long_documents": 15,
-      "requests": 760,
-      "long_requests": 15,
-      "unsized_documents": 0,
-      "by_step": {
-        "Assessment": {
-          "documents": 59,
-          "long_documents": 1,
-          "requests": 345,
-          "long_requests": 1,
-          "unsized_documents": 0
-        },
-        "Classification": {
-          "documents": 59,
-          "long_documents": 14,
-          "requests": 68,
-          "long_requests": 14,
-          "unsized_documents": 0
-        },
-        "Extraction": {
-          "documents": 59,
-          "long_documents": 0,
-          "requests": 347,
-          "long_requests": 0,
-          "unsized_documents": 0
-        }
-      },
-      "surcharge": [
-        0.01636915,
-        0.01141637,
-        0.01338885
-      ],
-      "unsized_ceiling": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    "docsplit|Images only": {
-      "rules": {
-        "anthropic.claude-haiku-5-5": {
-          "threshold": 100000,
-          "multiplier": 5.0
-        }
-      },
-      "documents": 58,
-      "long_documents": 0,
-      "requests": 718,
-      "long_requests": 0,
-      "unsized_documents": 0,
-      "by_step": {
-        "Assessment": {
-          "documents": 58,
-          "long_documents": 0,
-          "requests": 325,
-          "long_requests": 0,
-          "unsized_documents": 0
-        },
-        "Classification": {
-          "documents": 58,
-          "long_documents": 0,
-          "requests": 67,
-          "long_requests": 0,
-          "unsized_documents": 0
-        },
-        "Extraction": {
-          "documents": 58,
-          "long_documents": 0,
-          "requests": 326,
-          "long_requests": 0,
-          "unsized_documents": 0
-        }
-      },
-      "surcharge": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "unsized_ceiling": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    }
+    "docsplit_100": 4.1633
   }
 }

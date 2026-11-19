@@ -137,9 +137,9 @@ def test_the_answer_quotes_the_numbers_it_rests_on():
     assert text.startswith(
         "Holistic classification with Claude Haiku 5.5 is a good place to start"
     )
-    assert "0.75 of sections exactly right for $10.4" in text
+    assert "75% of sections exactly right for $10.4" in text
     assert "no approach under $200 got measurably more right" in text
-    assert "With Claude Sonnet 5.5 it got the most right, 0.90, for $200" in text
+    assert "With Claude Sonnet 5.5 it got the most right, 90%, for $200" in text
 
 
 def test_a_value_still_running_is_named_once_and_leaves_no_blank():
@@ -407,8 +407,8 @@ def test_a_clear_change_is_said_as_one():
     d = long_data(dict(CELLS))
     _, why, *_ = rsa.long_text(d, rsa.long_facts(d))
     assert why.startswith(
-        "Long packets are harder for both approaches: on 30–60 pages both got 0.62 of "
-        "sections exactly right, against 0.76 for holistic and 0.68 for page by page"
+        "Long packets are harder for both approaches: on 30–60 pages both got 62% of "
+        "sections exactly right, against 76% for holistic and 68% for page by page"
     )
 
 
@@ -427,7 +427,7 @@ def test_harder_is_said_only_for_a_drop_beyond_its_packet_to_packet_spread():
     paras = rsa.long_text(long_data(dict(CELLS), scored=False), f)
     assert any(
         p.startswith(
-            "On 30–60 pages both got 0.62 of sections exactly right, against 0.75"
+            "On 30–60 pages both got 62% of sections exactly right, against 75%"
         )
         for p in paras
     )

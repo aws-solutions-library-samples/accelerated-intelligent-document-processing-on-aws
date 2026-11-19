@@ -453,19 +453,19 @@ def answer(data: Data) -> str:
         return "Not yet measured."
     s, words = pk.start, DATASET_WORDS.get(ds, chart_name(ds, data.reg["datasets"]))
     first = (
-        f"{approach_phrase(s)} is a good place to start: on {words} it got "
-        f"{s.y['mean']:.2f} of sections exactly right for {money(s.x['mean'])} of "
+        f"{approach_phrase(s)} is a good place to start. On {words} it got "
+        f"{pct(s.y['mean'])} of sections exactly right for {money(s.x['mean'])} of "
         "classification per 1,000 packets"
     )
     if pk.unbeaten and pk.upper is not None:
-        first += f", and no approach under {money(pk.upper)} got measurably more right"
+        first += f"; no approach under {money(pk.upper)} got measurably more right"
     out = [first + "."]
     top = pk.top
     if top and s not in top:
         # The trade-off: what the most accurate point, or points tied for it, cost.
         cheapest = min(p.x["mean"] for p in top)
         ratio = cheapest / s.x["mean"] if s.x["mean"] else 0
-        accs = join([f"{p.y['mean']:.2f}" for p in top])
+        accs = join([pct(p.y["mean"]) for p in top])
         cost = join([money(p.x["mean"]) for p in top])
         if ratio >= 2:
             cost += (
@@ -488,6 +488,10 @@ def answer(data: Data) -> str:
             out.append(
                 f"{names[:1].upper() + names[1:]} got the most right, {accs}, for {cost}."
             )
+    out.append(
+        "Reading text only, without page images, does better still "
+        "([SC-02](#do-i-need-page-images-in-the-classification-prompt))."
+    )
     out.append("Test it on your own packets.")
     return " ".join(out)
 
@@ -1230,23 +1234,24 @@ def long_text(data: Data, f: LongFacts) -> list[str]:
             f"as page by page ({money(ca['mean'])} against {money(cb['mean'])} of "
             "classification per 1,000 long packets), because a 20-page window with page "
             "images goes over the 100,000 tokens above which Claude Haiku 5.5 bills its "
-            "long-context rate; reading text only, or a window of about 15 pages, keeps "
-            "each call under it."
+            "long-context rate; a 10- or 15-page window keeps most calls under it "
+            "([SC-04](#how-long-a-packet-can-holistic-classification-handle)), as does "
+            "reading text only."
         )
 
     why = []
     by = {name: (s, lg) for name, s, lg in f.absolute}
     hol, page = by.get("Holistic"), by.get("Page by page")
     if hol and page:
-        a, b = f"{hol[1]['mean']:.2f}", f"{page[1]['mean']:.2f}"
+        a, b = pct(hol[1]["mean"]), pct(page[1]["mean"])
         on_long = (
             f"both got {a} of sections exactly right"
             if a == b
             else f"holistic got {a} of sections exactly right and page by page {b}"
         )
         text = (
-            f"on {f.long.label} {on_long}, against {hol[0]['mean']:.2f} for holistic "
-            f"and {page[0]['mean']:.2f} for page by page on {f.short.label}"
+            f"on {f.long.label} {on_long}, against {pct(hol[0]['mean'])} for holistic "
+            f"and {pct(page[0]['mean'])} for page by page on {f.short.label}"
         )
         lead = harder_words(f)
         why.append(f"{lead}: {text}." if lead else f"{text[:1].upper()}{text[1:]}.")

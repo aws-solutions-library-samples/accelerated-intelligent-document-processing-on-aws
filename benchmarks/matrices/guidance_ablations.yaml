@@ -305,10 +305,10 @@ ablations:
     changes: "What the classification model reads"
     values: ["Text and images (baseline)", "Text only", "Images only"]
     set: [{"classification.combined.llm.modality": {"text": true, "images": true}}, {"classification.combined.llm.modality": {"text": true, "images": false}}, {"classification.combined.llm.modality": {"text": false, "images": true}}]
-    baseline: recommended
+    baseline: develop
     reference: "Text and images (baseline)"
     fixed: Classification
-    datasets: ["docsplit"]
+    datasets: ["docsplit_100"]
     runs: 3
     metrics: ["section_accuracy", "page_accuracy", "boundary_accuracy", "label_accuracy", "classification_tokens"]
     plot: section_accuracy
@@ -317,12 +317,26 @@ ablations:
   - id: SC-04
     page: splitting-and-classification
     question: "How long a packet can holistic classification handle?"
-    changes: "Pages per holistic call (`window_pages`)"
-    values: ["20 (default)", "10", "40"]
-    holds: "Holistic, one call"
-    datasets: [docsplit_long, docsplit]
+    takeaway: "A 10-page window costs 60% less on long packets, and gets at least as many sections right"
+    changes: "Pages per holistic call (`window_pages`), on 30-to-60-page packets"
+    varies: "pages per holistic call"
+    fixed: "Classification"
+    values: ["20 pages (default)", "10 pages", "15 pages", "40 pages"]
+    set: [{"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.packet.window_pages": "20"}, {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.packet.window_pages": "10"}, {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.packet.window_pages": "15"}, {"classification.strategy": "combined", "classification.combined.granularity": "packet", "classification.combined.llm.model": "us.anthropic.claude-haiku-5-5", "classification.combined.packet.window_pages": "40"}]
+    baseline: develop
+    reference: "20 pages (default)"
+    datasets: [docsplit_long]
     runs: 3
-    metrics: [page_accuracy, boundary_accuracy, label_accuracy, classification_tokens]
+    metrics: [section_accuracy, grouping_score, boundary_accuracy, label_accuracy, page_accuracy, classification_tokens, median_seconds]
+    plot: section_accuracy
+    cost_metric: classification_cost_per_1000_docs
+    econ: {against: "20 pages (default)", line: "10 pages"}
+    families: false
+    notes: >-
+      Holistic classification with Claude Haiku 5.5 reading text and page images; a packet longer
+      than the window is read in overlapping windows (2 pages of overlap) and merged. The
+      20-page runs are the same runs as SC-14's holistic long-packet runs. A window of more than
+      20 pages sends more than 20 page images, so Claude scales each to 2,000 pixels.
   - id: SC-06
     page: splitting-and-classification
     question: "Do few-shot examples help classification?"
@@ -544,7 +558,7 @@ ablations:
     metrics: [auroc, calibration_error, alert_rate, errors_caught]
   - id: CF-02
     page: confidence-assessment
-    notes: "Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48% at the same cost as Claude Haiku 5.5, not measurably worse, but it varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models."
+    notes: "Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48%, fewer than Claude Haiku 5.5's 71% at the same cost, and varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models."
     question: "Which scoring model should I use?"
     takeaway: "Haiku 5.5 catches errors like Sonnet 5.5, at a fifth the cost"
     changes: "Scoring model"

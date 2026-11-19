@@ -54,7 +54,7 @@ Some benchmarks here reuse runs from other pages.
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Claude Haiku 5.5 extraction, Textract Layout only, and confidence off or scored by Claude Haiku 5.5 is a good place to start: $21 per 1,000 invoices against $135 for the default, at the same accuracy. Test it on your own documents.
+**Answer:** Claude Haiku 5.5 extraction with Textract Layout only is a good place to start. With confidence off it cost $21 per 1,000 invoices, against $135 for the default, at the same weighted accuracy. Scoring confidence with Claude Haiku 5.5 raises that to $28, and it got every field right on more invoices (10% against 3%). Test it on your own documents.
 
 <details>
 <summary>Details</summary>

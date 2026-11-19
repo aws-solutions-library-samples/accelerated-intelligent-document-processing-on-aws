@@ -3,555 +3,555 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261116-210412, RealKIE-FCC-Verified-20261116-210348, RealKIE-FCC-Verified-20261116-210401, RealKIE-FCC-Verified-20261116-210325, RealKIE-FCC-Verified-20261116-210312, RealKIE-FCC-Verified-20261116-210336, RealKIE-FCC-Verified-20261116-211231, RealKIE-FCC-Verified-20261116-211428, RealKIE-FCC-Verified-20261116-211453, RealKIE-FCC-Verified-20261116-211742, RealKIE-FCC-Verified-20261116-212058, RealKIE-FCC-Verified-20261116-212135, RealKIE-FCC-Verified-20261116-211556, RealKIE-FCC-Verified-20261116-211631, RealKIE-FCC-Verified-20261116-211617, RealKIE-FCC-Verified-20261116-212145, RealKIE-FCC-Verified-20261116-212209, RealKIE-FCC-Verified-20261116-212223, RealKIE-FCC-Verified-20261116-212359, RealKIE-FCC-Verified-20261116-212503, RealKIE-FCC-Verified-20261116-212608, RealKIE-FCC-Verified-20261116-212629, RealKIE-FCC-Verified-20261116-212647, RealKIE-FCC-Verified-20261116-212713",
-  "verdict": "Keep both on; they're a free safety net. Validation checks each value against the schema and records what fails; coercion converts values to the schema's types (for example \"$6.00\" to 6.0). On RealKIE invoices coercion changed no value for any model, and validation flagged only Amazon Nova 2 Lite (5 of 60 sections, each missing a required field), which it records but doesn't fix. Accuracy and cost were the same on and off for Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Amazon Nova 2 Lite.",
+  "verdict": "Keep both on; they're a cheap safety net. Validation checks each value against the schema and records what fails. Coercion converts values to the schema's types, for example \"$6.00\" to 6.0. On RealKIE invoices, accuracy was the same with them on or off for every model, and they added up to 8% to the cost. Coercion changed no value, and validation flagged only Amazon Nova 2 Lite: 5 of 60 sections were missing a required field, which it records but doesn't fix.",
   "cells": {
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|weighted_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
       "mean": 0.824813,
       "se": 0.034285
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|extraction_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|extraction_tokens": {
       "mean": 6806.119342,
       "se": 24.79422
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|scoring_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|scoring_tokens": {
       "mean": 12125.440329,
       "se": 443.388667
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|total_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|total_tokens": {
       "mean": 18931.559671,
       "se": 468.176732
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|median_seconds": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|median_seconds": {
       "mean": 50.9614,
       "se": 3.339735
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|list_recall": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|list_recall": {
       "mean": 0.459817,
       "se": 0.0703
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|list_precision": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|list_precision": {
       "mean": 0.295116,
       "se": 0.008916
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|all_fields_right": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|auroc": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|auroc": {
       "mean": 0.852951,
       "se": 0.014942
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|calibration_error": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|calibration_error": {
       "mean": 0.116781,
       "se": 0.009648
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|errors_caught_30": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|errors_caught_30": {
       "mean": 0.78823,
       "se": 0.007331
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|errors_caught_30_random": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
       "mean": 0.298894,
       "se": 0.000147
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|page_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|section_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|grouping_score": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|boundary_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Sonnet 5.5|label_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|weighted_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.807938,
       "se": 0.037382
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|extraction_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|extraction_tokens": {
       "mean": 6772.168724,
       "se": 0.50226
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|scoring_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|scoring_tokens": {
       "mean": 10097.91358,
       "se": 312.193458
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|total_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|total_tokens": {
       "mean": 16870.082305,
       "se": 312.297432
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|median_seconds": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|median_seconds": {
       "mean": 50.889701,
       "se": 4.878112
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|list_recall": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|list_recall": {
       "mean": 0.312272,
       "se": 0.034086
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|list_precision": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|list_precision": {
       "mean": 0.347774,
       "se": 0.067956
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|all_fields_right": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|auroc": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|auroc": {
       "mean": 0.820624,
       "se": 0.021958
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|calibration_error": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|calibration_error": {
       "mean": 0.172821,
       "se": 0.006621
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|errors_caught_30": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|errors_caught_30": {
       "mean": 0.641718,
       "se": 0.024982
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|errors_caught_30_random": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
       "mean": 0.299076,
       "se": 0.000144
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|page_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|section_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|grouping_score": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|boundary_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5|label_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|weighted_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|weighted_accuracy": {
       "mean": 0.825416,
       "se": 0.035797
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|extraction_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|extraction_tokens": {
       "mean": 6908.687243,
       "se": 4.935824
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|scoring_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|scoring_tokens": {
       "mean": 15006.938272,
       "se": 110.953981
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|total_tokens": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|total_tokens": {
       "mean": 21915.625514,
       "se": 107.696504
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|median_seconds": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|median_seconds": {
       "mean": 45.913831,
       "se": 2.459707
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|list_recall": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|list_recall": {
       "mean": 0.953471,
       "se": 0.008576
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|list_precision": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|list_precision": {
       "mean": 0.264417,
       "se": 0.026322
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|all_fields_right": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|all_fields_right": {
       "mean": 0.1,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|auroc": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|auroc": {
       "mean": 0.823238,
       "se": 0.017069
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|calibration_error": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|calibration_error": {
       "mean": 0.102758,
       "se": 0.007704
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|errors_caught_30": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|errors_caught_30": {
       "mean": 0.802557,
       "se": 0.015647
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|errors_caught_30_random": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|errors_caught_30_random": {
       "mean": 0.299307,
       "se": 0.000162
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|page_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|section_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|grouping_score": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|boundary_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5|label_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|weighted_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|weighted_accuracy": {
       "mean": 0.812679,
       "se": 0.036395
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|extraction_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|extraction_tokens": {
       "mean": 6780.123457,
       "se": 5.263358
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|scoring_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|scoring_tokens": {
       "mean": 11421.958848,
       "se": 578.18168
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|total_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|total_tokens": {
       "mean": 18202.082305,
       "se": 581.030233
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|median_seconds": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|median_seconds": {
       "mean": 38.092101,
       "se": 3.852366
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|list_recall": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|list_recall": {
       "mean": 0.298098,
       "se": 0.000922
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|list_precision": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|list_precision": {
       "mean": 0.297283,
       "se": 0.006551
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|all_fields_right": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|auroc": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|auroc": {
       "mean": 0.854937,
       "se": 0.015434
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|calibration_error": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|calibration_error": {
       "mean": 0.175067,
       "se": 0.004934
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|errors_caught_30": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|errors_caught_30": {
       "mean": 0.728815,
       "se": 0.040927
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|errors_caught_30_random": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|errors_caught_30_random": {
       "mean": 0.298607,
       "se": 0.00016
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|page_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|section_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|grouping_score": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|boundary_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5|label_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|weighted_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|weighted_accuracy": {
       "mean": 0.760374,
       "se": 0.037797
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|extraction_tokens": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|extraction_tokens": {
       "mean": 1661.0,
       "se": 28.969368
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|scoring_tokens": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|scoring_tokens": {
       "mean": 16720.374486,
       "se": 2542.542794
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|total_tokens": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|total_tokens": {
       "mean": 18381.374486,
       "se": 2515.088594
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|median_seconds": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|median_seconds": {
       "mean": 44.924221,
       "se": 1.1474
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|list_recall": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|list_recall": {
       "mean": 0.586114,
       "se": 0.186648
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|list_precision": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|list_precision": {
       "mean": 0.194175,
       "se": 0.04322
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|all_fields_right": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|auroc": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|auroc": {
       "mean": 0.733751,
       "se": 0.050147
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|calibration_error": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|calibration_error": {
       "mean": 0.09782,
       "se": 0.024572
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|errors_caught_30": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|errors_caught_30": {
       "mean": 0.529685,
       "se": 0.108231
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|errors_caught_30_random": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|errors_caught_30_random": {
       "mean": 0.299007,
       "se": 0.00036
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|page_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|section_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|grouping_score": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|boundary_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite|label_accuracy": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|weighted_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|weighted_accuracy": {
       "mean": 0.825019,
       "se": 0.034155
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|extraction_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|extraction_tokens": {
       "mean": 6831.786008,
       "se": 0.264529
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|scoring_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|scoring_tokens": {
       "mean": 14125.403292,
       "se": 301.104684
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|total_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|total_tokens": {
       "mean": 20957.1893,
       "se": 300.869609
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|median_seconds": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|median_seconds": {
       "mean": 35.741863,
       "se": 0.646063
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|list_recall": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|list_recall": {
       "mean": 0.495543,
       "se": 0.014931
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|list_precision": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|list_precision": {
       "mean": 0.25074,
       "se": 0.015089
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|all_fields_right": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|auroc": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|auroc": {
       "mean": 0.869209,
       "se": 0.012024
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|calibration_error": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|calibration_error": {
       "mean": 0.131611,
       "se": 0.001602
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|errors_caught_30": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|errors_caught_30": {
       "mean": 0.8182,
       "se": 0.035218
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|errors_caught_30_random": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|errors_caught_30_random": {
       "mean": 0.298764,
       "se": 0.000452
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|page_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|section_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|grouping_score": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|boundary_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5|label_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|weighted_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|weighted_accuracy": {
       "mean": 0.823502,
       "se": 0.035451
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|extraction_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|extraction_tokens": {
       "mean": 6894.736626,
       "se": 10.132349
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|scoring_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|scoring_tokens": {
       "mean": 14494.209877,
       "se": 340.818673
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|total_tokens": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|total_tokens": {
       "mean": 21388.946502,
       "se": 350.924471
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|median_seconds": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|median_seconds": {
       "mean": 39.859842,
       "se": 0.096171
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|list_recall": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|list_recall": {
       "mean": 0.958176,
       "se": 0.006944
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|list_precision": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|list_precision": {
       "mean": 0.290649,
       "se": 0.064065
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|all_fields_right": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|all_fields_right": {
       "mean": 0.066667,
       "se": 0.016667
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|auroc": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|auroc": {
       "mean": 0.793203,
       "se": 0.053859
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|calibration_error": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|calibration_error": {
       "mean": 0.126742,
       "se": 0.009139
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|errors_caught_30": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|errors_caught_30": {
       "mean": 0.704037,
       "se": 0.111761
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|errors_caught_30_random": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|errors_caught_30_random": {
       "mean": 0.298852,
       "se": 0.000269
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|page_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|section_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|grouping_score": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|boundary_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5|label_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|weighted_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|weighted_accuracy": {
       "mean": 0.753575,
       "se": 0.040315
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|extraction_tokens": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|extraction_tokens": {
       "mean": 1595.185185,
       "se": 20.910247
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|scoring_tokens": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|scoring_tokens": {
       "mean": 12507.851852,
       "se": 752.222112
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|total_tokens": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|total_tokens": {
       "mean": 14103.037037,
       "se": 731.80222
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|median_seconds": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|median_seconds": {
       "mean": 36.307059,
       "se": 0.220135
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|list_recall": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|list_recall": {
       "mean": 0.475728,
       "se": 0.165655
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|list_precision": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|list_precision": {
       "mean": 0.238245,
       "se": 0.064939
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|all_fields_right": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|all_fields_right": {
       "mean": 0.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|auroc": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|auroc": {
       "mean": 0.732389,
       "se": 0.059885
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|calibration_error": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|calibration_error": {
       "mean": 0.124307,
       "se": 0.019616
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|errors_caught_30": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|errors_caught_30": {
       "mean": 0.591956,
       "se": 0.102639
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|errors_caught_30_random": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|errors_caught_30_random": {
       "mean": 0.298105,
       "se": 0.000517
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|page_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|page_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|section_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|section_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|grouping_score": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|grouping_score": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|boundary_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|boundary_accuracy": {
       "mean": 1.0,
       "se": 0.0
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite|label_accuracy": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite|label_accuracy": {
       "mean": 1.0,
       "se": 0.0
     }
   },
   "sample": {
-    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5": {
       "docs": [
         20,
         20,
@@ -564,7 +564,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5": {
       "docs": [
         20,
         20,
@@ -577,7 +577,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5": {
       "docs": [
         20,
         20,
@@ -590,7 +590,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5": {
       "docs": [
         20,
         20,
@@ -603,7 +603,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite": {
       "docs": [
         20,
         20,
@@ -616,7 +616,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5": {
       "docs": [
         20,
         20,
@@ -629,7 +629,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5": {
       "docs": [
         20,
         20,
@@ -642,7 +642,7 @@
       ],
       "runs": 3
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite": {
       "docs": [
         20,
         20,
@@ -657,7 +657,7 @@
     }
   },
   "models": {
-    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Claude Sonnet 5.5, single-pass",
@@ -671,7 +671,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Claude Haiku 5.5, single-pass",
@@ -685,7 +685,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Claude Opus 5.5, single-pass",
@@ -699,7 +699,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Claude Haiku 5.5, single-pass",
@@ -713,7 +713,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Amazon Nova 2 Lite, single-pass",
@@ -727,7 +727,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Claude Sonnet 5.5, single-pass",
@@ -741,7 +741,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Claude Opus 5.5, single-pass",
@@ -755,7 +755,7 @@
         ]
       }
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite": {
       "OCR": "Amazon Textract (Layout)",
       "Classification": "Claude Haiku 5.5, holistic (no calls billed)",
       "Extraction": "Amazon Nova 2 Lite, single-pass",
@@ -771,7 +771,7 @@
     }
   },
   "usage": {
-    "realkie|Validation and coercion on · Claude Sonnet 5.5": [
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5": [
       {
         "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 21778.8,
         "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 21527.4,
@@ -806,7 +806,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion on · Claude Haiku 5.5": [
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5": [
       {
         "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 29648.7,
         "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 10101.5,
@@ -829,7 +829,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion on · Claude Opus 5.5": [
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5": [
       {
         "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 47061.65,
         "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 3397.25,
@@ -864,7 +864,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion off · Claude Haiku 5.5": [
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5": [
       {
         "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 41005.3,
         "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
@@ -887,7 +887,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite": [
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite": [
       {
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1332.55,
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 136.05,
@@ -922,7 +922,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion off · Claude Sonnet 5.5": [
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5": [
       {
         "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 48019.0,
         "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
@@ -957,7 +957,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion off · Claude Opus 5.5": [
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5": [
       {
         "bedrock/us.anthropic.claude-haiku-5-5|cacheReadInputTokens": 47280.0,
         "bedrock/us.anthropic.claude-haiku-5-5|cacheWriteInputTokens": 0.0,
@@ -992,7 +992,7 @@
         "textract/analyze_document-Layout|pages": 4.05
       }
     ],
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite": [
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite": [
       {
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheReadInputTokens": 1332.75,
         "bedrock/us.amazon.nova-2-lite-v1:0|cacheWriteInputTokens": 135.85,
@@ -1029,33 +1029,33 @@
     ]
   },
   "cost_basis": {
-    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5": {
       "mode": "cache-isolated"
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite": {
       "mode": "cache-isolated"
     }
   },
   "per_doc": {
-    "realkie|Validation and coercion on · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Sonnet 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 0.8,
         "list_rows": 10,
@@ -1217,7 +1217,7 @@
         "cost": 0.125878
       }
     },
-    "realkie|Validation and coercion on · Claude Haiku 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Haiku 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 0.798025,
         "list_rows": 10,
@@ -1379,7 +1379,7 @@
         "cost": 0.034016
       }
     },
-    "realkie|Validation and coercion on · Claude Opus 5.5": {
+    "realkie|Validation and coercion on \u00b7 Claude Opus 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 1.0,
         "list_rows": 10,
@@ -1541,7 +1541,7 @@
         "cost": 0.1979
       }
     },
-    "realkie|Validation and coercion off · Claude Haiku 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Haiku 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 0.794074,
         "list_rows": 10,
@@ -1703,7 +1703,7 @@
         "cost": 0.035225
       }
     },
-    "realkie|Validation and coercion on · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion on \u00b7 Amazon Nova 2 Lite": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 0.8,
         "list_rows": 10,
@@ -1865,7 +1865,7 @@
         "cost": 0.061931
       }
     },
-    "realkie|Validation and coercion off · Claude Sonnet 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Sonnet 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 0.8,
         "list_rows": 10,
@@ -2027,7 +2027,7 @@
         "cost": 0.121665
       }
     },
-    "realkie|Validation and coercion off · Claude Opus 5.5": {
+    "realkie|Validation and coercion off \u00b7 Claude Opus 5.5": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 1.0,
         "list_rows": 10,
@@ -2189,7 +2189,7 @@
         "cost": 0.198337
       }
     },
-    "realkie|Validation and coercion off · Amazon Nova 2 Lite": {
+    "realkie|Validation and coercion off \u00b7 Amazon Nova 2 Lite": {
       "033f718b16cb597c065930410752c294.pdf": {
         "list_score": 0.8,
         "list_rows": 10,
@@ -2355,56 +2355,56 @@
   "validation_counts": {
     "note": "Sections across all three runs. 'on' values: read from section metadata (metadata.validation, metadata.coercion). 'off' values: the same validate_extraction and coerce_extraction run offline over the stored output, to show what they would have done. Every validation failure was a required field (Advertiser) missing from Nova 2 Lite's output.",
     "values": {
-      "Validation and coercion on · Claude Sonnet 5.5": {
+      "Validation and coercion on \u00b7 Claude Sonnet 5.5": {
         "sections": 60,
         "sections_failing_validation": 0,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "validation"
       },
-      "Validation and coercion on · Claude Haiku 5.5": {
+      "Validation and coercion on \u00b7 Claude Haiku 5.5": {
         "sections": 60,
         "sections_failing_validation": 0,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "validation"
       },
-      "Validation and coercion on · Claude Opus 5.5": {
+      "Validation and coercion on \u00b7 Claude Opus 5.5": {
         "sections": 60,
         "sections_failing_validation": 0,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "validation"
       },
-      "Validation and coercion off · Claude Haiku 5.5": {
+      "Validation and coercion off \u00b7 Claude Haiku 5.5": {
         "sections": 60,
         "sections_failing_validation": 0,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "nothing (both off); counted offline"
       },
-      "Validation and coercion on · Amazon Nova 2 Lite": {
+      "Validation and coercion on \u00b7 Amazon Nova 2 Lite": {
         "sections": 60,
         "sections_failing_validation": 5,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "validation"
       },
-      "Validation and coercion off · Claude Sonnet 5.5": {
+      "Validation and coercion off \u00b7 Claude Sonnet 5.5": {
         "sections": 60,
         "sections_failing_validation": 0,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "nothing (both off); counted offline"
       },
-      "Validation and coercion off · Claude Opus 5.5": {
+      "Validation and coercion off \u00b7 Claude Opus 5.5": {
         "sections": 60,
         "sections_failing_validation": 0,
         "values_coercion_changed_or_would_change": 0,
         "coercion_refusals": 0,
         "recorded_by_pipeline": "nothing (both off); counted offline"
       },
-      "Validation and coercion off · Amazon Nova 2 Lite": {
+      "Validation and coercion off \u00b7 Amazon Nova 2 Lite": {
         "sections": 60,
         "sections_failing_validation": 5,
         "values_coercion_changed_or_would_change": 0,

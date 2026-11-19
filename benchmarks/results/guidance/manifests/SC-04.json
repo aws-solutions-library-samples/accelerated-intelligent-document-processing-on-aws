@@ -1,0 +1,49 @@
+{
+  "ablation": "SC-04",
+  "verdict": "Measured; see the table.",
+  "runs": {
+    "docsplit_long": {
+      "20 pages (default)": [
+        "DocSplit-Long-20261118-183936",
+        "DocSplit-Long-20261118-210825",
+        "DocSplit-Long-20261118-210839"
+      ],
+      "10 pages": [
+        "DocSplit-Long-20261119-163952",
+        "DocSplit-Long-20261119-163920",
+        "DocSplit-Long-20261119-163930"
+      ],
+      "15 pages": [
+        "DocSplit-Long-20261119-163939",
+        "DocSplit-Long-20261119-171805",
+        "DocSplit-Long-20261119-172036"
+      ],
+      "40 pages": [
+        "DocSplit-Long-20261119-172129",
+        "DocSplit-Long-20261119-172206",
+        "DocSplit-Long-20261119-174357"
+      ]
+    }
+  },
+  "max_failed": {
+    "docsplit_long": 4
+  },
+  "stack": "sr-testing",
+  "region": "us-east-1",
+  "release": "0.6.15-develop-d1be93f+fixes-2034-2035-2036",
+  "measured": "November 2026",
+  "cache_isolated": [
+    "DocSplit-Long-20261118-183936",
+    "DocSplit-Long-20261118-210825",
+    "DocSplit-Long-20261118-210839",
+    "DocSplit-Long-20261119-163920",
+    "DocSplit-Long-20261119-163930",
+    "DocSplit-Long-20261119-163939",
+    "DocSplit-Long-20261119-163952",
+    "DocSplit-Long-20261119-171805",
+    "DocSplit-Long-20261119-172036",
+    "DocSplit-Long-20261119-172129",
+    "DocSplit-Long-20261119-172206",
+    "DocSplit-Long-20261119-174357"
+  ]
+}

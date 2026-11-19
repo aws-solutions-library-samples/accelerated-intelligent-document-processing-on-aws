@@ -69,7 +69,7 @@ Full definitions: Stickler's [Thresholds and Metrics](https://awslabs.github.io/
 
 *One point per invoice per extraction mode and model; each line is its running median.*
 
-**Answer:** Single-pass is a good place to start for most documents. For documents with exceptionally long or complex extractions, such as invoices or receipts with many line items, agentic extraction may do better: on [RealKIE](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified) invoices with more than about 100 line items, single-pass got almost no line items right and agentic with Claude Haiku 5.5 got 0.44 to 0.79. Below that, single-pass scored as well or better, at about the same cost or less (agentic calls over 100,000 tokens, which Claude Haiku 5.5 bills at a higher rate, aren't priced here). Test it on your own documents.
+**Answer:** Single-pass is a good place to start for most documents. Agentic extraction may do better on exceptionally long or complex extractions, such as invoices or receipts with many line items. On [RealKIE](../idp-fundamentals/benchmark-datasets.md#realkie-fcc-verified) invoices with more than about 100 line items, single-pass got almost no line items right, and agentic with Claude Haiku 5.5 got 44% to 79%. Below that, single-pass scored as well or better, for about the same cost or less. Agentic costs here are a floor: we can't price its calls over 100,000 tokens, which Claude Haiku 5.5 charges more for. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -156,7 +156,7 @@ Failed documents per run: Agentic · Claude Haiku 5.5: 1, 1, 1; Agentic · Claud
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Claude Haiku 5.5 is a good place to start: no model scored measurably higher on RealKIE invoices, and it cost $23 per 1,000 against $85 to $601 for the Claude, OpenAI and xAI models. Test it on your own documents.
+**Answer:** Claude Haiku 5.5 is a good place to start. On RealKIE invoices no model got a measurably higher weighted accuracy, and Claude Haiku 5.5 cost the least: $23 per 1,000 invoices, against $59 to $601 for the other Claude, OpenAI and xAI models. OpenAI GPT-6 Astra got every field right on the most invoices, 13% against none for Claude Haiku 5.5, for $601. Test it on your own documents.
 
 **The economics:** On RealKIE invoices, OpenAI GPT-6 Astra scored no measurably better than Claude Haiku 5.5, so the extra $578 per 1,000 documents buys nothing measurable.
 
@@ -214,7 +214,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 
 *Fake-W2: every value scored 0.99 or higher, too easy to separate.*
 
-**Answer:** Low effort is a good place to start: with Claude Sonnet 5.5, medium and high scored the same on RealKIE invoices, and high cost more on W-2 forms. Test it on your own documents.
+**Answer:** Low effort is a good place to start. With Claude Sonnet 5.5, medium and high effort scored no better than low on RealKIE invoices or W-2 forms, and high cost more on both. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -250,7 +250,7 @@ On W-2 forms every Claude, OpenAI and xAI model scored 0.996 or better, and Amaz
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Page image plus OCR text is a good place to start. On W-2 forms and bank checks, OCR text alone lost the most (W-2s: 0.91 against 0.997; checks: 0.89 against 0.994), and the image alone got fewer forms fully right (50% of W-2s against 82%). On RealKIE invoices all three scored the same (0.77 to 0.79). The image-only runs still paid for OCR here; skipping OCR would save about $10 per 1,000 pages. Test it on your own documents.
+**Answer:** Page image plus OCR text is a good place to start. On W-2 forms and bank checks, OCR text alone scored lowest (W-2s 0.91 against 0.997; checks 0.89 against 0.994), and the page image alone got every field right on fewer forms (50% of W-2s against 82%). On RealKIE invoices all three scored about the same (0.77 to 0.79). Our image-only runs still paid for OCR; skipping it would save about $10 per 1,000 pages. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -291,7 +291,7 @@ Failed documents per run: OmniAI, bank checks — OCR text only: 0, 0, 1.
 
 *One point per document per table parsing, a tool that turns Textract's tables into rows by code instead of the model retyping them; each line is its running median.*
 
-**Answer:** Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing scored no better (line-item score 52% on, 56% off, within the noise) and cost more (at least $257 against $210 per 1,000 invoices; agentic calls over 100,000 tokens, which Claude Haiku 5.5 bills at a higher rate, can't be priced from our metering) and took longer. Test it on your own long tables.
+**Answer:** Off is a good place to start. On 18 long RealKIE invoices (8 to 33 pages), agentic extraction with table parsing on scored no better than with it off (line-item score 52% against 56%), cost more (at least $257 against $210 per 1,000 invoices) and took longer. Test it on your own long tables.
 
 <details>
 <summary>Details</summary>
@@ -327,7 +327,7 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 
 *Bands show ±2 standard errors.*
 
-**Answer:** Keep both on; they're a free safety net. Validation checks each value against the schema and records what fails; coercion converts values to the schema's types (for example "$6.00" to 6.0). On RealKIE invoices coercion changed no value for any model, and validation flagged only Amazon Nova 2 Lite (5 of 60 sections, each missing a required field), which it records but doesn't fix. Accuracy and cost were the same on and off for Claude Haiku 5.5, Sonnet 5.5, Opus 5.5 and Amazon Nova 2 Lite.
+**Answer:** Keep both on; they're a cheap safety net. Validation checks each value against the schema and records what fails. Coercion converts values to the schema's types, for example "$6.00" to 6.0. On RealKIE invoices, accuracy was the same with them on or off for every model, and they added up to 8% to the cost. Coercion changed no value, and validation flagged only Amazon Nova 2 Lite: 5 of 60 sections were missing a required field, which it records but doesn't fix.
 
 <details>
 <summary>Details</summary>
@@ -384,7 +384,7 @@ Failed documents per run: On: 1, 1, 1; Off: 1, 1, 1.
 
 *Fake-W2: every value scored 0.99 or higher, too easy to separate.*
 
-**Answer:** Warn is a good place to start: validation never failed on these documents, so escalating to Claude Sonnet 5.5 never ran. Test it on your own documents.
+**Answer:** Warn, which only records validation failures, is a good place to start. We couldn't measure the retry: validation never failed on these documents, so escalating to Claude Sonnet 5.5 never ran. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -420,7 +420,7 @@ Differences in the table are run-to-run noise.
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** Structured output, or the schema in the prompt, is a good place to start; avoid the forced tool, which lowered W-2 accuracy from 0.997 to 0.92 with Claude Haiku 5.5. Test it on your own documents.
+**Answer:** Structured output, or the schema in the prompt, is a good place to start; structured output isn't in a release yet ([#1785](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1785)). Avoid the forced tool: with Claude Haiku 5.5 it lowered W-2 accuracy from 0.995 to 0.92. Test it on your own documents.
 
 <details>
 <summary>Details</summary>

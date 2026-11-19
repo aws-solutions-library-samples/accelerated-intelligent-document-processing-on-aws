@@ -61,14 +61,14 @@ Full definitions: Stickler's [Confidence Metrics](https://awslabs.github.io/stic
 
 *Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (1×, what reviewing a random 30% of values catches).*
 
-**Answer:** Claude Haiku 5.5 is a good place to start: reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as a random 30% review (ECARB) on RealKIE invoices, as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset default, found fewer than a random review (0.6 times). Test it on your own documents.
+**Answer:** Claude Haiku 5.5 is a good place to start. On RealKIE invoices, reviewing the 30% of values it was least sure of found 2.4 times as many wrong values as reviewing a random 30% (this ratio is ECARB). That's as many as Claude Sonnet 5.5, for a fifth of the cost. Amazon Nova Lite, the preset's default, did worse than a random review (0.6 times). Test it on your own documents.
 
 <details>
 <summary>Details</summary>
 
 *Measured on release 0.6.15.dev1, November 2026, us-east-1. Source: 23 Test Studio runs, listed in `benchmarks/results/guidance/CF-02.json`.*
 
-Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48% at the same cost as Claude Haiku 5.5, not measurably worse, but it varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models.
+Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a random 30%. Amazon Nova 2 Lite caught 48%, fewer than Claude Haiku 5.5's 71% at the same cost, and varied more between runs. W-2 forms aren't shown: after Claude Haiku 5.5 extraction a run has about one wrong value, too few to compare scoring models.
 
 | | |
 |---|---|
@@ -97,7 +97,7 @@ Amazon Nova Lite, the preset's scoring model, caught 18%, fewer than reviewing a
 
 *Bands show ±2 standard errors. Cost axes differ by dataset.*
 
-**Answer:** A separate scoring pass is a good place to start if people review by confidence; if nobody does, turn confidence off, which kept accuracy and cut cost by 13% to 28%. Test it on your own documents.
+**Answer:** If people review values by confidence, a separate scoring pass is a good place to start. If nobody does, turn confidence off: accuracy stayed the same and cost fell 13% to 28%. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
@@ -135,7 +135,7 @@ Integrated scoring lowered W-2 accuracy from 1.00 to 0.96 to save $0.81 per 1,00
 
 *Bands show ±2 standard errors. Dashed lines mark coin flip (50%, no better than chance) and random review (1×, what reviewing a random 30% of values catches).*
 
-**Answer:** Not yet: score confidence with an LLM; Claude Haiku 5.5 is a good place to start. The Strands Decider 2B reading page images separated right from wrong values less well (AUROC 0.68 against 0.80), at more than three times the cost ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, a gap within run-to-run variation; Claude Sonnet 5.5 found the most (3.0 times) for $130. Test it on your own documents.
+**Answer:** Not yet; score confidence with an LLM, such as Claude Haiku 5.5. The Strands Decider 2B, reading page images, told right values from wrong ones less well (AUROC 0.68 against 0.80) and cost more than three times as much ($104 against $29 per 1,000 invoices). Reviewing its least-sure 30% of values found 2.0 times as many errors as a random review, against 2.5 times for Claude Haiku 5.5, too close to call. Claude Sonnet 5.5 found the most, 3.0 times, for $130. Test it on your own documents.
 
 <details>
 <summary>Details</summary>

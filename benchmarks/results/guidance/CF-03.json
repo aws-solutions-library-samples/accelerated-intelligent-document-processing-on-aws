@@ -3,7 +3,7 @@
   "measured": "November 2026",
   "region": "us-east-1",
   "source": "Test Studio runs RealKIE-FCC-Verified-20261116-181051, RealKIE-FCC-Verified-20261116-181112, RealKIE-FCC-Verified-20261116-181508, RealKIE-FCC-Verified-20261116-181017, RealKIE-FCC-Verified-20261116-181101, RealKIE-FCC-Verified-20261116-181027, RealKIE-FCC-Verified-20261116-181125, RealKIE-FCC-Verified-20261116-181038, RealKIE-FCC-Verified-20261116-181135, Fake-W2-Tax-Forms-20261116-181544, Fake-W2-Tax-Forms-20261116-181821, Fake-W2-Tax-Forms-20261116-181746, Fake-W2-Tax-Forms-20261116-182100, Fake-W2-Tax-Forms-20261116-182200, Fake-W2-Tax-Forms-20261116-182227, Fake-W2-Tax-Forms-20261116-182241, Fake-W2-Tax-Forms-20261116-182336, Fake-W2-Tax-Forms-20261116-182315",
-  "verdict": "A separate scoring pass is a good place to start if people review by confidence; if nobody does, turn confidence off, which kept accuracy and cut cost by 13% to 28%. Test it on your own documents.",
+  "verdict": "If people review values by confidence, a separate scoring pass is a good place to start. If nobody does, turn confidence off: accuracy stayed the same and cost fell 13% to 28%. Test it on your own documents.",
   "cells": {
     "realkie|Off|weighted_accuracy": {
       "mean": 0.816449,

@@ -96,7 +96,7 @@ Failed documents per run: OmniAI, bank checks — Textract, layout only (recomme
 
 *Bands show ±2 standard errors.*
 
-**Answer:** 300 DPI is a good place to start: 200 and 150 DPI scored no better on RealKIE invoices and cost no less. Test it on your own documents.
+**Answer:** 300 DPI is a good place to start: on RealKIE invoices, 200 and 150 DPI scored no better and cost more. Test it on your own documents.
 
 <details>
 <summary>Details</summary>
