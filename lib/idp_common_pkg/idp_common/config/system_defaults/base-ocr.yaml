@@ -22,6 +22,11 @@ ocr:
   
   # For bedrock backend only - model and prompts
   model_id: "us.amazon.nova-2-lite-v1:0"
+  # Output cap for each Bedrock OCR page call (bedrock backend only). Bedrock
+  # holds input + max_tokens of the tokens-per-minute quota while a call runs,
+  # so this is capped below Nova 2 Lite's 64,000-token limit. Empty => use the
+  # selected model's maximum output limit (model_config_limits.yaml).
+  max_tokens: "10000"
   system_prompt: "You are an expert OCR system. Extract all text from the provided image accurately, preserving layout where possible."
   task_prompt: "Extract all text from this document image. Preserve the layout, including paragraphs, tables, and formatting."
   

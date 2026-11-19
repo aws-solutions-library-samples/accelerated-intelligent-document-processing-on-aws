@@ -634,6 +634,12 @@ Resources:
                 description: "Reasoning effort for reasoning-capable models: OpenAI GPT-5.x (minimal|low|medium|high), Claude Sonnet 5 / Sonnet 4.6 / Opus 4.5-4.8 / Opus 5 / Opus 5.5 / Fable 5 / Haiku 5.5 (low|medium|high|xhigh|max), xAI Grok (none|low|medium|high|xhigh), and OpenAI GPT-6 Astra (none|low|medium|high|xhigh|max). Controls how much the model reasons before answering. This list is a superset across families; a value your model does not accept is dropped with a warning rather than sent. Higher effort costs more output tokens with little accuracy gain for extraction (measured), so lower is usually better. Ignored by Nova, Sonnet 4.5, and Haiku 4.5 — note the two Haikus differ: Haiku 5.5 accepts effort and defaults to medium."
                 order: 4
                 dependsOn: { field: "model_id", reasoningCapable: true }
+              max_tokens:
+                type: number
+                title: Max tokens
+                description: "Cap on output tokens for each Bedrock OCR page call (default 10000). Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
+                order: 5
+                dependsOn: { field: "backend", value: "bedrock" }
               features:
                 type: array
                 title: Textract features
@@ -1344,7 +1350,7 @@ Resources:
                           max_tokens:
                             type: number
                             title: Max tokens
-                            description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                            description: "Cap on output tokens (default 10000). A classification reply is short, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                             order: 4
                           reasoning_effort:
                             type: string
@@ -1725,7 +1731,7 @@ Resources:
                               max_tokens:
                                 type: number
                                 title: Max tokens
-                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                description: "Cap on output tokens (default 10000). A classification reply is short, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                                 order: 4
                               reasoning_effort:
                                 type: string
@@ -1969,7 +1975,7 @@ Resources:
                               max_tokens:
                                 type: number
                                 title: Max tokens
-                                description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                                description: "Cap on output tokens (default 10000). A classification reply is short, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                                 order: 4
                               reasoning_effort:
                                 type: string
@@ -3515,7 +3521,7 @@ Resources:
                       max_tokens:
                         type: number
                         title: Max tokens
-                        description: "Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit."
+                        description: "Cap on output tokens (default 10000). A comparison reply is a short JSON object, and Bedrock holds input + max_tokens of the tokens-per-minute quota while a call runs. Leave empty to use the selected model's maximum output limit. If set, it must not exceed the model's limit."
                         order: 4
                       reasoning_effort:
                         type: string

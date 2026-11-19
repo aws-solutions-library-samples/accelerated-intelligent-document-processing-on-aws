@@ -1240,7 +1240,7 @@ classification:
       temperature: "0.0"
       top_p: "0.0"
       top_k: "5"
-      max_tokens: ""               # empty uses the model's maximum
+      max_tokens: "10000"          # output cap; empty uses the model's maximum
       reasoning_effort: medium     # reasoning-capable models only; ignored by Nova
       model_lambda_hook_arn: ""    # used when model is 'LambdaHook'
       modality: {text: "", images: ""}

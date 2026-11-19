@@ -369,7 +369,8 @@ def get_model_max_output_tokens(model_id: str) -> int:
         - Claude Sonnet 5 / Opus 4.6-4.8 / Sonnet 4.6: 128,000 tokens
         - Other Claude 4.x models: 64,000 tokens
         - Claude 3.x models: 8,192 tokens
-        - Amazon Nova models: 10,000 tokens
+        - Amazon Nova 2 Lite: 64,000 tokens
+        - Other Amazon Nova models: 10,000 tokens
         - OpenAI GPT-5.x: 128,000 tokens
 
     Args:

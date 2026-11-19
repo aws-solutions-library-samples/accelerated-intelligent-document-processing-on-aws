@@ -198,6 +198,8 @@ class OcrService:
                         "model_id": self.config.ocr.model_id,
                         "system_prompt": self.config.ocr.system_prompt,
                         "task_prompt": self.config.ocr.task_prompt,
+                        # None => use the model's maximum output.
+                        "max_tokens": self.config.ocr.max_tokens,
                     }
                 else:
                     self.bedrock_config = None
@@ -874,9 +876,10 @@ class OcrService:
                 temperature=0.0,
                 top_p=0.1,
                 top_k=5,
-                # None => Bedrock client resolves the model's max output tokens
-                # (model_config_limits.yaml); Bedrock's default-when-omitted truncates.
-                max_tokens=None,
+                # ocr.max_tokens; None => Bedrock client resolves the model's max
+                # output tokens (model_config_limits.yaml); Bedrock's
+                # default-when-omitted truncates.
+                max_tokens=self.bedrock_config.get("max_tokens"),
                 reasoning_effort=getattr(self.config.ocr, "reasoning_effort", None)
                 if hasattr(self, "config")
                 else None,
@@ -1152,9 +1155,10 @@ class OcrService:
                 temperature=0.0,
                 top_p=0.1,
                 top_k=5,
-                # None => Bedrock client resolves the model's max output tokens
-                # (model_config_limits.yaml); Bedrock's default-when-omitted truncates.
-                max_tokens=None,
+                # ocr.max_tokens; None => Bedrock client resolves the model's max
+                # output tokens (model_config_limits.yaml); Bedrock's
+                # default-when-omitted truncates.
+                max_tokens=self.bedrock_config.get("max_tokens"),
                 reasoning_effort=getattr(self.config.ocr, "reasoning_effort", None)
                 if hasattr(self, "config")
                 else None,
@@ -2372,9 +2376,10 @@ class OcrService:
                     temperature=0.0,
                     top_p=0.1,
                     top_k=5,
-                    # None => Bedrock client resolves the model's max output tokens
-                    # (model_config_limits.yaml); Bedrock's default-when-omitted truncates.
-                    max_tokens=None,
+                    # ocr.max_tokens; None => Bedrock client resolves the model's
+                    # max output tokens (model_config_limits.yaml); Bedrock's
+                    # default-when-omitted truncates.
+                    max_tokens=self.bedrock_config.get("max_tokens"),
                     reasoning_effort=getattr(self.config.ocr, "reasoning_effort", None)
                     if hasattr(self, "config")
                     else None,

@@ -887,6 +887,19 @@ Different Bedrock models implement these parameters with varying defaults, namin
     from the `ValidationException` and retries once.
 
 - **Nova models**:
+  - Limits differ within the family, so `model_config_limits.yaml` gives the
+    members whose Bedrock model card names a different window their own entry
+    ahead of the family pattern: Nova 2 Lite (`nova-2-lite`, every geo, global
+    and service-tier id) has a 1,000,000-token input window and 64,000 output
+    tokens, Nova Micro 128,000 input and 10,000 output, and Nova Pro, Nova Lite,
+    Nova Premier and any other Nova 2 id 300,000 input and 10,000 output. Nova 2
+    Pro has no Bedrock model card, so it keeps the conservative family values.
+    Because the client requests the model maximum when `max_tokens` is unset, a
+    Nova 2 Lite call with no cap asks for 64,000 output tokens, and Bedrock holds
+    that amount of the tokens-per-minute quota until the request finishes. The
+    system defaults therefore set `max_tokens: 10000` for the short-reply steps
+    that use Nova 2 Lite (the three classification calls, `ocr.max_tokens` and
+    `evaluation.llm_method.max_tokens`).
   - Default values: temperature=0.7, topP=0.9, topK≈50 (moderately constrained)
   - Parameters use camelCase: `temperature`, `topP`, `topK`
   - Implementation: `topK` is placed in `additionalModelRequestFields.inferenceConfig`

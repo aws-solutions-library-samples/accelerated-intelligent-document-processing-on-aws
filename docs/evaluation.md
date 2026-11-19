@@ -645,7 +645,7 @@ evaluation:
     temperature: "0.0"
     top_p: "0.0"         # 0 sends temperature instead of top_p
     top_k: "5"
-    max_tokens: ""       # Empty = the model's maximum output; set a value to cap it
+    max_tokens: "10000"  # Output cap; empty = the model's maximum output
     system_prompt: >-
       You are an evaluator that helps determine if the predicted and expected values match ...
     task_prompt: >-
