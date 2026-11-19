@@ -661,6 +661,8 @@ class TestRetainedReportOutput:
         assert "- /aws/lambda/tfidp-fn" in out
         assert "/aws-glue/crawlers (shared by every Glue crawler" in out
         assert "log streams: tfidp-crawler" in out
+        assert "Log groups AWS services created for the deployment's resources" in out
+        assert "Each exists only if its resource ran at least once" in out
         assert "Delete them manually if no longer needed." in out
 
     def test_nothing_left_says_so_and_nothing_else(self):

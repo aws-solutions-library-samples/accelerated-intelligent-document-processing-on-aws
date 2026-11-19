@@ -893,6 +893,56 @@ class TestServiceLogGroups:
             "/aws/lambda/tfidp-z",
         ]
 
+    def test_the_aws_provider_crawler_reads_security_configuration(self):
+        config = _res(
+            "aws_glue_security_configuration",
+            "s",
+            name="tfidp-sec",
+            encryption_configuration=[
+                {"cloudwatch_encryption": [{"cloudwatch_encryption_mode": "SSE-KMS"}]}
+            ],
+        )
+        crawler = _res(
+            "aws_glue_crawler",
+            "c",
+            name="tfidp-c",
+            role="tfidp-crawler",
+            security_configuration="tfidp-sec",
+        )
+        [group] = tf.service_log_groups(_state(config, crawler))
+        assert group["physical_id"] == "/aws-glue/crawlers-role/tfidp-crawler-tfidp-sec"
+        assert group["created_for"] == [crawler["address"]]
+
+    def test_a_function_read_as_data_is_not_reported(self):
+        fn = dict(
+            _res("aws_lambda_function", "a", function_name="tfidp-a"), mode="data"
+        )
+        assert tf.service_log_groups(_state(fn)) == []
+
+    def test_codebuild_naming_its_default_group_is_still_the_services(self):
+        project = _res(
+            "aws_codebuild_project",
+            "a",
+            name="tfidp-a",
+            logs_config=[
+                {
+                    "cloudwatch_logs": [
+                        {"status": "ENABLED", "group_name": "/aws/codebuild/tfidp-a"}
+                    ]
+                }
+            ],
+        )
+        groups = tf.service_log_groups(_state(project))
+        assert [g["physical_id"] for g in groups] == ["/aws/codebuild/tfidp-a"]
+
+    def test_the_delete_report_leaves_out_a_retained_functions_group(self):
+        kept = _res("aws_lambda_function", "k", function_name="tfidp-k")
+        gone = _res("aws_lambda_function", "g", function_name="tfidp-g")
+        report = tf.retained_report(_state(kept, gone), [kept["address"]])
+        assert [g["physical_id"] for g in report["service_log_groups"]] == [
+            "/aws/lambda/tfidp-g"
+        ]
+
     def test_the_delete_report_carries_them(self):
         fn = _res("aws_lambda_function", "a", function_name="tfidp-a")
         report = tf.retained_report(_state(fn), [])

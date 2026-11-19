@@ -1,7 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 # SPDX-License-Identifier: MIT-0
-"""`idp-cli delete --terraform` lists every log group a service creates for the
-deployment, judged against the module the publish builds.
+"""`idp-cli delete --terraform` lists the Lambda log groups the destroy leaves
+behind, judged against the module the publish builds; it also pins this
+module's CodeBuild and Glue results.
 
 `terraform destroy` removes only what is in the state. Lambda, CodeBuild and Glue
 create log groups of their own when a function, build or crawler first runs, and
@@ -156,7 +157,7 @@ def _synthetic_state(root: Path) -> dict:
     return {"values": {"root_module": {"resources": resources}}}
 
 
-def test_every_log_group_a_service_creates_is_reported(module_dir):
+def test_every_lambda_default_log_group_is_reported(module_dir):
     from idp_sdk._core import terraform_deploy as tf
 
     state = _synthetic_state(module_dir)
@@ -172,9 +173,11 @@ def test_every_log_group_a_service_creates_is_reported(module_dir):
         for r in state["values"]["root_module"]["resources"]
         if r["type"] == "aws_lambda_function"
     }
-    expected = _cfn_functions_without_a_log_group() & lambdas
-    # An empty expectation would make the comparison below vacuous.
+    expected = _cfn_functions_without_a_log_group()
+    # An empty expectation would make the comparison below vacuous, and a
+    # function the translation lost would silently leave it.
     assert expected, "no function without a log group found; the derivation broke"
+    assert expected <= lambdas, sorted(expected - lambdas)
     assert created_for.get("aws_lambda_function") == expected
     for entry in reported:
         _, module, kind, label = entry["created_for"][0].split(".")
