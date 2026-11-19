@@ -289,13 +289,36 @@ describe('The create-test-set wizard', () => {
     const timeFilter = wrapper.findWizard()!.findContent()!.findAllSelects()[2];
     act(() => timeFilter.openDropdown());
     act(() => timeFilter.selectOptionByValue('custom'));
-    fireEvent.change(screen.getByPlaceholderText('YYYY-MM-DD'), { target: { value: date } });
-    fireEvent.change(screen.getByPlaceholderText('00:00:00'), { target: { value: time } });
+    const content = wrapper.findWizard()!.findContent()!;
+    act(() => content.findDatePicker()!.setInputValue(date));
+    act(() => content.findTimeInput()!.setInputValue(time));
   };
 
-  it('will not go on to Create with a custom date that is not real, and says so beside the field', async () => {
-    enterCustomDateTime('2026/11/18', '00:00:00');
-    expect(screen.getAllByText(invalidText).length).toBeGreaterThan(0);
+  /** What the wizard holds for the custom date and time, as the dialog's components show them. */
+  const shownDateTime = (): [string, string] => {
+    const content = createWrapper(document.body).findWizard()!.findContent()!;
+    return [content.findDatePicker()!.findNativeInput().getElement().value, content.findTimeInput()!.findNativeInput().getElement().value];
+  };
+
+  it('takes the custom date and time with the same date picker and time input as the add-documents dialog', async () => {
+    enterCustomDateTime('2026/11/18', '09:30:00');
+    expect(shownDateTime()).toEqual(['2026/11/18', '09:30:00']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check matching files' }));
+    await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
+
+    expect(cutoffsSent('listBucketFiles')).toEqual(['2026-11-18T09:30:00.000Z']);
+  });
+
+  it('will not go on to Create with a custom date typed only in part, and says so beside the field', async () => {
+    // The date picker passes on what is typed so far ('2026-11'), which is not a date.
+    enterCustomDateTime('2026/11', '00:00:00');
+    const dateField = createWrapper(document.body)
+      .findWizard()!
+      .findContent()!
+      .findAllFormFields()
+      .find((f) => f.findLabel()?.getElement().textContent === 'Date')!;
+    expect(dateField.findError()?.getElement().textContent).toBe(invalidText);
     expect(errorAlerts()).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Check matching files' }));
     expect(errorAlerts()).toHaveLength(1);
@@ -305,13 +328,13 @@ describe('The create-test-set wizard', () => {
     const wizard = createWrapper(document.body).findWizard()!;
     act(() => wizard.findPrimaryButton().click());
     // Still on the pattern step: no Review, and nothing was created.
-    expect(screen.getByPlaceholderText('YYYY-MM-DD')).toBeTruthy();
+    expect(createWrapper(document.body).findWizard()!.findContent()!.findDatePicker()).not.toBeNull();
     expect(errorAlerts()).toHaveLength(1);
     expect(cutoffsSent('addTestSet')).toEqual([]);
   });
 
   it('puts a time error under the Time field when the date is fine', () => {
-    enterCustomDateTime('2026-11-18', '9:30');
+    enterCustomDateTime('2026/11/18', '09:3');
     const fields = createWrapper(document.body).findWizard()!.findContent()!.findAllFormFields();
     const errorUnder = (label: string) =>
       fields
@@ -323,7 +346,7 @@ describe('The create-test-set wizard', () => {
   });
 
   it('reads a custom date and time as UTC, as the add-documents dialog does, and says so', async () => {
-    enterCustomDateTime('2026-11-18', '09:30:00');
+    enterCustomDateTime('2026/11/18', '09:30:00');
     expect(screen.getByText('Date and time are in UTC.')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Check matching files' }));

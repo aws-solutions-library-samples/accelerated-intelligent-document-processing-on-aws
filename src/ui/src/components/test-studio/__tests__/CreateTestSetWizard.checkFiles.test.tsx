@@ -131,9 +131,9 @@ describe('Check matching files in the create wizard', () => {
   });
 
   it.each([
-    ['date', 'YYYY-MM-DD', '2026-11-01'],
-    ['time', '00:00:00', '12:00:00'],
-  ])('clears the count when the custom %s changes', async (_field, placeholder, value) => {
+    ['date', '2026/11/01'],
+    ['time', '12:00:00'],
+  ])('clears the count when the custom %s changes', async (field, value) => {
     const listing = deferredListing();
     openPatternStep();
     const timeFilter = createWrapper(document.body).findWizard()!.findContent()!.findAllSelects()[2];
@@ -143,10 +143,12 @@ describe('Check matching files in the create wizard', () => {
     await act(async () => listing.resolve(['inv-1.pdf', 'inv-2.pdf']));
     await waitFor(() => expect(screen.getByText('2 files to add')).toBeTruthy());
 
-    fireEvent.change(screen.getByPlaceholderText(placeholder), { target: { value } });
+    const content = createWrapper(document.body).findWizard()!.findContent()!;
+    const input = field === 'date' ? content.findDatePicker()! : content.findTimeInput()!;
+    act(() => input.setInputValue(value));
 
     expect(screen.queryByText('2 files to add')).toBeNull();
-    expect(screen.getByDisplayValue(value)).toBeTruthy();
+    expect(input.findNativeInput().getElement().value).toBe(value);
   });
 
   it('clears a "no files matched" result when the pattern changes', async () => {
