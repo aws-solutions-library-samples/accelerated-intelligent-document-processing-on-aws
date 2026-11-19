@@ -662,6 +662,24 @@ its ground truth, add more documents, edit its details, or delete it. Opening th
 set — by clicking its name, or **Actions** → **Browse documents** — is where you
 generate draft labels, annotate, prune documents and publish a version.
 
+#### Deleting test sets
+
+Deleting a set removes every file under its folder and then its record. A set that
+a job is still writing — status `QUEUED`, `COPYING`, `UPDATING` (adding documents,
+or a pre-deployed dataset being refreshed) or `GENERATING` — cannot be deleted
+until that job finishes; the delete is refused with the set's status, and any
+other selected sets are still deleted. A set whose job died is moved to `FAILED`
+after a while (two hours for a copy, twelve for a generation) and can then be
+deleted. A set left in one of those statuses by an older release, which recorded
+no time for the status and so is never moved to `FAILED`, can be deleted
+directly.
+
+While its files are being removed a set shows `DELETING`. If some files cannot be
+removed, the set is kept, marked `FAILED` with the reason, and the delete reports
+an error; delete it again to finish. The record is kept on purpose: a folder with
+no record is picked up as a [direct upload](#creating-test-sets) and would come
+back as a new set.
+
 ### Browsing Test Set Documents and Ground Truth
 
 Click a COMPLETED test set's name in the table (or select it and click
