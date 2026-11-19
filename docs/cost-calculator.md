@@ -127,6 +127,12 @@ workflow that succeeded. And when an extraction attempt fails with a transient
 error and Step Functions retries it, the calls of the failed attempt are not
 counted; only the attempt that finishes is.
 
+**Advanced-mode extraction counts the calls that compact its conversation.** When an
+agentic extraction's conversation grows too large for the model's context window,
+the agent summarizes its oldest turns with an extra call to the extraction model.
+Those calls are counted under the section's `Extraction` step and the extraction
+model, whether or not the extraction then succeeds.
+
 **Validation escalation is one row in both extraction modes.** The calls a
 [validation escalation](extraction-and-confidence.md#schema-validation-and-model-escalation)
 makes to the escalation model are metered under the context
