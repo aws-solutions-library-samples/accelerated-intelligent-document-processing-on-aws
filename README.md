@@ -51,7 +51,7 @@ Concierge support for customization, deployment, and integration of production u
 
 **Prefer AWS CDK?** This solution is also available as [GenAI IDP Accelerator for AWS CDK](https://github.com/cdklabs/genai-idp), providing the same functional capabilities through AWS CDK constructs for customers who prefer Infrastructure-as-Code with CDK.
 
-**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating to the built-in Terraform module](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
+**Prefer Terraform?** Each release also publishes a Terraform module generated from this repository's CloudFormation templates, deployable with Terraform or OpenTofu (experimental). See [Terraform Deployment](./docs/terraform.md), and [Migrating from genai-idp-terraform](./docs/terraform-migration.md) if you deploy with a separate Terraform implementation today.
 
 ## Key Features
 

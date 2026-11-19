@@ -298,6 +298,44 @@ back a failed apply the way CloudFormation rolls back a failed stack: what was c
 stays in state. Fix the cause and run `terraform apply` again, or run
 `terraform destroy`.
 
+#### Reviewing a plan before it is applied
+
+`idp-cli deploy --terraform` plans, checks and applies in one invocation, and has no
+option to stop after the plan. Where a change must be reviewed and approved before it
+is applied, run the steps from your own root configuration and apply the saved plan
+file, so that what is applied is exactly what was reviewed:
+
+```bash
+# Plan job
+terraform init
+terraform plan -out=idp.tfplan
+terraform show -json idp.tfplan > idp-plan.json
+
+# Every planned deletion or replacement of a resource that holds data or that
+# CloudFormation would retain, which is what idp-cli's own check refuses:
+jq -r --slurpfile m .terraform/modules/idp/idp-terraform.json '
+  ($m[0].statefulAddresses + $m[0].retainedAddresses) as $protected
+  | .resource_changes[]
+  | select(.change.actions | index("delete"))
+  | select((.address | gsub("\\[[^]]*\\]"; "") | ltrimstr("module.idp."))
+      as $bare | $protected | index($bare))
+  | "\(.change.actions | join(",")) \(.address)"' idp-plan.json
+
+# Apply job, after approval, from the same configuration and lock file
+terraform init
+terraform apply idp.tfplan
+```
+
+The `jq` command prints nothing when the plan deletes and replaces none of those
+resources; an action of `delete,create` or `create,delete` is a replacement. It
+assumes the module block is named `idp`, as in the example above. Review the rest of
+the plan as for any change (`terraform show idp.tfplan` prints it readably).
+
+A saved plan file holds every input value, sensitive ones included, so store it as a
+protected artifact and delete it after the apply. Terraform refuses to apply a saved
+plan once the state has changed since the plan was made, so a plan that waited for
+approval while something else was applied has to be made again.
+
 #### Using the module beside your own resources
 
 Three things behave differently from an ordinary module when the `module "idp"` block
@@ -499,6 +537,42 @@ it to `false` to skip the stack, for example where the deploying role may not us
 CloudFormation. Without the label, `idp-cli` and the SDK cannot address the
 deployment, and every operation on this page that takes `--stack-name` stops working
 for it.
+
+## What still uses CloudFormation
+
+A Terraform deployment does not deploy through CloudFormation, but it is not free of
+CloudFormation's API either. Three things use it:
+
+- **The label stack**, the module's one `aws_cloudformation_stack` resource, described
+  in the previous section. It is created, updated and deleted with the credentials
+  Terraform runs with, using the `cloudformation:` stack actions. Setting
+  `enable_cfn_stack_label = false` removes it, and with it the ability of `idp-cli`
+  and the SDK to address the deployment by `--stack-name`. Running `idp-cli` against
+  a deployment that has the label also needs read access to it
+  (`cloudformation:DescribeStacks`).
+- **The Cloud Control API**, through which the `awscc` provider manages the resources
+  that have no `hashicorp/aws` mapping in the translator (queues, state machines,
+  alarms, the KMS key and others; the module's `.tf` files show which). Cloud Control
+  creates no stacks, but its actions are in the `cloudformation:` IAM namespace
+  (`cloudformation:CreateResource`, `GetResource`, `UpdateResource`, `DeleteResource`,
+  `ListResources` and `GetResourceRequestStatus`), so they are needed for every
+  deployment and cannot be turned off.
+- **Feature-platform extensions** (see [Feature Platform](./feature-platform.md)),
+  which install as CloudFormation stacks of their own. The extension templates in this
+  repository read the main deployment's values through CloudFormation exports
+  (`Fn::ImportValue` of `<stack name>-...`), and the Terraform module creates no
+  CloudFormation exports, so those imports have nothing to resolve to. Installing an
+  extension on a Terraform deployment has not been tested. `EnableFeaturePlatform`
+  set to `false` removes the platform.
+
+The CloudFormation custom resources in the templates do not need CloudFormation: the
+module's bridge function calls their handlers itself.
+
+So the module cannot be deployed where every `cloudformation:` action is denied,
+because that denies Cloud Control as well. Where only the stack actions are denied
+and the Cloud Control actions are allowed, the module needs
+`enable_cfn_stack_label = false`, which leaves the deployment without `idp-cli` and
+SDK access by `--stack-name` and without extensions. Neither case has been tried.
 
 ## Using `idp-cli` and the SDK
 
