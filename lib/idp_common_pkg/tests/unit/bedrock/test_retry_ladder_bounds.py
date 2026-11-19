@@ -10,9 +10,11 @@ into whatever it raises for a closed connection, and the test asserts that the
 ladder retries *that*. A botocore upgrade that changed the class would then be
 measured rather than assumed.
 
-**An HTTP 500, 502, 503 or 504 is retried whatever its code (#2036).** Driven the same
-way, with ``urlopen`` answering a 5xx whose body names no error type, so the bare
-``"500"`` code is the one botocore itself builds for such a reply.
+**An HTTP 500, 502, 503 or 504 is retried whatever its code (#2036).** A real client
+is answered with a 5xx whose body names no error type (empty, or an HTML page), so
+the bare ``"500"`` code is the one botocore itself builds for such a reply; the
+replies come from ``tests/unit/_botocore_errors.py``, as do the Lambda errors the
+hook ladder is handed.
 """
 
 from __future__ import annotations
@@ -40,6 +42,14 @@ from urllib3.exceptions import ProtocolError
 from idp_common.bedrock import client as client_mod
 from idp_common.bedrock.client import BedrockClient
 from idp_common.lambda_deadline import set_lambda_deadline_epoch
+from tests.unit._botocore_errors import (
+    Reply,
+    bare_replies,
+    named_reply,
+    ok_reply,
+    scripted_client,
+    service_error,
+)
 
 #: botocore's real transport, captured at import — before the suite's autouse
 #: no-outbound fixture replaces it for each test. The test below needs botocore's own
@@ -320,10 +330,13 @@ def _hook_function_error() -> dict:
     }
 
 
+_HOOK_THROTTLE = named_reply(
+    "TooManyRequestsException", message="slow", service="lambda"
+)
+
+
 def _hook_throttle() -> dict:
-    raise ClientError(
-        {"Error": {"Code": "TooManyRequestsException", "Message": "slow"}}, "Invoke"
-    )
+    raise service_error(_HOOK_THROTTLE, "Invoke", "lambda")
 
 
 def _hook_read_timeout() -> dict:
@@ -336,7 +349,9 @@ def _hook_success() -> dict:
 
 _HOOK_FAILURES = {
     "F": (_hook_function_error, RuntimeError),
-    "T": (_hook_throttle, ClientError),
+    # botocore raises a modelled error as the client's own subclass, and the ladder
+    # re-raises it unchanged, so this is that class rather than ``ClientError``.
+    "T": (_hook_throttle, type(service_error(_HOOK_THROTTLE, "Invoke", "lambda"))),
     "R": (_hook_read_timeout, ReadTimeoutError),
 }
 _HOOK_MAX_RETRIES = 3
@@ -414,10 +429,13 @@ def test_a_hook_ladder_that_recovers_stops_at_the_first_success():
 # --- LambdaHook ladder: one failed request is one LambdaHookRequestsFailed ---------
 
 
+#: Lambda's model declares no ``AccessDeniedException`` for ``Invoke``; IAM answers
+#: it with a 403.
+_HOOK_DENIED = named_reply("AccessDeniedException", 403, "no", service="lambda")
+
+
 def _hook_denied() -> dict:
-    raise ClientError(
-        {"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "Invoke"
-    )
+    raise service_error(_HOOK_DENIED, "Invoke", "lambda")
 
 
 def _hook_handled_function_error() -> dict:
@@ -555,45 +573,19 @@ def test_every_hook_failure_exit_is_driven():
 
 
 # -- HTTP 5xx replies (#2036) -------------------------------------------------------
+#
+# The replies are described as HTTP (status, body, headers) and turned into errors by
+# a real ``bedrock-runtime`` client (``tests/unit/_botocore_errors.py``), so the code
+# each ladder is handed is the one botocore builds -- a bare ``"500"`` for an empty or
+# HTML body -- rather than one written here.
 
 _NOVA = "us.amazon.nova-lite-v1:0"
 _TITAN = "amazon.titan-embed-text-v2:0"
 _EMBEDDING = [0.1, 0.2]
 
-Reply = Callable[[], urllib3.HTTPResponse]
-
-
-def _http_reply(status: int, body: bytes, headers: dict[str, str]) -> Reply:
-    """A reply factory: each attempt reads its own body stream."""
-    return lambda: urllib3.HTTPResponse(
-        body=io.BytesIO(body), status=status, headers=headers, preload_content=False
-    )
-
-
-def _bare_status_reply(status: int) -> Reply:
-    """What a front end sends: no error type, so botocore makes the status the code."""
-    return _http_reply(
-        status, b"<html><body>Server Error</body></html>", {"content-type": "text/html"}
-    )
-
-
-def _named_error_reply(status: int, code: str, message: str = "m") -> Reply:
-    return _http_reply(
-        status,
-        json.dumps({"message": message}).encode(),
-        {"content-type": "application/json", "x-amzn-ErrorType": code},
-    )
-
-
 _OK_REPLY = {
-    "converse": _http_reply(
-        200, json.dumps(_CONVERSE_OK).encode(), {"content-type": "application/json"}
-    ),
-    "embedding": _http_reply(
-        200,
-        json.dumps({"embedding": _EMBEDDING}).encode(),
-        {"content-type": "application/json"},
-    ),
+    "converse": ok_reply(_CONVERSE_OK),
+    "embedding": ok_reply({"embedding": _EMBEDDING}),
 }
 
 #: Each ladder's metric names: (the retryable-error count, the non-retryable count,
@@ -615,21 +607,16 @@ _LADDER_METRICS = {
 def _drive_ladder(ladder: str, replies: list[Reply], monkeypatch) -> SimpleNamespace:
     """Serve ``replies`` in order to a real ``bedrock-runtime`` client, make one call
     through ``ladder``, and report what was sent, raised, slept and counted."""
-    sent: list[str] = []
     codes: list[str] = []
     backoffs: list[int] = []
     sleeps: list[float] = []
-
-    def urlopen(pool, method, url, *args, **kwargs):
-        sent.append(url)
-        return replies[len(sent) - 1]()
 
     def record_error_code(response=None, **_kwargs):
         # The error botocore parsed from each failed reply, read from botocore.
         if response is not None and "Error" in response[1]:
             codes.append(response[1]["Error"]["Code"])
 
-    runtime = _botocore_runtime_client()
+    runtime, served = scripted_client(replies)
     operation = "Converse" if ladder == "converse" else "InvokeModel"
     runtime.meta.events.register(
         f"needs-retry.bedrock-runtime.{operation}", record_error_code
@@ -644,8 +631,6 @@ def _drive_ladder(ladder: str, replies: list[Reply], monkeypatch) -> SimpleNames
 
     monkeypatch.setattr(BedrockClient, "_backoff_within_invocation", backoff)
     monkeypatch.setattr(client_mod.time, "sleep", sleeps.append)
-    monkeypatch.setattr(urllib3.connectionpool.HTTPConnectionPool, "urlopen", urlopen)
-    monkeypatch.setattr(URLLib3Session, "send", _REAL_SEND)
     outcome: object
     try:
         if ladder == "converse":
@@ -673,7 +658,7 @@ def _drive_ladder(ladder: str, replies: list[Reply], monkeypatch) -> SimpleNames
     except ClientError as e:
         outcome = e
     return SimpleNamespace(
-        sent=len(sent),
+        sent=len(served),
         codes=codes,
         backoffs=backoffs,
         sleeps=sleeps,
@@ -691,41 +676,42 @@ def _succeeded(ladder: str, outcome: object) -> bool:
     return outcome == _EMBEDDING
 
 
-#: Replies both ladders retry: (the reply, the code botocore gives it, how many times
-#: it counts toward ``BedrockServiceUnavailable`` -- the circuit breaker's default
-#: trigger -- and toward ``BedrockThrottling``, and what the retry log line calls
-#: it). The bare statuses are the #2036 case. ``InternalFailure`` is a named code in
-#: neither list, retried for its 500 status alone. The two Bedrock names are the
-#: controls the ladders already retried. A throttle carrying a 503 is counted and
-#: logged by its name, not its status.
+#: Replies both ladders retry: (the replies, each checked in turn; the code botocore
+#: gives them; how many times each counts toward ``BedrockServiceUnavailable`` -- the
+#: circuit breaker's default trigger -- and toward ``BedrockThrottling``; and what the
+#: retry log line calls it). The bare statuses are the #2036 case, each checked with
+#: an empty body and with an HTML one. ``InternalFailure`` is a named code in neither
+#: list, retried for its 500 status alone. The two Bedrock names are the controls the
+#: ladders already retried. A throttle carrying a 503 is counted and logged by its
+#: name, not its status.
 _RETRIED_REPLIES = {
-    "bare 500": (_bare_status_reply(500), "500", 0, 0, "server error (HTTP 500)"),
-    "bare 502": (_bare_status_reply(502), "502", 0, 0, "server error (HTTP 502)"),
-    "bare 503": (_bare_status_reply(503), "503", 1, 0, "server error (HTTP 503)"),
-    "bare 504": (_bare_status_reply(504), "504", 0, 0, "server error (HTTP 504)"),
+    "bare 500": (bare_replies(500), "500", 0, 0, "server error (HTTP 500)"),
+    "bare 502": (bare_replies(502), "502", 0, 0, "server error (HTTP 502)"),
+    "bare 503": (bare_replies(503), "503", 1, 0, "server error (HTTP 503)"),
+    "bare 504": (bare_replies(504), "504", 0, 0, "server error (HTTP 504)"),
     "InternalFailure (500)": (
-        _named_error_reply(500, "InternalFailure"),
+        (named_reply("InternalFailure", 500),),
         "InternalFailure",
         0,
         0,
         "server error (HTTP 500)",
     ),
     "InternalServerException (500)": (
-        _named_error_reply(500, "InternalServerException"),
+        (named_reply("InternalServerException"),),
         "InternalServerException",
         0,
         0,
         "server error (HTTP 500)",
     ),
     "ServiceUnavailableException (503)": (
-        _named_error_reply(503, "ServiceUnavailableException"),
+        (named_reply("ServiceUnavailableException"),),
         "ServiceUnavailableException",
         1,
         0,
         "server error (HTTP 503)",
     ),
     "ThrottlingException (503)": (
-        _named_error_reply(503, "ThrottlingException"),
+        (named_reply("ThrottlingException", 503),),
         "ThrottlingException",
         0,
         1,
@@ -740,33 +726,36 @@ _RETRIED_REPLIES = {
 def test_an_http_server_error_is_retried_with_backoff_and_recovers(
     ladder, reply, monkeypatch, caplog
 ):
-    first, code, service_unavailable, throttling, kind = _RETRIED_REPLIES[reply]
+    firsts, code, service_unavailable, throttling, kind = _RETRIED_REPLIES[reply]
     caplog.set_level(logging.WARNING, logger=client_mod.logger.name)
-    run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
+    for first in firsts:
+        caplog.clear()
+        run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
+        what = first.label
 
-    assert run.codes == [code], "the reply did not produce the error under test"
-    assert run.sent == 2, f"{reply}: {run.sent} sends, expected a retry (#2036)"
-    assert run.backoffs == [0] and run.sleeps == [0.25], "the retry did not back off"
-    assert _succeeded(ladder, run.outcome), run.outcome
-    retried, non_retryable, failed = _LADDER_METRICS[ladder]
-    assert run.metrics[retried] == 1
-    assert run.metrics[non_retryable] == 0
-    assert run.metrics[failed] == 0
-    assert run.metrics["BedrockServiceUnavailable"] == service_unavailable
-    assert run.metrics["BedrockThrottling"] == throttling
-    assert run.metrics["BedrockQuotaLimit"] == 0
-    assert f"Bedrock {kind} occurred (attempt 1/4)" in caplog.text
+        assert run.codes == [code], f"{what}: the reply did not produce {code!r}"
+        assert run.sent == 2, f"{what}: {run.sent} sends, expected a retry (#2036)"
+        assert run.backoffs == [0] and run.sleeps == [0.25], f"{what}: no backoff"
+        assert _succeeded(ladder, run.outcome), (what, run.outcome)
+        retried, non_retryable, failed = _LADDER_METRICS[ladder]
+        assert run.metrics[retried] == 1, what
+        assert run.metrics[non_retryable] == 0, what
+        assert run.metrics[failed] == 0, what
+        assert run.metrics["BedrockServiceUnavailable"] == service_unavailable, what
+        assert run.metrics["BedrockThrottling"] == throttling, what
+        assert run.metrics["BedrockQuotaLimit"] == 0, what
+        assert f"Bedrock {kind} occurred (attempt 1/4)" in caplog.text, what
 
 
 #: Replies neither ladder retries: a request error, the same as a bare status, and a
 #: 5xx that fails the same way every time.
 _NOT_RETRIED_REPLIES = {
     "ValidationException (400)": (
-        _named_error_reply(400, "ValidationException", "Malformed input request"),
+        (named_reply("ValidationException", message="Malformed input request"),),
         "ValidationException",
     ),
-    "bare 400": (_bare_status_reply(400), "400"),
-    "bare 501": (_bare_status_reply(501), "501"),
+    "bare 400": (bare_replies(400), "400"),
+    "bare 501": (bare_replies(501), "501"),
 }
 
 
@@ -774,14 +763,16 @@ _NOT_RETRIED_REPLIES = {
 @pytest.mark.parametrize("ladder", sorted(_OK_REPLY))
 @pytest.mark.parametrize("reply", sorted(_NOT_RETRIED_REPLIES))
 def test_a_request_error_or_a_501_is_not_retried(ladder, reply, monkeypatch):
-    first, code = _NOT_RETRIED_REPLIES[reply]
-    run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
+    firsts, code = _NOT_RETRIED_REPLIES[reply]
+    for first in firsts:
+        run = _drive_ladder(ladder, [first, _OK_REPLY[ladder]], monkeypatch)
+        what = first.label
 
-    assert isinstance(run.outcome, ClientError), run.outcome
-    assert run.outcome.response["Error"]["Code"] == code
-    assert run.sent == 1, f"{reply}: {run.sent} sends, expected no retry"
-    assert run.backoffs == [] and run.sleeps == []
-    retried, non_retryable, failed = _LADDER_METRICS[ladder]
-    assert run.metrics[retried] == 0
-    assert run.metrics[non_retryable] == 1
-    assert run.metrics[failed] == 1
+        assert isinstance(run.outcome, ClientError), (what, run.outcome)
+        assert run.outcome.response["Error"]["Code"] == code, what
+        assert run.sent == 1, f"{what}: {run.sent} sends, expected no retry"
+        assert run.backoffs == [] and run.sleeps == [], what
+        retried, non_retryable, failed = _LADDER_METRICS[ladder]
+        assert run.metrics[retried] == 0, what
+        assert run.metrics[non_retryable] == 1, what
+        assert run.metrics[failed] == 1, what
