@@ -86,6 +86,10 @@ window.IdpFeatures.register('my-feature', {
 And your `feature-ui/vite.config.ts` **must** externalise React/ReactDOM/
 Cloudscape/aws-amplify (see the provided example).
 
+The host passes the `FeatureContext` fields to `App` as props, including
+`locale`, the web UI's language (see
+[Follow the web UI's language](../../docs/feature-platform-developer-guide.md#optional-follow-the-web-uis-language)).
+
 ### Backend API (optional)
 If your feature needs a backend, `template.yaml` should create an HTTP API
 Gateway + Lambda(s) and output the endpoint. The ui-deployer CR reads that

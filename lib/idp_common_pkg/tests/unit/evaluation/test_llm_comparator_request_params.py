@@ -352,4 +352,4 @@ def test_compare_llm_refuses_an_empty_prompt_without_calling_bedrock(key: str) -
     assert (matched, score) == (False, 0.0)
     assert reason is not None and f"evaluation.llm_method.{key} is empty" in reason
     # An error result is never memoized by LLMComparator.
-    assert reason.startswith(comparators._TRANSIENT_ERROR_PREFIXES)
+    assert reason.startswith(comparators._ERROR_REASON_PREFIXES)

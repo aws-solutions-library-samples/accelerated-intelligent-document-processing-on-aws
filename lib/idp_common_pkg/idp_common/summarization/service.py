@@ -25,6 +25,7 @@ from idp_common.models import Document, Status
 from idp_common.summarization.markdown_formatter import SummaryMarkdownFormatter
 from idp_common.summarization.models import DocumentSummarizationResult, DocumentSummary
 from idp_common.utils import extract_json_from_text
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -975,6 +976,12 @@ class SummarizationService:
                 )
 
         except Exception as e:
+            # A section's transient failure (a throttle past the client's retries,
+            # a read timeout, a bare HTTP 5xx) must reach the Lambda as
+            # TransientError, which SummarizationStep retries. Recorded as a FAILED
+            # document instead, the Lambda could only raise an untyped error and
+            # the document failed with no retry.
+            reraise_if_transient(e, where="summarization")
             error_msg = f"Error summarizing document: {str(e)}"
             logger.error(error_msg)
             document = self._update_document_status(

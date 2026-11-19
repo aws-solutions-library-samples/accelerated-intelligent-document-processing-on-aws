@@ -1230,7 +1230,7 @@ _UPLOAD_FROM_COMPUTER = (
     '    uid=4_5 button "Configuration Profile" expandable haspopup="listbox"',
     '    uid=4_6 button "Choose files"',
     '    uid=4_7 StaticText "Drop files to upload"',
-    '    uid=4_8 button "Upload (1 files)"',
+    '    uid=4_8 button "Upload (1 file)"',
 )
 _UPLOAD_SAMPLE = (
     '    uid=4_1 heading "Upload Documents" level="2"',
@@ -1243,7 +1243,7 @@ _UPLOAD_SAMPLE = (
 _UPLOAD_SOURCES = (
     "'Choose files'",
     "'Process sample'",
-    "`Upload ${",
+    "one {Upload (# file)}",
     "Optional folder prefix (e.g., invoices/2024)",
 )
 
@@ -1310,7 +1310,7 @@ def test_the_upload_page_still_refuses_its_own_commit_controls() -> None:
     assert local.control_of(uid_of(local, "link", "Browse catalog")) is None
     assert local.control_of("4_2") is None
     assert local.control_of("4_6") == ("commit_point", "Choose files")
-    assert local.control_of("4_8") == ("commit_point", "Upload (1 files)")
+    assert local.control_of("4_8") == ("commit_point", "Upload (1 file)")
     assert local.pressed("enter") == (
         "commit_point",
         "Enter in Optional folder prefix (e.g., invoices/2024)",
@@ -1643,7 +1643,7 @@ def test_the_relay_forwards_a_followed_link_and_refuses_the_page_it_opens(
     assert reply_text(refused) == story_relay.COMMIT_POINT_TEXT
     assert (rig.last()["refused"], rig.last()["label"]) == (
         "commit_point",
-        "Upload (1 files)",
+        "Upload (1 file)",
     )
     clicks = [call for call in rig.tool_calls() if call["name"] == "click"]
     assert [call["arguments"]["uid"] for call in clicks] == [UPLOAD_LINK]
@@ -2230,7 +2230,7 @@ MUTATION_CONTROLS: dict[str, tuple[Shipped, ...]] = {
         Shipped("components/discovery/DiscoveryPanel.tsx", "Start Discovery"),
     ),
     "UploadDocument": (
-        Shipped(_UPLOAD, "Upload (1 files)", source="`Upload ${"),
+        Shipped(_UPLOAD, "Upload (1 file)", source="one {Upload (# file)}"),
         Shipped(_EDIT_TEXT, "Save and Reprocess", inside_dialog=True),
         Shipped(
             "components/pages-panel/PageTextEditorModal.tsx",

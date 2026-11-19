@@ -339,6 +339,14 @@ class OcrService:
         # Initialize document converter for non-PDF formats
         self.document_converter = DocumentConverter(dpi=self.dpi or DEFAULT_DPI)
 
+        # The exceptions behind the entries ``process_document`` writes into
+        # ``document.errors``, in the order they were recorded. The errors list
+        # holds only their text, and text cannot say whether a failure was a
+        # throttle, a read timeout or a bare HTTP 5xx, so the OCR Lambda reads
+        # these to report a transient failure as ``TransientError`` (the name
+        # OCRStep's retrier lists) instead of a document failure.
+        self.failure_causes: List[BaseException] = []
+
     def process_document(self, document: Document) -> Document:
         """
         Process a document with OCR and update the Document model.
@@ -351,6 +359,7 @@ class OcrService:
             Updated Document object with OCR results
         """
         t0 = time.time()
+        self.failure_causes = []
 
         # Get the document from S3
         try:
@@ -367,6 +376,7 @@ class OcrService:
             stack_trace = traceback.format_exc()
             logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
             document.errors.append(f"{error_msg} (see logs for full trace)")
+            self.failure_causes.append(e)
             document.status = Status.FAILED
             return document
 
@@ -414,6 +424,7 @@ class OcrService:
                         stack_trace = traceback.format_exc()
                         logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
                         document.errors.append(f"{error_msg} (see logs for full trace)")
+                        self.failure_causes.append(e)
             else:
                 # Process PDF/image documents
                 is_pdf = file_type == "pdf"
@@ -525,6 +536,7 @@ class OcrService:
                                     document.errors.append(
                                         f"{error_msg} (see logs for full trace)"
                                     )
+                                    self.failure_causes.append(e)
                         finally:
                             memory_monitor_shutdown.set()
 
@@ -573,6 +585,7 @@ class OcrService:
             stack_trace = traceback.format_exc()
             logger.error(f"{error_msg}\nStack trace:\n{stack_trace}")
             document.errors.append(f"{error_msg} (see logs for full trace)")
+            self.failure_causes.append(e)
             document.status = Status.FAILED
 
         t2 = time.time()

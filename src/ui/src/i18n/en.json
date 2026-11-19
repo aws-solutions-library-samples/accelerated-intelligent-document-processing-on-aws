@@ -215,6 +215,34 @@
     "defaultMessage": "Learn more",
     "description": "Heading of the footer of an info (help) panel, above a list of links into the product documentation."
   },
+  "common.pagination.next": {
+    "defaultMessage": "Next page",
+    "description": "Screen-reader label of the next-page button of a table's pagination."
+  },
+  "common.pagination.page": {
+    "defaultMessage": "Page {pageNumber, number} of all pages",
+    "description": "Screen-reader label of a page button of a table's pagination. {pageNumber} is the page number."
+  },
+  "common.pagination.previous": {
+    "defaultMessage": "Previous page",
+    "description": "Screen-reader label of the previous-page button of a table's pagination."
+  },
+  "common.table.filterCount": {
+    "defaultMessage": "{count, plural, one {# match} other {# matches}}",
+    "description": "Count next to a table's text filter. {count} is the number of rows the filter matches."
+  },
+  "common.table.noMatch.body": {
+    "defaultMessage": "We can't find a match.",
+    "description": "Text under the heading a table shows when its filter matches no row."
+  },
+  "common.table.noMatch.clear": {
+    "defaultMessage": "Clear filter",
+    "description": "Button under the no-match text of a table that clears its filter."
+  },
+  "common.table.noMatch.title": {
+    "defaultMessage": "No matches",
+    "description": "Heading a table shows when its filter matches no row."
+  },
   "configuration.layout.previewPrompts": {
     "defaultMessage": "Preview prompts",
     "description": "Configuration page: label of the button that opens a dialog showing what each processing step's prompt includes, and the header of that dialog."
@@ -271,17 +299,653 @@
     "defaultMessage": "Skip All Reviews results",
     "description": "Title of the results dialog of a bulk Skip All Reviews run from the Document List."
   },
+  "documents.list.circuit.bedrockOutage": {
+    "defaultMessage": "Circuit: Bedrock outage",
+    "description": "Badge in the document list header when the Bedrock circuit breaker opened on failures."
+  },
+  "documents.list.circuit.closed": {
+    "defaultMessage": "Circuit: closed",
+    "description": "Badge in the document list header when the Bedrock circuit breaker is closed (processing runs normally)."
+  },
+  "documents.list.circuit.manuallyPaused": {
+    "defaultMessage": "Circuit: manually paused",
+    "description": "Badge in the document list header when an Admin paused the Bedrock circuit breaker."
+  },
+  "documents.list.circuit.recovering": {
+    "defaultMessage": "Circuit: recovering",
+    "description": "Badge in the document list header when the Bedrock circuit breaker is half-open (probing whether Bedrock is back)."
+  },
+  "documents.list.claimRefused": {
+    "defaultMessage": "Start Review was refused",
+    "description": "Heading of the error alert listing the documents the server refused to claim for review; \"Start Review\" is the menu action."
+  },
   "documents.list.downloadFailed": {
     "defaultMessage": "Download failed: {error}",
     "description": "Error notification when the bulk document export fails. {error} is the error message."
+  },
+  "documents.list.empty.body": {
+    "defaultMessage": "No documents found.",
+    "description": "Text under the heading of the empty Document List."
+  },
+  "documents.list.empty.title": {
+    "defaultMessage": "No documents",
+    "description": "Heading of the empty Document List when the loaded period holds no document."
+  },
+  "documents.list.emptyReviewer.body": {
+    "defaultMessage": "There are no documents waiting for your review at this time.",
+    "description": "Text under the heading of the empty Document List for a reviewer."
+  },
+  "documents.list.emptyReviewer.title": {
+    "defaultMessage": "No pending reviews",
+    "description": "Heading of the empty Document List for a reviewer, who only sees documents waiting for review."
+  },
+  "documents.list.emptyTest.body": {
+    "defaultMessage": "No test run submitted documents in this time period. Widen the range with Load, or see <link>Test Executions</link>.",
+    "description": "Text under the heading of the empty Document List in the Test Studio view. \"Load\" is the button that chooses the period; the <link> phrase is the name of the Test Executions page and opens it."
+  },
+  "documents.list.emptyTest.title": {
+    "defaultMessage": "No Test Studio documents",
+    "description": "Heading of the empty Document List in the Test Studio view."
+  },
+  "documents.list.export.hydrating": {
+    "defaultMessage": "Loading details for {count, plural, one {# document} other {# documents}}…",
+    "description": "Progress line of the bulk export dialog while the selected documents are fetched. {count} is how many are selected."
+  },
+  "documents.list.export.loadingDetails": {
+    "defaultMessage": "Loading document details…",
+    "description": "Progress line of the bulk export dialog after each batch of documents is fetched."
+  },
+  "documents.list.filterAriaLabel": {
+    "defaultMessage": "Filter documents",
+    "description": "Screen-reader label of the search field above the Document List table."
+  },
+  "documents.list.filterPlaceholder": {
+    "defaultMessage": "Find documents",
+    "description": "Placeholder of the search field above the Document List table."
+  },
+  "documents.list.loading": {
+    "defaultMessage": "Loading documents",
+    "description": "Text shown in the Document List table while the documents load."
+  },
+  "documents.list.releaseRefused": {
+    "defaultMessage": "Release Review was refused",
+    "description": "Heading of the error alert listing the documents the server refused to release from review; \"Release Review\" is the menu action."
   },
   "documents.list.sendToReviewResults": {
     "defaultMessage": "Send to review results",
     "description": "Title of the results dialog of Send to review from the Document List."
   },
+  "documents.list.testViewDestructiveDisabled": {
+    "defaultMessage": "Test Studio documents are managed by their test run — use Test Executions to rerun or delete a run",
+    "description": "Tooltip of the disabled Abort, Reprocess and Delete buttons in the Test Studio view of the Document List. \"Test Executions\" is the name of a page."
+  },
+  "documents.list.title": {
+    "defaultMessage": "Documents",
+    "description": "Heading of the document list page in the Production view."
+  },
+  "documents.list.titleTest": {
+    "defaultMessage": "Test Studio Documents",
+    "description": "Heading of the document list page in the Test Studio view, which lists the documents submitted by test runs."
+  },
   "documents.list.unknownError": {
     "defaultMessage": "Unknown error",
     "description": "Used as the error of a failed bulk document export when there is no error message."
+  },
+  "documents.reviewStatus.completed": {
+    "defaultMessage": "Review Completed",
+    "description": "Review Status of a document whose human review is finished."
+  },
+  "documents.reviewStatus.failed": {
+    "defaultMessage": "Review Failed",
+    "description": "Review Status of a document whose human review step failed."
+  },
+  "documents.reviewStatus.inProgress": {
+    "defaultMessage": "Review In Progress",
+    "description": "Review Status of a document a human reviewer is working on (legacy review flow)."
+  },
+  "documents.reviewStatus.inReview": {
+    "defaultMessage": "In Review",
+    "description": "Review Status of a document that is waiting in a review queue for a human reviewer."
+  },
+  "documents.reviewStatus.inReviewLinkAriaLabel": {
+    "defaultMessage": "In Review: open the review queue item",
+    "description": "Accessible name of the In Review status when it links to the document in its review queue."
+  },
+  "documents.reviewStatus.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Review Status of a document that never needed a human review."
+  },
+  "documents.reviewStatus.pending": {
+    "defaultMessage": "Review Pending",
+    "description": "Review Status of a document that needs a human review nobody has started."
+  },
+  "documents.reviewStatus.rejected": {
+    "defaultMessage": "Review Rejected",
+    "description": "Review Status of a document a human reviewer rejected."
+  },
+  "documents.reviewStatus.skipped": {
+    "defaultMessage": "Review Skipped",
+    "description": "Review Status of a document whose human review was skipped."
+  },
+  "documents.status.aborted": {
+    "defaultMessage": "ABORTED",
+    "description": "Document status ABORTED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.assessing": {
+    "defaultMessage": "ASSESSING",
+    "description": "Document status ASSESSING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.classifying": {
+    "defaultMessage": "CLASSIFYING",
+    "description": "Document status CLASSIFYING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.completed": {
+    "defaultMessage": "COMPLETED",
+    "description": "Document status COMPLETED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.evaluating": {
+    "defaultMessage": "EVALUATING",
+    "description": "Document status EVALUATING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.extracting": {
+    "defaultMessage": "EXTRACTING",
+    "description": "Document status EXTRACTING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.failed": {
+    "defaultMessage": "FAILED",
+    "description": "Document status FAILED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.hitlInProgress": {
+    "defaultMessage": "HITL_IN_PROGRESS",
+    "description": "Document status HITL_IN_PROGRESS as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.inProgress": {
+    "defaultMessage": "IN_PROGRESS",
+    "description": "Document status IN_PROGRESS as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.malwareScanFailed": {
+    "defaultMessage": "MALWARE_SCAN_FAILED",
+    "description": "Document status MALWARE_SCAN_FAILED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.malwareScanning": {
+    "defaultMessage": "MALWARE_SCANNING",
+    "description": "Document status MALWARE_SCANNING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ocr": {
+    "defaultMessage": "OCR",
+    "description": "Document status OCR as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.pendingUpload": {
+    "defaultMessage": "PENDING_UPLOAD",
+    "description": "Document status PENDING_UPLOAD as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.postprocessing": {
+    "defaultMessage": "POSTPROCESSING",
+    "description": "Document status POSTPROCESSING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.preprocessing": {
+    "defaultMessage": "PREPROCESSING",
+    "description": "Document status PREPROCESSING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.quarantined": {
+    "defaultMessage": "QUARANTINED",
+    "description": "Document status QUARANTINED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.queued": {
+    "defaultMessage": "QUEUED",
+    "description": "Document status QUEUED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.redactedSuperseded": {
+    "defaultMessage": "REDACTED_SUPERSEDED",
+    "description": "Document status REDACTED_SUPERSEDED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.rejected": {
+    "defaultMessage": "REJECTED",
+    "description": "Document status REJECTED as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ruleValidation": {
+    "defaultMessage": "RULE_VALIDATION",
+    "description": "Document status RULE_VALIDATION as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ruleValidationOrchestrator": {
+    "defaultMessage": "RULE_VALIDATION_ORCHESTRATOR",
+    "description": "Document status RULE_VALIDATION_ORCHESTRATOR as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.ruleValidationPolicyClassification": {
+    "defaultMessage": "RULE_VALIDATION_POLICY_CLASSIFICATION",
+    "description": "Document status RULE_VALIDATION_POLICY_CLASSIFICATION as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.running": {
+    "defaultMessage": "RUNNING",
+    "description": "Document status RUNNING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.summarizing": {
+    "defaultMessage": "SUMMARIZING",
+    "description": "Document status SUMMARIZING as stored. English shows the stored value so the UI reads like the CLI, the SDK and IDP Monitor; a translation may spell it out."
+  },
+  "documents.status.unknown": {
+    "defaultMessage": "Unknown",
+    "description": "Status column text for a document row whose stored status is empty."
+  },
+  "documents.table.abort.label": {
+    "defaultMessage": "Abort",
+    "description": "Screen-reader label of the Abort button of the document list."
+  },
+  "documents.table.abort.title": {
+    "defaultMessage": "Abort processing for selected documents",
+    "description": "Tooltip of the Abort button of the document list."
+  },
+  "documents.table.column.completionTime": {
+    "defaultMessage": "Completed",
+    "description": "Column header of the document list: when processing finished."
+  },
+  "documents.table.column.confidenceAlertCount": {
+    "defaultMessage": "Confidence Alerts",
+    "description": "Column header of the document list: the number of low-confidence fields."
+  },
+  "documents.table.column.configVersion": {
+    "defaultMessage": "Config Profile",
+    "description": "Column header of the document list: the configuration profile the document was processed with."
+  },
+  "documents.table.column.duration": {
+    "defaultMessage": "Duration",
+    "description": "Column header of the document list: how long processing took."
+  },
+  "documents.table.column.evaluationStatus": {
+    "defaultMessage": "Evaluation",
+    "description": "Column header of the document list: the evaluation status against a baseline."
+  },
+  "documents.table.column.hitlReviewOwner": {
+    "defaultMessage": "Review Owner",
+    "description": "Column header of the document list: who holds the review."
+  },
+  "documents.table.column.hitlReviewedBy": {
+    "defaultMessage": "Review Completed By",
+    "description": "Column header of the document list: who completed the review."
+  },
+  "documents.table.column.hitlStatus": {
+    "defaultMessage": "Review Status",
+    "description": "Column header of the document list: the human review status."
+  },
+  "documents.table.column.initialEventTime": {
+    "defaultMessage": "Submitted",
+    "description": "Column header of the document list: when the document was submitted."
+  },
+  "documents.table.column.missingRequiredFieldCount": {
+    "defaultMessage": "Missing Required Fields",
+    "description": "Column header of the document list: the number of required fields with no value."
+  },
+  "documents.table.column.objectKey": {
+    "defaultMessage": "Document ID",
+    "description": "Column header of the document list: the document key."
+  },
+  "documents.table.column.objectStatus": {
+    "defaultMessage": "Status",
+    "description": "Column header of the document list: the processing status."
+  },
+  "documents.table.column.processingIssueCount": {
+    "defaultMessage": "Processing Issues",
+    "description": "Column header of the document list: the number of issues raised while processing."
+  },
+  "documents.table.column.testRunId": {
+    "defaultMessage": "Test Run",
+    "description": "Column header of the document list: the Test Studio run that submitted the document."
+  },
+  "documents.table.delete.label": {
+    "defaultMessage": "Delete",
+    "description": "Screen-reader label of the Delete button of the document list."
+  },
+  "documents.table.delete.title": {
+    "defaultMessage": "Delete selected documents",
+    "description": "Tooltip of the Delete button of the document list."
+  },
+  "documents.table.download.all": {
+    "defaultMessage": "All data (ZIP)",
+    "description": "Download menu item: every artifact of the selected documents as a ZIP."
+  },
+  "documents.table.download.baselines": {
+    "defaultMessage": "Baselines (ZIP)",
+    "description": "Download menu item: the evaluation baselines of the selected documents as a ZIP."
+  },
+  "documents.table.download.excel": {
+    "defaultMessage": "Table as Excel ({count, plural, one {# row} other {# rows}})",
+    "description": "Download menu item exporting the filtered list as an Excel file. {count} is the number of rows."
+  },
+  "documents.table.download.inProgress": {
+    "defaultMessage": "A download is already in progress",
+    "description": "Why the ZIP items of the Download menu are disabled while an export runs."
+  },
+  "documents.table.download.label": {
+    "defaultMessage": "Download",
+    "description": "Text and screen-reader label of the Download menu button of the document list."
+  },
+  "documents.table.download.listGroup": {
+    "defaultMessage": "Document list",
+    "description": "Group label in the Download menu above the export of the whole list."
+  },
+  "documents.table.download.noBaseline": {
+    "defaultMessage": "No selected document has an evaluation baseline",
+    "description": "Why the Baselines item of the Download menu is disabled."
+  },
+  "documents.table.download.predictions": {
+    "defaultMessage": "Predictions (ZIP)",
+    "description": "Download menu item: the predictions of the selected documents as a ZIP."
+  },
+  "documents.table.download.selectFirst": {
+    "defaultMessage": "Select one or more documents in the table",
+    "description": "Why the ZIP items of the Download menu are disabled when no document is selected."
+  },
+  "documents.table.download.selectedGroup": {
+    "defaultMessage": "Selected documents ({count, number})",
+    "description": "Group label in the Download menu above the ZIP exports. {count} is the number of selected documents."
+  },
+  "documents.table.load.button": {
+    "defaultMessage": "Load: {period}",
+    "description": "Menu button of the document list that picks how far back to load. {period} is the chosen period or date range."
+  },
+  "documents.table.load.customRange": {
+    "defaultMessage": "Custom range...",
+    "description": "Load menu option of the document list that opens the date range dialog."
+  },
+  "documents.table.load.day1": {
+    "defaultMessage": "1 day",
+    "description": "Load menu option of the document list: the last day."
+  },
+  "documents.table.load.days2": {
+    "defaultMessage": "2 days",
+    "description": "Load menu option of the document list: the last 2 days."
+  },
+  "documents.table.load.days30": {
+    "defaultMessage": "30 days",
+    "description": "Load menu option of the document list: the last 30 days."
+  },
+  "documents.table.load.hours2": {
+    "defaultMessage": "2 hrs",
+    "description": "Load menu option of the document list: the last 2 hours."
+  },
+  "documents.table.load.hours4": {
+    "defaultMessage": "4 hrs",
+    "description": "Load menu option of the document list: the last 4 hours."
+  },
+  "documents.table.load.hours8": {
+    "defaultMessage": "8 hrs",
+    "description": "Load menu option of the document list: the last 8 hours."
+  },
+  "documents.table.load.latest": {
+    "defaultMessage": "Latest",
+    "description": "Load menu option of the document list: the newest documents, with no date bounds."
+  },
+  "documents.table.load.week1": {
+    "defaultMessage": "1 week",
+    "description": "Load menu option of the document list: the last week."
+  },
+  "documents.table.load.weeks2": {
+    "defaultMessage": "2 weeks",
+    "description": "Load menu option of the document list: the last 2 weeks."
+  },
+  "documents.table.notApplicable": {
+    "defaultMessage": "N/A",
+    "description": "Evaluation cell of the document list for a document that was not evaluated."
+  },
+  "documents.table.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the Preferences dialog of the document list without saving."
+  },
+  "documents.table.preferences.columnsGroup": {
+    "defaultMessage": "Document list properties",
+    "description": "Group label above the column checkboxes in the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that saves the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Heading of the page-size choices in the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# Document} other {# Documents}}",
+    "description": "A page-size choice in the Preferences dialog of the document list. {count} is the number of rows per page."
+  },
+  "documents.table.preferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.visibleColumns": {
+    "defaultMessage": "Select visible columns",
+    "description": "Heading of the column checkboxes in the Preferences dialog of the document list."
+  },
+  "documents.table.preferences.wrapLines": {
+    "defaultMessage": "Wrap lines",
+    "description": "Checkbox in the Preferences dialog of the document list that wraps long cell text."
+  },
+  "documents.table.preferences.wrapLinesDescription": {
+    "defaultMessage": "Check to see all the text and wrap the lines",
+    "description": "Help text under the Wrap lines checkbox in the Preferences dialog of the document list."
+  },
+  "documents.table.refresh.ariaLabel": {
+    "defaultMessage": "Refresh",
+    "description": "Screen-reader label of the refresh button of the document list."
+  },
+  "documents.table.refresh.title": {
+    "defaultMessage": "Refresh document list",
+    "description": "Tooltip of the refresh button of the document list."
+  },
+  "documents.table.reprocess.label": {
+    "defaultMessage": "Reprocess",
+    "description": "Screen-reader label of the Reprocess button of the document list."
+  },
+  "documents.table.reprocess.refused": {
+    "defaultMessage": "{count, plural, one {# selected document was} other {# selected documents were}} refused by malware scanning and cannot be reprocessed. Delete {count, plural, one {it} other {them}}, or re-upload an unprotected copy of a file GuardDuty could not read.",
+    "description": "Tooltip of the disabled Reprocess button when the selection holds documents refused by malware scanning. {count} is how many."
+  },
+  "documents.table.reprocess.scanning": {
+    "defaultMessage": "{count, plural, one {# selected document is} other {# selected documents are}} still being scanned for malware. Reprocess is available once the scan verdict arrives.",
+    "description": "Tooltip of the disabled Reprocess button when the selection holds documents still being scanned. {count} is how many."
+  },
+  "documents.table.reprocess.title": {
+    "defaultMessage": "Reprocess selected documents",
+    "description": "Tooltip of the Reprocess button of the document list."
+  },
+  "documents.table.review.label": {
+    "defaultMessage": "Review",
+    "description": "Text and screen-reader label of the Review menu button of the document list."
+  },
+  "documents.table.selection.all": {
+    "defaultMessage": "select all",
+    "description": "Screen-reader label of the select-all checkbox of the document list."
+  },
+  "documents.table.selection.group": {
+    "defaultMessage": "Document selection",
+    "description": "Screen-reader name of the group of row checkboxes of the document list."
+  },
+  "documents.table.selection.item": {
+    "defaultMessage": "select {name}",
+    "description": "Screen-reader label of a row checkbox of the document list. {name} is the document key."
+  },
+  "documents.table.source.label": {
+    "defaultMessage": "Document source",
+    "description": "Screen-reader label of the control that switches the document list between production and Test Studio documents."
+  },
+  "documents.table.source.production": {
+    "defaultMessage": "Production",
+    "description": "Document source option: documents submitted for processing (uploads, API, CLI, extensions)."
+  },
+  "documents.table.source.testStudio": {
+    "defaultMessage": "Test Studio",
+    "description": "Document source option: documents submitted by Test Studio runs."
+  },
+  "documents.upload.autoImport.alreadyImported": {
+    "defaultMessage": "This sample is tuned for the already-imported “{configId}” configuration profile, which has been pre-selected above. You can choose a different version if you prefer.",
+    "description": "Shown when the configuration the selected sample is tuned for is already imported as a profile. {configId} is the name of that profile."
+  },
+  "documents.upload.autoImport.hint": {
+    "defaultMessage": "This sample is tuned for the “{configId}” library configuration, which is not yet imported. It will be saved as a new configuration profile and selected for processing.",
+    "description": "Text under the import checkbox. {configId} is the name of the library configuration the sample is tuned for."
+  },
+  "documents.upload.autoImport.label": {
+    "defaultMessage": "Also import and use its configuration ({configId})",
+    "description": "Checkbox label: also import the library configuration the selected sample is tuned for, and process the sample with it. {configId} is the name of that configuration."
+  },
+  "documents.upload.errorNoFiles": {
+    "defaultMessage": "Please select at least one file to upload",
+    "description": "Error on the Upload Documents page when Upload is pressed with no file chosen."
+  },
+  "documents.upload.errorNoSample": {
+    "defaultMessage": "Please select a sample document to upload",
+    "description": "Error on the Upload Documents page when Process sample is pressed with no sample chosen."
+  },
+  "documents.upload.files.chooseMultiple": {
+    "defaultMessage": "Choose files",
+    "description": "Button of the file picker that opens the file chooser, when several files can be chosen."
+  },
+  "documents.upload.files.chooseSingle": {
+    "defaultMessage": "Choose file",
+    "description": "Button of the file picker that opens the file chooser, when one file can be chosen."
+  },
+  "documents.upload.files.constraint": {
+    "defaultMessage": "Multiple files allowed. Spreadsheet, Word, and text files are converted on the backend.",
+    "description": "Hint under the file picker: several files can be chosen, and some file types are converted by the server."
+  },
+  "documents.upload.files.dropMultiple": {
+    "defaultMessage": "Drop files to upload",
+    "description": "Text of the drop zone shown while files are dragged over the page, when several files can be dropped."
+  },
+  "documents.upload.files.dropSingle": {
+    "defaultMessage": "Drop file to upload",
+    "description": "Text of the drop zone shown while a file is dragged over the page, when one file can be dropped."
+  },
+  "documents.upload.files.errorIcon": {
+    "defaultMessage": "Error",
+    "description": "Screen-reader label of the error icon next to a chosen file."
+  },
+  "documents.upload.files.label": {
+    "defaultMessage": "Select files to upload",
+    "description": "Label of the file picker on the Upload Documents page."
+  },
+  "documents.upload.files.removeFile": {
+    "defaultMessage": "Remove file {index, number}",
+    "description": "Screen-reader label of the button that removes a chosen file. {index} is the position of the file in the list, from 1."
+  },
+  "documents.upload.files.warningIcon": {
+    "defaultMessage": "Warning",
+    "description": "Screen-reader label of the warning icon next to a chosen file."
+  },
+  "documents.upload.importFailed": {
+    "defaultMessage": "Configuration import failed: {error}",
+    "description": "Error on the Upload Documents page when the library configuration of a sample could not be imported. {error} is the error message."
+  },
+  "documents.upload.mappingWins": {
+    "defaultMessage": "Your profile selection will be ignored",
+    "description": "Heading of the warning when a prefix mapping processes the upload under another configuration profile than the one selected."
+  },
+  "documents.upload.noInputBucket": {
+    "defaultMessage": "Input bucket not configured",
+    "description": "Error on the Upload Documents page when the stack has no input bucket to upload to."
+  },
+  "documents.upload.outOfScope": {
+    "defaultMessage": "You cannot upload to this folder",
+    "description": "Heading of the error alert when the user may not upload under the folder prefix entered. The reason from the server follows."
+  },
+  "documents.upload.prefix.label": {
+    "defaultMessage": "Optional folder prefix (e.g., invoices/2024)",
+    "description": "Label of the text field for the folder prefix the documents are uploaded under. \"invoices/2024\" is an example prefix."
+  },
+  "documents.upload.prefix.placeholder": {
+    "defaultMessage": "Leave empty for root folder",
+    "description": "Placeholder of the folder prefix field: with no prefix the documents go to the root folder."
+  },
+  "documents.upload.profile.description": {
+    "defaultMessage": "Select which configuration profile to use for processing these documents",
+    "description": "Help text under the Configuration Profile label on the Upload Documents page."
+  },
+  "documents.upload.profile.label": {
+    "defaultMessage": "Configuration Profile",
+    "description": "Label of the selector of the configuration profile the documents are processed with."
+  },
+  "documents.upload.profile.loading": {
+    "defaultMessage": "Loading profiles...",
+    "description": "Placeholder and loading text of the configuration profile selector while the profiles load."
+  },
+  "documents.upload.profile.placeholder": {
+    "defaultMessage": "Select configuration profile",
+    "description": "Placeholder of the configuration profile selector when no profile is selected."
+  },
+  "documents.upload.refused": {
+    "defaultMessage": "This upload would be refused",
+    "description": "Heading of the error alert when the server would refuse an upload under the folder prefix entered. The reason from the server follows."
+  },
+  "documents.upload.refusedAdvice": {
+    "defaultMessage": "Choose that profile, or upload somewhere else.",
+    "description": "Advice after the reason in the refusal alert, when a prefix mapping requires the configuration profile the reason names."
+  },
+  "documents.upload.results.failed": {
+    "defaultMessage": "Failed - {error}",
+    "description": "Result of one file in the upload results, after the file name and a colon: the upload failed. {error} is the error message."
+  },
+  "documents.upload.results.objectKey": {
+    "defaultMessage": "Object Key: {key}",
+    "description": "Line under a successful upload result. {key} is the S3 object key the file was stored under."
+  },
+  "documents.upload.results.success": {
+    "defaultMessage": "Uploaded successfully",
+    "description": "Result of one file in the upload results, after the file name and a colon: the upload succeeded."
+  },
+  "documents.upload.results.title": {
+    "defaultMessage": "Upload Results:",
+    "description": "Heading of the upload results, one line per file."
+  },
+  "documents.upload.sample.description": {
+    "defaultMessage": "Bundled sample documents you can process without downloading them first",
+    "description": "Help text under the sample document selector."
+  },
+  "documents.upload.sample.empty": {
+    "defaultMessage": "No sample documents available",
+    "description": "Shown in the sample document selector when there is no sample document."
+  },
+  "documents.upload.sample.fileCount": {
+    "defaultMessage": "{count, plural, one {# file} other {# files}}",
+    "description": "Tag next to a sample that is a batch of files, in the sample document selector. {count} is the number of files."
+  },
+  "documents.upload.sample.label": {
+    "defaultMessage": "Select a sample document",
+    "description": "Label of the sample document selector, and its placeholder when no sample is selected."
+  },
+  "documents.upload.sample.loading": {
+    "defaultMessage": "Loading samples...",
+    "description": "Placeholder and loading text of the sample document selector while the samples load."
+  },
+  "documents.upload.selectionWins": {
+    "defaultMessage": "Your selection overrides the mapping",
+    "description": "Heading of the warning when the selected configuration profile takes precedence over the prefix mapping of the folder."
+  },
+  "documents.upload.source.label": {
+    "defaultMessage": "Document source",
+    "description": "Label of the control that chooses where the documents to upload come from."
+  },
+  "documents.upload.source.local": {
+    "defaultMessage": "From my computer",
+    "description": "Option of the document source control: upload files from the computer."
+  },
+  "documents.upload.source.sample": {
+    "defaultMessage": "Sample documents",
+    "description": "Option of the document source control: process one of the bundled sample documents."
+  },
+  "documents.upload.submit.sample": {
+    "defaultMessage": "Process sample",
+    "description": "Button that processes the selected sample document."
+  },
+  "documents.upload.submit.upload": {
+    "defaultMessage": "{count, plural, =0 {Upload} one {Upload (# file)} other {Upload (# files)}}",
+    "description": "Button that uploads the chosen files. {count} is the number of files chosen; with none, it reads only the verb."
+  },
+  "documents.upload.title": {
+    "defaultMessage": "Upload Documents",
+    "description": "Heading of the Upload Documents page."
+  },
+  "documents.upload.uploadFailed": {
+    "defaultMessage": "Upload process failed: {error}",
+    "description": "Error on the Upload Documents page when the upload as a whole fails. {error} is the error message."
   },
   "editScreen.reviewActivity.job": {
     "defaultMessage": "Job {jobId}",
@@ -459,6 +1123,66 @@
     "defaultMessage": "Get started with GenAI IDP",
     "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
   },
+  "helpPanel.documents.docsCircuitBreaker": {
+    "defaultMessage": "Circuit Breaker",
+    "description": "Documentation link in the Documents help panel: the page about the circuit breaker that pauses processing."
+  },
+  "helpPanel.documents.docsHumanReview": {
+    "defaultMessage": "Human Review",
+    "description": "Documentation link in the Documents help panel: the page about human review of documents."
+  },
+  "helpPanel.documents.docsMonitoring": {
+    "defaultMessage": "Monitoring",
+    "description": "Documentation link in the Documents help panel: the page about monitoring."
+  },
+  "helpPanel.documents.docsWebUi": {
+    "defaultMessage": "Web UI",
+    "description": "Documentation link in the Documents help panel: the page about the web interface."
+  },
+  "helpPanel.documents.feature1": {
+    "defaultMessage": "View document processing status, classification, and confidence scores",
+    "description": "First item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature2": {
+    "defaultMessage": "Filter by date range, status, document type, or any field using the search bar",
+    "description": "Second item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature3": {
+    "defaultMessage": "Select documents to reprocess, delete, or abort active workflows",
+    "description": "Third item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature4": {
+    "defaultMessage": "Claim or release documents for human review",
+    "description": "Fourth item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature5": {
+    "defaultMessage": "Export filtered results to Excel for offline analysis",
+    "description": "Fifth item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature6": {
+    "defaultMessage": "Drill down into individual documents for detailed inspection",
+    "description": "Sixth item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.feature7": {
+    "defaultMessage": "Monitor the circuit breaker status and (admins only) pause, resume, or probe document processing",
+    "description": "Seventh item of the feature list in the Documents help panel."
+  },
+  "helpPanel.documents.features": {
+    "defaultMessage": "Features",
+    "description": "Heading above the list of what the Document List page offers, in its help panel."
+  },
+  "helpPanel.documents.intro": {
+    "defaultMessage": "Track, search, filter, and manage all documents processed by the IDP system.",
+    "description": "First sentence of the Documents help panel. \"IDP\" is the product abbreviation and may stay as it is in the translation."
+  },
+  "helpPanel.documents.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Documents help panel."
+  },
+  "helpPanel.documents.title": {
+    "defaultMessage": "Documents",
+    "description": "Heading of the help panel of the Document List page."
+  },
   "helpPanel.feedback.intro": {
     "defaultMessage": "Report bugs or suggest enhancements on GitHub — your deployment details are filled in automatically.",
     "description": "Sentence under the heading of the feedback block, above its three links."
@@ -482,6 +1206,46 @@
   "helpPanel.feedback.viewIssues": {
     "defaultMessage": "View existing issues",
     "description": "Link in the feedback block that opens the list of GitHub issues of the project in a new tab."
+  },
+  "helpPanel.upload.details": {
+    "defaultMessage": "Details",
+    "description": "Heading above the list of upload details in the Upload Documents help panel."
+  },
+  "helpPanel.upload.docsOcrSizing": {
+    "defaultMessage": "OCR & Image Sizing Guide",
+    "description": "Documentation link in the Upload Documents help panel: the guide to text recognition (OCR) and image sizes."
+  },
+  "helpPanel.upload.docsWebUi": {
+    "defaultMessage": "Web UI",
+    "description": "Documentation link in the Upload Documents help panel: the page about the web interface."
+  },
+  "helpPanel.upload.formats": {
+    "defaultMessage": "Supported formats: PDF, PNG, JPEG, TIFF, Excel (XLSX/XLS), CSV, Word (DOCX), and plain text (TXT). PDF and image files are processed with Textract; spreadsheet, Word, and text files are supported through backend conversion. Legacy Word (.doc) is not supported — re-save it as .docx.",
+    "description": "First item of the details list in the Upload Documents help panel: the file types an upload accepts. Format names, file extensions and \"Textract\" (an AWS service) stay as they are."
+  },
+  "helpPanel.upload.intro": {
+    "defaultMessage": "Upload documents to be processed by the IDP system.",
+    "description": "First sentence of the Upload Documents help panel. \"IDP\" is the product abbreviation and may stay as it is in the translation."
+  },
+  "helpPanel.upload.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Upload Documents help panel."
+  },
+  "helpPanel.upload.multiple": {
+    "defaultMessage": "Multiple files can be uploaded simultaneously",
+    "description": "Fourth item of the details list in the Upload Documents help panel."
+  },
+  "helpPanel.upload.prefix": {
+    "defaultMessage": "<strong>Prefix:</strong> Optionally add a prefix to organize your documents (e.g., \"invoices/\", \"forms/2023/\")",
+    "description": "Second item of the details list in the Upload Documents help panel. The <strong> phrase is shown in bold and names the folder prefix field; the quoted examples are folder prefixes."
+  },
+  "helpPanel.upload.queue": {
+    "defaultMessage": "After upload, documents are automatically added to the processing queue and appear in the Documents list when processing begins",
+    "description": "Third item of the details list in the Upload Documents help panel. \"Documents\" is the name of the document list page."
+  },
+  "helpPanel.upload.title": {
+    "defaultMessage": "Upload Documents",
+    "description": "Heading of the help panel of the Upload Documents page."
   },
   "home.toolsPanels.goodToKnow": {
     "defaultMessage": "Good to know",
@@ -1791,10 +2555,6 @@
     "defaultMessage": "Refresh jobs",
     "description": "Screen-reader label of the refresh button of the Jobs table."
   },
-  "reviewBulk.jobsPage.resourceName": {
-    "defaultMessage": "Job",
-    "description": "Name of one item of the Jobs table, used by its empty state."
-  },
   "reviewBulk.jobsPage.retry": {
     "defaultMessage": "Retry",
     "description": "Button in the error alert that loads the job list again."
@@ -2114,6 +2874,30 @@
   "testStudio.patternPreview.noneToAdd": {
     "defaultMessage": "None of the {count, plural, one {# matching file} other {# matching files}} would be added ({leftOut}).",
     "description": "Warning when Check Files matched files but the add would copy none of them. {leftOut} says why, e.g. \"1 already in the set\"."
+  },
+  "testStudio.results.aurocIncludingEmpty": {
+    "defaultMessage": "AUROC incl. Empty Values",
+    "description": "Metric name: AUROC computed over all fields, including fields the extractor returned empty."
+  },
+  "testStudio.results.confidencePrefix": {
+    "defaultMessage": "Confidence:",
+    "description": "Prefix before a confidence calibration metric name in the test run breakdown table."
+  },
+  "testStudio.results.emptyPredictions": {
+    "defaultMessage": "Empty Predictions",
+    "description": "Metric name: fields the extractor returned no value for."
+  },
+  "testStudio.results.emptyPredictionsValue": {
+    "defaultMessage": "{count} ({wrong} wrong)",
+    "description": "{count} is the number of empty predictions; {wrong} is how many of them had a value in the ground truth."
+  },
+  "testStudio.results.emptyPredictionsValueWithAuroc": {
+    "defaultMessage": "{count} ({wrong} wrong, AUROC {auroc})",
+    "description": "{count} is the number of empty predictions; {wrong} is how many of them were wrong; {auroc} is the formatted AUROC over those fields alone."
+  },
+  "testStudio.results.olderSectionsNotScored": {
+    "defaultMessage": "{sections, plural, one {# older section not scored} other {# older sections not scored}}",
+    "description": "Appended to the empty-predictions value when some sections were evaluated before this measure existed."
   },
   "testStudio.testSets.delete.notDeleted": {
     "defaultMessage": "Failed to delete test sets: {reason}",

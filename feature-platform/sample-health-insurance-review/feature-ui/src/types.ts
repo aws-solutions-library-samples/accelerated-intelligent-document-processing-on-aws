@@ -45,6 +45,14 @@ export interface FeatureContext {
    * extension's job".
    */
   entitlementVerified?: boolean;
+  /**
+   * The web UI's language as a BCP 47 tag: `en` until another language is
+   * enabled, then the user's choice (`fr-CA`); `en-XA` on pseudo-locale test
+   * builds. Absent on hosts older than this field. Treat a tag you have no
+   * translation for as English. When the user switches language the host
+   * re-renders your component with the new value; it does not remount it.
+   */
+  locale?: string;
 }
 
 export interface FeatureRegistration {
