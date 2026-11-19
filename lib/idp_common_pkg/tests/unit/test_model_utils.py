@@ -383,11 +383,49 @@ class TestGetModelMaxOutputTokens:
         assert get_model_max_output_tokens("us.amazon.nova-premier-v1:0") == 10_000
         assert get_model_max_output_tokens("us.amazon.nova-micro-v1:0") == 10_000
 
-    def test_nova2_models_return_10k(self):
-        """Test Amazon Nova 2 models return 10,000 max tokens."""
-        assert get_model_max_output_tokens("us.amazon.nova-2-lite-v1:0") == 10_000
-        assert get_model_max_output_tokens("eu.amazon.nova-2-lite-v1:0") == 10_000
-        assert get_model_max_output_tokens("global.amazon.nova-2-lite-v1:0") == 10_000
+    # Nova 2 Lite's Bedrock model card (model-card-amazon-nova-2-lite) gives a
+    # 1M-token context window and 64K max output, and lists these ids: the
+    # in-Region id, the us./eu./jp. geo profiles and the global. profile. The
+    # service-tier suffixes are this repository's own spelling of the same model.
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "amazon.nova-2-lite-v1:0",
+            "us.amazon.nova-2-lite-v1:0",
+            "eu.amazon.nova-2-lite-v1:0",
+            "jp.amazon.nova-2-lite-v1:0",
+            "global.amazon.nova-2-lite-v1:0",
+            "us.amazon.nova-2-lite-v1:0:flex",
+            "global.amazon.nova-2-lite-v1:0:priority",
+        ],
+    )
+    def test_nova2_lite_has_its_model_card_limits(self, model_id):
+        """Nova 2 Lite is not sized as a 300K / 10K first-generation Nova (#2048)."""
+        assert get_model_max_input_tokens(model_id) == 1_000_000
+        assert get_model_max_output_tokens(model_id) == 64_000
+
+    def test_nova_micro_has_its_model_card_window(self):
+        """Nova Micro's card gives 128K context, not the family's 300K."""
+        for model_id in ("us.amazon.nova-micro-v1:0", "eu.amazon.nova-micro-v1:0"):
+            assert get_model_max_input_tokens(model_id) == 128_000
+            assert get_model_max_output_tokens(model_id) == 10_000
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "us.amazon.nova-lite-v1:0",
+            "ca.amazon.nova-lite-v1:0",
+            "us.amazon.nova-pro-v1:0",
+            "us.amazon.nova-premier-v1:0",
+            # No Bedrock model card to take a window from: stays conservative.
+            "us.amazon.nova-2-pro-v1:0",
+            # The fine-tuning base-model variant; the 1M card figure is not its.
+            "amazon.nova-2-lite-v1:0:256k",
+        ],
+    )
+    def test_other_nova_ids_keep_the_family_limits(self, model_id):
+        assert get_model_max_input_tokens(model_id) == 300_000
+        assert get_model_max_output_tokens(model_id) == 10_000
 
     def test_openai_gpt5_models_return_128k(self):
         """Test OpenAI GPT-5.x models return 128,000 max tokens."""

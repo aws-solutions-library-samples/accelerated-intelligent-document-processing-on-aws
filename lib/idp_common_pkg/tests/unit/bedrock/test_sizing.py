@@ -26,6 +26,30 @@ def test_larger_input_window_gives_larger_shard_budget():
     assert base.max_input_tokens == 200_000
 
 
+def test_nova2_lite_shards_against_its_1m_window():
+    """Nova 2 Lite (1M context, 64K output per its model card) must not be sized
+    as a first-generation 300K / 10K Nova (#2048).
+
+    The expected budget is arithmetic on the card's figures at the default 0.30
+    buffer, not a value read back from sizing.py: 700,000 usable input minus a
+    44,800 output reserve minus 20 images at 1,600 tokens."""
+    plan = compute_sizing_plan(model_id="us.amazon.nova-2-lite-v1:0", context_buffer=0.3)
+    assert plan.max_input_tokens == 1_000_000
+    assert plan.max_output_tokens == 64_000
+    assert plan.shard_token_budget == 700_000 - 44_800 - 32_000
+    nova_lite = compute_sizing_plan(model_id=NOVA_LITE, context_buffer=0.3)
+    assert plan.shard_token_budget > nova_lite.shard_token_budget
+
+
+def test_nova_micro_shard_budget_fits_its_128k_window():
+    """Nova Micro's card gives 128K context. Sized off the family's 300K, its
+    shard budget (171,000) was larger than its entire window."""
+    plan = compute_sizing_plan(model_id="us.amazon.nova-micro-v1:0", context_buffer=0.3)
+    assert plan.max_input_tokens == 128_000
+    assert plan.shard_token_budget < 128_000
+    assert plan.shard_token_budget == 89_600 - 7_000 - 32_000
+
+
 def test_context_buffer_reduces_budgets():
     """A larger context buffer leaves less usable window → smaller shard budget.
 
