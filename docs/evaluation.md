@@ -838,6 +838,31 @@ classes:
               x-aws-idp-evaluation-method: NUMERIC_EXACT
 ```
 
+#### Lists of scalar values
+
+A list of strings, numbers or booleans (`type: array` with scalar `items`) is
+scored with **one** comparator, which is applied to each pair of elements; the
+elements are then paired by Hungarian matching. Set the method, and any
+threshold, weight or method config, on the array. The configuration editor
+writes it there.
+
+A method written on the `items` instead is accepted and means the same thing:
+the evaluation moves each evaluation key from the items to the array. The
+legacy-format conversion writes this shape for a list with a single item
+attribute. When the array and its items both set the same key, the array's
+value is used, and a different value on the items is ignored and logged as a
+warning in the Evaluation Lambda's log. The exception is a method that is
+invalid on the array, such as `HUNGARIAN`, which needs a list of objects. That
+method is removed with an `ERROR` log line and the items' method is used.
+
+```yaml
+ENDORSEMENTS:
+  type: array
+  x-aws-idp-evaluation-method: EXACT   # compares each endorsement code exactly
+  items:
+    type: string
+```
+
 ### Understanding Threshold vs Match-Threshold
 
 The evaluation framework uses **two different threshold concepts** depending on the field type:

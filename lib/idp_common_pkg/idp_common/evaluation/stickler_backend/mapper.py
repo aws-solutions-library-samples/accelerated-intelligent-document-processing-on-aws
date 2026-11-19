@@ -83,6 +83,21 @@ class SticklerConfigMapper:
         EVALUATION_METHOD_HUNGARIAN: None,  # Built-in for arrays
     }
 
+    # Field-level evaluation keys. On an array of scalars Stickler reads every
+    # one of these off the ARRAY field (its comparator scores the elements), and
+    # raises on the translated key when it sits on ``items``. See
+    # ``_hoist_scalar_item_keys``.
+    SCALAR_ITEM_FIELD_KEYS = (
+        X_AWS_IDP_EVALUATION_METHOD,
+        X_AWS_IDP_EVALUATION_METHOD_CONFIG,
+        X_AWS_IDP_EVALUATION_THRESHOLD,
+        X_AWS_IDP_EVALUATION_WEIGHT,
+        X_AWS_IDP_EVALUATION_LLM_IN_LIST,
+        "x-aws-idp-evaluation-clip-under-threshold",
+        "x-aws-idp-evaluation-aggregate",
+    )
+    SCALAR_ITEM_TYPES = frozenset({"string", "number", "integer", "boolean", "null"})
+
     # R11: the legacy ``map_field_config`` / ``_map_type`` / ``_resolve_ref`` /
     # ``JSON_SCHEMA_TO_STICKLER_TYPE`` fields-config path that used to live
     # here (~200 lines) was deleted. Production only calls
@@ -452,6 +467,91 @@ class SticklerConfigMapper:
                 )
 
     @classmethod
+    def _scalar_items(cls, schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The ``items`` schema of an array of scalars, or None for any other field.
+
+        Scalar means a ``type`` (or list of types) drawn only from
+        ``SCALAR_ITEM_TYPES``; ``_inline_refs`` has already replaced any ``$ref``.
+        """
+        if schema.get(SCHEMA_TYPE) != TYPE_ARRAY:
+            return None
+        items = schema.get(SCHEMA_ITEMS)
+        if not isinstance(items, dict):
+            return None
+        item_type = items.get(SCHEMA_TYPE)
+        types = item_type if isinstance(item_type, list) else [item_type]
+        if not types or not all(
+            isinstance(t, str) and t in cls.SCALAR_ITEM_TYPES for t in types
+        ):
+            return None
+        return items
+
+    @classmethod
+    def _hoist_scalar_item_keys(cls, schema: Dict[str, Any], field_path: str) -> None:
+        """Move field-level evaluation keys from a scalar array's items to the array.
+
+        For an array of scalars Stickler has one comparator, read off the array
+        field and applied to each element pair; the ``items`` position only takes
+        element-class keys, and a translated ``x-aws-stickler-comparator`` there
+        makes the whole class's model build raise, so the section is not
+        evaluated at all. A method on the items is nonetheless a natural way to
+        say "compare each element this way", and ``config.migration`` writes
+        exactly that shape for a legacy list with a single item attribute.
+
+        So each key on the items is moved up when the array does not set it, and
+        dropped when the array does: the array-level value is the one the UI's
+        schema editor writes and the one already honoured, so it wins. A dropped
+        value that differs from the array's is logged as a warning. A method on
+        the array that is invalid for it (HUNGARIAN on scalars) does not count as
+        set: it is removed here so the items' method can take its place.
+        The items' ``method-config`` travels with their method, and is dropped
+        with it when the array's method wins.
+        """
+        items = cls._scalar_items(schema)
+        if items is None or not any(k in items for k in cls.SCALAR_ITEM_FIELD_KEYS):
+            return
+
+        array_method = schema.get(X_AWS_IDP_EVALUATION_METHOD)
+        if array_method is not None and X_AWS_IDP_EVALUATION_METHOD in items:
+            try:
+                cls._validate_method_for_field(schema, array_method, field_path)
+            except ValueError as e:
+                logger.error(
+                    f"{e}. Using the method set on its items "
+                    f"('{items[X_AWS_IDP_EVALUATION_METHOD]}') instead."
+                )
+                del schema[X_AWS_IDP_EVALUATION_METHOD]
+
+        item_method_overridden = (
+            X_AWS_IDP_EVALUATION_METHOD in items
+            and X_AWS_IDP_EVALUATION_METHOD in schema
+        )
+        for key in cls.SCALAR_ITEM_FIELD_KEYS:
+            if key not in items:
+                continue
+            value = items.pop(key)
+            if key == X_AWS_IDP_EVALUATION_METHOD_CONFIG and item_method_overridden:
+                if schema.get(key) != value:
+                    logger.warning(
+                        f"Field '{field_path}': '{key}' on the items is ignored "
+                        f"because the array's own method "
+                        f"'{schema.get(X_AWS_IDP_EVALUATION_METHOD)}' is used."
+                    )
+                continue
+            if key not in schema:
+                schema[key] = value
+                logger.info(
+                    f"Field '{field_path}': '{key}: {value}' on the items of an "
+                    f"array of scalars applies to the array's element comparison."
+                )
+            elif schema[key] != value:
+                logger.warning(
+                    f"Field '{field_path}': '{key}: {value}' on the items is "
+                    f"ignored; the array sets '{schema[key]}', which is used for "
+                    f"each element. Set it in one place."
+                )
+
+    @classmethod
     def _coerce_to_float(cls, value: Any, field_name: str = "") -> float:
         """
         Coerce value to float, handling strings and ints.
@@ -627,6 +727,10 @@ class SticklerConfigMapper:
         # authoritative IDP evaluation semantic.
         if schema.get(SCHEMA_TYPE) == TYPE_OBJECT and SCHEMA_PROPERTIES in schema:
             schema["required"] = []
+
+        # An array of scalars is scored by ONE comparator read off the array, so
+        # evaluation keys authored on its items move up before translation.
+        cls._hoist_scalar_item_keys(schema, field_path)
 
         # Check if this is an array with structured items
         is_structured_array = False

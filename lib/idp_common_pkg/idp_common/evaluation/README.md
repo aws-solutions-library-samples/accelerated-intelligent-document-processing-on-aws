@@ -839,6 +839,21 @@ Arrays of items where each item's attributes are evaluated individually:
 # - And so on for each transaction...
 ```
 
+#### Lists of scalar values
+
+Stickler scores an array of scalars with one comparator, read off the array
+field and applied to each element pair. It raises on a field-level key under
+`items`, and that failure used to stop the whole class from being evaluated.
+`SticklerConfigMapper._hoist_scalar_item_keys` therefore moves every
+`x-aws-idp-evaluation-*` field key (method, method config, threshold, weight,
+allow-LLM-in-list, clip-under-threshold, aggregate) from scalar `items` to the
+array before translating it. That is the shape `config.migration` writes for a
+legacy list with a single item attribute. When both places set a key, the
+array's value wins and a differing item value is logged as a warning. The
+items' `method-config` is dropped along with their method. The exception is an
+array-level method that is invalid there, such as `HUNGARIAN` on scalars: it is
+removed with an `ERROR` log and the items' method is used.
+
 ### Data Flattening Process
 
 The evaluation service automatically flattens nested extraction results for comparison:
