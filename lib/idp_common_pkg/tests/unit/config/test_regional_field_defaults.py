@@ -257,7 +257,7 @@ def test_input_that_is_not_a_mapping_is_passed_through(region):
     region("eu-west-1")
 
     class Source:
-        model = "us.anthropic.claude-sonnet-5:1m"
+        model = "us.anthropic.claude-opus-4-8"
 
     config = models.SummarizationConfig.model_validate(Source(), from_attributes=True)
-    assert config.model == "us.anthropic.claude-sonnet-5:1m"
+    assert config.model == "us.anthropic.claude-opus-4-8"
