@@ -909,6 +909,7 @@ def validate_config(
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
     _validate_confidence_prompt_as_sent(validated, merged, result)
+    _validate_document_image_placeholders(validated, sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
@@ -1666,12 +1667,8 @@ def _validate_confidence_prompt_as_sent(
     this does too: the placeholder check above skips an empty one, so an explicit
     ``""`` used to pass. When the prompt carries ``{DOCUMENT_IMAGE}`` the service applies
     ``document_image_placeholder_error`` to it, and this applies the same rule.
-
-    Classification and extraction are not checked for this, because they do not
-    refuse a repeated ``{DOCUMENT_IMAGE}``: they log a warning and fall back.
-    Classification's context-pages and packet prompts then send the images after
-    the text; extraction and classification's page prompt send the text without the
-    images.
+    Classification and extraction prompts get the same rule from
+    ``_validate_document_image_placeholders``.
 
     Skipped when the confidence block turns scoring off, as the placeholder check
     above is, because the prompt is then never sent.
@@ -1680,9 +1677,11 @@ def _validate_confidence_prompt_as_sent(
         return
 
     from idp_common.config import without_prompt_comments
-    from idp_common.extraction.prompt_assembly import (
+    from idp_common.document_image_placeholder import (
         DOCUMENT_IMAGE_PLACEHOLDER,
         document_image_placeholder_error,
+    )
+    from idp_common.extraction.prompt_assembly import (
         geometry_requires_llm_boxes,
         select_confidence_task_prompt,
     )
@@ -1711,6 +1710,98 @@ def _validate_confidence_prompt_as_sent(
             result["valid"] = False
             result["errors"].append(
                 f"{path}: {error} The confidence pass refuses a document otherwise."
+            )
+
+
+def _validate_document_image_placeholders(
+    validated: Any, sent_prompts: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Refuse a classification or extraction prompt that repeats ``{DOCUMENT_IMAGE}``.
+
+    Both services refuse such a prompt on every document
+    (``check_document_image_placeholder``), so this refuses it before it is used.
+    The prompts judged are the ones sent, with prompt comments removed:
+
+    - classification: each prompt the active strategy sends
+      (``_classification_task_prompts``). When a call's ``modality.images`` is
+      explicitly off, the prompt is judged after ``strip_placeholder``, which is
+      what the service applies to it first. The class-confidence block the
+      service splices in is not included. The section-classification prompt is
+      skipped when the decision model labels every section
+      (``section_prompt_can_be_sent``), because it is then never sent.
+    - extraction: the prompt ``select_extraction_task_prompt`` chooses, both with
+      and without integrated confidence (a Simple section on a class with list
+      fields falls back to the plain prompt), and each class's
+      ``x-aws-idp-extraction-task-prompt``, which replaces it for that class.
+    """
+    from idp_common.config import without_prompt_comments
+    from idp_common.config.models import _parse_tristate_bool
+    from idp_common.config.schema_constants import (
+        ID_FIELD,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+    from idp_common.document_image_placeholder import (
+        DOCUMENT_IMAGE_PLACEHOLDER,
+        document_image_placeholder_error,
+        section_prompt_can_be_sent,
+        strip_placeholder,
+    )
+    from idp_common.extraction.prompt_assembly import select_extraction_task_prompt
+
+    section = validated.classification.split_then_classify.section_classification
+    section_sent = section_prompt_can_be_sent(
+        section.method, section.low_confidence.on_low_confidence
+    )
+    judged: List[tuple] = []
+    for path, prompt, modality in _classification_task_prompts(sent_prompts):
+        if not section_sent and path.startswith(
+            "classification.split_then_classify.section_classification."
+        ):
+            continue  # the decision model labels every section; never sent
+        if _parse_tristate_bool(modality.get("images"), "images") is False:
+            # What the service does to the prompt before building it.
+            prompt = strip_placeholder(
+                prompt or "", DOCUMENT_IMAGE_PLACEHOLDER, "document-image"
+            )
+        judged.append((path, prompt, "classification"))
+
+    extraction = without_prompt_comments(validated, as_model=True).extraction
+    plain = select_extraction_task_prompt(extraction, integrated_ok=False)
+    judged.append(("extraction.task_prompt", plain, "extraction"))
+    integrated = select_extraction_task_prompt(extraction)
+    if integrated != plain:
+        judged.append(
+            (
+                "the integrated-confidence extraction prompt "
+                "(extraction.task_prompt_extraction_with_confidence or "
+                "task_prompt_extraction_with_confidence_topk, with "
+                "extraction.geometry.task_prompt_bbox appended in the LLM-box "
+                "geometry modes)",
+                integrated,
+                "extraction",
+            )
+        )
+    for cls in sent_prompts.get("classes") or []:
+        if isinstance(cls, dict) and cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            cid = cls.get(ID_FIELD) or cls.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
+            judged.append(
+                (
+                    f"class {cid} {X_AWS_IDP_EXTRACTION_TASK_PROMPT}",
+                    cls[X_AWS_IDP_EXTRACTION_TASK_PROMPT],
+                    "extraction",
+                )
+            )
+
+    for path, prompt, service in judged:
+        if not isinstance(prompt, str) or DOCUMENT_IMAGE_PLACEHOLDER not in prompt:
+            continue
+        error = document_image_placeholder_error(prompt)
+        if error:
+            result["valid"] = False
+            result["errors"].append(
+                f"{path}: {error} {service.capitalize()} refuses every document "
+                "otherwise."
             )
 
 

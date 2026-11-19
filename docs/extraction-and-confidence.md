@@ -2255,6 +2255,11 @@ document images appear, using the `{DOCUMENT_IMAGE}` placeholder.
 - **Without the placeholder**: no page images are attached to the prompt, which is
   sent as text only. This holds for extraction and confidence prompts alike.
 - **With the placeholder**: images are inserted exactly where `{DOCUMENT_IMAGE}` appears.
+- **With the placeholder more than once**: the prompt is refused, by extraction and
+  the confidence pass alike, and the section fails with `found N occurrences, but
+  exactly 1 is required`. Both sides of `{FEW_SHOT_EXAMPLES}` count, and so does a
+  per-class `x-aws-idp-extraction-task-prompt`. `idp-cli config-validate` reports
+  such a prompt before it is used.
 
 ```yaml
 extraction:
