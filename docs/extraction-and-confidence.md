@@ -2633,6 +2633,22 @@ The rows that were extracted are still in the section's `result.json` and the
 section still points at it, so a partial result stays readable in the Visual
 Editor rather than being discarded with the failure.
 
+**A content-filter block fails only its own section.** When Amazon Bedrock's
+content filter withholds the extraction model's reply for a section (a
+`ValidationException` saying the output was blocked by the content filtering
+policy), extraction records an error-severity `extraction_failed` issue on that
+section, naming the block, and writes an empty result for it. Advanced mode
+regenerates a blocked reply a few times before giving up; Simple mode does not
+retry it. The section shows as **Failed** and has no extracted fields; the other
+sections keep their results and the document completes. The confidence pass
+reports the section as unscored with the same reason. ⚠️ Because the section has
+no fields and no confidence scores, it raises no confidence alert and no
+missing-required-field reason, so it does **not** send the document to human
+review on its own; find such documents by the section's **Failed** status, and
+expect evaluation to score that section's fields as missed. This applies to extraction run inside the extraction function. A block
+inside one shard of a section sharded through the Distributed Map
+(`ExtractionShardMap`) still fails the document, as any failed shard does.
+
 **A transient failure is not marked.** A throttle or a read timeout is retried by
 the state machine, so flagging the section would show it failed for as long as that
 ladder runs and then clear itself. Only a failure that will not be retried is

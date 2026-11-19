@@ -1170,6 +1170,19 @@ wraps its service call and, in the `except` block, calls
 - `patterns/unified/src/extraction_function/sfn_runtime_handler.py`, `mode="merge"`
   — the Distributed Map shard merge, around `merge_section_shards`.
 
+**One failure does not raise: a content-filter block.** When the model's reply
+is withheld by Bedrock's content filter (`bedrock_utils.is_content_filter_block`,
+which matches `CONTENT_FILTER_BLOCK_MESSAGE` on a `ValidationException` anywhere
+in the explicit `__cause__` chain), `process_document_section` calls
+`_handle_content_filtered` instead of re-raising. It writes an empty
+`result.json` with `metadata.content_filtered: true`, replaces the section's
+extraction-stage issues with one error-severity `extraction_failed` issue naming
+the block, and returns without touching `document.errors`, so the ProcessSections
+Map iteration succeeds and the collate step completes the document (#2038). The
+assessment service reads `metadata.content_filtered` and gives its skip the same
+reason. Not covered: `run_one_section_shard` on the Distributed Map path, where a
+blocked shard still fails `ExtractionShardMap`.
+
 Three properties it relies on, and one it deliberately does not do:
 
 - **The document carries the diagnosis on a raise.** Both service entry points

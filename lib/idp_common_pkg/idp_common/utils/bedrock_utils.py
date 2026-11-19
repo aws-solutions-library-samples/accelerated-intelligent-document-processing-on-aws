@@ -348,6 +348,43 @@ def is_input_token_overflow(error: BaseException) -> bool:
     return False
 
 
+#: The text of the ``ValidationException`` Bedrock returns when a model's own
+#: output filter withholds its reply. The retry decorators below retry that one
+#: ``ValidationException`` (a regenerated reply can pass), so this is the same
+#: string they match; it is the reply being refused, not the request being
+#: malformed.
+CONTENT_FILTER_BLOCK_MESSAGE = "Output blocked by content filtering policy"
+
+
+def is_content_filter_block(error: BaseException) -> bool:
+    """True if ``error``, or one it was raised ``from``, is a content-filter block.
+
+    Walks the explicit ``__cause__`` chain because the agentic path delivers the
+    Bedrock ``ClientError`` wrapped (Strands' ``EventLoopException``), and a node
+    carrying a definite error code other than ``ValidationException`` is not a
+    block whatever its message says, as for :func:`is_image_request_rejection`.
+    The code is compared case-insensitively: an error raised inside a
+    ``ConverseStream`` reply carries the event-stream member name,
+    ``validationException``, as its code.
+
+    The agentic retry decorator regenerates a blocked reply before giving up;
+    ``BedrockClient``'s own ladder does not retry a ``ValidationException``, so on
+    that path one block is final. Either way the caller treats it as a verdict
+    on this content rather than as a transient fault.
+    """
+    marker = CONTENT_FILTER_BLOCK_MESSAGE.lower()
+    for node in _cause_chain(error):
+        code = ""
+        response = getattr(node, "response", None)
+        if isinstance(response, dict):
+            code = str((response.get("Error") or {}).get("Code") or "")
+        if code and code.lower() != "validationexception":
+            continue
+        if marker in str(node).lower():
+            return True
+    return False
+
+
 #: ``stopReason`` values that mean the model stopped because it ran out of OUTPUT
 #: budget rather than because it finished answering.
 #:
@@ -653,7 +690,7 @@ def async_exponential_backoff_retry[T, **P](
 
                     if (
                         error_code == "ValidationException"
-                        and "Output blocked by content filtering policy"
+                        and CONTENT_FILTER_BLOCK_MESSAGE
                         not in e.response.get("Error", {}).get("Message", "")
                     ):
                         raise
@@ -881,7 +918,7 @@ def exponential_backoff_retry[T, **P](
 
                     if (
                         error_code == "ValidationException"
-                        and "Output blocked by content filtering policy"
+                        and CONTENT_FILTER_BLOCK_MESSAGE
                         not in e.response.get("Error", {}).get("Message", "")
                     ):
                         raise
