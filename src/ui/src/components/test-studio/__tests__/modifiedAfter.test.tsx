@@ -35,7 +35,7 @@ vi.mock('../useGenerateSyntheticForm', () => ({
 // Imported after the mocks, which vitest hoists.
 import AddDocumentsModals from '../AddDocumentsModals';
 import CreateTestSetWizard from '../CreateTestSetWizard';
-import { resolveModifiedAfter } from '../modifiedAfter';
+import { customCutoff, customCutoffIsInvalid, resolveModifiedAfter } from '../modifiedAfter';
 
 const hour = 3600 * 1000;
 const checkedAt = Date.parse('2026-11-18T12:00:00.000Z');
@@ -61,15 +61,28 @@ const cutoffsSent = (query: string, bucketType?: string): (string | undefined)[]
     .filter((arg) => arg.query === query && (bucketType === undefined || arg.variables?.bucketType === bucketType))
     .map((arg) => arg.variables?.modifiedAfter);
 
+const invalidText = 'Enter a real date as YYYY-MM-DD and a time as HH:mm:ss.';
+
+/** Text of the error alerts shown, which is where a refused action says why. */
+const errorAlerts = (): string[] =>
+  createWrapper(document.body)
+    .findAllAlerts()
+    .filter((a) => a.getElement().textContent?.includes(invalidText))
+    .map((a) => a.getElement().textContent ?? '');
+
 const English = ({ children }: { children: React.ReactNode }): React.JSX.Element => (
   <IntlProvider locale="en" defaultLocale="en">
     {children}
   </IntlProvider>
 );
 
-const answerEveryCall = (): void => {
+/** Answer every operation; `duringListing` runs while a listing is in flight (e.g. to move the clock). */
+const answerEveryCall = (duringListing: () => void = () => undefined): void => {
   graphql.mockImplementation(async ({ query }: { query: string }) => {
-    if (query === 'listBucketFiles') return { data: { listBucketFiles: ['inv-1.pdf', 'inv-2.pdf'] } };
+    if (query === 'listBucketFiles') {
+      duringListing();
+      return { data: { listBucketFiles: ['inv-1.pdf', 'inv-2.pdf'] } };
+    }
     if (query === 'addDocumentsToTestSet') return { data: { addDocumentsToTestSet: { id: 'invoices', name: 'Invoices' } } };
     if (query === 'addTestSet') return { data: { addTestSet: { id: 'recent', name: 'recent' } } };
     return { data: {} };
@@ -91,8 +104,33 @@ describe('resolveModifiedAfter', () => {
     expect(resolveModifiedAfter('custom', '', '09:30:00')).toBeUndefined();
   });
 
-  it('passes a custom date that does not parse through for the server to refuse', () => {
-    expect(resolveModifiedAfter('custom', 'not-a-date', '09:30:00')).toBe('not-a-dateT09:30:00Z');
+  it('refuses a custom date and time that are not real, rather than sending or rolling them over', () => {
+    for (const [date, time] of [
+      ['not-a-date', '09:30:00'],
+      ['2026/11/18', '09:30:00'],
+      ['2026-02-30', '00:00:00'],
+      ['2026-13-01', '00:00:00'],
+      ['2026-11-18', '24:00:00'],
+      ['2026-11-18', '09:60:00'],
+      ['2026-11-18', '09:30:60'],
+      ['2026-11-18', '9:30'],
+    ]) {
+      expect(customCutoff(date, time), `${date} ${time}`).toBeNull();
+      expect(customCutoffIsInvalid('custom', date, time), `${date} ${time}`).toBe(true);
+      expect(() => resolveModifiedAfter('custom', date, time), `${date} ${time}`).toThrow();
+    }
+  });
+
+  it('accepts the last moment of a day, a leap day and a time without seconds', () => {
+    expect(customCutoff('2026-11-18', '23:59:59')).toBe('2026-11-18T23:59:59.000Z');
+    expect(customCutoff('2028-02-29', '00:00:00')).toBe('2028-02-29T00:00:00.000Z');
+    expect(customCutoff('2026-11-18', '09:30')).toBe('2026-11-18T09:30:00.000Z');
+  });
+
+  it('only calls a custom filter with a date entered invalid', () => {
+    expect(customCutoffIsInvalid('24', 'not-a-date', '')).toBe(false);
+    expect(customCutoffIsInvalid('custom', '', 'garbage')).toBe(false);
+    expect(customCutoffIsInvalid('custom', '2026-11-18', '09:30:00')).toBe(false);
   });
 
   it('resolves a relative window against the time given', () => {
@@ -139,6 +177,9 @@ describe('The add-documents dialog', () => {
 
   it('sends the cutoff the check counted against, not one recomputed at submit', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(checkedAt);
+    // The clock moves while the listing is answered, so a cutoff worked out again
+    // when the reply lands (rather than the one sent) would differ too.
+    answerEveryCall(() => now.mockReturnValue(checkedAt + 7 * 1000));
     renderDialog();
     chooseTimeFilter('24');
     await checkFiles();
@@ -181,6 +222,20 @@ describe('The add-documents dialog', () => {
     expect(cutoffsSent('listBucketFiles', 'input')).toEqual(['2026-11-18T09:30:00.000Z']);
     expect(cutoffsSent('addDocumentsToTestSet')).toEqual(['2026-11-18T09:30:00.000Z']);
   });
+
+  it('will not check a custom time typed only in part, and says so beside the field', async () => {
+    renderDialog();
+    chooseTimeFilter('custom');
+    const content = dialog();
+    act(() => content.findDatePicker()!.setInputValue('2026/11/18'));
+    act(() => content.findTimeInput()!.setInputValue('09:3'));
+    expect(screen.getByText('Enter a real date as YYYY-MM-DD and a time as HH:mm:ss.')).toBeTruthy();
+    expect(errorAlerts()).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Check Files' }));
+    expect(errorAlerts()).toHaveLength(1);
+    expect(cutoffsSent('listBucketFiles')).toEqual([]);
+    expect(screen.getByRole('button', { name: 'Add Documents' })).toHaveProperty('disabled', true);
+  });
 });
 
 describe('The create-test-set wizard', () => {
@@ -190,7 +245,8 @@ describe('The create-test-set wizard', () => {
     answerEveryCall();
   });
 
-  it('reads a custom date and time as UTC, as the add-documents dialog does, and says so', async () => {
+  /** Open the pattern step and enter a custom date and time. */
+  const enterCustomDateTime = (date: string, time: string): void => {
     render(
       <English>
         <CreateTestSetWizard visible onDismiss={vi.fn()} onCreated={vi.fn()} generatorAvailable={false} onGenerationStarted={vi.fn()} />
@@ -203,8 +259,29 @@ describe('The create-test-set wizard', () => {
     const timeFilter = wrapper.findWizard()!.findContent()!.findAllSelects()[2];
     act(() => timeFilter.openDropdown());
     act(() => timeFilter.selectOptionByValue('custom'));
-    fireEvent.change(screen.getByPlaceholderText('YYYY-MM-DD'), { target: { value: '2026-11-18' } });
-    fireEvent.change(screen.getByPlaceholderText('00:00:00'), { target: { value: '09:30:00' } });
+    fireEvent.change(screen.getByPlaceholderText('YYYY-MM-DD'), { target: { value: date } });
+    fireEvent.change(screen.getByPlaceholderText('00:00:00'), { target: { value: time } });
+  };
+
+  it('will not go on to Create with a custom date that is not real, and says so beside the field', async () => {
+    enterCustomDateTime('2026/11/18', '00:00:00');
+    expect(screen.getAllByText(invalidText).length).toBeGreaterThan(0);
+    expect(errorAlerts()).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Check matching files' }));
+    expect(errorAlerts()).toHaveLength(1);
+    expect(cutoffsSent('listBucketFiles')).toEqual([]);
+
+    fireEvent.change(screen.getByPlaceholderText('my-invoices-benchmark'), { target: { value: 'recent-invoices' } });
+    const wizard = createWrapper(document.body).findWizard()!;
+    act(() => wizard.findPrimaryButton().click());
+    // Still on the pattern step: no Review, and nothing was created.
+    expect(screen.getByPlaceholderText('YYYY-MM-DD')).toBeTruthy();
+    expect(errorAlerts()).toHaveLength(1);
+    expect(cutoffsSent('addTestSet')).toEqual([]);
+  });
+
+  it('reads a custom date and time as UTC, as the add-documents dialog does, and says so', async () => {
+    enterCustomDateTime('2026-11-18', '09:30:00');
     expect(screen.getByText('Date and time are in UTC.')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Check matching files' }));

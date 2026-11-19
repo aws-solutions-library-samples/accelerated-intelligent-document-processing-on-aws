@@ -2055,6 +2055,10 @@
     "defaultMessage": "Date and time are in UTC.",
     "description": "Help text beside the custom date and time of the \"Modified after\" filter when picking files for a test set: the entered date and time are read as UTC, not as the browser's local time."
   },
+  "testStudio.modifiedAfter.invalidCustomDateTime": {
+    "defaultMessage": "Enter a real date as YYYY-MM-DD and a time as HH:mm:ss.",
+    "description": "Error beside the custom date and time of the \"Modified after\" filter when they are not a real date and time, for example 2026-02-30 or 24:00:00. Keep YYYY-MM-DD and HH:mm:ss as they are."
+  },
   "testStudio.patternPreview.alreadyInSet": {
     "defaultMessage": "{count, number} already in the set",
     "description": "Part of the Check Files result: matching files the set already holds, which the add leaves as they are."

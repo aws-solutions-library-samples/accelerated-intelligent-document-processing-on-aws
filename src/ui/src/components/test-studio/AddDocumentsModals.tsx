@@ -28,7 +28,7 @@ import { generateClient } from '../../api/client-shim';
 import { addDocumentsToTestSet, addDocumentsToTestSetFromUpload, listBucketFiles } from '../../graphql/generated';
 import { getErrorMessage } from '../../utils/errorUtils';
 import { BUCKET_OPTIONS, TIME_FILTER_OPTIONS } from './testSetOptions';
-import { modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
+import { customCutoffIsInvalid, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import AddProcessedDocumentsModal from './AddProcessedDocumentsModal';
 import { createLatestResponseGuard } from './latestResponseOnly';
 import { useFormatters } from '../../i18n/format';
@@ -151,10 +151,16 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
     onDismiss();
   };
 
+  const customDateTimeInvalid = customCutoffIsInvalid(selectedTimeFilter.value, customDate, customTime);
   const getModifiedAfterTimestamp = (): string | undefined => resolveModifiedAfter(selectedTimeFilter.value, customDate, customTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim() || !testSet) return;
+    if (customDateTimeInvalid) {
+      setError(intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime));
+      return;
+    }
+    setError('');
     const bucketType = selectedBucket.value ?? '';
     const isCurrent = checkGuard.current.claim();
     const modifiedAfter = getModifiedAfterTimestamp();
@@ -205,7 +211,8 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           filePattern: filePattern.trim(),
           bucketType: selectedBucket.value ?? '',
           fileCount,
-          // Unchecked, there is no count to agree with, so the window is resolved now.
+          // Add is enabled only once a check has answered, so the stored cutoff is
+          // there; resolving now covers a future path that enables Add without one.
           modifiedAfter: checkedCutoff ? checkedCutoff.modifiedAfter : getModifiedAfterTimestamp(),
         },
       });
@@ -324,7 +331,11 @@ const AddDocumentsModals = ({ testSet, mode, onDismiss, onSubmitted }: AddDocume
           </FormField>
 
           {selectedBucket.value === 'input' && (
-            <FormField label="Modified after" description="Optional: only include files modified within this time period">
+            <FormField
+              label="Modified after"
+              description="Optional: only include files modified within this time period"
+              errorText={customDateTimeInvalid ? intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime) : undefined}
+            >
               <SpaceBetween size="xs">
                 <Select
                   selectedOption={selectedTimeFilter}

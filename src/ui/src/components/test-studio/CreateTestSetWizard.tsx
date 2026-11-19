@@ -40,7 +40,7 @@ import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
 import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
 import { createLatestResponseGuard } from './latestResponseOnly';
-import { modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
+import { customCutoffIsInvalid, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -190,10 +190,16 @@ const CreateTestSetWizard = ({
   };
 
   const getModifiedAfter = (): string | undefined => resolveModifiedAfter(timeFilter.value, customDate, customTime);
+  const customDateTimeInvalid = customCutoffIsInvalid(timeFilter.value, customDate, customTime);
+  const invalidCustomDateTimeText = intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim()) {
       setError('Enter a file pattern first');
+      return;
+    }
+    if (customDateTimeInvalid) {
+      setError(invalidCustomDateTimeText);
       return;
     }
     const isCurrent = checkGuard.current.claim();
@@ -353,6 +359,10 @@ const CreateTestSetWizard = ({
     }
     if (description && !validateDescription(description.trim())) {
       setError('Description cannot exceed 500 characters');
+      return;
+    }
+    if (source === 'existing-files' && customDateTimeInvalid) {
+      setError(invalidCustomDateTimeText);
       return;
     }
     if (!(await nameIsFree())) return;
@@ -536,7 +546,7 @@ const CreateTestSetWizard = ({
           </FormField>
           {timeFilter.value === 'custom' && (
             <ColumnLayout columns={2}>
-              <FormField label="Date">
+              <FormField label="Date" errorText={customDateTimeInvalid ? invalidCustomDateTimeText : undefined}>
                 <Input
                   value={customDate}
                   onChange={({ detail }) => {
@@ -654,6 +664,10 @@ const CreateTestSetWizard = ({
               }
               if (source === 'existing-files' && !filePattern.trim()) {
                 setError('Enter a file pattern to continue');
+                return;
+              }
+              if (source === 'existing-files' && customDateTimeInvalid) {
+                setError(invalidCustomDateTimeText);
                 return;
               }
             }
