@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Union
 
 import boto3
@@ -406,6 +407,34 @@ def _literal_prefix(pattern: str) -> str:
     return pattern[: pattern.rfind("/", 0, wildcard_at) + 1]
 
 
+def parse_modified_after(modified_after: object) -> Optional[datetime]:
+    """The cutoff ``find_matching_files`` filters by, or None when there is none.
+
+    A falsy value means no cutoff. Anything else must be an ISO 8601 string
+    ``datetime.fromisoformat`` reads, with a trailing ``Z`` taken as UTC and a
+    value with no offset taken as UTC; any other value raises ``ValueError``.
+    This is the one parse of that argument, so an API that validates it before
+    queueing a copy refuses exactly what the copy would have failed on.
+    """
+    if not modified_after:
+        return None
+    if not isinstance(modified_after, str):
+        raise ValueError(
+            "modifiedAfter must be an ISO 8601 date-time string, "
+            f"got {type(modified_after).__name__}"
+        )
+    try:
+        cutoff_time = datetime.fromisoformat(modified_after.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError(
+            f"modifiedAfter '{modified_after}' is not an ISO 8601 date-time "
+            "(for example 2026-09-01T00:00:00Z)"
+        ) from None
+    if cutoff_time.tzinfo is None:
+        cutoff_time = cutoff_time.replace(tzinfo=timezone.utc)
+    return cutoff_time
+
+
 def find_matching_files(
     bucket: str, pattern: str, modified_after: str | None = None
 ) -> List[str]:
@@ -423,8 +452,6 @@ def find_matching_files(
     Returns:
         List of matching file keys
     """
-    from datetime import datetime, timezone
-
     try:
         s3 = get_s3_client()
         paginator = s3.get_paginator("list_objects_v2")
@@ -438,12 +465,8 @@ def find_matching_files(
         if prefix:
             list_kwargs["Prefix"] = prefix
 
-        # Parse modified_after filter if provided
-        cutoff_time = None
-        if modified_after:
-            cutoff_time = datetime.fromisoformat(modified_after.replace("Z", "+00:00"))
-            if cutoff_time.tzinfo is None:
-                cutoff_time = cutoff_time.replace(tzinfo=timezone.utc)
+        cutoff_time = parse_modified_after(modified_after)
+        if cutoff_time:
             logger.info(f"Filtering files modified after {cutoff_time.isoformat()}")
 
         matching_files = []
