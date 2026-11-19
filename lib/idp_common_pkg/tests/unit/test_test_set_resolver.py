@@ -9853,6 +9853,44 @@ class TestCreatingATestSetNeverReplacesAnExistingOne:
 
 
 @pytest.mark.unit
+class TestTheNamePreCheckDoesNotFailOpen:
+    """``validateTestFileName`` is the wizard's check before it creates a set."""
+
+    def _event(self, name):
+        return {
+            "info": {"fieldName": "validateTestFileName"},
+            "arguments": {"fileName": name},
+            "identity": _ADMIN_IDENTITY,
+        }
+
+    def test_a_taken_id_is_reported_under_either_spelling(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+
+        for name in ("my-set", "My Set"):
+            assert test_set_index.handler(self._event(name), {}) == {
+                "exists": True,
+                "testSetId": "my-set",
+            }
+
+    def test_a_free_id_is_reported_free(self, create_env):
+        assert test_set_index.handler(self._event("Other Set"), {}) == {
+            "exists": False,
+            "testSetId": None,
+        }
+
+    def test_a_failed_lookup_is_an_error_not_a_free_name(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+        table.delete()
+
+        with pytest.raises(DynamoDBError) as raised:
+            test_set_index.handler(self._event("My Set"), {})
+
+        assert raised.value.error_code == "ResourceNotFoundException"
+
+
+@pytest.mark.unit
 class TestPatternImportIsAdminOnly:
     """Matching a pattern searches a whole bucket, so Authors cannot do it.
 

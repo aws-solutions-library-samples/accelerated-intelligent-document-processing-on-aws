@@ -12,6 +12,7 @@ from typing import Any, Dict
 import boto3
 import cfnresponse
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
 # Set HuggingFace cache to /tmp (Lambda's writable directory)
 os.environ["HF_HOME"] = "/tmp/huggingface"  # nosec B108 - isolated Lambda environment
@@ -49,6 +50,10 @@ TRACKING_TABLE = os.environ.get("TRACKING_TABLE")
 DATASET_NAME = "RealKIE-FCC-Verified"
 DATASET_PREFIX = "realkie-fcc-verified/"
 TEST_SET_ID = "realkie-fcc-verified"
+# The ``source`` this deployer stamps on its row. The test set id is fixed, so a
+# user can create a set with the same id; a row carrying any other source is
+# that set, and is never replaced or written into.
+DATASET_SOURCE = "huggingface:amazon-agi/RealKIE-FCC-Verified"
 
 
 def handler(event, context):
@@ -87,6 +92,13 @@ def handler(event, context):
                     "Message": f"Dataset version {dataset_version} already exists, description updated"
                 },
             )
+            return
+
+        # Claim the id before the first file lands in its folder. With a row in
+        # place, Test Studio neither registers the folder as an upload nor lets
+        # a user create a set under the id while the dataset is written.
+        if not claim_row(dataset_version):
+            _report_id_in_use(event, context)
             return
 
         # Download and deploy the dataset
@@ -128,12 +140,78 @@ def update_description_only(description: str):
         table.update_item(
             Key={"PK": f"testset#{TEST_SET_ID}", "SK": "metadata"},
             UpdateExpression="SET description = :desc",
-            ExpressionAttributeValues={":desc": description},
+            ConditionExpression="#source = :source",
+            ExpressionAttributeNames={"#source": "source"},
+            ExpressionAttributeValues={":desc": description, ":source": DATASET_SOURCE},
         )
         logger.info(f"Updated description for test set {TEST_SET_ID}")
     except Exception as e:
         logger.error(f"Failed to update description: {e}")
         raise
+
+
+def _report_id_in_use(event, context):
+    """Answer CloudFormation when a set this deployer did not create holds the id.
+
+    SUCCESS, so a name clash does not fail the stack; the set"s row and folder
+    are left as they are and the dataset is not deployed.
+    """
+    message = (
+        f"A test set with id {TEST_SET_ID} already exists and was not "
+        f"created by this deployer; {DATASET_NAME} was not deployed"
+    )
+    logger.warning(message)
+    cfnresponse.send(
+        event, context, cfnresponse.SUCCESS, {"Status": "ID_IN_USE", "Message": message}
+    )
+
+
+def claim_row(version: str) -> bool:
+    """Write this deployer"s row as in progress; False if another set holds the id.
+
+    UPDATING is a status the resolver neither reconciles nor overwrites. If this
+    run dies, the row stays UPDATING, which check_existing_version does not
+    count as deployed, so the next run deploys again.
+    """
+    table = dynamodb.Table(TRACKING_TABLE)  # type: ignore[attr-defined]
+    timestamp = datetime.utcnow().isoformat() + "Z"
+    item = {
+        "PK": f"testset#{TEST_SET_ID}",
+        "SK": "metadata",
+        "ItemType": "testset",
+        "InitialEventTime": timestamp,
+        "id": TEST_SET_ID,
+        "name": DATASET_NAME,
+        "filePattern": "",
+        "fileCount": 0,
+        "status": "UPDATING",
+        "statusUpdatedAt": timestamp,
+        "createdAt": timestamp,
+        "datasetVersion": version,
+        "source": DATASET_SOURCE,
+        "description": f"Deploying {DATASET_NAME} from its source.",
+    }
+    try:
+        _put_own_row(table, item)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+    return True
+
+
+def _put_own_row(table, item):
+    """Write the set's row unless a set created by someone else holds the id.
+
+    Conditional: a refusal raises, and on the record writers it takes the
+    handler's non-blocking error path.
+    """
+    table.put_item(
+        Item=item,
+        ConditionExpression="attribute_not_exists(PK) OR #source = :source",
+        ExpressionAttributeNames={"#source": "source"},
+        ExpressionAttributeValues={":source": DATASET_SOURCE},
+    )
 
 
 def check_existing_version(version: str) -> bool:
@@ -153,8 +231,12 @@ def check_existing_version(version: str) -> bool:
             # Check if version matches, status is not FAILED, and files exist
             if existing_version == version:
                 existing_status = response["Item"].get("status", "")
-                if existing_status == "FAILED":
-                    logger.info("Previous deployment failed, retrying deployment")
+                # Only a finished deployment counts: UPDATING is the claim of a run
+                # that died before its final record, and FAILED is one that failed.
+                if existing_status != "COMPLETED":
+                    logger.info(
+                        f"Previous deployment is {existing_status}, retrying deployment"
+                    )
                     return False
                 # Verify at least some files exist in S3
                 try:
@@ -396,7 +478,7 @@ def create_failed_testset_record(version: str, error_message: str):
         "status": "FAILED",
         "createdAt": timestamp,
         "datasetVersion": version,
-        "source": "huggingface:amazon-agi/RealKIE-FCC-Verified",
+        "source": DATASET_SOURCE,
         "description": (
             f"⚠️ Deployment failed: {error_message[:500]}. "
             f"This test set could not be downloaded from its source. "
@@ -404,7 +486,7 @@ def create_failed_testset_record(version: str, error_message: str):
         ),
     }
 
-    table.put_item(Item=item)
+    _put_own_row(table, item)
     logger.info(f"Created FAILED test set record in DynamoDB: {TEST_SET_ID}")
 
 
@@ -428,9 +510,9 @@ def create_testset_record(version: str, description: str, file_count: int):
         "status": "COMPLETED",
         "createdAt": timestamp,
         "datasetVersion": version,
-        "source": "huggingface:amazon-agi/RealKIE-FCC-Verified",
+        "source": DATASET_SOURCE,
         "description": description or "RealKIE-FCC-Verified dataset from HuggingFace",
     }
 
-    table.put_item(Item=item)
+    _put_own_row(table, item)
     logger.info(f"Created test set record in DynamoDB: {TEST_SET_ID}")

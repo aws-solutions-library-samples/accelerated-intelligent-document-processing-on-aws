@@ -7537,16 +7537,12 @@ def validate_test_file_name(args):
     test_set_name = args["fileName"]
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
-    # Check if test set already exists in tracking table
-    try:
-        item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
+    # A failed lookup raises rather than answering "does not exist": the wizard
+    # reports an error as one, and a false "free" would send it on to a create.
+    item = db_client.get_item({"PK": f"testset#{test_set_id}", "SK": "metadata"})
 
-        if item:
-            logger.info(f"Test set {test_set_id} already exists")
-            return {"exists": True, "testSetId": test_set_id}
-        else:
-            logger.info(f"Test set {test_set_id} does not exist")
-            return {"exists": False, "testSetId": None}
-    except Exception as e:
-        logger.error(f"Error checking test set existence: {str(e)}")
-        return {"exists": False, "testSetId": None}
+    if item:
+        logger.info(f"Test set {test_set_id} already exists")
+        return {"exists": True, "testSetId": test_set_id}
+    logger.info(f"Test set {test_set_id} does not exist")
+    return {"exists": False, "testSetId": None}
