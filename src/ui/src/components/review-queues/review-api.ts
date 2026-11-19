@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT-0
 //
 // Typed calls to the review queue API, shared by the review queue pages.
+import { defineMessages, type IntlShape, type NoMessageValues } from 'react-intl';
+
 import { generateClient } from '../../api/client-shim';
 import { extractGraphQLErrorMessage } from '../../hooks/utils/graphql-error';
 import {
@@ -140,17 +142,41 @@ export const removeItem = async (item: ItemRef, note?: string): Promise<ReviewIt
 export const MISSING_REQUIRED_KIND = 'missing_required';
 
 /**
- * One reason's chip text: "Low confidence: Employer name 0.62 < 0.80", or
- * "Missing required: Employer name" for a required field with no value.
+ * The `kind` of a reason for a section whose extraction failed and left it with no
+ * fields (for example, a content filter withheld the model's reply). Its `label` is
+ * the section's processing-issue message, and it names no field.
  */
-export const reasonText = (reason: {
-  kind: string;
-  label?: string | null;
-  field?: string | null;
-  score: number;
-  threshold: number;
-}): string => {
+export const EXTRACTION_FAILED_KIND = 'extraction_failed';
+
+const messages = defineMessages<{ extractionFailed: NoMessageValues }>({
+  extractionFailed: {
+    id: 'reviewQueues.reasons.extractionFailed',
+    defaultMessage: 'Extraction failed',
+    description:
+      'Chip text of a review reason for a section whose extraction failed and left it with no extracted data (for example, a content filter withheld the model reply). Also the Reason column of a work list.',
+  },
+});
+
+/**
+ * One reason's chip text: "Low confidence: Employer name 0.62 < 0.80",
+ * "Missing required: Employer name" for a required field with no value, or
+ * "Extraction failed" for a section with no extracted data. The last is a declared
+ * message, formatted with `intl` when the caller has one and its English otherwise.
+ */
+export const reasonText = (
+  reason: {
+    kind: string;
+    label?: string | null;
+    field?: string | null;
+    score: number;
+    threshold: number;
+  },
+  intl?: Pick<IntlShape, 'formatMessage'>,
+): string => {
   const name = reason.label || reason.field;
+  if (reason.kind === EXTRACTION_FAILED_KIND) {
+    return intl ? intl.formatMessage(messages.extractionFailed) : String(messages.extractionFailed.defaultMessage);
+  }
   if (reason.kind === MISSING_REQUIRED_KIND) return `Missing required${name ? `: ${name}` : ''}`;
   const what = reason.kind === 'blueprint_confidence' ? 'Blueprint confidence' : 'Low confidence';
   return `${what}: ${name ? `${name} ` : ''}${reason.score.toFixed(2)} < ${reason.threshold.toFixed(2)}`;

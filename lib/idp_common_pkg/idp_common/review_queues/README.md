@@ -118,7 +118,16 @@ In queue mode:
   of a section's `missing_required_fields` is a `missing_required` reason named by
   its path, with a score of 0.0 and the entry's threshold, otherwise
   `hitl.confidence_threshold`, so it sorts ahead of the confidence alerts. Legacy
-  HITL (`legacy_section_triggers`, `bda_segment_triggers`) does not read it. So routing agrees exactly with the alerts users
+  HITL (`legacy_section_triggers`, `bda_segment_triggers`) does not read it. A
+  section carrying an error-severity `extraction_failed` processing issue
+  (`failed_extraction_issue`; the content-filter case of #2038, where extraction
+  records the failure and returns) is one `extraction_failed` reason with no
+  field, the issue's `message` as its label, a score of 0.0 and
+  `hitl.confidence_threshold`. That one is not queue-only: `legacy_section_triggers`
+  reads the same helper, so legacy HITL marks the section pending too. Both are
+  gated on `hitl.enabled`. The code is spelled `EXTRACTION_FAILED_ISSUE_CODE` here
+  rather than imported, because importing `idp_common.extraction` loads the
+  extraction service; a test pins it to `extraction.failure.EXTRACTION_FAILED_CODE`. So routing agrees exactly with the alerts users
   see, and it reads nothing from S3. A malformed alert is skipped. A section's
   `missing_required_fields` are not reasons and nothing here reads them; they are
   the input for routing on missing data, which does not exist yet. The module must
