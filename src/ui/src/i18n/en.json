@@ -1447,6 +1447,54 @@
     "defaultMessage": "View existing issues",
     "description": "Link in the feedback block that opens the list of GitHub issues of the project in a new tab."
   },
+  "helpPanel.knowledgeBase.docsKnowledgeBase": {
+    "defaultMessage": "Knowledge Base",
+    "description": "Documentation link in the Knowledge Base help panel: the page about the document knowledge base."
+  },
+  "helpPanel.knowledgeBase.feature1": {
+    "defaultMessage": "Ask questions about documents in your knowledge base",
+    "description": "First item of the features list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.feature2": {
+    "defaultMessage": "Get responses with citations to source documents",
+    "description": "Second item of the features list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.feature3": {
+    "defaultMessage": "Follow document links to view original source material",
+    "description": "Third item of the features list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.features": {
+    "defaultMessage": "Features",
+    "description": "Heading above the list of features in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.intro": {
+    "defaultMessage": "Query your document collection using natural language, powered by Amazon Bedrock Knowledge Bases.",
+    "description": "First paragraph of the Knowledge Base help panel. \"Amazon Bedrock Knowledge Bases\" is an AWS service name and stays as it is."
+  },
+  "helpPanel.knowledgeBase.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tip1": {
+    "defaultMessage": "Be specific in your questions to get more accurate answers",
+    "description": "First item of the tips list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tip2": {
+    "defaultMessage": "Questions are context-aware — you can ask follow-up questions",
+    "description": "Second item of the tips list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tip3": {
+    "defaultMessage": "Results are based on indexed document content",
+    "description": "Third item of the tips list in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.tips": {
+    "defaultMessage": "Tips",
+    "description": "Heading above the list of tips in the Knowledge Base help panel."
+  },
+  "helpPanel.knowledgeBase.title": {
+    "defaultMessage": "Document Knowledge Base Query",
+    "description": "Heading of the help panel of the Knowledge Base page."
+  },
   "helpPanel.upload.details": {
     "defaultMessage": "Details",
     "description": "Heading above the list of upload details in the Upload Documents help panel."
@@ -1694,6 +1742,38 @@
   "inbox.navLink.unread": {
     "defaultMessage": "{count, plural, one {unread} other {unread}}",
     "description": "Read by screen readers after the count badge of the Inbox link, as in \"3 unread\". {count} is the number of unread messages; the badge itself shows the number."
+  },
+  "knowledgeBase.query.intro": {
+    "defaultMessage": "Ask a question below.",
+    "description": "Text of the Knowledge Base page before the first question."
+  },
+  "knowledgeBase.query.introDisabled": {
+    "defaultMessage": "Document Knowledge Base queries are not enabled. Document Knowledge Base is set to DISABLED for this GenAIIDP deployment.",
+    "description": "Text of the Knowledge Base page when the deployment has no knowledge base. Keep DISABLED (the deployment setting value) and GenAIIDP (the product name) as they are."
+  },
+  "knowledgeBase.query.placeholder": {
+    "defaultMessage": "Enter a question to query your document knowledge base.",
+    "description": "Placeholder of the question box on the Knowledge Base page."
+  },
+  "knowledgeBase.query.placeholderDisabled": {
+    "defaultMessage": "Document Knowledge Base is set to DISABLED for this GenAIIDP deployment.",
+    "description": "Placeholder of the question box when the deployment has no knowledge base. Keep DISABLED (the deployment setting value) and GenAIIDP (the product name) as they are."
+  },
+  "knowledgeBase.query.queryAction": {
+    "defaultMessage": "query the knowledge base",
+    "description": "Action phrase completing an API error sentence (\"Failed to …: <error>\" / \"You do not have permission to …\") when the knowledge base cannot be queried."
+  },
+  "knowledgeBase.query.question": {
+    "defaultMessage": "Q: {question}",
+    "description": "Bold label above each answer on the Knowledge Base page. {question} is the question as the user typed it."
+  },
+  "knowledgeBase.query.submit": {
+    "defaultMessage": "Submit",
+    "description": "Button that sends the typed question to the knowledge base."
+  },
+  "knowledgeBase.query.title": {
+    "defaultMessage": "Documents Knowledge Base Query Tool",
+    "description": "Heading of the Knowledge Base page."
   },
   "mcp.configuration.adminOnly": {
     "defaultMessage": "MCP Configuration is available to Admin users only.",
