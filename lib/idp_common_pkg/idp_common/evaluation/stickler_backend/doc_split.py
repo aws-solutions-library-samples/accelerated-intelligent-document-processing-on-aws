@@ -41,6 +41,7 @@ from stickler.doc_split.doc_split_classification_metrics import (  # noqa: F401
 )
 
 from idp_common import s3
+from idp_common.utils.transient_errors import reraise_if_transient
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,9 @@ def load_sections_for_doc_split(
 
     Failures loading a section's JSON append to ``calculator.errors``, which
     flows into ``calculate_all_metrics()["errors"]`` and out to the markdown
-    report; the section is skipped from metrics.
+    report; the section is skipped from metrics. A transient failure (throttle,
+    5xx, timeout) is raised as ``TransientError`` instead, so the evaluation is
+    retried rather than scored against a section that was never read.
 
     Args:
         sections: IDP ``Section`` objects (typed via duck-typing to avoid a
@@ -77,6 +80,9 @@ def load_sections_for_doc_split(
         try:
             data = s3.get_json_content(section.extraction_result_uri)
         except Exception as e:  # noqa: BLE001 — surface all load failures
+            # A transient read is retried rather than reported as a missing
+            # section, which would depress the split metrics (#2129).
+            reraise_if_transient(e, where="evaluation")
             calculator.errors.append(
                 f"Error loading section data from {section.extraction_result_uri}: {e}"
             )

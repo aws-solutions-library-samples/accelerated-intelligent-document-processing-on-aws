@@ -613,6 +613,12 @@ class EvaluationService:
             return extraction_data, confidence_scores
 
         except Exception as e:
+            # A throttled, 5xx or timed-out read says nothing about the document,
+            # and scoring its fields as misses would record a depressed accuracy
+            # with no retry. Surface it as TransientError so EvaluationStep runs
+            # again (#2129). A missing object or an unparseable body is
+            # deterministic and keeps the empty-data fallback.
+            reraise_if_transient(e, where="evaluation")
             logger.error(
                 f"Error loading extraction results from {uri}: {str(e)}", exc_info=True
             )
@@ -1965,6 +1971,10 @@ class EvaluationService:
                 )
 
             except Exception as e:
+                # The doc split metrics are supplemental, so a failure computing
+                # them is recorded and the evaluation goes on, but a transient
+                # section read must reach the retry (#2129).
+                reraise_if_transient(e, where="evaluation")
                 logger.error(
                     f"Error calculating doc split metrics: {str(e)}", exc_info=True
                 )

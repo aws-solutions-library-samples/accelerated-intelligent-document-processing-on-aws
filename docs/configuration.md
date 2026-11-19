@@ -846,7 +846,11 @@ with no retry. In `EvaluationStep` it is an LLM-judge call that failed transient
 (a throttle that outlasted the Bedrock client's retries, a bare HTTP 5xx, a read
 timeout): the comparator raises it instead of scoring the field 0.0, and the step is
 retried without a failed evaluation being recorded first. A deterministic judge
-error still scores its field 0.0. If the retries run out, the step's Catch records
+error still scores its field 0.0. The same holds for the step's S3 reads: a
+throttled, 5xx or timed-out read of the document, the baseline or a section's
+extraction result is retried, where before it scored the section's fields as
+misses or failed the evaluation with no retry, and a missing object keeps its
+existing outcome. If the retries run out, the step's Catch records
 the evaluation as failed and the document continues. `RecordEvaluationFailure` does
 not list `TransientError`, because it makes no model call and never raises. Whether
 a failure is transient is decided in

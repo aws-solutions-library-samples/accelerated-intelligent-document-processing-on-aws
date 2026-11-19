@@ -147,7 +147,7 @@ def extract_document_from_event(event: Dict[str, Any]) -> Optional[Document]:
         return document
     except Exception as e:
         logger.error(f"Error extracting document from event: {str(e)}")
-        raise ValueError(f"Failed to extract document from event: {str(e)}")
+        raise ValueError(f"Failed to extract document from event: {str(e)}") from e
 
 
 def load_baseline_document(document_key: str) -> Optional[Document]:
@@ -187,7 +187,7 @@ def load_baseline_document(document_key: str) -> Optional[Document]:
 
     except Exception as e:
         logger.error(f"Error loading baseline document: {str(e)}")
-        raise ValueError(f"Failed to load baseline document: {str(e)}")
+        raise ValueError(f"Failed to load baseline document: {str(e)}") from e
 
 
 def create_response(
