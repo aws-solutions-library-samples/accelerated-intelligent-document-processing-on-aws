@@ -1215,6 +1215,123 @@ def test_upload_offers_the_escape_hatch_when_the_checks_could_not_run_either(
         assert stack.item("p1") is None
 
 
+#: Valid, with an unread nested key: the model's field is `ocr.image.dpi`, so
+#: validation warns about `ocr.dpi` and names the field it was meant to be.
+_UPLOAD_WITH_UNREAD_KEY = (
+    "classes:\n  - name: invoice\n    description: An invoice\nocr:\n  dpi: 150\n"
+)
+
+
+def _upload_args(*extra):
+    return [
+        "config-upload",
+        "--stack-name",
+        STACK,
+        "--config-file",
+        "config.yaml",
+        "--config-profile",
+        "p1",
+        "--region",
+        REGION,
+        *extra,
+    ]
+
+
+@pytest.mark.unit
+def test_upload_prints_the_validation_warnings_and_still_succeeds():
+    """
+    The findings `config-validate` prints for a file are printed by the command
+    that stores it, too. They used to be dropped on this path, so a warning added
+    to the validator reached nobody who uploaded. Non-fatal: the record is written
+    and the exit code stays 0.
+    """
+    with config_stack() as stack:
+        with write_config(_UPLOAD_WITH_UNREAD_KEY) as runner:
+            result = runner.invoke(cli, _upload_args())
+            validated = runner.invoke(
+                cli, ["config-validate", "--config-file", "config.yaml"]
+            )
+        assert result.exit_code == 0, result.output
+        flat = " ".join(result.output.split())
+        assert "Configuration uploaded successfully" in flat
+        assert "Warnings:" in flat
+        assert "Did you mean 'ocr.image.dpi'?" in flat
+        # Every finding config-validate reports for the file, not only the first.
+        validated_flat = " ".join(validated.output.split())
+        reported = [
+            line.split("⚠", 1)[1].strip()
+            for line in validated.output.splitlines()
+            if line.strip().startswith("⚠")
+        ]
+        assert len(reported) >= 2, validated.output
+        for line in reported:
+            assert line in validated_flat
+            assert line in flat, line
+        assert stack.item("p1") is not None
+
+
+@pytest.mark.unit
+def test_upload_prints_the_warnings_beside_a_validation_refusal(api_calls):
+    """The unread key is often why the value the author set did not take."""
+    with config_stack() as stack:
+        api_calls.clear()
+        with write_config(
+            "extraction:\n  model: us.anthropic.claude-nope-v9:0\n"
+            + _UPLOAD_WITH_UNREAD_KEY
+        ) as runner:
+            result = runner.invoke(cli, _upload_args())
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert "Failed to upload configuration: Validation failed" in flat
+        assert "Warnings:" in flat
+        assert "Did you mean 'ocr.image.dpi'?" in flat
+        assert api_calls.of("PutItem") == []
+        assert stack.item("p1") is None
+
+
+#: Valid, and both warnings it produces quote text the author wrote that rich would
+#: read as markup: the unread key's path, and the fallback class name.
+_MARKUP_LIKE_CONFIG = (
+    "classes:\n  - name: invoice\n    description: An invoice\n"
+    'classification:\n  fallback_class: "[/x]"\n'
+    'ocr:\n  "[bold]dpi": 150\n'
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("command", ["config-validate", "config-upload"])
+def test_warnings_quoting_markup_like_user_text_are_printed_verbatim(command):
+    """
+    Warnings quote what the author wrote. Printed as rich markup, `[bold]` in a key
+    is swallowed as a style tag, so the warning names `ocr.dpi`, a key the author
+    did not write, and `[/x]` in the fallback class raises, so a valid
+    configuration exits 1. Both commands print through the same escaped helper.
+    """
+    with config_stack():
+        with write_config(_MARKUP_LIKE_CONFIG) as runner:
+            args = (
+                ["config-validate", "--config-file", "config.yaml"]
+                if command == "config-validate"
+                else _upload_args()
+            )
+            result = runner.invoke(cli, args)
+    assert result.exit_code == 0, result.output
+    flat = " ".join(result.output.split())
+    assert "'ocr.[bold]dpi'" in flat
+    assert "'[/x]'" in flat
+
+
+@pytest.mark.unit
+def test_upload_without_validation_prints_no_warnings_heading():
+    """Nothing was checked, so there is nothing to report."""
+    with config_stack() as stack:
+        with write_config(_UPLOAD_WITH_UNREAD_KEY) as runner:
+            result = runner.invoke(cli, _upload_args("--no-validate"))
+        assert result.exit_code == 0, result.output
+        assert "Warnings:" not in result.output
+        assert stack.item("p1") is not None
+
+
 @pytest.mark.unit
 def test_upload_requires_a_profile_and_an_existing_file():
     """Both are usage errors, so both are exit 2 and neither reaches AWS."""

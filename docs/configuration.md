@@ -449,6 +449,14 @@ summarization:
 - No LLM API calls or S3 operations are performed
 - Document processing continues to completion
 
+**When a summary cannot be produced:** if Bedrock refuses the prompt as too long
+for the summarization model's input window, or Bedrock's content filter withholds
+the model's reply, the document still completes, with its extraction results intact.
+The affected summary (one section's, or the whole document's when it has no
+sections) is replaced by a *Summary Unavailable* note saying which of the two
+happened; the other sections are summarized normally. Any other summarization model
+error fails the document.
+
 **Note:** Prior to v0.4.0, this feature was controlled by the `IsSummarizationEnabled` CloudFormation parameter. The configuration-based approach provides runtime control without requiring stack redeployment.
 
 ## Confidence (Assessment) Configuration
@@ -1302,8 +1310,12 @@ Four notes on reading that:
   carries only `task_prompt_topk` and `task_prompt_verbalized`, because it is one
   call per section that always returns one class, so the per-segment `_packet`
   variants would never be read.
-- **`fallback_class` is not validated against your class list.** It accepts any
-  string; the built-in value is `unclassified`. Pointing it at one of your own
+- **`fallback_class` should be `unclassified` or one of your classes.** The
+  built-in value is `unclassified`. Any other string is stored as written, and a
+  page given it has no extraction schema, so nothing is extracted from it;
+  `idp-cli config-validate` warns when the fallback names no configured class
+  (comparing names exactly, and suggesting the nearest class name), without
+  failing validation, so the configuration still uploads. Pointing it at one of your own
   classes is supported and means extraction then runs that class's schema over a
   document whose class could not actually be decided — which may be what you
   want, or may not.

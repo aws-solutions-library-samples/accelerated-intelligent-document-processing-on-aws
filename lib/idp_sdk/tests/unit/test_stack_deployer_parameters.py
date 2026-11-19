@@ -265,8 +265,48 @@ def test_a_local_custom_config_without_a_resolvable_region_is_refused(
     cfg = tmp_path / "config.yaml"
     cfg.write_text("classification: {}\n")
 
+    monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
     with pytest.raises(ValueError, match="Region could not be determined"):
         build_parameters(custom_config=str(cfg), region=None)
+
+
+@pytest.mark.parametrize("source", ["default_session", "AWS_REGION"])
+def test_a_local_custom_config_is_uploaded_in_the_region_resolve_region_names(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, source: str
+):
+    """With no `region`, the upload goes where `idp_sdk.resolve_region` says.
+
+    A Region given to `boto3.setup_default_session` is honoured although
+    `AWS_DEFAULT_REGION` names another, which a fresh `boto3.Session()` would
+    read; and a shell setting only `AWS_REGION`, which boto3 does not read,
+    still resolves.
+    """
+    import idp_sdk._core.stack as stack_module
+
+    monkeypatch.setenv("AWS_CONFIG_FILE", "/dev/null")
+    monkeypatch.delenv("AWS_PROFILE", raising=False)
+    monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+    if source == "default_session":
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        boto3.setup_default_session(region_name="eu-central-1")
+    else:
+        monkeypatch.delenv("AWS_DEFAULT_REGION", raising=False)
+        monkeypatch.setenv("AWS_REGION", "eu-central-1")
+    uploads: list = []
+
+    def record(path, region, stack_name):
+        uploads.append(region)
+        return "s3://bucket/key.yaml"
+
+    monkeypatch.setattr(stack_module, "upload_local_config", record)
+    cfg = tmp_path / "config.yaml"
+    cfg.write_text("classification: {}\n")
+
+    out = build_parameters(custom_config=str(cfg), region=None)
+
+    assert uploads == ["eu-central-1"]
+    assert out["CustomConfigPath"] == "s3://bucket/key.yaml"
 
 
 def test_a_local_custom_config_is_uploaded_and_the_s3_uri_returned(

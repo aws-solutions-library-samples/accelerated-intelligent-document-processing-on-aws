@@ -93,6 +93,14 @@ def _is_input_token_overflow(error: Exception) -> bool:
     return is_input_token_overflow(error)
 
 
+def _is_content_filter_block(error: Exception) -> bool:
+    """A reply Bedrock's content filter withheld — the shared matcher in
+    ``bedrock_utils``."""
+    from idp_common.utils.bedrock_utils import is_content_filter_block
+
+    return is_content_filter_block(error)
+
+
 class SummarizationService:
     """Service for summarizing documents using various backends."""
 
@@ -446,6 +454,34 @@ class SummarizationService:
                     metadata={
                         "summarization_skipped": True,
                         "skip_reason": "input_token_overflow",
+                        "error": str(e),
+                    },
+                )
+            # The same degradation for a reply the content filter withheld: the
+            # summary is advisory, extraction already succeeded, and a retry sends
+            # the same text to the same filter, so the document completes with a
+            # stub that says why there is no summary.
+            if _is_content_filter_block(e):
+                logger.warning(
+                    "Amazon Bedrock's content filter withheld the summarization "
+                    "model's reply (%s); returning a summary stub so the document "
+                    "completes with extraction intact.",
+                    e,
+                )
+                return DocumentSummary(
+                    content={
+                        "summary": (
+                            "## Summary Unavailable\n\n"
+                            "No summary was produced because Amazon Bedrock's "
+                            "content filter withheld the summarization model's "
+                            "reply. Extraction results are available and "
+                            "unaffected. To get a summary, use a different "
+                            "summarization model."
+                        )
+                    },
+                    metadata={
+                        "summarization_skipped": True,
+                        "skip_reason": "content_filtered",
                         "error": str(e),
                     },
                 )

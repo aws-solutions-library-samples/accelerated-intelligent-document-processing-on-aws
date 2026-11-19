@@ -548,38 +548,29 @@ def test_prerequisite_floors_match_their_sources() -> None:
 
 
 @pytest.mark.unit
-def test_ruff_exclusion_figures_match_the_baseline() -> None:
-    """The document's two exclusion counts, read from the baseline that sets them.
+def test_ruff_exclusion_lists_are_described_by_their_source() -> None:
+    """The document names where the two exclusion-list sizes come from.
 
-    These are exact counts on purpose, which an earlier version of this check
-    could not afford: the figures then were "how many tracked .py files does ruff
-    skip", which every commit adding a .py file changed, so pinning them would
-    have red-lined unrelated branches. They are now the sizes of two named lists
-    in ``scripts/lint_debt.json``, and those change only when somebody runs
-    ``check_lint_debt.py --write`` — a deliberate act, by whoever is also in a
-    position to update this sentence.
+    It used to quote both sizes and the finding total, pinned here by presence.
+    Those figures move whenever anybody pays a file off with
+    ``check_lint_debt.py --write``, and a correct paydown on one branch then
+    red-lined every branch built on it, for a sentence nobody acts on. The sizes
+    are scenery next to the fact that the lists are per-file and shrink, so the
+    page names the baseline instead, and ``test_documented_counts.py`` guards
+    against a figure being written back in.
     """
     baseline = json.loads(
         (REPO_ROOT / "scripts" / "lint_debt.json").read_text(encoding="utf-8")
     )
-    lint_files = len(baseline["lintDebt"])
-    lint_findings = sum(sum(c.values()) for c in baseline["lintDebt"].values())
-    format_files = len(baseline["formatDebt"])
-
-    assert lint_files and format_files, (
+    assert baseline["lintDebt"] and baseline["formatDebt"], (
         "scripts/lint_debt.json records no debt at all. If that is genuine, the "
         "paragraph in CONTRIBUTING.md about excluded files should go rather than "
-        "quote zeroes."
+        "describe empty lists."
     )
-    for label, value in (
-        ("[lint] exclude file count", lint_files),
-        ("pre-existing lint findings", lint_findings),
-        ("[format] exclude file count", format_files),
-    ):
-        assert str(value) in DOC, (
-            f"CONTRIBUTING.md no longer quotes the {label} ({value}). "
-            "scripts/lint_debt.json is the source of truth; update the paragraph "
-            "under 'Before every commit' to match it."
+    for key in ("lintDebt", "formatDebt"):
+        assert f"`{key}`" in DOC, (
+            f"CONTRIBUTING.md no longer names the `{key}` entries of "
+            "scripts/lint_debt.json as the source of the exclusion-list sizes."
         )
 
 

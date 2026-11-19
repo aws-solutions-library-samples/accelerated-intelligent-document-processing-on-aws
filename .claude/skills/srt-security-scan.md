@@ -461,8 +461,9 @@ preferred over a JSON suppression for Python because the justification lives
 next to the code.
 
 **Check whether the file you edited is one ruff formats before reformatting it.**
-`ruff.toml`'s `[format] exclude` names 186 individual files that `ruff format` has
-never been run over, many of them under `scripts/` and `src/lambda/`. On one of
+`ruff.toml`'s `[format] exclude` names individual files that `ruff format` has
+never been run over (the `formatDebt` entries in `scripts/lint_debt.json`), many
+of them under `scripts/` and `src/lambda/`. On one of
 those, `ruff format <path>` rewrites the whole file and drags a large cosmetic diff
 into a `# nosec` change; `make lint-cicd` would not have asked for it. Ask
 `python3 scripts/check_lint_debt.py --explain <path>`, which reads the baseline

@@ -262,6 +262,19 @@ an agent's configured model cannot be read, follow the same rule, and so does a
 classification call whose model was cleared, which falls back to Nova 2 Lite:
 `eu.amazon.nova-2-lite-v1:0` in an EU Region and the `us.` profile elsewhere.
 
+The same rule covers a model setting that a configuration leaves out entirely.
+The step then runs its built-in default model, translated for the stack's Region
+the way the deploy-time mapping translates a stored one: for example
+`eu.anthropic.claude-opus-4-8:1m` for Chat with Document in a BDA-mode
+configuration, whose defaults carry no chat section. A model you set explicitly is
+never rewritten at read time.
+
+A configuration profile saved in an EU stack before this behaviour existed stored
+the `us.` id it was given at the time, and a stored id counts as one you set, so it
+is not rewritten. A stack update rewrites the profiles the deployment provides. In
+a profile you created, choose the model again, or restore that setting from the
+default profile, for any step that fails with an invalid model identifier.
+
 Claude Sonnet 4.5 (`eu.anthropic.claude-sonnet-4-5-20250929-v1:0`) remains
 selectable but is not the default for any step in a commercial-partition
 configuration. An AWS Health notice puts it in legacy

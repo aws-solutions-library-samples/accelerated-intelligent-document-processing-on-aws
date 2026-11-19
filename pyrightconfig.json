@@ -34,7 +34,8 @@
     "lib/idp_common_pkg",
     "lib/idp_feature_sdk",
     "lib/idp_mcp_connector_pkg",
-    "lib/idp_sdk"
+    "lib/idp_sdk",
+    "terraform/translator"
   ],
 
   "pythonVersion": "3.12",

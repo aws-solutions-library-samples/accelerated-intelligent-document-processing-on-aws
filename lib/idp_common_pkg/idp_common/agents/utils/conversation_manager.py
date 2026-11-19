@@ -25,12 +25,23 @@ Usage:
 
     # Add to agent
     agent.conversation_manager = conversation_manager
+
+``MeteredSummarizingConversationManager`` is the summarizing manager to use for
+any agent whose usage is metered: it is Strands' ``SummarizingConversationManager``
+with the summarization call's token usage added to the agent's
+``event_loop_metrics``, which Strands' own default summarization path skips.
 """
 
 import logging
-from typing import Any, Iterable
+from typing import Any, AsyncIterator, Callable, Iterable
 
-from strands.agent.conversation_manager import SlidingWindowConversationManager
+from strands.agent.conversation_manager import (
+    SlidingWindowConversationManager,
+    SummarizingConversationManager,
+)
+from strands.event_loop.streaming import extract_usage_metrics
+from strands.types.content import Message
+from strands.types.event_loop import Usage
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -273,3 +284,119 @@ class MinimalConversationManager(DropAndSlideConversationManager):
             **kwargs,
         )
         logger.info("Minimal conversation manager initialized with small window")
+
+
+def _record_summarization_usage(agent: Any, usage: Usage) -> None:
+    """Add one summarization call's ``usage`` to ``agent.event_loop_metrics``.
+
+    ``update_usage`` is the method the Strands event loop itself calls after every
+    model call, so the summary's tokens land in ``accumulated_usage`` (the total
+    every metering reader in this package uses), in the current invocation's
+    record, and in the OpenTelemetry token counters, exactly as an ordinary turn's
+    would. It attributes to ``agent_invocations[-1]``, which exists whenever the
+    agent loop is the caller; a direct ``reduce_context`` outside an invocation has
+    no such record, so only the running total is updated then.
+
+    Metering must never break the summary it is measuring, so a failure here is
+    logged and swallowed rather than raised into the conversation manager.
+    """
+    try:
+        metrics = agent.event_loop_metrics
+        if metrics.agent_invocations:
+            metrics.update_usage(usage)
+            return
+        total = metrics.accumulated_usage
+        for key, value in usage.items():
+            # Token counts only: Bedrock's usage can also carry ``cacheDetails``,
+            # a list, which ``update_usage`` ignores and this must too.
+            if isinstance(value, int) and not isinstance(value, bool):
+                total[key] = total.get(key, 0) + value
+    except Exception:  # noqa: BLE001 - metering is best effort, the summary is not
+        logger.warning(
+            "Could not record conversation-summarization token usage", exc_info=True
+        )
+
+
+class _UsageReportingModel:
+    """``model``, with the usage of every ``stream`` call handed to ``on_usage``.
+
+    The usage arrives in the stream's ``metadata`` chunk and is read with Strands'
+    own ``extract_usage_metrics``, the function the agent loop uses to read it from
+    the same chunk, so the units and defaults are the library's. Every other
+    attribute is the wrapped model's.
+    """
+
+    def __init__(self, model: Any, on_usage: Callable[[Usage], None]) -> None:
+        self._model = model
+        self._on_usage = on_usage
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._model, name)
+
+    async def stream(self, *args: Any, **kwargs: Any) -> AsyncIterator[Any]:
+        async for chunk in self._model.stream(*args, **kwargs):
+            if isinstance(chunk, dict) and "metadata" in chunk:
+                usage, _metrics = extract_usage_metrics(chunk["metadata"])
+                self._on_usage(usage)
+            yield chunk
+
+
+class _SummaryAgentView:
+    """``agent`` as the summarizer sees it: the same agent, with a metered model.
+
+    Strands' default summarization path reads only ``agent.model``. A view rather
+    than swapping ``agent.model`` in place, so nothing else that holds the agent can
+    observe the wrapper, and any other attribute a later Strands release reads is
+    still the real agent's.
+    """
+
+    def __init__(self, agent: Any, model: Any) -> None:
+        self._agent = agent
+        self.model = model
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._agent, name)
+
+
+class MeteredSummarizingConversationManager(SummarizingConversationManager):
+    """``SummarizingConversationManager`` whose summaries are metered.
+
+    When it has no ``summarization_agent``, Strands' manager summarizes the
+    conversation by calling the agent's model directly (``model.stream()``) rather
+    than through the agent loop, to avoid re-entering the agent's invocation lock.
+    That call is billed like any other, but the loop is what records usage, so its
+    tokens never reach ``agent.event_loop_metrics`` and every reader of
+    ``accumulated_usage`` under-reports the run by the cost of each summary.
+
+    This subclass keeps Strands' summarization exactly as it is — the same prompt,
+    the same messages, the same model — and adds the call's usage to the agent's
+    metrics as it arrives. The summary is generated by the agent's own model, so
+    its usage is the same model's and belongs under the same metering key.
+
+    ``summarization_agent`` is refused, at construction and on any later
+    assignment: a dedicated agent records the summary's usage on its own metrics,
+    which none of this package's readers look at, so accepting one would bring the
+    omission back by another route.
+    """
+
+    @property
+    def summarization_agent(self) -> None:
+        return None
+
+    @summarization_agent.setter
+    def summarization_agent(self, value: Any) -> None:
+        if value is not None:
+            raise ValueError(
+                "MeteredSummarizingConversationManager does not take a "
+                "summarization_agent: that agent's usage would be recorded on its "
+                "own metrics rather than on the agent being summarized."
+            )
+
+    def _generate_summary_with_model(
+        self, messages: list[Message], agent: Any
+    ) -> Message:
+        model = _UsageReportingModel(
+            agent.model, lambda usage: _record_summarization_usage(agent, usage)
+        )
+        view: Any = _SummaryAgentView(agent, model)
+        return super()._generate_summary_with_model(messages, view)

@@ -130,7 +130,14 @@ class ConfigUploadResult(BaseModel):
     error: Optional[str] = Field(default=None, description="Error message if failed")
     warnings: List[str] = Field(
         default_factory=list,
-        description="Non-fatal problems with the uploaded configuration",
+        description=(
+            "Non-fatal findings from validating the configuration — the same list "
+            "ConfigValidationResult.warnings holds for the file. Present when "
+            "validation refuses the upload as well as on success, since an unread "
+            "key is often the explanation for the error. Empty with validate=False "
+            "and for a refusal before validation runs (a file that does not load, "
+            "or managed: true), because nothing was checked."
+        ),
     )
 
 

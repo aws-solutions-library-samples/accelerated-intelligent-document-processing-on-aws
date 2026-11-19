@@ -909,7 +909,9 @@ def validate_config(
     sent_prompts = strip_prompt_comments_in_config(merged)
     _validate_task_prompt_placeholders(sent_prompts, result)
     _validate_confidence_prompt_as_sent(validated, merged, result)
+    _validate_document_image_placeholders(validated, sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
+    _validate_fallback_class(validated, result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
     # and the runtime reads `config.extraction.agentic.enabled` off this same model.
@@ -1666,12 +1668,8 @@ def _validate_confidence_prompt_as_sent(
     this does too: the placeholder check above skips an empty one, so an explicit
     ``""`` used to pass. When the prompt carries ``{DOCUMENT_IMAGE}`` the service applies
     ``document_image_placeholder_error`` to it, and this applies the same rule.
-
-    Classification and extraction are not checked for this, because they do not
-    refuse a repeated ``{DOCUMENT_IMAGE}``: they log a warning and fall back.
-    Classification's context-pages and packet prompts then send the images after
-    the text; extraction and classification's page prompt send the text without the
-    images.
+    Classification and extraction prompts get the same rule from
+    ``_validate_document_image_placeholders``.
 
     Skipped when the confidence block turns scoring off, as the placeholder check
     above is, because the prompt is then never sent.
@@ -1680,9 +1678,11 @@ def _validate_confidence_prompt_as_sent(
         return
 
     from idp_common.config import without_prompt_comments
-    from idp_common.extraction.prompt_assembly import (
+    from idp_common.document_image_placeholder import (
         DOCUMENT_IMAGE_PLACEHOLDER,
         document_image_placeholder_error,
+    )
+    from idp_common.extraction.prompt_assembly import (
         geometry_requires_llm_boxes,
         select_confidence_task_prompt,
     )
@@ -1711,6 +1711,117 @@ def _validate_confidence_prompt_as_sent(
             result["valid"] = False
             result["errors"].append(
                 f"{path}: {error} The confidence pass refuses a document otherwise."
+            )
+
+
+def _validate_document_image_placeholders(
+    validated: Any, sent_prompts: Dict[str, Any], result: Dict[str, Any]
+) -> None:
+    """Refuse a classification or extraction prompt that repeats ``{DOCUMENT_IMAGE}``.
+
+    Both services refuse such a prompt on every document
+    (``check_document_image_placeholder``), so this refuses it before it is used.
+    The prompts judged are the ones sent, with prompt comments removed:
+
+    - classification: each prompt the active strategy sends
+      (``_classification_task_prompts``), judged as
+      ``classification_task_prompt_as_sent`` returns it — the function the service
+      builds the prompt with, so the modality rewrite and the class-confidence
+      block it splices in are counted exactly as the service counts them. The
+      section-classification prompt is skipped when the decision model labels
+      every section (``section_prompt_can_be_sent``), because it is then never
+      sent. An empty prompt is judged as the shipped one the service sends in its
+      place (``shipped_classification_prompt``), except the combined page prompt,
+      which has no such fallback.
+    - extraction: the prompt ``select_extraction_task_prompt`` chooses, both with
+      and without integrated confidence (a Simple section on a class with list
+      fields falls back to the plain prompt), and each class's
+      ``x-aws-idp-extraction-task-prompt``, which replaces it for that class.
+    """
+    from idp_common.classification.service import (
+        STAGE_CLASSIFICATION,
+        STAGE_SECTION_CLASSIFICATION,
+        STAGE_SPLITTING,
+        classification_task_prompt_as_sent,
+        shipped_classification_prompt,
+    )
+    from idp_common.config import without_prompt_comments
+    from idp_common.config.schema_constants import (
+        ID_FIELD,
+        X_AWS_IDP_DOCUMENT_TYPE,
+        X_AWS_IDP_EXTRACTION_TASK_PROMPT,
+    )
+    from idp_common.document_image_placeholder import (
+        DOCUMENT_IMAGE_PLACEHOLDER,
+        document_image_placeholder_error,
+        section_prompt_can_be_sent,
+    )
+    from idp_common.extraction.prompt_assembly import select_extraction_task_prompt
+
+    section = validated.classification.split_then_classify.section_classification
+    section_sent = section_prompt_can_be_sent(
+        section.method, section.low_confidence.on_low_confidence
+    )
+    num_classes = len(sent_prompts.get("classes") or [])
+    judged: List[tuple] = []
+    for path, prompt, _ in _classification_task_prompts(sent_prompts):
+        if path.startswith(
+            "classification.split_then_classify.section_classification."
+        ):
+            if not section_sent:
+                continue  # the decision model labels every section; never sent
+            stage = STAGE_SECTION_CLASSIFICATION
+        elif path.startswith("classification.split_then_classify.splitting."):
+            stage = STAGE_SPLITTING
+        else:
+            stage = STAGE_CLASSIFICATION
+        if not prompt and not path.startswith("classification.combined.page."):
+            # An empty stage prompt is sent as the shipped one (``_stage_prompt``);
+            # only the combined page prompt has no fallback.
+            prompt = shipped_classification_prompt(*path.split(".")[1:])
+        if prompt:
+            # What the service builds from the prompt before sending it.
+            prompt = classification_task_prompt_as_sent(
+                prompt, validated.classification, stage, num_classes
+            )
+        judged.append((path, prompt, "classification"))
+
+    extraction = without_prompt_comments(validated, as_model=True).extraction
+    plain = select_extraction_task_prompt(extraction, integrated_ok=False)
+    judged.append(("extraction.task_prompt", plain, "extraction"))
+    integrated = select_extraction_task_prompt(extraction)
+    if integrated != plain:
+        judged.append(
+            (
+                "the integrated-confidence extraction prompt "
+                "(extraction.task_prompt_extraction_with_confidence or "
+                "task_prompt_extraction_with_confidence_topk, with "
+                "extraction.geometry.task_prompt_bbox appended in the LLM-box "
+                "geometry modes)",
+                integrated,
+                "extraction",
+            )
+        )
+    for cls in sent_prompts.get("classes") or []:
+        if isinstance(cls, dict) and cls.get(X_AWS_IDP_EXTRACTION_TASK_PROMPT):
+            cid = cls.get(ID_FIELD) or cls.get(X_AWS_IDP_DOCUMENT_TYPE) or "?"
+            judged.append(
+                (
+                    f"class {cid} {X_AWS_IDP_EXTRACTION_TASK_PROMPT}",
+                    cls[X_AWS_IDP_EXTRACTION_TASK_PROMPT],
+                    "extraction",
+                )
+            )
+
+    for path, prompt, service in judged:
+        if not isinstance(prompt, str) or DOCUMENT_IMAGE_PLACEHOLDER not in prompt:
+            continue
+        error = document_image_placeholder_error(prompt)
+        if error:
+            result["valid"] = False
+            result["errors"].append(
+                f"{path}: {error} {service.capitalize()} refuses every document "
+                "otherwise."
             )
 
 
@@ -1838,6 +1949,63 @@ def _validate_task_prompt_placeholders(
                 result["valid"] = False
                 # `replace`, not `format`: the messages hold literal braces.
                 result["errors"].append(error_message.replace("{path}", path))
+
+
+def _validate_fallback_class(validated: Any, result: Dict[str, Any]) -> None:
+    """Warn when ``classification.fallback_class`` names no configured class.
+
+    The fallback is the class a page or section is given when its class cannot be
+    decided (validation retries ran out, or a non-LLM section classifier was not
+    confident). The built-in ``unclassified`` is the default and every shipped
+    preset uses it; any other name has to be one of the configured classes for the
+    pages it lands on to have an extraction schema. A name no class declares (a
+    typo, a renamed class, or a catch-all such as ``other`` that was never
+    defined) is stored on the section as written, and extraction then has nothing
+    to extract against, so those pages yield no data.
+
+    A warning, not an error: extraction treats a section carrying the configured
+    fallback the way it treats ``unclassified`` (no fields, no error), so such a
+    configuration runs today and an error would make ``idp-cli config-upload``
+    refuse it. The check reads the validated model, so a pre-0.9
+    ``invalidClassFallback`` is judged after it was migrated, and compares names
+    exactly, as the classification service does. A class list in the legacy
+    ``name``/``attributes`` format is converted first, as
+    ``ConfigurationRecord.from_dynamodb_item`` converts it before the service
+    reads it; ``IDPConfig.model_validate`` alone does not.
+    """
+    from difflib import get_close_matches
+
+    from idp_common.config.migration import is_legacy_format, migrate_legacy_to_schema
+    from idp_common.config.schema_constants import (
+        UNCLASSIFIED_CLASS,
+        X_AWS_IDP_DOCUMENT_TYPE,
+    )
+
+    fallback = validated.classification.fallback_class
+    if fallback == UNCLASSIFIED_CLASS:
+        return
+    classes = list(validated.classes or [])
+    if classes and is_legacy_format(classes):
+        classes = migrate_legacy_to_schema(classes)
+    names = [
+        str(c.get(X_AWS_IDP_DOCUMENT_TYPE))
+        for c in classes
+        if isinstance(c, dict) and c.get(X_AWS_IDP_DOCUMENT_TYPE)
+    ]
+    if fallback in names:
+        return
+    by_lower = {n.lower(): n for n in names}
+    near = by_lower.get(fallback.lower()) or next(
+        iter(get_close_matches(fallback, names, n=1, cutoff=0.8)), None
+    )
+    hint = f" Did you mean '{near}'?" if near else ""
+    result["warnings"].append(
+        f"classification.fallback_class '{fallback}' (invalidClassFallback in the "
+        f"pre-0.9 layout) is not one of the configured "
+        f"classes, so a page or section given the fallback has no extraction "
+        f"schema and nothing is extracted from it. Name a configured class, or use "
+        f"the built-in '{UNCLASSIFIED_CLASS}'.{hint}"
+    )
 
 
 def _validate_schema_fields(

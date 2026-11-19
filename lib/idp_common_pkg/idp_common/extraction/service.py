@@ -39,6 +39,10 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_SOURCE_PAGE_TYPES,
 )
 from idp_common.decision_model import function_name
+from idp_common.document_image_placeholder import (
+    DocumentImagePlaceholderError,
+    check_document_image_placeholder,
+)
 from idp_common.empty_schema import (
     EMPTY_SCHEMA_CLASS_NOT_CONFIGURED,
     EMPTY_SCHEMA_NO_ATTRIBUTES,
@@ -548,6 +552,11 @@ class ExtractionService:
         if "<<CACHEPOINT>>" in prompt_template:
             self._pending_cache_marker_seen = True
 
+        # A repeated {DOCUMENT_IMAGE} is refused, as the confidence pass refuses
+        # it. Checked on the whole template, before the few-shot split renders
+        # each side separately.
+        check_document_image_placeholder(prompt_template, "extraction task prompt")
+
         # Handle FEW_SHOT_EXAMPLES placeholder first
         if "{FEW_SHOT_EXAMPLES}" in prompt_template:
             parts = prompt_template.split("{FEW_SHOT_EXAMPLES}")
@@ -592,29 +601,27 @@ class ExtractionService:
 
         # Handle DOCUMENT_IMAGE placeholder
         if "{DOCUMENT_IMAGE}" in prompt_template:
+            # The caller checked the whole template: at most one placeholder.
             parts = prompt_template.split("{DOCUMENT_IMAGE}")
-            if len(parts) == 2:
-                # Add text before image
-                before_text = self._prepare_prompt_from_template(
-                    parts[0], self._substitutions, required_placeholders=[]
-                )
-                if before_text.strip():
-                    content.append({"text": before_text})
+            # Add text before image
+            before_text = self._prepare_prompt_from_template(
+                parts[0], self._substitutions, required_placeholders=[]
+            )
+            if before_text.strip():
+                content.append({"text": before_text})
 
-                # Add images
-                if image_content:
-                    content.extend(self._prepare_image_attachments(image_content))
+            # Add images
+            if image_content:
+                content.extend(self._prepare_image_attachments(image_content))
 
-                # Add text after image
-                after_text = self._prepare_prompt_from_template(
-                    parts[1], self._substitutions, required_placeholders=[]
-                )
-                if after_text.strip():
-                    content.append({"text": after_text})
+            # Add text after image
+            after_text = self._prepare_prompt_from_template(
+                parts[1], self._substitutions, required_placeholders=[]
+            )
+            if after_text.strip():
+                content.append({"text": after_text})
 
-                return content
-            else:
-                logger.warning("Invalid DOCUMENT_IMAGE placeholder usage")
+            return content
 
         # No image placeholder, just text
         task_prompt = self._prepare_prompt_from_template(
@@ -2103,6 +2110,96 @@ class ExtractionService:
         )
         return document
 
+    def _handle_content_filtered(
+        self,
+        document: Document,
+        section: Any,
+        section_info: SectionInfo,
+        section_id: str,
+        t0: float,
+        error: BaseException,
+    ) -> Document:
+        """Fail one section whose model reply was withheld by a content filter.
+
+        A content-filter block is a verdict on THIS section's content (the
+        agentic path has already regenerated the reply and been refused; the
+        Simple path's client does not retry it), and the other sections'
+        content is unaffected. Raising here failed
+        the ProcessSections Map, and with it the whole document, although every
+        other section extracted normally (#2038).
+
+        So the section is completed the way ``_handle_empty_schema`` completes a
+        section whose class is not configured: an empty result is written with
+        ``metadata.content_filtered`` set, and the section carries an
+        error-severity ``extraction_failed`` issue naming the reason. The section
+        then has no data rather than wrong data, the issue is what the Sections
+        panel renders as Failed, and the rest of the document completes.
+        ``document.errors`` is deliberately not appended to: the collate step fails
+        the whole document on any entry there, which is the outcome this replaces.
+        """
+        from idp_common.extraction.failure import (
+            EXTRACTION_FAILED_CODE,
+            EXTRACTION_STAGE,
+        )
+        from idp_common.models import ProcessingIssue
+
+        class_label = section_info.class_label
+        issue = ProcessingIssue(
+            stage=EXTRACTION_STAGE,
+            severity="error",
+            code=EXTRACTION_FAILED_CODE,
+            message=(
+                "No fields were extracted from this section: Amazon Bedrock's "
+                "content filter withheld the model's reply. "
+                "The rest of the document was processed normally."
+            ),
+            root_cause=(
+                f"{type(error).__name__}: {error}. The block applies to this "
+                f"section's content (class '{class_label}', pages "
+                f"{section_info.start_page}-{section_info.end_page}). Review the "
+                "pages, or reprocess the document with a different extraction "
+                "model."
+            ),
+            section_id=section_id,
+        )
+        logger.error(
+            "Content filter blocked extraction for section %s (class %s); "
+            "recording %s on the section and continuing with the rest of the "
+            "document: %s",
+            section_id,
+            class_label,
+            issue.code,
+            error,
+        )
+        # Replace only this stage's issues, as _save_results and
+        # _handle_empty_schema do: the result they described has been replaced by
+        # the empty one below, and other stages' issues must survive.
+        section.processing_issues = [
+            pi
+            for pi in (section.processing_issues or [])
+            if getattr(pi, "stage", None) != EXTRACTION_STAGE
+        ] + [issue]
+
+        output = {
+            "document_class": {"type": class_label},
+            "split_document": {"page_indices": section_info.page_indices},
+            "inference_result": {},
+            "metadata": {
+                "parsing_succeeded": False,
+                "content_filtered": True,
+                "extraction_time_seconds": time.time() - t0,
+                "processing_issues": [pi.to_dict() for pi in section.processing_issues],
+            },
+        }
+        s3.write_content(
+            output,
+            section_info.output_bucket,
+            section_info.output_key,
+            content_type="application/json",
+        )
+        section.extraction_result_uri = section_info.output_uri
+        return document
+
     def _build_extraction_content(
         self,
         document: Document,
@@ -2219,6 +2316,10 @@ class ExtractionService:
             else:
                 try:
                     content = self._build_prompt_content(prompt_template, page_images)
+                except DocumentImagePlaceholderError:
+                    # The configured prompt is wrong for every document; sending
+                    # the default prompt instead would hide that.
+                    raise
                 except ValueError as e:
                     logger.warning(
                         f"Error formatting prompt template: {str(e)}. Using default prompt."
@@ -5200,11 +5301,13 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
             if conf_cfg.method == "decision_model":
                 conf_model = function_name(conf_cfg.decision_model.endpoint or "")
                 conf_name = f"decision model {conf_model}".strip()
-                one_pass = f"{conf_cfg.decision_model.input}, one request per page"
+                scoring_detail = (
+                    f"{conf_cfg.decision_model.input}, one request per page"
+                )
             else:
                 conf_model = conf_cfg.model
                 conf_name = conf_cfg.model or "model"
-                one_pass = "1 pass"
+                scoring_detail = "1 pass"
             if conf_mode == "integrated" and self._integrated_downgrade_reason:
                 # Configured integrated, ran separately (list-bearing class).
                 # Report what HAPPENED, not what was configured; the full reason
@@ -5227,7 +5330,7 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     c_detail += f" · {concurrent}× concurrent"
                 fan = concurrent if (concurrent and concurrent > 1) else 0
             else:
-                c_detail = f"{conf_name} · {one_pass}"
+                c_detail = f"{conf_name} · {scoring_detail}"
                 fan = 0
             stages.append(
                 {
@@ -8452,10 +8555,18 @@ Benefits: Faster, more accurate, handles OCR artifacts automatically.
                     document.metering, failed_run_metering
                 )
             from idp_common.utils.bedrock_utils import (
+                is_content_filter_block,
                 is_image_request_rejection,
                 is_input_token_overflow,
             )
 
+            if is_content_filter_block(e):
+                # Fails this section only and returns, so the other sections and
+                # the document complete (#2038). Ahead of the two matchers below
+                # so neither can absorb it; its wording matches neither today.
+                return self._handle_content_filtered(
+                    document, section, section_info, section_id, t0, e
+                )
             if is_image_request_rejection(e):
                 # Checked FIRST so the image case can never be absorbed by the
                 # overflow branch as Bedrock's wording evolves: the two families
