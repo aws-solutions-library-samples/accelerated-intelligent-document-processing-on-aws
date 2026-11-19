@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: MIT-0
 import React from 'react';
 import { Box, Container, Header } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, type NoMessageValues } from 'react-intl';
 import SafeMarkdown from '../common/SafeMarkdown';
+
+const messages = defineMessages<{ title: NoMessageValues }>({
+  title: {
+    id: 'agents.text.title',
+    defaultMessage: 'Text Response',
+    description: "Heading of an agent's text result.",
+  },
+});
 
 interface ChildrenProps {
   children?: React.ReactNode;
@@ -258,7 +267,13 @@ const TextDisplay = ({ textData = null }: TextDisplayProps): React.JSX.Element |
   };
 
   return (
-    <Container header={<Header variant="h3">Text Response</Header>}>
+    <Container
+      header={
+        <Header variant="h3">
+          <FormattedMessage {...messages.title} />
+        </Header>
+      }
+    >
       <Box padding="m">
         <Box
           variant="div"

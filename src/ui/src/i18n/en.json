@@ -7,6 +7,242 @@
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
   },
+  "agents.plot.combinedData": {
+    "defaultMessage": "Combined Data",
+    "description": "Name of the one data series a pie or doughnut chart shows when it adds up several series that have no names."
+  },
+  "agents.plot.debugInfo": {
+    "defaultMessage": "Debug Information",
+    "description": "Expandable section under a chart error that shows the chart's data and options."
+  },
+  "agents.plot.defaultTitle": {
+    "defaultMessage": "Chart",
+    "description": "Heading of an agent's chart when the chart has no title."
+  },
+  "agents.plot.invalidData": {
+    "defaultMessage": "Invalid chart data structure",
+    "description": "Shown in place of an agent's chart when its data has no data series."
+  },
+  "agents.plot.invalidLabels": {
+    "defaultMessage": "Invalid or missing chart labels",
+    "description": "Shown in place of an agent's chart when its data has no labels."
+  },
+  "agents.plot.renderError": {
+    "defaultMessage": "Error rendering {chartType} chart",
+    "description": "Shown in place of an agent's chart when it cannot be drawn. {chartType} is the chart type code, in lower case and as is (for example bar or pie)."
+  },
+  "agents.plot.type.bar": {
+    "defaultMessage": "Bar Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.type.doughnut": {
+    "defaultMessage": "Doughnut Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.type.line": {
+    "defaultMessage": "Line Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.type.pie": {
+    "defaultMessage": "Pie Chart",
+    "description": "Chart type option in the picker above an agent's chart."
+  },
+  "agents.plot.typePlaceholder": {
+    "defaultMessage": "Select chart type",
+    "description": "Placeholder of the chart type picker above an agent's chart."
+  },
+  "agents.plot.unknownLabel": {
+    "defaultMessage": "Unknown",
+    "description": "Tooltip of a pie or doughnut chart slice that has no label, when its value cannot be shown."
+  },
+  "agents.result.debugInfo": {
+    "defaultMessage": "Debug Information:",
+    "description": "Heading above the raw data of an agent result of a type the UI does not know."
+  },
+  "agents.result.noPlot": {
+    "defaultMessage": "No plot data available",
+    "description": "Shown in place of an agent's chart result when the result holds no chart."
+  },
+  "agents.result.noTable": {
+    "defaultMessage": "No table data available",
+    "description": "Shown in place of an agent's table result when the result holds no table."
+  },
+  "agents.result.noText": {
+    "defaultMessage": "No text data available",
+    "description": "Shown in place of an agent's text result when the result holds no text."
+  },
+  "agents.result.rawResponse": {
+    "defaultMessage": "Raw Response",
+    "description": "Heading above an agent result of a type the UI does not know, shown as raw data."
+  },
+  "agents.result.responseType": {
+    "defaultMessage": "Response type: <strong>{type}</strong>",
+    "description": "Notice above an agent's results. {type} is the result type the agent returned (plotData, table or text), in bold and as is, or the word for an unknown type."
+  },
+  "agents.result.resultsFor": {
+    "defaultMessage": "Results for: <i>{query}</i>",
+    "description": "Heading of an agent's results. {query} is the question the agent answered, in italics and as it was sent."
+  },
+  "agents.result.unknownType": {
+    "defaultMessage": "Unknown response type: {type}",
+    "description": "Warning above an agent result of a type the UI does not know. {type} is the type the agent returned, as is, or \"undefined\" when it returned none."
+  },
+  "agents.result.unknownTypeName": {
+    "defaultMessage": "Unknown",
+    "description": "Shown as the result type in the notice above an agent's results when the agent returned no type."
+  },
+  "agents.table.empty.body": {
+    "defaultMessage": "No table data to display.",
+    "description": "Text under the heading in an agent's result table when it has no rows."
+  },
+  "agents.table.empty.title": {
+    "defaultMessage": "No data available",
+    "description": "Bold heading in an agent's result table when it has no rows."
+  },
+  "agents.table.loading": {
+    "defaultMessage": "Loading table data",
+    "description": "Shown in an agent's result table while its rows load."
+  },
+  "agents.table.preferences.cancel": {
+    "defaultMessage": "Cancel",
+    "description": "Button that closes the settings of an agent's result table without applying them."
+  },
+  "agents.table.preferences.columnsGroup": {
+    "defaultMessage": "Main table properties",
+    "description": "Label of the group that lists the table's columns in the column choice of an agent's result table."
+  },
+  "agents.table.preferences.confirm": {
+    "defaultMessage": "Confirm",
+    "description": "Button that applies the settings of an agent's result table."
+  },
+  "agents.table.preferences.pageSize": {
+    "defaultMessage": "Page size",
+    "description": "Title of the page size choice in the settings of an agent's result table."
+  },
+  "agents.table.preferences.pageSizeOption": {
+    "defaultMessage": "{count, plural, one {# row} other {# rows}}",
+    "description": "A page size option in the settings of an agent's result table. {count} is the number of rows per page."
+  },
+  "agents.table.preferences.title": {
+    "defaultMessage": "Preferences",
+    "description": "Title of the settings dialog of an agent's result table, and the label of the button that opens it."
+  },
+  "agents.table.preferences.visibleContent": {
+    "defaultMessage": "Select visible content",
+    "description": "Title of the column choice in the settings of an agent's result table."
+  },
+  "agents.table.title": {
+    "defaultMessage": "Table Results",
+    "description": "Heading of an agent's table result."
+  },
+  "agents.text.title": {
+    "defaultMessage": "Text Response",
+    "description": "Heading of an agent's text result."
+  },
+  "agents.thoughtProcess.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the SQL, code or schema dialog."
+  },
+  "agents.thoughtProcess.codeTitle": {
+    "defaultMessage": "Python Code",
+    "description": "Title of the dialog that shows the Python code the agent ran."
+  },
+  "agents.thoughtProcess.copy": {
+    "defaultMessage": "Copy to Clipboard",
+    "description": "Button in the SQL, code and schema dialogs that copies the text shown."
+  },
+  "agents.thoughtProcess.databaseInfoRetrieved": {
+    "defaultMessage": "Database schema information was retrieved by the agent",
+    "description": "Note that the agent read the database schema, kept with that step of the agent thought process."
+  },
+  "agents.thoughtProcess.description": {
+    "defaultMessage": "Real-time agent conversation",
+    "description": "Description under the agent thought process heading."
+  },
+  "agents.thoughtProcess.noCode": {
+    "defaultMessage": "No Python code available",
+    "description": "Shown in the code dialog when there is no code to show."
+  },
+  "agents.thoughtProcess.noContent": {
+    "defaultMessage": "'<No content>'",
+    "description": "Shown in the agent thought process for a message with no content. The apostrophes keep the angle brackets as text; keep them."
+  },
+  "agents.thoughtProcess.noSchema": {
+    "defaultMessage": "No database information available",
+    "description": "Shown in the schema dialog when there is no schema reference to show."
+  },
+  "agents.thoughtProcess.noSql": {
+    "defaultMessage": "No SQL query available",
+    "description": "Shown in the SQL dialog when there is no query to show."
+  },
+  "agents.thoughtProcess.noTextContent": {
+    "defaultMessage": "'<No text content>'",
+    "description": "Shown in the agent thought process for a message with no text. The apostrophes keep the angle brackets as text; keep them."
+  },
+  "agents.thoughtProcess.role.assistant": {
+    "defaultMessage": "Assistant",
+    "description": "Role name above a message the agent wrote, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.exception": {
+    "defaultMessage": "Exception",
+    "description": "Role name above an error the agent ran into, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.throttling": {
+    "defaultMessage": "Throttling",
+    "description": "Role name above a notice that the model service throttled the agent, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.tool": {
+    "defaultMessage": "Tool",
+    "description": "Role name above a tool step, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.unknown": {
+    "defaultMessage": "Unknown",
+    "description": "Role name above a message that has no role, in the agent thought process."
+  },
+  "agents.thoughtProcess.role.user": {
+    "defaultMessage": "User",
+    "description": "Role name above a message the user sent, in the agent thought process."
+  },
+  "agents.thoughtProcess.schemaTitle": {
+    "defaultMessage": "Database Schema Information",
+    "description": "Title of the dialog that shows the database schema reference."
+  },
+  "agents.thoughtProcess.sqlTitle": {
+    "defaultMessage": "SQL Query",
+    "description": "Title of the dialog that shows the SQL query the agent ran."
+  },
+  "agents.thoughtProcess.thinking": {
+    "defaultMessage": "Agent is thinking...",
+    "description": "Shown at the end of the agent thought process while the agent works."
+  },
+  "agents.thoughtProcess.title": {
+    "defaultMessage": "Agent Thought Process",
+    "description": "Heading of the panel that lists the agent's messages and steps while it works."
+  },
+  "agents.thoughtProcess.toolRequest": {
+    "defaultMessage": "Tool request initiated for tool: {toolName}",
+    "description": "Text of a tool step in the agent thought process. {toolName} is the tool's technical name, as is."
+  },
+  "agents.thoughtProcess.unknownTool": {
+    "defaultMessage": "unknown",
+    "description": "Tool name shown on a tool step of the agent thought process when the agent named no tool."
+  },
+  "agents.thoughtProcess.viewCode": {
+    "defaultMessage": "View Code",
+    "description": "Button on a code step of the agent thought process that shows the Python code the agent ran."
+  },
+  "agents.thoughtProcess.viewInfo": {
+    "defaultMessage": "View Info",
+    "description": "Button on the schema step of the agent thought process that shows the database schema reference."
+  },
+  "agents.thoughtProcess.viewSql": {
+    "defaultMessage": "View SQL",
+    "description": "Button on a query step of the agent thought process that shows the SQL query the agent ran."
+  },
+  "agents.thoughtProcess.waiting": {
+    "defaultMessage": "Waiting for agent to start...",
+    "description": "Shown in the agent thought process before the agent's first message."
+  },
   "appLayout.ariaLabels.navigation": {
     "defaultMessage": "Side navigation",
     "description": "Screen-reader name of the side navigation landmark of every page."
