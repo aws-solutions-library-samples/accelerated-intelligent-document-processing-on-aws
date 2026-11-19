@@ -1102,9 +1102,29 @@ pinned `strands-agents` that total is added to as soon as a model response arriv
 (so a `max_tokens` turn is in it) and is never reset by a later `invoke_async` on the
 same agent, so one reading covers every feedback round and every resumed retry. Do
 not add readings together: each is cumulative. A call that raised before a response
-arrived recorded no usage, and none is invented for it. Strands' own
-conversation-summarization call goes to the model directly rather than through the
-event loop, so it is not in this total on either path.
+arrived recorded no usage, and none is invented for it.
+
+The total includes conversation summarization. When the conversation outgrows the
+model's context window, Strands' `SummarizingConversationManager` summarizes its
+oldest turns by calling the agent's model directly rather than through the event
+loop, so on its own that call's usage reaches no metric. The agent is therefore
+built with `MeteredSummarizingConversationManager`
+(`idp_common/agents/utils/conversation_manager.py`), which leaves Strands'
+summarization unchanged and adds each summary's usage to
+`agent.event_loop_metrics` with `update_usage`, the method the event loop uses for
+an ordinary turn. The summary is made by the extraction model, so its tokens are
+under the same `<context>/bedrock/<model>` key, on the success path and on this one
+([#1952](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/1952)).
+It refuses a `summarization_agent`, at construction or assigned later, because
+that agent would record the usage on its own metrics.
+`tests/unit/extraction/test_agentic_summarization_metering.py` scans every tracked
+production module except that one and fails on any identifier, parameter,
+keyword, import or non-docstring string or bytes literal that names Strands'
+summarizing manager, its `generate_summary` helper, the method the subclass
+overrides, `summarization_agent`, or the `Agent` `context_manager` option, which
+builds an unmetered manager internally. That
+covers a dictionary of `Agent` arguments, `getattr` and `importlib`. It cannot see
+a name assembled at run time from pieces, or `Agent` arguments loaded from data.
 
 Two callers read it with `failure_metering(e)`, and only from the exception they
 caught, never from its `__cause__`:
