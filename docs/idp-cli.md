@@ -676,11 +676,11 @@ idp-cli delete [OPTIONS]
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume during the delete (used with `--terraform`)
 
 **S3 Bucket Behavior:**
-- **LoggingBucket**: `DeletionPolicy: Retain` - Always kept (unless using `--force-delete-all`)
-- **All other buckets**: `DeletionPolicy: RetainExceptOnCreate` - Deleted if empty
-- CloudFormation can ONLY delete S3 buckets if they're empty
+- **LoggingBucket, ConfigurationBucket, TestSetBucket and WebUIBucket**: `DeletionPolicy: Retain` - kept when the stack is deleted (unless using `--force-delete-all`)
+- **The other data buckets** (input, output, working, discovery, reporting, evaluation baseline, MCP content and fine-tuning data): `DeletionPolicy: RetainExceptOnCreate` - also kept when the stack is deleted; CloudFormation deletes them only when the stack's own creation fails and rolls back. The API Gateway hosting staging bucket is the exception: it is deleted with the stack
 - Use `--empty-buckets` to automatically empty buckets before deletion
 - Use `--force-delete-all` to delete ALL remaining resources after CloudFormation completes
+- The KMS key that encrypts the buckets is retained too, and costs about $1 a month until you schedule its deletion; see [The retained KMS key](#the-retained-kms-key)
 
 **Force Delete All Behavior:**
 
@@ -720,6 +720,10 @@ from one that deleted cleanly.
 - All CloudWatch Log Groups (retained by CloudFormation)
 - All S3 buckets including LoggingBucket
 - Handles nested stack resources automatically
+
+The retained KMS key is **not** deleted by `--force-delete-all`; the cleanup summary
+names it and prints the `aws kms schedule-key-deletion` command. See
+[The retained KMS key](#the-retained-kms-key) below.
 
 **Examples:**
 
@@ -891,6 +895,36 @@ Proceeding with stack deletion...
 ```
 
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
+
+#### The retained KMS key
+
+The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
+data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
+leave every object in the retained buckets unreadable once its deletion window ended.
+Its alias, `alias/<stack-name>-customer-encryption-key`, is deleted with the stack, so
+a new stack with the same name creates its own key and alias. The key's description
+names the stack it belonged to.
+
+A retained key costs about $1 a month, rising to at most $3 a month once its yearly
+automatic rotation has run twice. A key scheduled for deletion is not charged. `delete`
+does not delete it, with or without `--force-delete-all`, because scheduling a key's
+deletion makes everything it encrypted unreadable, including data copied out of the
+buckets with its encryption intact. Once you no longer need any of the retained data:
+
+1. Find the key id. After a `--force-delete-all` or Terraform delete the CLI prints it.
+   Otherwise it is the `KMSMasterKeyID` of a retained bucket's default encryption
+   (`aws s3api get-bucket-encryption --bucket <retained-bucket-name>`), or the physical
+   id of `CustomerManagedEncryptionKey` in
+   `aws cloudformation list-stack-resources --stack-name <stack-id>`, which works for a
+   deleted stack when given its stack id.
+2. Delete the retained buckets, or make sure nothing you still need is encrypted with
+   the key.
+3. Schedule the key's deletion. The waiting period is 7 to 30 days, and
+   `aws kms cancel-key-deletion` undoes it until then:
+
+   ```bash
+   aws kms schedule-key-deletion --key-id <key-id> --pending-window-in-days 7
+   ```
 
 #### Deleting a Terraform deployment
 

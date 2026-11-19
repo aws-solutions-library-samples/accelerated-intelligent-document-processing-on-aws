@@ -3917,10 +3917,19 @@ Resources:
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
   # === Feature Platform (optional) — END =================================
 
+  # Retained on stack deletion, like the data it encrypts. Most of this stack's
+  # S3 buckets are retained (DeletionPolicy Retain or RetainExceptOnCreate) and
+  # encrypted with this key; deleting the key would leave every object in them
+  # unreadable once the key's deletion window ended. The alias below is not
+  # retained, so a new stack with the same name creates its own alias.
+  # docs/idp-cli.md ("The retained KMS key") says how to schedule the key's
+  # deletion once the retained buckets' data is no longer needed.
   CustomerManagedEncryptionKey:
     DependsOn:
       - IsStacknameLengthOK
     Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Metadata:
       security-matrix:
         rules_to_suppress:
@@ -3931,7 +3940,7 @@ Resources:
           - id: KMS-002
             reason: "kms:* permission for account root is standard pattern for administrative access to KMS keys"
     Properties:
-      Description: KMS key for DynamoDB encryption
+      Description: !Sub "Encrypts the data of IDP stack ${AWS::StackName}; kept when the stack is deleted"
       EnableKeyRotation: true
       KeyPolicy:
         Version: "2012-10-17"

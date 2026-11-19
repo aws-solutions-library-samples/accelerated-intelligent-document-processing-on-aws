@@ -38,7 +38,12 @@ class StackDeletionResult(BaseModel):
     stack_id: Optional[str] = Field(default=None, description="CloudFormation stack ID")
     error: Optional[str] = Field(default=None, description="Error message if failed")
     cleanup_result: Optional[Dict[str, Any]] = Field(
-        default=None, description="Results of force-delete cleanup phase"
+        default=None,
+        description=(
+            "Results of the force-delete cleanup phase: dynamodb_deleted, "
+            "logs_deleted, buckets_deleted, errors, and kms_keys_retained (the "
+            "retained KMS keys, which the cleanup does not delete)"
+        ),
     )
     retained_resources: Optional[Dict[str, Any]] = Field(
         default=None,

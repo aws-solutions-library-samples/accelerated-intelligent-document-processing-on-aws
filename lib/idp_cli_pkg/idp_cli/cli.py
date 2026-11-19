@@ -579,6 +579,49 @@ def _deploy_terraform(
         sys.exit(1)
 
 
+_KMS_KEY_TYPES = ("AWS::KMS::Key", "aws_kms_key", "awscc_kms_key")
+
+
+def _print_retained_kms_keys(
+    key_ids: List[str], stack_id: Optional[str] = None
+) -> None:
+    """Say that the deployment's KMS key was kept, what it costs and how to
+    schedule its deletion. With no ``key_ids``, say how to find the key."""
+    console.print(
+        "[bold]KMS key kept:[/bold] the key that encrypts the retained buckets is "
+        "retained so their data stays readable. It costs about $1 a month ($3 "
+        "once automatic rotation has run twice)."
+    )
+    if key_ids:
+        for key_id in key_ids:
+            console.print(f"    - {key_id}")
+    else:
+        console.print(
+            "    Its id is the KMSMasterKeyID of a retained bucket's default "
+            "encryption:"
+        )
+        console.print(
+            "  [cyan]aws s3api get-bucket-encryption --bucket <retained-bucket-name>"
+            "[/cyan]"
+        )
+        if stack_id:
+            console.print("    or the CustomerManagedEncryptionKey row of:")
+            console.print(
+                f"  [cyan]aws cloudformation list-stack-resources --stack-name "
+                f"{stack_id}[/cyan]"
+            )
+    console.print(
+        "    Once no retained data encrypted with it is needed, delete those "
+        "buckets, then schedule the key's deletion (7 to 30 days; it can be "
+        "cancelled until then):"
+    )
+    for key_id in key_ids or ["<key-id>"]:
+        console.print(
+            f"  [cyan]aws kms schedule-key-deletion --key-id {key_id} "
+            "--pending-window-in-days 7[/cyan]"
+        )
+
+
 def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
     labels = {
         "s3_buckets": "S3 Buckets",
@@ -621,6 +664,13 @@ def _print_retained(retained: Optional[Dict[str, Any]]) -> None:
         )
     if any(entries.values()) or service_groups:
         console.print("Delete them manually if no longer needed.")
+    kms_keys = [
+        r.get("physical_id") or r.get("logical_id")
+        for r in entries["other"]
+        if r.get("type") in _KMS_KEY_TYPES
+    ]
+    if kms_keys:
+        _print_retained_kms_keys(kms_keys)
 
 
 def _delete_terraform(
@@ -1956,6 +2006,10 @@ def delete(
                         console.print(f"  • {error['type']}: {error['resource']}")
                         console.print(f"    Error: {error['error']}")
 
+                if cleanup_result.get("kms_keys_retained"):
+                    console.print()
+                    _print_retained_kms_keys(cleanup_result["kms_keys_retained"])
+
                 console.print()
 
             except Exception as e:
@@ -1975,6 +2029,8 @@ def delete(
             )
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
+            console.print()
+            _print_retained_kms_keys([], stack_id=result.stack_id)
             console.print()
 
         if deletion_failed:
