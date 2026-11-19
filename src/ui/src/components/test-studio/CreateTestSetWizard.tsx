@@ -10,7 +10,7 @@
  */
 
 import React, { useState } from 'react';
-import { defineMessages, FormattedMessage, type MessageTag } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag } from 'react-intl';
 import {
   Alert,
   Box,
@@ -38,6 +38,7 @@ import { addTestSet, addTestSetFromUpload, createEmptyTestSet, listBucketFiles, 
 import { getErrorMessage } from '../../utils/errorUtils';
 import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
+import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -104,6 +105,7 @@ const CreateTestSetWizard = ({
   generatorAvailable,
   onGenerationStarted,
 }: CreateTestSetWizardProps): React.JSX.Element => {
+  const intl = useIntl();
   const [activeStep, setActiveStep] = useState(0);
   const [source, setSource] = useState<CreateSource>('upload-labeled');
 
@@ -122,6 +124,7 @@ const CreateTestSetWizard = ({
   const [customDate, setCustomDate] = useState('');
   const [customTime, setCustomTime] = useState('00:00:00');
   const [fileCount, setFileCount] = useState(0);
+  const [leftOut, setLeftOut] = useState('');
   const [isChecking, setIsChecking] = useState(false);
 
   const [error, setError] = useState('');
@@ -151,6 +154,7 @@ const CreateTestSetWizard = ({
     setCustomDate('');
     setCustomTime('00:00:00');
     setFileCount(0);
+    setLeftOut('');
     setError('');
   };
 
@@ -185,8 +189,15 @@ const CreateTestSetWizard = ({
         },
       });
       const matched = (result.data?.listBucketFiles ?? []).filter((f): f is string => f !== null);
-      setFileCount(matched.length);
+      // A new set holds nothing yet, so only the Input bucket's .zip matches are left out.
+      const split = splitPatternMatches(bucket.value ?? '', matched);
+      setFileCount(split.documents.length);
+      const leftOutText = formatLeftOut(intl, split);
+      setLeftOut(leftOutText);
       if (matched.length === 0) setError('No files matched that pattern');
+      else if (split.documents.length === 0) {
+        setError(intl.formatMessage(patternPreviewMessages.noneToAdd, { count: matched.length, leftOut: leftOutText }));
+      }
     } catch (err) {
       logger.error('Error checking files:', err);
       setError(`Could not check files: ${getErrorMessage(err)}`);
@@ -496,7 +507,12 @@ const CreateTestSetWizard = ({
             <Button onClick={handleCheckFiles} loading={isChecking}>
               Check matching files
             </Button>
-            {fileCount > 0 && <StatusIndicator type="success">{fileCount} file(s) match</StatusIndicator>}
+            {fileCount > 0 && (
+              <StatusIndicator type="success">
+                {intl.formatMessage(patternPreviewMessages.filesToAdd, { count: fileCount })}
+                {leftOut ? ` ${intl.formatMessage(patternPreviewMessages.leftOutNote, { leftOut })}` : ''}
+              </StatusIndicator>
+            )}
           </SpaceBetween>
           {bucket.value === 'input' && (
             <Alert type="info">
@@ -540,7 +556,7 @@ const CreateTestSetWizard = ({
               : [
                   { label: 'Bucket', value: bucket.label ?? '' },
                   { label: 'Pattern', value: filePattern || '—' },
-                  { label: 'Matching files', value: fileCount > 0 ? String(fileCount) : 'not checked' },
+                  { label: 'Files to add', value: fileCount > 0 ? String(fileCount) : 'not checked' },
                 ]),
         ]}
       />
