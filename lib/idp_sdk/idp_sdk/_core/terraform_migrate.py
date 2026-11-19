@@ -211,6 +211,7 @@ POOL_SETTING_TYPES = frozenset(
 # a setting that points at a deleted role stops logging just the same.
 API_GATEWAY_ACCOUNT_TYPE = "aws_api_gateway_account"
 ROLE_POLICY_TYPES = frozenset({"aws_iam_role_policy_attachment", "aws_iam_role_policy"})
+POLICY_ATTACHMENT_TYPE = "aws_iam_policy_attachment"
 
 # Kept with the BDA project, which names them.
 BDA_MEMBER_TYPES = frozenset({"awscc_bedrock_blueprint"})
@@ -1119,6 +1120,63 @@ def _resource_type(address: str) -> str:
     return address.split(".")[-2] if address.count(".") >= 1 else address
 
 
+def gateway_role_selection(
+    resources: Iterable[Tuple[str, Dict[str, Any]]],
+) -> Callable[[str, Dict[str, Any]], bool]:
+    """Whether a resource is the CloudWatch role an ``aws_api_gateway_account``
+    among ``resources`` (``(type, attributes)`` pairs) names, or one of that role's
+    attachments, inline policies or customer-managed policies. An
+    ``aws_iam_policy_attachment`` names its roles in a list, and destroying it
+    detaches the policy from every one of them, so one naming that role counts.
+
+    One selection for both the migration plan, which keeps them, and
+    ``check-destroy``, which refuses a destroy plan deleting them.
+    """
+    items = list(resources)
+    role_arns = {
+        str(a["cloudwatch_role_arn"])
+        for t, a in items
+        if t == API_GATEWAY_ACCOUNT_TYPE and a.get("cloudwatch_role_arn")
+    }
+    roles = {
+        str(a.get("name"))
+        for t, a in items
+        if t == "aws_iam_role" and str(a.get("arn")) in role_arns
+    }
+    # Customer-managed policies attached to that role go with it.
+    policy_arns = (
+        {
+            str(a.get("policy_arn"))
+            for t, a in items
+            if t == "aws_iam_role_policy_attachment" and a.get("role") in roles
+        }
+        | {
+            str(a.get("policy_arn"))
+            for t, a in items
+            if t == POLICY_ATTACHMENT_TYPE and roles & set(a.get("roles") or ())
+        }
+        | {
+            str(arn)
+            for t, a in items
+            if t == "aws_iam_role" and a.get("name") in roles
+            for arn in a.get("managed_policy_arns") or ()
+        }
+    )
+
+    def selected(tf_type: str, attrs: Dict[str, Any]) -> bool:
+        return (
+            (tf_type == "aws_iam_role" and attrs.get("name") in roles)
+            or (tf_type in ROLE_POLICY_TYPES and attrs.get("role") in roles)
+            or (tf_type == "aws_iam_policy" and attrs.get("arn") in policy_arns)
+            or (
+                tf_type == POLICY_ATTACHMENT_TYPE
+                and bool(roles & set(attrs.get("roles") or ()))
+            )
+        )
+
+    return selected
+
+
 def build_plan(
     old_state: Dict[str, Any],
     module: ModuleSource,
@@ -1239,30 +1297,7 @@ def build_plan(
         and i.type == "aws_kms_key"
         and planned[i.address].detach
     }
-    gateway_role_arns = {
-        str(i.attributes["cloudwatch_role_arn"])
-        for i in instances
-        if i.type == API_GATEWAY_ACCOUNT_TYPE
-        and i.attributes.get("cloudwatch_role_arn")
-    }
-    gateway_roles = {
-        str(i.attributes.get("name"))
-        for i in instances
-        if i.type == "aws_iam_role"
-        and str(i.attributes.get("arn")) in gateway_role_arns
-    }
-    # Customer-managed policies attached to that role go with it.
-    gateway_policy_arns = {
-        str(i.attributes.get("policy_arn"))
-        for i in instances
-        if i.type == "aws_iam_role_policy_attachment"
-        and i.attributes.get("role") in gateway_roles
-    } | {
-        str(arn)
-        for i in instances
-        if i.type == "aws_iam_role" and i.attributes.get("name") in gateway_roles
-        for arn in i.attributes.get("managed_policy_arns") or ()
-    }
+    in_gateway_role = gateway_role_selection((i.type, i.attributes) for i in instances)
 
     for inst in instances:
         if inst.address in planned:
@@ -1376,11 +1411,7 @@ def build_plan(
                 f"role ({a.get('cloudwatch_role_arn') or 'none recorded'}) and stops "
                 "API Gateway logging Region-wide. Managed by neither deployment."
             )
-        elif (
-            (inst.type == "aws_iam_role" and a.get("name") in gateway_roles)
-            or (inst.type in ROLE_POLICY_TYPES and a.get("role") in gateway_roles)
-            or (inst.type == "aws_iam_policy" and a.get("arn") in gateway_policy_arns)
-        ):
+        elif in_gateway_role(inst.type, a):
             pr.verdict, pr.detach = KEEP_UNMANAGED, True
             pr.note = (
                 "The CloudWatch role the Region's API Gateway account settings name "
@@ -2918,7 +2949,9 @@ def _family(tf_type: str) -> str:
 
 
 def check_destroy_plan(
-    destroy_json: Dict[str, Any], plan: MigrationPlan
+    destroy_json: Dict[str, Any],
+    plan: MigrationPlan,
+    old_states: Sequence[Dict[str, Any]] = (),
 ) -> Tuple[List[str], Dict[str, Any]]:
     """(findings, details) for the old deployment's destroy plan.
 
@@ -2930,7 +2963,12 @@ def check_destroy_plan(
     for the old deployment. Then a finding for each deletion of an address the
     migration detached (the detach did not happen), of an address the migration
     plan never saw (the old deployment changed since), and of anything that names
-    a kept bucket, table, key, pool or user.
+    a kept bucket, table, key, pool or user, and for a deletion of the Region's
+    API Gateway account settings or of the CloudWatch role they name (with its
+    policies), even when the migration plan recorded those as destroyable.
+    ``old_states`` are copies of the old state (``detach`` writes one before it
+    removes anything); the account settings in them name the role even when the
+    settings themselves are no longer in the destroy plan.
     """
     if not isinstance(destroy_json, dict):
         return ["this is not a Terraform plan (expected a JSON object)"], {}
@@ -2989,6 +3027,19 @@ def check_destroy_plan(
     if plan.pool_id:
         kept_family.setdefault(plan.pool_id, set()).add("cognito")
     kept = set(kept_family)
+    # The destroy plan's own `before` values name the role the account settings
+    # use, so this holds for a migration plan that recorded both as destroyable;
+    # a copy of the old state names it when the settings left the state first.
+    in_gateway_role = gateway_role_selection(
+        [(str(rc.get("type")), rc["change"].get("before") or {}) for rc in deletes]
+        + [
+            (str(res.get("type")), inst.get("attributes") or {})
+            for state in old_states
+            for res in state.get("resources") or []
+            if res.get("mode") == "managed"
+            for inst in res.get("instances") or []
+        ]
+    )
     unrecorded: List[str] = []
     for rc in deletes:
         address = rc.get("address")
@@ -3005,6 +3056,15 @@ def check_destroy_plan(
                 "Region's API Gateway CloudWatch role and stops logging for every "
                 "API in the Region. Run `plan` again with this version of idp-cli, "
                 "then `detach --apply`"
+            )
+            continue
+        if in_gateway_role(str(rc.get("type")), rc["change"].get("before") or {}):
+            findings.append(
+                f"{address} is in the destroy plan; it is the CloudWatch role the "
+                "Region's API Gateway account settings name, or one of its "
+                "policies, and destroying it stops logging for every API in the "
+                "Region. Run `plan` again with this version of idp-cli, then "
+                "`detach --apply`"
             )
             continue
         if planned is None:

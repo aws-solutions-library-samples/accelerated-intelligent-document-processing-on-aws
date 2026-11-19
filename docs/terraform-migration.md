@@ -558,7 +558,14 @@ a delete, and a plan none of whose deletions is an address `plan` recorded for t
 deployment. It then fails if the plan deletes anything the migration kept: an address
 that was to be detached (the detach did not run), an adopted or kept bucket, table,
 key, user pool, or BDA project, a setting on one of those, a user or group
-membership in the adopted pool, or the Region's API Gateway account settings. It also fails on a deletion of an address `plan`
+membership in the adopted pool, or the Region's API Gateway account settings, the
+CloudWatch role they name or one of that role's policies. The role is identified
+from the destroy plan's own values, or, when the settings are no longer in the destroy
+plan, from the copy of the old state saved in the migration directory before the
+detach (`detach --apply` and the commands `plan` prints both save one), so this holds
+when `plan` ran with an earlier version. If the settings were removed from the old
+state by hand and no such copy exists, nothing names the role and its deletion is not
+caught. It also fails on a deletion of an address `plan`
 never saw, because nothing decided whether that may be destroyed; run `plan` again.
 The old deployment's own app client, identity pool and WAF association are expected
 in the plan. When it passes, apply the saved destroy plan in the old directory
