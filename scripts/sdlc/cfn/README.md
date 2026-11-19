@@ -13,7 +13,7 @@ SPDX-License-Identifier: MIT-0
     * Enter the gitlab group name (e.g. `proserve/genaiid/reusable-assets`)
     * Enter the gitlab project name (e.g. `idp-accelerator`)
     * The trust policy names the code.aws.dev runner fleet's jump role
-      (`SecondGitLabJumpRoleArn`, default `arn:aws:iam::352364310414:role/prod_jump_role`).
+      (`SecondGitLabJumpRoleArn`: role `prod_jump_role` in account `352364310414`).
       The live stack (`genaiic-sdlc-credential-vendor`) still also trusts the old
       gitlab.aws.dev project through `GitLabGroupName`/`GitLabProjectName` until that
       trust is removed after the migration.
