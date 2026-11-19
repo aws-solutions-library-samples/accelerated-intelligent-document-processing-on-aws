@@ -153,6 +153,7 @@
         "idp_common/config_scope.py": 100.0,
         "idp_common/ddb_numbers.py": 100.0,
         "idp_common/decision_model/__init__.py": 100.0,
+        "idp_common/decision_model/budget.py": 100.0,
         "idp_common/decision_model/invoker.py": 93.42,
         "idp_common/decision_model/wire.py": 91.3,
         "idp_common/delete_documents.py": 96.42,

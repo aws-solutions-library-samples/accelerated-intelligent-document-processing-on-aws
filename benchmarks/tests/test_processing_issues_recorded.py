@@ -143,7 +143,12 @@ STAGES_EXCLUDED_FROM_RESULT_JSON = {
 CODES_EXCLUDED_FROM_RESULT_JSON = {
     "assessment_skipped_confidence_unavailable",
 }
-CODES_IN_RESULT_JSON_BEST_EFFORT = {
+# Codes the recorder may under-report: excluded from result.json whenever the
+# best-effort write is skipped or fails. The write is made by the assessment
+# handler's degrade branch (patterns/unified/src/assessment_function/index.py),
+# which lib/idp_common_pkg/tests/unit/lambdas/test_assessment_function_degradation.py
+# drives end to end, asserting the result.json write.
+CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON = {
     "assessment_failed_confidence_unavailable",
 }
 #: The one function in ``assessment/degradation.py`` allowed to write to S3.
@@ -411,22 +416,34 @@ def test_the_degradation_codes_are_partitioned_between_excluded_and_best_effort(
     )
     declared = {v for k, v in constants.items() if k.endswith("_CODE")}
     assert declared, "no *_CODE constants in assessment/degradation.py"
-    partitioned = CODES_EXCLUDED_FROM_RESULT_JSON | CODES_IN_RESULT_JSON_BEST_EFFORT
-    assert not CODES_EXCLUDED_FROM_RESULT_JSON & CODES_IN_RESULT_JSON_BEST_EFFORT
+    partitioned = (
+        CODES_EXCLUDED_FROM_RESULT_JSON | CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON
+    )
+    assert not CODES_EXCLUDED_FROM_RESULT_JSON & CODES_PARTLY_EXCLUDED_FROM_RESULT_JSON
     assert declared == partitioned, sorted(declared ^ partitioned)
     # Non-vacuity: these have to be codes the discovery really finds, or the boundary
     # is describing something that does not exist.
     assert partitioned <= CODES
 
 
-def _functions_writing_to_s3(tree):
-    """Names of the top-level functions whose body holds an S3 write marker."""
-    return {
-        node.name
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-        and any(m in ast.unparse(node) for m in S3_WRITE_MARKERS)
-    }
+def _s3_writes_outside(source, tree, allowed):
+    """Line numbers of S3 write markers that are not inside the function ``allowed``.
+
+    Read off the whole module's source, so a write added at module level, in a class
+    method or in an ``async def`` is found as surely as one in a top-level function.
+    """
+    spans = [
+        (node.lineno, node.end_lineno)
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == allowed
+    ]
+    return [
+        number
+        for number, line in enumerate(source.splitlines(), start=1)
+        if any(m in line for m in S3_WRITE_MARKERS)
+        and not any(start <= number <= (end or start) for start, end in spans)
+    ]
 
 
 def test_the_premise_behind_that_boundary_is_computed_not_asserted():
@@ -436,12 +453,19 @@ def test_the_premise_behind_that_boundary_is_computed_not_asserted():
     writing, makes the partition wrong in the direction that under-reports, and the
     failure says to re-check it rather than leaving a stale reason in place.
     """
-    tree = ast.parse((IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8"))
-    writers = _functions_writing_to_s3(tree)
-    assert writers == {BEST_EFFORT_RESULT_WRITER}, (
-        f"assessment/degradation.py writes to S3 in {sorted(writers)}. If any of them "
-        "writes the section's result.json, re-check CODES_EXCLUDED_FROM_RESULT_JSON, "
-        "the recorder's docstring and docs/benchmarking/index.md."
+    source = (IDP_COMMON / "assessment" / "degradation.py").read_text("utf-8")
+    tree = ast.parse(source)
+    outside = _s3_writes_outside(source, tree, BEST_EFFORT_RESULT_WRITER)
+    assert not outside, (
+        f"assessment/degradation.py writes to S3 outside {BEST_EFFORT_RESULT_WRITER} "
+        f"at line(s) {outside}. If that writes the section's result.json, re-check "
+        "CODES_EXCLUDED_FROM_RESULT_JSON, the recorder's docstring and "
+        "docs/benchmarking/index.md."
+    )
+    # Non-vacuity for the permitted writer: it must still exist and still write.
+    assert any(m in source for m in S3_WRITE_MARKERS), (
+        f"{BEST_EFFORT_RESULT_WRITER} no longer writes, so the degrade code no longer "
+        "reaches result.json and belongs in CODES_EXCLUDED_FROM_RESULT_JSON."
     )
     skip = next(
         node
