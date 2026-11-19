@@ -1291,7 +1291,7 @@ The extraction and classification services support precise control over where do
 
 #### How {DOCUMENT_IMAGE} Works
 
-**Without Placeholder (Default Behavior):**
+**Without Placeholder (Text Only):**
 ```yaml
 task_prompt: |
   Extract the following fields from this {DOCUMENT_CLASS} document:
@@ -1302,7 +1302,17 @@ task_prompt: |
   
   Respond with valid JSON.
 ```
-Images are automatically appended after the text content.
+No page image is sent with a prompt that has no `{DOCUMENT_IMAGE}`. That holds for
+each step that reads the prompt:
+
+- **Extraction** sends the text alone. In agentic mode the page images are not
+  attached either, and the agent is given no `view_image` tool.
+- **The confidence pass** (`extraction.confidence.task_prompt`) sends the text
+  alone. Removing the placeholder is the documented way to make it text-only.
+- **Classification** infers each call's `modality.images` from its task prompt, so
+  the call sends the text alone. Setting that call's `modality.images: true` is the
+  exception: it appends a wrapped placeholder to the end of the prompt, so the
+  images are sent after everything else in it.
 
 **With Placeholder (Controlled Placement):**
 ```yaml

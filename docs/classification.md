@@ -1828,9 +1828,12 @@ call fails with `found N occurrences, but exactly 1 is required`, and
 page, context-pages and packet prompts and to both calls of split-then-classify; a
 repeat in the section-classification prompt fails the document before any section
 is labelled, except under `method: decision_model` with an `on_low_confidence` other
-than `llm`, where that prompt is never sent. `modality.images: false` removes the placeholder wrapped in
-`<document-image>` tags, or every placeholder when none is wrapped, so a bare
-repeat beside a wrapped one is still sent and still refused.
+than `llm`, where that prompt is never sent. `modality.images: false` removes every `{DOCUMENT_IMAGE}` from the prompt (a
+`<document-image>` element that held only the placeholder goes with it), so nothing
+is refused and no image is sent. A placeholder written inside the class-confidence
+block (`confidence.task_prompt_topk`, `task_prompt_verbalized` and their packet
+variants) counts too, because the block is added to the prompt before the count, and
+after the modality removal, so the removal does not reach it.
 
 ### Usage Examples
 

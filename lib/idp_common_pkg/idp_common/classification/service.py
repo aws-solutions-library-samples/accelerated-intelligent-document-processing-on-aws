@@ -111,6 +111,172 @@ STAGE_CALL_PATH = {
     STAGE_SECTION_CLASSIFICATION: "split_then_classify.section_classification.llm",
 }
 
+
+def _stage_llm(classification: Any, stage: str) -> Any:
+    """The model-settings block for ``stage`` under ``classification``."""
+    if stage == STAGE_SECTION_CLASSIFICATION:
+        return classification.split_then_classify.section_classification.llm
+    if stage == STAGE_SPLITTING:
+        return classification.split_then_classify.splitting.llm
+    return classification.combined.llm
+
+
+def apply_modality_to_prompt(task_prompt: str, classification: Any, stage: str) -> str:
+    """Rewrite a prompt template so its placeholders match the call's modality.
+
+    Only an **explicitly set** flag causes a rewrite; an inferred one agrees
+    with the template by construction, so the overwhelmingly common path
+    returns the operator's prompt untouched.
+
+    Removal takes out every occurrence of the placeholder, so the content is
+    neither sent nor paid for. A placeholder's wrapping element goes with it when
+    the element contains nothing else — ``<document-image>{DOCUMENT_IMAGE}
+    </document-image>`` becomes nothing rather than an empty tag pair, because an
+    empty element announcing a modality that is switched off is a misleading
+    thing to put in a prompt (``strip_placeholder``).
+
+    Addition appends a wrapped placeholder at the end of the template. The
+    position is a guess — the operator's prompt said nothing about where the
+    content goes — so it is both the least surprising choice (the content is
+    the last thing the model reads) and logged, since a prompt the operator
+    did not write is something they need to be able to see.
+    """
+    modality = _stage_llm(classification, stage).modality
+    result = task_prompt
+
+    for flag, placeholder, element in (
+        (modality.text, "{DOCUMENT_TEXT}", "document-ocr-data"),
+        (modality.images, "{DOCUMENT_IMAGE}", "document-image"),
+    ):
+        if flag is None:
+            continue
+        present = placeholder in result
+        if flag and not present:
+            result = f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
+            logger.info(
+                "classification.%s.modality turned %s on but the task prompt "
+                "had no %s placeholder; appended one.",
+                STAGE_CALL_PATH[stage],
+                element,
+                placeholder,
+            )
+        elif not flag and present:
+            result = strip_placeholder(result, placeholder, element)
+            logger.info(
+                "classification.%s.modality turned %s off; removed %s from the "
+                "task prompt so the content is neither sent nor paid for.",
+                STAGE_CALL_PATH[stage],
+                element,
+                placeholder,
+            )
+
+    return result
+
+
+def compose_class_confidence_prompt(
+    task_prompt: str, classification: Any, stage: str, num_classes: int
+) -> str:
+    """Splice the class-confidence instruction block in, when enabled.
+
+    No-op when the mode is ``off``; the shipped default is ``topk``. A custom prompt that already carries a ``<class-confidence>``
+    block is left alone (the splice is idempotent), and the response parser
+    honours a ``confidence``/``candidates`` key regardless of this setting —
+    the mode composes the *instruction*, it does not gate the *parsing*.
+    """
+    confidence_cfg = _stage_llm(
+        classification,
+        STAGE_SECTION_CLASSIFICATION
+        if stage == STAGE_SECTION_CLASSIFICATION
+        else STAGE_CLASSIFICATION,
+    ).confidence
+    mode = confidence_cfg.mode
+    if mode == "off":
+        return task_prompt
+
+    if stage == STAGE_SPLITTING:
+        # The splitting call reports no class, so there is no class to be
+        # confident about. Scoring belongs to section classification, which
+        # is where the class is
+        # decided — and spending output tokens here would buy a number
+        # describing nothing.
+        return task_prompt
+
+    # Section classification is always one call about one segment, so it
+    # takes the PAGE block shape (one class, one score) regardless of how
+    # the boundaries were found. The packet block describes a `segments`
+    # array section classification does not return.
+    packet = (
+        classification.page_input_call().granularity
+        == ClassificationService.GRANULARITY_PACKET
+        and stage != STAGE_SECTION_CLASSIFICATION
+    )
+
+    if mode == "topk":
+        top_k = resolve_top_k(confidence_cfg.top_k_candidates, num_classes)
+        # The packet variant names the key it goes in and scopes the
+        # instruction per segment; the page one speaks about "this page".
+        # Falling back to the page block keeps a custom configuration
+        # written before packet granularity working rather than silently
+        # dropping the request.
+        block = (
+            confidence_cfg.task_prompt_topk_packet or confidence_cfg.task_prompt_topk
+            if packet
+            else confidence_cfg.task_prompt_topk
+        )
+    else:  # verbalized
+        top_k = None
+        block = (
+            confidence_cfg.task_prompt_verbalized_packet
+            or confidence_cfg.task_prompt_verbalized
+            if packet
+            else confidence_cfg.task_prompt_verbalized
+        )
+
+    if not block:
+        logger.warning(
+            "classification.%s.confidence.mode=%s but its prompt block is "
+            "empty; no confidence will be requested. Restore it from the "
+            "system defaults (base-classification.yaml).",
+            "split_then_classify.section_classification.llm"
+            if stage == STAGE_SECTION_CLASSIFICATION
+            else "combined.llm",
+            mode,
+        )
+        return task_prompt
+
+    composed = append_class_confidence_block(
+        task_prompt, strip_prompt_comments(block), top_k
+    )
+    if composed is not task_prompt:
+        logger.info(
+            "Requesting class confidence in %s mode%s",
+            mode,
+            f" (top {top_k} candidates)" if top_k else "",
+        )
+    return composed
+
+
+def classification_task_prompt_as_sent(
+    task_prompt: str, classification: Any, stage: str, num_classes: int
+) -> str:
+    """The task prompt template a classification call sends, from the configured one.
+
+    ``task_prompt`` is the configured template with prompt comments removed.
+    Modality normalisation runs BEFORE the class-confidence splice: the splice
+    positions its block relative to the document/cache-point marker, and
+    rewriting placeholders afterwards could move content across it. The service
+    builds every call's prompt through this, and ``validate_config`` judges the
+    ``{DOCUMENT_IMAGE}`` rule on its result, so the two count the same
+    placeholders — including one written inside a confidence block.
+    """
+    return compose_class_confidence_prompt(
+        apply_modality_to_prompt(task_prompt, classification, stage),
+        classification,
+        stage,
+        num_classes,
+    )
+
+
 # Bounds on what a classification ProcessingIssue's ``root_cause`` may carry. The
 # text comes from model output or a service error message, and the issue rides to
 # DynamoDB inside the section map, whose 400 KB item ceiling the assessment path
@@ -1564,12 +1730,8 @@ class ClassificationService:
             raise ValueError(
                 f"No task_prompt found for the {stage} stage of classification"
             )
-        # Modality normalisation runs BEFORE the class-confidence splice: the
-        # splice positions its block relative to the document/cache-point marker,
-        # and rewriting placeholders afterwards could move content across it.
-        task_prompt = self._apply_modality_to_prompt(task_prompt, stage)
-        config["task_prompt"] = self._compose_class_confidence_prompt(
-            task_prompt, stage
+        config["task_prompt"] = classification_task_prompt_as_sent(
+            task_prompt, self.config.classification, stage, len(self.valid_doc_types)
         )
 
         return config
@@ -1583,89 +1745,6 @@ class ClassificationService:
         problem that a cheaper model answers just as well.
         """
         return self._call(stage).model
-
-    def _compose_class_confidence_prompt(
-        self, task_prompt: str, stage: str = STAGE_CLASSIFICATION
-    ) -> str:
-        """Splice the class-confidence instruction block in, when enabled.
-
-        No-op when the mode is ``off``; the shipped default is ``topk``. A custom prompt that already carries a ``<class-confidence>``
-        block is left alone (the splice is idempotent), and the response parser
-        honours a ``confidence``/``candidates`` key regardless of this setting —
-        the mode composes the *instruction*, it does not gate the *parsing*.
-        """
-        confidence_cfg = self._call(
-            self.STAGE_SECTION_CLASSIFICATION
-            if stage == self.STAGE_SECTION_CLASSIFICATION
-            else self.STAGE_CLASSIFICATION
-        ).confidence
-        mode = confidence_cfg.mode
-        if mode == "off":
-            return task_prompt
-
-        if stage == self.STAGE_SPLITTING:
-            # The splitting call reports no class, so there is no class to be
-            # confident about. Scoring belongs to section classification, which
-            # is where the class is
-            # decided — and spending output tokens here would buy a number
-            # describing nothing.
-            return task_prompt
-
-        # Section classification is always one call about one segment, so it
-        # takes the PAGE block shape (one class, one score) regardless of how
-        # the boundaries were found. The packet block describes a `segments`
-        # array section classification does not return.
-        packet = (
-            self.granularity == self.GRANULARITY_PACKET
-            and stage != self.STAGE_SECTION_CLASSIFICATION
-        )
-
-        if mode == "topk":
-            top_k = resolve_top_k(
-                confidence_cfg.top_k_candidates, len(self.valid_doc_types)
-            )
-            # The packet variant names the key it goes in and scopes the
-            # instruction per segment; the page one speaks about "this page".
-            # Falling back to the page block keeps a custom configuration
-            # written before packet granularity working rather than silently
-            # dropping the request.
-            block = (
-                confidence_cfg.task_prompt_topk_packet
-                or confidence_cfg.task_prompt_topk
-                if packet
-                else confidence_cfg.task_prompt_topk
-            )
-        else:  # verbalized
-            top_k = None
-            block = (
-                confidence_cfg.task_prompt_verbalized_packet
-                or confidence_cfg.task_prompt_verbalized
-                if packet
-                else confidence_cfg.task_prompt_verbalized
-            )
-
-        if not block:
-            logger.warning(
-                "classification.%s.confidence.mode=%s but its prompt block is "
-                "empty; no confidence will be requested. Restore it from the "
-                "system defaults (base-classification.yaml).",
-                "split_then_classify.section_classification.llm"
-                if stage == self.STAGE_SECTION_CLASSIFICATION
-                else "combined.llm",
-                mode,
-            )
-            return task_prompt
-
-        composed = append_class_confidence_block(
-            task_prompt, strip_prompt_comments(block), top_k
-        )
-        if composed is not task_prompt:
-            logger.info(
-                "Requesting class confidence in %s mode%s",
-                mode,
-                f" (top {top_k} candidates)" if top_k else "",
-            )
-        return composed
 
     def _raw_task_prompt(self, stage: str = STAGE_CLASSIFICATION) -> str:
         """The configured task prompt for a stage and granularity, un-normalised.
@@ -1938,57 +2017,10 @@ class ClassificationService:
     def _apply_modality_to_prompt(
         self, task_prompt: str, stage: Optional[str] = None
     ) -> str:
-        """Rewrite a prompt template so its placeholders match the modality.
-
-        Only an **explicitly set** flag causes a rewrite; an inferred one agrees
-        with the template by construction, so the overwhelmingly common path
-        returns the operator's prompt untouched.
-
-        Removal takes the placeholder's wrapping element with it when the
-        element contains nothing else — ``<document-image>{DOCUMENT_IMAGE}
-        </document-image>`` becomes nothing rather than an empty tag pair,
-        because an empty element announcing a modality that is switched off is a
-        misleading thing to put in a prompt. A placeholder that is not wrapped
-        that way is simply deleted.
-
-        Addition appends a wrapped placeholder at the end of the template. The
-        position is a guess — the operator's prompt said nothing about where the
-        content goes — so it is both the least surprising choice (the content is
-        the last thing the model reads) and logged, since a prompt the operator
-        did not write is something they need to be able to see.
-        """
-        modality = self._call(stage).modality
-        result = task_prompt
-
-        for flag, placeholder, element in (
-            (modality.text, "{DOCUMENT_TEXT}", "document-ocr-data"),
-            (modality.images, "{DOCUMENT_IMAGE}", "document-image"),
-        ):
-            if flag is None:
-                continue
-            present = placeholder in result
-            if flag and not present:
-                result = (
-                    f"{result.rstrip()}\n\n<{element}>\n{placeholder}\n</{element}>\n"
-                )
-                logger.info(
-                    "classification.%s.modality turned %s on but the task prompt "
-                    "had no %s placeholder; appended one.",
-                    STAGE_CALL_PATH[stage or self._reader_stage()],
-                    element,
-                    placeholder,
-                )
-            elif not flag and present:
-                result = self._strip_placeholder(result, placeholder, element)
-                logger.info(
-                    "classification.%s.modality turned %s off; removed %s from the "
-                    "task prompt so the content is neither sent nor paid for.",
-                    STAGE_CALL_PATH[stage or self._reader_stage()],
-                    element,
-                    placeholder,
-                )
-
-        return result
+        """Rewrite a prompt to match the call's modality; see ``apply_modality_to_prompt``."""
+        return apply_modality_to_prompt(
+            task_prompt, self.config.classification, stage or self._reader_stage()
+        )
 
     @staticmethod
     def _strip_placeholder(template: str, placeholder: str, element: str) -> str:

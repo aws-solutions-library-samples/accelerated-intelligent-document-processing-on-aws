@@ -424,8 +424,13 @@ def _stc_user(splitting_prompt=None, section_prompt=None, splitting_modality=Non
     }
 
 
-def _run_merged_classification(user: Dict[str, Any]):
-    """``classify_document`` on the merged configuration, answering each call by stage."""
+def _run_merged_classification(
+    user: Dict[str, Any], contents: Optional[List[Any]] = None
+):
+    """``classify_document`` on the merged configuration, answering each call by stage.
+
+    ``contents``, when given, collects each request's ``(stage, content blocks)``.
+    """
     from idp_common.config.merge_utils import merge_config_with_defaults
 
     service = ClassificationService(
@@ -447,6 +452,8 @@ def _run_merged_classification(user: Dict[str, Any]):
 
     def answer(content, config):
         stages.append(config.get("stage"))
+        if contents is not None:
+            contents.append((config.get("stage"), content))
         reply = {
             "class": "invoice",
             "document_boundary": "start",
@@ -508,13 +515,22 @@ class TestSplitThenClassify:
         assert _validate(user)
 
 
+def _no_image_sent(contents: List[Any], stage: str) -> bool:
+    """True when ``stage`` made requests and none of them held an image."""
+    sent = [c for s, c in contents if s == stage]
+    return bool(sent) and all(
+        _image_count(c) == 0 and _IMG not in json.dumps(c, default=str) for c in sent
+    )
+
+
 @pytest.mark.unit
 class TestImagesOffJudgesThePromptAsSent:
-    """``modality.images: false`` removes the WRAPPED placeholder only, when there is
-    one, so bare repeats beside it are still sent and still refused. The validator
-    applies the same removal (``strip_placeholder``)."""
+    """``modality.images: false`` removes every ``{DOCUMENT_IMAGE}`` — the wrapped one
+    with its ``<document-image>`` element, and bare ones beside it — so no image slot
+    is left and nothing is refused. The validator judges the prompt as the service
+    builds it (``classification_task_prompt_as_sent``)."""
 
-    def test_bare_repeats_beside_a_wrapped_placeholder_are_refused_both_sides(self):
+    def test_bare_repeats_beside_a_wrapped_placeholder_are_removed_both_sides(self):
         prompt = _defaults_cls()["split_then_classify"]["splitting"]["llm"]["page"][
             "task_prompt"
         ]
@@ -522,17 +538,84 @@ class TestImagesOffJudgesThePromptAsSent:
         user = _stc_user(
             splitting_prompt=prompt + _IMG + _IMG, splitting_modality={"images": False}
         )
-        _, document, stages = _run_merged_classification(user)
-        assert document.status == Status.FAILED and stages == []
-        assert _validate(user)
+        contents: List[Any] = []
+        outcome, _, stages = _run_merged_classification(user, contents)
+        assert isinstance(outcome, Document) and "splitting" in stages
+        assert _no_image_sent(contents, "splitting")
+        assert _validate(user) == []
 
     def test_a_wrapped_placeholder_alone_is_removed_and_accepted_both_sides(self):
         prompt = _defaults_cls()["split_then_classify"]["splitting"]["llm"]["page"][
             "task_prompt"
         ]
         user = _stc_user(splitting_prompt=prompt, splitting_modality={"images": False})
-        outcome, _, stages = _run_merged_classification(user)
+        contents: List[Any] = []
+        outcome, _, stages = _run_merged_classification(user, contents)
         assert isinstance(outcome, Document) and "splitting" in stages
+        assert _no_image_sent(contents, "splitting")
+        assert _validate(user) == []
+
+    def test_the_shipped_prompt_with_images_unset_does_send_an_image(self):
+        """Control for ``_no_image_sent``: it can say no."""
+        contents: List[Any] = []
+        outcome, _, _ = _run_merged_classification(_stc_user(), contents)
+        assert isinstance(outcome, Document)
+        assert not _no_image_sent(contents, "splitting")
+
+    def test_the_same_repeats_with_images_on_are_refused_both_sides(self):
+        """Control: without the modality flag the bare repeats are sent and refused."""
+        prompt = _defaults_cls()["split_then_classify"]["splitting"]["llm"]["page"][
+            "task_prompt"
+        ]
+        user = _stc_user(splitting_prompt=prompt + _IMG + _IMG)
+        _, document, stages = _run_merged_classification(user)
+        assert document.status == Status.FAILED and stages == []
+        assert _validate(user)
+
+
+def _combined_user(prompt: str, block: str, mode: str = "topk") -> Dict[str, Any]:
+    key = "task_prompt_topk" if mode == "topk" else "task_prompt_verbalized"
+    return {
+        "classes": [_class("invoice"), _class("receipt")],
+        "classification": {
+            "combined": {
+                "page": {"task_prompt": prompt},
+                "llm": {"confidence": {"mode": mode, key: block}},
+            }
+        },
+    }
+
+
+@pytest.mark.unit
+class TestClassConfidenceBlockIsCounted:
+    """The service splices the class-confidence block into the prompt before it
+    counts ``{DOCUMENT_IMAGE}``, so a placeholder written in the block counts, and
+    the validator counts it the same way."""
+
+    _BLOCK = "<class-confidence>Rank the classes. " + _IMG + "</class-confidence>"
+
+    @pytest.mark.parametrize("mode", ["topk", "verbalized"])
+    def test_one_in_the_prompt_and_one_in_the_block_is_refused_both_sides(self, mode):
+        user = _combined_user(_CLASSIFICATION_PROMPTS["once"][0], self._BLOCK, mode)
+        _, document, stages = _run_merged_classification(user)
+        assert stages == []
+        assert "classification page task prompt" in " ".join(document.errors)
+        errors = _validate(user)
+        assert len(errors) == 1, errors
+        assert errors[0].startswith("classification.combined.page.task_prompt: ")
+        assert "found 2 occurrences" in errors[0]
+
+    def test_one_in_the_block_alone_is_accepted_both_sides(self):
+        """Control: the block's placeholder is the only one, so it is sent once."""
+        user = _combined_user(_PAGE, self._BLOCK)
+        outcome, _, stages = _run_merged_classification(user)
+        assert isinstance(outcome, Document) and "classification" in stages
+        assert _validate(user) == []
+
+    def test_mode_off_splices_no_block_so_nothing_is_counted(self):
+        user = _combined_user(_CLASSIFICATION_PROMPTS["once"][0], self._BLOCK, "off")
+        outcome, _, stages = _run_merged_classification(user)
+        assert isinstance(outcome, Document) and "classification" in stages
         assert _validate(user) == []
 
 
@@ -588,8 +671,8 @@ class TestSectionPromptOnlyJudgedWhenSent:
         assert _validate(user)
 
     def test_images_off_section_prompt_is_judged_after_the_removal(self):
-        """The wrapped placeholder is removed under ``modality.images: false``, so
-        the one bare placeholder left is a single one and is sent."""
+        """Every placeholder is removed under ``modality.images: false``, wrapped
+        and bare, so nothing is refused."""
         prompt = _defaults_cls()["split_then_classify"]["section_classification"][
             "llm"
         ]["task_prompt"]
