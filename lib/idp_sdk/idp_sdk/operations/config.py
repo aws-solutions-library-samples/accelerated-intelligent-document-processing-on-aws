@@ -712,8 +712,16 @@ class ConfigOperation:
         if isinstance(user_config, dict):
             user_config["managed"] = False
 
+        # The validation warnings travel with every result from here on, success or
+        # not. `validate` already computes them (unread keys with the field they were
+        # meant to be, prompt-cache and fallback-class findings, ...), and before they
+        # were carried here they were dropped on this path: `config-upload` printed
+        # none of them, so a finding added to validate_config reached only callers of
+        # `config-validate`, never the command that stores the configuration.
+        validation_warnings: list[str] = []
         if validate:
             result = self.validate(config_file, pattern=pattern or "pattern-2")
+            validation_warnings = list(result.warnings)
             if not result.valid:
                 # The gate holds either way — an unchecked configuration is not
                 # stored — but the two refusals ask for different things from the
@@ -728,6 +736,7 @@ class ConfigOperation:
                 return ConfigUploadResult(
                     success=False,
                     error=f"{reason}: {'; '.join(result.errors)}",
+                    warnings=validation_warnings,
                 )
 
         self._configure_config_env(name)
@@ -797,9 +806,12 @@ class ConfigOperation:
                 version_created=version_created,
                 revision=revision,
                 error=None if success else "Upload failed",
+                warnings=validation_warnings,
             )
         except Exception as e:
-            return ConfigUploadResult(success=False, error=str(e))
+            return ConfigUploadResult(
+                success=False, error=str(e), warnings=validation_warnings
+            )
 
     def list(
         self,
