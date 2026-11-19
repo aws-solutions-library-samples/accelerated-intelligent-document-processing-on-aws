@@ -793,11 +793,13 @@ class TestStackResourceResolution:
 
     @mock_aws
     def test_both_the_table_and_the_bucket_are_exported(
-        self, aws_credentials, config_env
+        self, aws_credentials, config_env, monkeypatch
     ):
         _create_stack(aws_credentials)
         import os
 
+        # Unset, so the assertion below can only pass through the bridge.
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
         _client(aws_credentials).config._configure_config_env(STACK)
 
         assert os.environ["CONFIGURATION_TABLE_NAME"] == _table(aws_credentials).name
@@ -813,6 +815,133 @@ class TestStackResourceResolution:
 
         with pytest.raises(IDPResourceNotFoundError, match="ConfigurationTable"):
             _client(aws_credentials).config._configure_config_env(STACK)
+
+
+# A Region whose inference profiles differ from the US ones, so a model resolved
+# for the wrong Region is visible as a different id.
+EU_STACK_REGION = "eu-central-1"
+
+
+@pytest.mark.unit
+@pytest.mark.config
+class TestAbsentModelKeysResolveForTheStacksRegion:
+    """A model key the configuration leaves out resolves for the stack's Region.
+
+    `RegionalModelDefaults` fills an absent model key with the declared default
+    translated for `idp_common.regional_models.stack_region()`, which reads
+    `AWS_REGION` before `AWS_DEFAULT_REGION`. The SDK's bridge used to set only the
+    second, so a shell whose `AWS_REGION` named another Region downloaded `us.`
+    profiles from an EU stack. A BDA-mode configuration carries no chat or
+    extraction model, so both are resolved from the declaration.
+    """
+
+    @staticmethod
+    def _expected() -> dict:
+        from idp_common.config.models import ChatConfig, ExtractionConfig
+        from idp_common.regional_models import regional_shipped_model
+
+        expected = {}
+        for section, model in (("chat", ChatConfig), ("extraction", ExtractionConfig)):
+            declared = model.model_fields["model"].default
+            regional = regional_shipped_model(declared, EU_STACK_REGION)
+            # Non-vacuity: the stack's Region must map this model to another id,
+            # or a US answer would pass.
+            assert regional != declared, (section, declared)
+            expected[section] = regional
+        return expected
+
+    def _round_trip(self, client: IDPClient, tmp_path) -> dict:
+        _create_stack(EU_STACK_REGION)
+        path = _write_config(tmp_path / "bda.yaml", use_bda=True, classes=[])
+        result = client.config.upload(
+            config_file=path, config_profile="bda", pattern="pattern-1"
+        )
+        assert result.success, result.error
+        config = client.config.download(config_profile="bda").config
+        return {section: config[section]["model"] for section in ("chat", "extraction")}
+
+    @mock_aws
+    def test_with_region_given_and_another_region_in_aws_region(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+
+        client = IDPClient(stack_name=STACK, region=EU_STACK_REGION)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
+
+    @mock_aws
+    def test_with_no_region_given_and_boto3_resolving_the_stacks_region(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        """No `--region`: boto3 finds the stack through `AWS_DEFAULT_REGION`.
+
+        boto3 does not read `AWS_REGION`, so the stack is found in
+        `AWS_DEFAULT_REGION`'s Region while `stack_region()` would answer
+        `AWS_REGION`'s, unless the bridge names the Region the lookup used.
+        """
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", EU_STACK_REGION)
+
+        client = IDPClient(stack_name=STACK)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
+
+    @mock_aws
+    def test_with_no_region_given_the_bridge_names_the_lookups_region(
+        self, aws_credentials, config_env, monkeypatch
+    ):
+        """The bridged Region is the resolved one, whichever Region that is.
+
+        A stack outside the EU, so that an answer fixed to the Region the other
+        tests use cannot pass.
+        """
+        monkeypatch.setenv("AWS_REGION", EU_STACK_REGION)
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+        _create_stack("us-west-2")
+
+        IDPClient(stack_name=STACK).config._configure_config_env(STACK)
+
+        assert os.environ["AWS_REGION"] == "us-west-2"
+
+    @mock_aws
+    def test_with_no_region_given_and_the_region_from_the_profile(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        """No `--region` and no `AWS_DEFAULT_REGION`: the profile names the Region.
+
+        Distinguishes boto3's resolution from reading `AWS_DEFAULT_REGION` alone,
+        which here is unset.
+        """
+        profile = tmp_path / "aws-config"
+        profile.write_text(f"[default]\nregion = {EU_STACK_REGION}\n", encoding="utf-8")
+        monkeypatch.setenv("AWS_CONFIG_FILE", str(profile))
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+
+        client = IDPClient(stack_name=STACK)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
+
+    @mock_aws
+    def test_with_no_region_given_and_a_default_session_naming_the_stacks_region(
+        self, aws_credentials, config_env, monkeypatch, tmp_path
+    ):
+        """The stack is found through boto3's default session, not a fresh one.
+
+        A caller that ran `boto3.setup_default_session(region_name=...)` has its
+        stack looked up in that Region, while a newly built `Session()` would
+        still answer `AWS_DEFAULT_REGION`'s.
+        """
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        boto3.setup_default_session(region_name=EU_STACK_REGION)
+
+        client = IDPClient(stack_name=STACK)
+
+        assert self._round_trip(client, tmp_path) == self._expected()
 
 
 # --------------------------------------------------------------------------

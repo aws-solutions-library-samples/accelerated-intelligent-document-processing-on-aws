@@ -198,9 +198,9 @@ idp-cli config-upload --stack-name my-stack --config-file ./config.yaml \
 The resolution order is:
 
 1. `--region` on the subcommand, if given.
-2. Otherwise boto3's own chain: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the
-   `region` configured for the selected `--profile` (or `AWS_PROFILE`), then EC2
-   instance metadata.
+2. Otherwise boto3's own chain: `AWS_DEFAULT_REGION`, then the `region`
+   configured for the selected `--profile` (or `AWS_PROFILE`). boto3 does not
+   read `AWS_REGION`, and it does not take the Region from EC2 instance metadata.
 
 Nothing substitutes a hardcoded region for the configuration commands, so a
 command run with no `--region` and no region resolvable from the environment fails
@@ -225,6 +225,15 @@ report success. It therefore covers
 A whole-tree check (`scripts/tests/test_config_region_threading.py`) asserts that
 no code outside a Lambda builds a configuration client without a region, so a new
 command cannot reintroduce the gap.
+
+The configuration commands that read a stack (`config-download`, `config-upload`,
+`config-activate` and the rest) also set both `AWS_REGION` and
+`AWS_DEFAULT_REGION` to the Region the stack was found in, for the rest of the
+command. A model setting the configuration leaves out resolves to that Region's
+inference profile (see [EU Region Model Support](eu-region-model-support.md)), and
+that lookup reads `AWS_REGION` first, so a shell whose `AWS_REGION` names another
+Region would otherwise get that Region's profiles, such as `us.` ids in a file
+downloaded from an EU stack.
 
 Three commands take no `--region` because they make no AWS calls at all:
 `config-create`, `config-validate` and `validate-manifest`.
