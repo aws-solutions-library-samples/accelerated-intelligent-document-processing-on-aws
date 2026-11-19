@@ -339,6 +339,19 @@ class TestTranslatorCommand:
             tmp_path / "terraform" / "translator"
         )
 
+    def test_suppressions_come_from_the_checkouts_source_template(self, tmp_path):
+        """The published template has no comments left, so the translator is
+        pointed at the source template for the checkov skips it carries."""
+        (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
+        (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert "--suppressions-source" not in cmd
+        (tmp_path / "template.yaml").write_text("Resources: {}\n")
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert cmd[cmd.index("--suppressions-source") + 1] == str(
+            tmp_path / "template.yaml"
+        )
+
     def test_missing_translator_is_refused(self, tmp_path):
         with pytest.raises(IDPConfigurationError, match="translator not found"):
             tf.translator_command(str(tmp_path), "t", "o", "c", "1")
@@ -725,6 +738,17 @@ class TestRetainedReportNames:
         assert entry["physical_id"] == "Wq3x9"
         assert entry["display_name"] == (
             f"API Gateway account settings for this Region (CloudWatch Logs role {role})"
+        )
+
+    @pytest.mark.parametrize("tf_type", ["awscc_kms_key", "aws_kms_key"])
+    def test_the_kms_key_says_why_it_was_kept(self, tf_type):
+        key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+        key = _res(tf_type, "customer_managed_encryption_key", id=key_id, key_id=key_id)
+        [entry] = tf.retained_report(_state(key), [key["address"]])["other"]
+        assert entry["physical_id"] == key_id
+        assert entry["type"] == tf_type
+        assert entry["display_name"] == (
+            f"KMS key {key_id}, which encrypts the retained buckets"
         )
 
     def test_a_named_resource_gets_no_display_name(self):

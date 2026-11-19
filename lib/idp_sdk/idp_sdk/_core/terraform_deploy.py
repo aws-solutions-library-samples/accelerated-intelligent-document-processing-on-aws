@@ -231,7 +231,8 @@ def translator_command(
     by ``TemplateURL`` into ``nested_cache``. The same template labels the
     deployment, at ``version``. ``previous_manifest`` is the path of the
     previous release's ``idp-terraform.json``, from which the translator writes
-    ``moved`` blocks for resources whose address changed.
+    ``moved`` blocks for resources whose address changed. The checkout's
+    ``template.yaml`` supplies the scanner suppressions carried into the module.
     """
     translator = Path(source_dir) / "terraform" / "translator"
     if not (translator / "idp_tf" / "cli.py").is_file():
@@ -267,6 +268,11 @@ def translator_command(
     ]
     if previous_manifest:
         cmd += ["--previous-manifest", previous_manifest]
+    # The published template has lost its comments, so the scanner suppressions
+    # the module carries are read from the source template it was packaged from.
+    source_template = Path(source_dir) / "template.yaml"
+    if source_template.is_file():
+        cmd += ["--suppressions-source", str(source_template)]
     return cmd, env
 
 
@@ -725,6 +731,55 @@ def render_main_tf(
     return "\n".join(blocks) + "\n"
 
 
+#: Where a kept value came from, as the upgrade output names it.
+SOURCE_LABEL_STACK = "label stack"
+SOURCE_PARAMETERS_FILE = PARAMETERS_FILE
+SOURCE_TFVARS = "terraform.tfvars"
+
+
+class RootConfigValues(dict):
+    """The Terraform variable values :func:`write_root_config` wrote.
+
+    A plain ``dict`` of variable name to value (what the function always
+    returned), carrying how each parameter that was not passed got its value:
+
+    - ``kept``: CloudFormation name -> value kept from the deployment's record,
+      for every parameter not passed on this deploy;
+    - ``kept_from``: CloudFormation name -> where that value was read
+      (:data:`SOURCE_LABEL_STACK`, :data:`SOURCE_PARAMETERS_FILE` or
+      :data:`SOURCE_TFVARS`);
+    - ``recorded``: the CloudFormation names the label stack recorded, or
+      ``None`` when no label stack was read;
+    - ``upgrade``: whether an earlier deploy was found (a label stack or this
+      directory's own record);
+    - ``local``: whether this directory held a record of an earlier deploy.
+    """
+
+    kept: Dict[str, Any]
+    kept_from: Dict[str, str]
+    recorded: Optional[frozenset]
+    upgrade: bool
+    local: bool
+
+
+def label_parameter_values(stack: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
+    """The deployment's effective parameter values its label stack records.
+
+    ``stack`` is a ``DescribeStacks`` entry for the deployment's label stack.
+    Terraform writes the label stack's parameters at every apply from the
+    module's variables, so they are the value in effect of every parameter,
+    passed or defaulted, by CloudFormation name; ``NoEcho`` parameters are not
+    among them. ``None`` when there is no stack or it carries no parameters.
+    """
+    if not stack or "Parameters" not in stack:
+        return None
+    return {
+        p["ParameterKey"]: p.get("ParameterValue", "")
+        for p in stack.get("Parameters") or []
+        if "ParameterKey" in p
+    }
+
+
 def write_root_config(
     directory: Path,
     *,
@@ -735,20 +790,37 @@ def write_root_config(
     parameters: Dict[str, str],
     manifest: Dict[str, Any],
     assume_role_arn: Optional[str] = None,
-) -> Dict[str, Any]:
+    recorded: Optional[Dict[str, str]] = None,
+) -> RootConfigValues:
     """Write ``main.tf`` and ``terraform.tfvars`` into ``directory``.
 
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
 
-    Refuses a ``main.tf`` that idp-cli did not write. On a later deploy the
-    values the previous deploy wrote are kept and the new ones applied over them:
-    those in ``idp-cli-parameters.json``, by CloudFormation parameter name, or,
-    without that file, those in the previous ``terraform.tfvars``. Only values that
-    were passed are ever written, never the defaults in effect, so a variable that
-    was never passed takes the module's default, which after an upgrade is the new
-    module's default. That differs from a CloudFormation update, which keeps the
-    previous value of every parameter it is not given. Returns the variable values
-    written.
+    Refuses a ``main.tf`` that idp-cli did not write. A parameter that is not
+    passed keeps the value the deployment has, as a CloudFormation update keeps
+    the previous value of every parameter it is not given. The value is taken,
+    in order of precedence, from:
+
+    1. ``parameters`` (and ``admin_email``), the values passed on this deploy;
+    2. ``recorded``, the deployment's effective values by CloudFormation name as
+       its label stack records them (see :func:`label_parameter_values`). The
+       label stack lives with the deployment, so a second operator deploying
+       from a fresh directory against the same state reads the same values, and
+       it holds every parameter's value in effect, defaulted ones included, for
+       deployments made before idp-cli recorded them;
+    3. this directory's ``idp-cli-parameters.json`` (by CloudFormation name,
+       which is stable where a Terraform variable name may change), or without
+       that file the previous ``terraform.tfvars``. These are the only source
+       for ``NoEcho`` parameters, which the label stack leaves out.
+
+    A parameter none of these holds takes the module's default: a parameter new
+    in this module, or every parameter of a deployment whose record cannot be
+    read (no label stack, and a directory holding only the values passed, as
+    idp-cli wrote before it recorded the effective ones). :func:`parameter_report`
+    describes the outcome, and :func:`record_effective_parameters` writes every
+    value in effect into ``idp-cli-parameters.json`` once the deploy has applied.
+
+    Returns the variable values written, as a :class:`RootConfigValues`.
     """
     directory.mkdir(parents=True, exist_ok=True)
     main_tf = directory / "main.tf"
@@ -759,7 +831,9 @@ def write_root_config(
             "overwrite it. Use another --terraform-dir, or remove the file."
         )
     specs = variable_specs(manifest)
+    known = manifest.get("parameters") or {}
     previous: Dict[str, Any] = {}
+    local_source = SOURCE_TFVARS
     if tfvars.exists():
         text = tfvars.read_text()
         if ROOT_MARKER not in text:
@@ -773,8 +847,8 @@ def write_root_config(
         # versions, and keying on it would drop the value without a word.
         remembered = directory / PARAMETERS_FILE
         if remembered.exists():
+            local_source = SOURCE_PARAMETERS_FILE
             by_name = json.loads(remembered.read_text())
-            known = manifest.get("parameters") or {}
             previous = {"stack_name": previous_vars.get("stack_name")}
             for name, value in by_name.items():
                 if name in known:
@@ -798,13 +872,42 @@ def write_root_config(
             f"{directory} holds the deployment {previous['stack_name']!r}, not "
             f"{stack_name!r}; use another --terraform-dir."
         )
-    values = dict(previous)
-    values.update(map_parameters(parameters, manifest))
+    from_label: Dict[str, Any] = {}
+    for name, text_value in sorted((recorded or {}).items()):
+        spec = known.get(name)
+        if spec is None:
+            logger.info(
+                "Parameter %s on the label stack is not in this module and was dropped",
+                name,
+            )
+            continue
+        try:
+            value = _convert(name, str(spec.get("type", "String")), text_value)
+        except IDPConfigurationError as e:
+            logger.warning("Ignoring the label stack's value of %s: %s", name, e)
+            continue
+        variable = spec["variable"]
+        if variable in previous and previous[variable] != value:
+            logger.info(
+                "%s is %r on the label stack and %r in %s; keeping the label "
+                "stack's, the value the deployment last applied",
+                name,
+                text_value if not spec.get("sensitive") else "(sensitive)",
+                previous[variable] if not spec.get("sensitive") else "(sensitive)",
+                local_source,
+            )
+        from_label[variable] = value
+    values = RootConfigValues(previous)
+    values.update(from_label)
+    passed = map_parameters(parameters, manifest)
+    values.update(passed)
     values["stack_name"] = stack_name
+    passed_names = set(parameters)
     if admin_email:
-        admin = (manifest.get("parameters") or {}).get("AdminEmail")
+        admin = known.get("AdminEmail")
         if admin:
             values[admin["variable"]] = admin_email
+            passed_names.add("AdminEmail")
         else:
             # The headless module has no Cognito and so no AdminEmail, as with
             # the headless CloudFormation template.
@@ -815,6 +918,19 @@ def write_root_config(
         raise IDPConfigurationError(
             "required parameter(s) have no value: " + ", ".join(missing) + hint
         )
+    values.kept = {}
+    values.kept_from = {}
+    for name, spec in known.items():
+        variable = spec["variable"]
+        if name in passed_names or variable not in values:
+            continue
+        values.kept[name] = values[variable]
+        values.kept_from[name] = (
+            SOURCE_LABEL_STACK if variable in from_label else local_source
+        )
+    values.recorded = frozenset(recorded) if recorded is not None else None
+    values.local = tfvars.exists()
+    values.upgrade = recorded is not None or values.local
     main_tf.write_text(
         render_main_tf(
             region, module_url, values, specs, check_assume_role_arn(assume_role_arn)
@@ -822,6 +938,13 @@ def write_root_config(
     )
     # The values can include NoEcho parameters.
     write_private(tfvars, render_tfvars(values))
+    _write_parameters_file(directory, manifest, values)
+    return values
+
+
+def _write_parameters_file(
+    directory: Path, manifest: Dict[str, Any], values: Dict[str, Any]
+) -> None:
     by_variable = {
         spec["variable"]: name
         for name, spec in (manifest.get("parameters") or {}).items()
@@ -835,7 +958,251 @@ def write_root_config(
         )
         + "\n",
     )
-    return values
+
+
+_VARIABLE_HEADER = re.compile(r'^variable "([^"]+)" \{$')
+_DEFAULT_LINE = re.compile(r"^  default = (.*)$")
+
+
+def module_variable_defaults(variables_tf: str) -> Dict[str, Any]:
+    """Terraform variable name -> default, from a ``variables.tf`` the
+    translator wrote.
+
+    Reads the shape ``Translator._variables`` writes: a top-level
+    ``variable "<name>" {`` block whose ``default = <value>`` line is indented
+    two spaces, the value a number, a quoted string or a list of quoted strings
+    (on one line, or one item per line closed by ``]``). A variable without a
+    default, or with one in any other shape, is left out, so a caller treats its
+    default as unknown rather than reading a wrong one.
+    """
+    out: Dict[str, Any] = {}
+    lines = variables_tf.splitlines()
+    i = 0
+    current: Optional[str] = None
+    while i < len(lines):
+        line = lines[i]
+        header = _VARIABLE_HEADER.match(line)
+        if header:
+            current = header.group(1)
+        elif line == "}":
+            current = None
+        elif current is not None:
+            default = _DEFAULT_LINE.match(line)
+            if default:
+                text = default.group(1)
+                if text == "[":
+                    items = []
+                    i += 1
+                    while i < len(lines) and lines[i] != "  ]":
+                        items.append(lines[i].strip().rstrip(","))
+                        i += 1
+                    text = "[" + ", ".join(items) + "]"
+                try:
+                    out[current] = _parse_hcl_value(text)
+                except ValueError:
+                    pass
+        i += 1
+    return out
+
+
+def read_module_defaults_from_dir(directory: Path) -> Optional[Dict[str, Any]]:
+    """The defaults of the ``idp`` module ``init`` installed in ``directory``,
+    or ``None`` when no module is installed there."""
+    modules_json = directory / ".terraform" / "modules" / "modules.json"
+    if not modules_json.is_file():
+        return None
+    try:
+        modules = json.loads(modules_json.read_text()).get("Modules", [])
+    except ValueError:
+        return None
+    for mod in modules:
+        if mod.get("Key") == "idp":
+            path = directory / mod["Dir"] / "variables.tf"
+            if path.is_file():
+                return module_variable_defaults(path.read_text())
+    return None
+
+
+#: A default :func:`parameter_report` could not read.
+_UNKNOWN = object()
+
+
+def _shown(spec: Dict[str, Any], value: Any) -> str:
+    if spec.get("sensitive"):
+        return "(sensitive)"
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value)
+    return str(value)
+
+
+def parameter_report(
+    values: RootConfigValues,
+    manifest: Dict[str, Any],
+    new_defaults: Optional[Dict[str, Any]],
+    old_defaults: Optional[Dict[str, Any]] = None,
+) -> List[Tuple[int, str]]:
+    """``(logging level, line)`` pairs describing what an upgrade kept.
+
+    ``values`` is what :func:`write_root_config` returned; ``new_defaults`` and
+    ``old_defaults`` are :func:`read_module_defaults_from_dir` for the module
+    being deployed and the one installed before (``None`` when unknown). Lists:
+
+    - the values kept that differ from the new module's default (all kept
+      values when its defaults are unknown), and how many others were kept;
+    - the parameters that take the new module's default because no record of
+      the deployment holds them: those new in this module, and, when the
+      deployment's effective values could not be read (no label stack), a
+      warning naming every parameter whose default changed between the two
+      modules, which this deploy therefore changes.
+
+    Empty for a first deploy.
+    """
+    if not values.upgrade:
+        return []
+    known = manifest.get("parameters") or {}
+    out: List[Tuple[int, str]] = []
+    shown_kept = []
+    same = 0
+    for name in sorted(values.kept):
+        spec = known[name]
+        value = values.kept[name]
+        default = (new_defaults or {}).get(spec["variable"], _UNKNOWN)
+        if new_defaults is not None and default == value:
+            same += 1
+            continue
+        line = f"  {name} = {_shown(spec, value)} (from the {values.kept_from[name]}"
+        if default is not _UNKNOWN:
+            line += f"; this module's default is {_shown(spec, default)}"
+        shown_kept.append(line + ")")
+    if shown_kept or same:
+        header = (
+            f"Kept {len(values.kept)} parameter value(s) the deployment already "
+            "had and this deploy did not pass"
+        )
+        if new_defaults is not None:
+            header += (
+                f"; {same} equal this module's default, the others are:"
+                if shown_kept
+                else f"; all {same} equal this module's default."
+            )
+        else:
+            header += ":"
+        out.append((logging.INFO, header))
+        out.extend((logging.INFO, line) for line in shown_kept)
+
+    unset = {
+        name: spec
+        for name, spec in sorted(known.items())
+        if spec["variable"] not in values
+    }
+
+    def is_new(name: str, spec: Dict[str, Any]) -> bool:
+        if old_defaults is not None and spec["variable"] in old_defaults:
+            return False
+        if values.recorded is not None:
+            return name not in values.recorded and not spec.get("sensitive")
+        return old_defaults is not None
+
+    new = []
+    for name, spec in unset.items():
+        if is_new(name, spec):
+            default = (new_defaults or {}).get(spec["variable"], "?")
+            new.append(f"{name} = {_shown(spec, default)}")
+    if new:
+        out.append(
+            (
+                logging.INFO,
+                "New parameter(s) in this module, taking its default: "
+                + ", ".join(new),
+            )
+        )
+    if values.recorded is None:
+        changed = []
+        if old_defaults is not None and new_defaults is not None:
+            for name, spec in unset.items():
+                var = spec["variable"]
+                if (
+                    var in old_defaults
+                    and var in new_defaults
+                    and old_defaults[var] != new_defaults[var]
+                ):
+                    changed.append(
+                        f"  {name}: {_shown(spec, old_defaults[var])} -> "
+                        f"{_shown(spec, new_defaults[var])}"
+                    )
+        if changed:
+            out.append(
+                (
+                    logging.WARNING,
+                    "The deployment's settings could not be read from its label "
+                    f"stack, and {PARAMETERS_FILE} records only the parameters "
+                    "passed to earlier deploys, so the parameters below, never "
+                    "passed, take this module's default, which differs from the "
+                    "default they were deployed with. Pass the earlier value with "
+                    "--parameters to keep it:",
+                )
+            )
+            out.extend((logging.WARNING, line) for line in changed)
+        elif old_defaults is None and unset:
+            out.append(
+                (
+                    logging.WARNING,
+                    "No record of this deployment's settings was found for the "
+                    "parameters below: the label stack could not be read, this "
+                    "directory does not record them, and the defaults they were "
+                    "deployed with are unknown (no module is installed here). They "
+                    "take this module's default; pass any the deployment set "
+                    "differently with --parameters: " + ", ".join(unset),
+                )
+            )
+    # The label stack leaves NoEcho values out, so a directory with no record
+    # of its own (a second operator's) cannot know them.
+    sensitive_unset = [name for name, spec in unset.items() if spec.get("sensitive")]
+    if sensitive_unset and values.recorded is not None and not values.local:
+        out.append(
+            (
+                logging.WARNING,
+                "NoEcho parameter(s) are not recorded on the label stack and this "
+                "directory holds no value for them, so they take this module's "
+                "default; pass them again if the deployment set them: "
+                + ", ".join(sensitive_unset),
+            )
+        )
+    return out
+
+
+def effective_parameters(
+    values: Dict[str, Any],
+    manifest: Dict[str, Any],
+    defaults: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Every parameter's value in effect, by CloudFormation name: the value
+    written, or the module's default for a parameter with none."""
+    out = {}
+    for name, spec in (manifest.get("parameters") or {}).items():
+        variable = spec["variable"]
+        if variable in values:
+            out[name] = values[variable]
+        elif defaults is not None and variable in defaults:
+            out[name] = defaults[variable]
+    return out
+
+
+def record_effective_parameters(
+    directory: Path,
+    manifest: Dict[str, Any],
+    values: Dict[str, Any],
+    defaults: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Write every parameter's value in effect into ``idp-cli-parameters.json``,
+    defaulted ones included, so the next deploy from this directory keeps them
+    even where no label stack can be read. Returns what was written."""
+    by_name = effective_parameters(values, manifest, defaults)
+    write_private(
+        directory / PARAMETERS_FILE,
+        json.dumps(by_name, indent=2, sort_keys=True) + "\n",
+    )
+    return by_name
 
 
 # ---------------------------------------------------------------------------
@@ -1070,12 +1437,20 @@ def _api_gateway_account(vals: Dict[str, Any]) -> str:
     return f"{text} (CloudWatch Logs role {role})" if role else text
 
 
+def _kms_key(vals: Dict[str, Any]) -> str:
+    key = vals.get("key_id") or vals.get("id")
+    return f"KMS key {key}, which encrypts the retained buckets"
+
+
 #: Resources whose only identifier is not a name a reader can act on. The
 #: account-level API Gateway setting's id is the provider's or Cloud Control's
-#: identifier, which says nothing about what was kept.
+#: identifier, which says nothing about what was kept; a KMS key's id says
+#: nothing about why it was kept.
 _DISPLAY_NAMES = {
     "aws_api_gateway_account": _api_gateway_account,
     "awscc_apigateway_account": _api_gateway_account,
+    "aws_kms_key": _kms_key,
+    "awscc_kms_key": _kms_key,
 }
 
 

@@ -44,12 +44,19 @@ def _repo_root() -> Path:
     raise RuntimeError("could not locate the repository root from this test file")
 
 
-if _CANONICAL_SANITIZER not in sys.modules:
-    _path = (
-        _repo_root() / "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py"
-    )
-    _spec = importlib.util.spec_from_file_location(_CANONICAL_SANITIZER, _path)
+# The metering-map helpers are loaded the same way and for the same reasons:
+# stdlib-only, and a stub would hide what the handler computes from them.
+_REAL_BY_PATH = {
+    _CANONICAL_SANITIZER: "lib/idp_common_pkg/idp_common/utils/log_sanitizer.py",
+    "idp_common.utils.metering": "lib/idp_common_pkg/idp_common/utils/metering.py",
+}
+
+for _name, _relative in _REAL_BY_PATH.items():
+    if _name in sys.modules:
+        continue
+    _path = _repo_root() / _relative
+    _spec = importlib.util.spec_from_file_location(_name, _path)
     assert _spec is not None and _spec.loader is not None, f"cannot load {_path}"
     _module = importlib.util.module_from_spec(_spec)
     _spec.loader.exec_module(_module)
-    sys.modules[_CANONICAL_SANITIZER] = _module
+    sys.modules[_name] = _module

@@ -675,6 +675,18 @@ Parameters:
       - ERROR
     Description: Default logging level for all logs
 
+  ManageApiGatewayAccountSettings:
+    Type: String
+    Default: 'true'
+    AllowedValues: [ 'true', 'false' ]
+    Description: >-
+      Whether this deployment sets the Region's API Gateway CloudWatch logging
+      role, which REST API access logging (LogLevel INFO or DEBUG) requires. It
+      is one setting per account and Region, so let one deployment per Region
+      manage it and set false on the others; a deployment with false uses the
+      role the Region already has, and fails to create its API stage at INFO or
+      DEBUG if none is set. Has no effect at WARN or ERROR.
+
   LogRetentionDays:
     Type: Number
     Default: 30
@@ -1721,6 +1733,7 @@ Metadata:
           - BDACallbackTimeoutSeconds
           - LogLevel
           - LogRetentionDays
+          - ManageApiGatewayAccountSettings
 
     ParameterLabels:
       # --- Feature Platform ---
@@ -1794,6 +1807,8 @@ Metadata:
         default: "Queue Stalled Threshold (seconds)"
       LogLevel:
         default: "Logging Level"
+      ManageApiGatewayAccountSettings:
+        default: "Manage the Region's API Gateway Logging Role"
       LogRetentionDays:
         default: "Log Retention Period (days)"
       CloudFrontPriceClass:
@@ -3648,6 +3663,7 @@ Resources:
         StackName: !Ref AWS::StackName
         LogRetentionDays: !Ref LogRetentionDays
         LogLevel: !Ref LogLevel
+        ManageApiGatewayAccountSettings: !Ref ManageApiGatewayAccountSettings
         DataRetentionInDays: !Ref DataRetentionInDays
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
         ExecutionTimeThresholdMs: !Ref ExecutionTimeThresholdMs
@@ -3901,10 +3917,19 @@ Resources:
         PermissionsBoundaryArn: !Ref PermissionsBoundaryArn
   # === Feature Platform (optional) — END =================================
 
+  # Retained on stack deletion, like the data it encrypts. Most of this stack's
+  # S3 buckets are retained (DeletionPolicy Retain or RetainExceptOnCreate) and
+  # encrypted with this key; deleting the key would leave every object in them
+  # unreadable once the key's deletion window ended. The alias below is not
+  # retained, so a new stack with the same name creates its own alias.
+  # docs/idp-cli.md ("The retained KMS key") says how to schedule the key's
+  # deletion once the retained buckets' data is no longer needed.
   CustomerManagedEncryptionKey:
     DependsOn:
       - IsStacknameLengthOK
     Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Metadata:
       security-matrix:
         rules_to_suppress:
@@ -3915,7 +3940,7 @@ Resources:
           - id: KMS-002
             reason: "kms:* permission for account root is standard pattern for administrative access to KMS keys"
     Properties:
-      Description: KMS key for DynamoDB encryption
+      Description: !Sub "Encrypts the data of IDP stack ${AWS::StackName}; kept when the stack is deleted"
       EnableKeyRotation: true
       KeyPolicy:
         Version: "2012-10-17"
@@ -5845,6 +5870,15 @@ Resources:
             # back to a document_sections_* JOIN when this is NULL. See
             # docs/reporting-sql-layer.md §10.
             - Name: document_class
+              Type: string
+            # The workflow execution the row's usage was incurred in, and how it
+            # ended (SUCCEEDED, FAILED, TIMED_OUT, ABORTED). An execution that did
+            # not succeed reports its partial usage too, so totals are actual
+            # spend; filter on execution_status to break failed attempts out.
+            # NULL on rows written before these columns existed.
+            - Name: execution_arn
+              Type: string
+            - Name: execution_status
               Type: string
           Compressed: true
         PartitionKeys:

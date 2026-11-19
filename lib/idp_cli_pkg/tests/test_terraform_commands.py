@@ -698,6 +698,40 @@ class TestRetainedReportOutput:
         assert role in out
         assert "Wq3x9" not in out
 
+    def test_the_retained_kms_key_says_why_and_how_to_delete_it(self):
+        key_id = "1234abcd-12ab-34cd-56ef-1234567890ab"
+        out = self._output(
+            self._report(
+                (
+                    "awscc_kms_key",
+                    "customer_managed_encryption_key",
+                    {"id": key_id, "key_id": key_id},
+                ),
+                ("aws_s3_bucket", "input_bucket", {"bucket": "tfidp-input"}),
+                retained=[
+                    "awscc_kms_key.customer_managed_encryption_key",
+                    "aws_s3_bucket.input_bucket",
+                ],
+            )
+        )
+        assert f"KMS key {key_id}, which encrypts the retained buckets" in out
+        assert "KMS key kept" in out
+        assert "about $1 a month" in out
+        assert (
+            f"aws kms schedule-key-deletion --key-id {key_id} "
+            "--pending-window-in-days 7"
+        ) in out
+
+    def test_no_kms_note_without_a_retained_key(self):
+        out = self._output(
+            self._report(
+                ("aws_s3_bucket", "input_bucket", {"bucket": "tfidp-input"}),
+                retained=["aws_s3_bucket.input_bucket"],
+            )
+        )
+        assert "tfidp-input" in out
+        assert "KMS key kept" not in out
+
     def test_service_created_log_groups_are_listed(self):
         out = self._output(
             self._report(

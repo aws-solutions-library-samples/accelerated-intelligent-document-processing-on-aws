@@ -136,14 +136,30 @@ This table is partitioned by date (YYYY-MM-DD format).
 
 The `metering` table captures detailed usage metrics and cost information for each document processing operation:
 
-**Rows are per run.** Each processing run of a document writes the usage of that run
-only. A run that resubmits a stored document (**Process Changes**, finishing or
+**Rows are per run.** Each processing run of a document — one workflow execution —
+writes the usage of that run only, once, under that execution. A run that resubmits a stored document (**Process Changes**, finishing or
 skipping a review, `idp-cli rerun-inference` or the SDK rerun) reports the stages it ran
 and none of the earlier runs' usage, so summing a document's rows over all runs gives
 its total usage without counting any run twice. The document's tracking record (the
 **Estimated Cost** in the Web UI) keeps the cumulative total of every run. Documents
 reprocessed before this behaviour was introduced keep the figures they were saved
 with: their rows are not rewritten.
+
+**Failed runs are included.** An execution that ends `FAILED`, `TIMED_OUT` or
+`ABORTED` writes the usage its stages had recorded on the document's tracking record
+before it stopped, so a sum over the table is actual spend, failed attempts
+included. Usage the failing step itself incurred is not recorded there and is not
+included. Rows written before `execution_status` existed hold NULL in it and come
+from executions that succeeded. To break failed attempts out:
+
+```sql
+SELECT COALESCE(execution_status, 'SUCCEEDED') AS execution_status,
+       COUNT(DISTINCT execution_arn) AS executions,
+       SUM(estimated_cost) AS cost
+FROM metering
+WHERE date = '2026-11-18'
+GROUP BY 1
+```
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -158,6 +174,9 @@ with: their rows are not rewritten.
 | timestamp | timestamp | Document COMPLETION time — when the workflow ended and the row was written. Same value as the partition. |
 | initial_event_time | timestamp | Original queue time — when the document was first enqueued. Preserved for consumers who need queue-time semantics. |
 | config_version | string | Configuration profile used for processing |
+| document_class | string | The document's class, derived from its sections: the one class, `mixed` for several, `unknown` for none |
+| execution_arn | string | The workflow execution the usage was incurred in. NULL on rows written before the column existed |
+| execution_status | string | How that execution ended: `SUCCEEDED`, `FAILED`, `TIMED_OUT` or `ABORTED`. NULL on rows written before the column existed |
 
 **Partitioned by `date` + `hour`** (both string; `YYYY-MM-DD` and `HH`).
 Partition values reflect **completion time** (write time), not queue

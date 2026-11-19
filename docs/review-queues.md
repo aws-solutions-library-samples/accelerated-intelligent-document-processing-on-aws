@@ -62,6 +62,12 @@ the existing [Human-in-the-Loop review](./human-review.md) flow.
      `hitl.route_missing_required_fields` is on (the default). Its review reason
      reads **Missing required: <field>** (see
      [Absent values and missing required fields](./extraction-and-confidence.md#absent-values-and-missing-required-fields))
+   - a section's extraction failed without failing the document, so the section
+     has no extracted data: Amazon Bedrock's content filter withheld the
+     extraction model's reply, for example. Its review reason reads **Extraction
+     failed**, and its details give the section and the section's
+     `extraction_failed` issue message (see
+     [Where a failed section shows up](./extraction-and-confidence.md#where-a-failed-section-shows-up))
    - in BDA mode, the matched blueprint's confidence is under
      `hitl.confidence_threshold`, or BDA matched a blueprint but returned no
      usable confidence for it: null, NaN, infinite, `true` or `false`, a string

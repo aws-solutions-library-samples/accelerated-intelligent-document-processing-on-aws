@@ -234,6 +234,9 @@ ocr:
   bda_project_arn: null
   # For Bedrock backend only:
   model_id: "anthropic.claude-3-sonnet-20240229-v1:0"
+  # Output cap for each page call (shipped 10000); empty requests the model's
+  # maximum output, resolved from config_library/model_config_limits.yaml.
+  max_tokens: "10000"
   system_prompt: "You are an OCR system..."
   task_prompt: "Extract all text from this image..."
 ```

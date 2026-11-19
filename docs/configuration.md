@@ -40,6 +40,8 @@ Key capabilities:
 - **Track** which profile (and revision) was used for each processed document and test run
 - **Select** a specific profile when uploading documents, running tests, or using the CLI (`--config-profile`, with `--config-revision` to pin a revision)
 
+A pinned revision is filled from the current `default` profile exactly as the profile itself is: every setting the revision holds is used as saved (an empty one included), and a setting it lacks, such as one added by a later release, takes `default`'s value. The stored revision is not changed. See [Selecting a revision for processing or testing](configuration-profiles.md#selecting-a-revision-for-processing-or-testing).
+
 #### Managed Configuration Profiles
 
 The stack automatically deploys **managed configuration profiles** for each pre-deployed test set (`fake-w2`, `docsplit`, `ocr-benchmark`, `realkie-fcc-verified`). These are marked with `managed: true` and have the following behavior:
@@ -668,6 +670,7 @@ Key parameters that can be configured during CloudFormation deployment:
 - `BDACallbackTimeoutSeconds`: How long the BDA step waits for its asynchronous completion callback before failing (default: 7200 s); keep it below `WorkflowExecutionTimeoutSeconds`
 - `QueueStalledAgeThresholdSeconds`: How long the oldest queued document may wait *with no queue progress at all* before `DocumentQueueStalledAlarm` fires (default: 1800 s). Not a backlog limit — see [Monitoring](./monitoring.md#documentqueuestalledalarm--why-it-is-not-a-queue-depth-alarm)
 - `LogLevel`: Set logging level (DEBUG, INFO, WARN, ERROR; default: `WARN`). `WARN` is the default because `INFO` and `DEBUG` can emit sensitive values — document contents, PII and S3 presigned URLs — into CloudWatch. At `INFO` or `DEBUG`, access logging is also enabled on the web UI's REST API stage (request metadata only — no request/response bodies), capturing requests that fail before reaching a Lambda (e.g. authorizer 401/403s, WAF blocks); at the `WARN` default that access log is **not** configured, so raise `LogLevel` to `INFO` if you need that audit trail
+- `ManageApiGatewayAccountSettings`: Whether this deployment sets the Region's API Gateway CloudWatch logging role, which REST API access logging at `LogLevel` `INFO` or `DEBUG` requires (default: `true`). It is one setting per account and Region, so let one deployment per Region manage it and set `false` on the others. See [Monitoring](./monitoring.md#manageapigatewayaccountsettings--one-deployment-per-region-owns-the-api-gateway-logging-role)
 - `WAFAllowedIPv4Ranges`: IP restrictions for web UI access (default: allow all)
 - `CloudFrontPriceClass`: Set CloudFront price class for UI distribution (CloudFront hosting only)
 - `CloudFrontAllowedGeos`: Optional geographic restrictions for UI access (CloudFront hosting only)
@@ -1255,7 +1258,7 @@ classification:
       temperature: "0.0"
       top_p: "0.0"
       top_k: "5"
-      max_tokens: ""               # empty uses the model's maximum
+      max_tokens: "10000"          # output cap; empty uses the model's maximum
       reasoning_effort: medium     # reasoning-capable models only; ignored by Nova
       model_lambda_hook_arn: ""    # used when model is 'LambdaHook'
       modality: {text: "", images: ""}

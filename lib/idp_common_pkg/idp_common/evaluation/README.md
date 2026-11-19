@@ -522,8 +522,11 @@ applies to evaluation on GPT-5.x. Every stored profile holds the field's default
 because the full model dump is stored, so an evaluation on an effort-capable
 model sends `medium` unless the profile sets another value. A setting that is
 absent, `None` or, for the numeric ones and `reasoning_effort`, an empty string
-takes the `EvaluationLLMMethodConfig` default, so `max_tokens: ""`
-requests the model's maximum output. An **empty** `system_prompt` or
+takes the `EvaluationLLMMethodConfig` default. `max_tokens` is the exception: an
+absent one takes the default (10000), while `None` or an empty string requests the
+model's maximum output, as it does for classification and OCR. The two have to be
+kept apart because the service hands the comparator the profile's `model_dump()`,
+which turns an explicit `max_tokens: ""` into `None`. An **empty** `system_prompt` or
 `task_prompt` is refused rather than sent, as summarization and
 classification's combined page prompt refuse one (these prompts have always
 shipped, so an empty one is a broken configuration rather than an old stored
@@ -533,8 +536,9 @@ Stickler model is built, `EvaluationService` records the **whole section** as
 failed (`failure_type: schema_configuration_error`, score 0), its non-`LLM`
 fields included. `compare_llm` called directly returns `(False, 0.0, <reason>)`
 without calling Bedrock. For `compare_llm` itself only an absent or `None`
-setting takes the default; an empty string is passed to the client, which
-treats an empty `top_p`, `max_tokens` or `reasoning_effort` as unset.
+setting takes the default (for `max_tokens`, only an absent one); an empty string
+is passed to the client, which treats an empty `top_p` or `reasoning_effort` as
+unset.
 
 Identical values (after case and whitespace normalization) short-circuit to a
 match with **no** Bedrock call, and repeated `(expected, actual)` pairs are
@@ -601,6 +605,16 @@ so `evaluate_document` submits each section through
 `contextvars.copy_context().run`. A new fan-out that runs comparisons must do
 the same, or its calls are billed and recorded nowhere. `compare_llm` called
 outside any `collect_evaluation_metering()` block records nothing.
+
+Capacity Planning reads these keys to measure judge requests per evaluated
+document for its Evaluation demand line (`EVALUATION_METERING_PREFIX` in
+`src/lambda/calculate_capacity/index.py`, checked against
+`EVALUATION_METERING_CONTEXT` by the test beside it). Until any are recorded it
+counts one request per `LLM`-compared field of the class schema
+(`countLlmComparisons` in `src/ui/src/components/capacity-planning/demand-lines.ts`),
+following the call pattern above: an `LLM` method on an object or a structured
+list makes no call of its own, and a field inside a structured list is counted
+only when it opts in with `x-aws-idp-evaluation-allow-llm-in-list`.
 
 #### DATE method configuration
 
@@ -891,6 +905,21 @@ Arrays of items where each item's attributes are evaluated individually:
 # - "Transactions[1].Amount" (NUMERIC_EXACT evaluation)
 # - And so on for each transaction...
 ```
+
+#### Lists of scalar values
+
+Stickler scores an array of scalars with one comparator, read off the array
+field and applied to each element pair. It raises on a field-level key under
+`items`, and that failure used to stop the whole class from being evaluated.
+`SticklerConfigMapper._hoist_scalar_item_keys` therefore moves every
+`x-aws-idp-evaluation-*` field key (method, method config, threshold, weight,
+allow-LLM-in-list, clip-under-threshold, aggregate) from scalar `items` to the
+array before translating it. That is the shape `config.migration` writes for a
+legacy list with a single item attribute. When both places set a key, the
+array's value wins and a differing item value is logged as a warning. The
+items' `method-config` is dropped along with their method. The exception is an
+array-level method that is invalid there, such as `HUNGARIAN` on scalars: it is
+removed with an `ERROR` log and the items' method is used.
 
 ### Data Flattening Process
 

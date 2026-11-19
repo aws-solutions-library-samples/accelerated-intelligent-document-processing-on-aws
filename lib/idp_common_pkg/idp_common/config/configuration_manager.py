@@ -426,13 +426,12 @@ class ConfigurationManager:
             ClientError: If DynamoDB operation fails
             ValueError: If the requested revision is no longer retained
         """
-        from copy import deepcopy
-
         if revision is not None:
             # An explicitly pinned revision is authoritative. Note there is no
             # "published revision" branch: the profile head always holds the
             # published revision's content, and reading the head is one get_item
             # against an S3 GET, so the unpinned path below stays on the head.
+            # It is resolved against `default` exactly as the head is (#1955).
             return self._load_revision_config(version, revision)
 
         if not version:
@@ -527,19 +526,6 @@ class ConfigurationManager:
             raise ValueError(f"No Version {version} configuration found")
         version_dict, stored_metadata = raw_read
 
-        # Remove format marker if present (shouldn't be in sparse, but just in case)
-        version_dict.pop(_FULL_CONFIG_MARKER, None)
-
-        # Migrate the raw sparse delta to v0.6 BEFORE merging. The default is
-        # already v0.6 (get_configuration validates through IDPConfig, which
-        # migrates), so migrating the delta first keeps the merge a clean
-        # v0.6-over-v0.6 deep_update — the delta's confidence/geometry/hitl keys
-        # correctly override the default's, instead of a hybrid where a legacy
-        # `assessment.*` delta would be shadowed by the default's new-home keys.
-        from .migrations import migrate_config
-
-        version_dict = migrate_config(version_dict)
-
         # ⚠️ `managed` is the one `IDPConfig` field stored as a head-item
         # attribute (`Managed`) rather than in the body, so the raw read above
         # does not carry it. Left out, the merge fills it from `default`, which
@@ -551,67 +537,18 @@ class ConfigurationManager:
         # resolved exactly as `ConfigurationRecord.from_dynamodb_item` resolves
         # it for the validated read the comparison is made against: the head
         # attribute when present, else a body key (older writers left it there),
-        # else the field default. Issue #1613.
+        # else the field default (`_resolve_against_default`). Issue #1613.
         if "Managed" in stored_metadata:
             version_dict["managed"] = stored_metadata["Managed"]
-        else:
-            version_dict.setdefault(
-                "managed", IDPConfig.model_fields["managed"].default
-            )
 
-        # Merge: start from the default profile, then let every key the stored
-        # config HAS override it. A key it lacks is backfilled; a key it holds
-        # wins even when the value is empty, because absent is not cleared.
-        default_dict = default_config.model_dump(mode="python")
-        merged_dict = deepcopy(default_dict)
-        deep_update(merged_dict, version_dict)
-
-        # ⚠️ A merge of two individually VALID configurations can be invalid, so
-        # this validation is guarded. `IDPConfig` has cross-field validators, and
-        # one side of the merge supplies a field the other does not: a profile
-        # holding `packet.overlap_pages: 15` validates alone (against the model's
-        # `window_pages` default of 20) and so does a default holding
-        # `window_pages: 10` (against the `overlap_pages` default of 2), but
-        # merged they trip `overlap_pages >= window_pages`. Measured, not
-        # supposed.
-        #
-        # `ConfigurationReader.get_merged_configuration` re-raises, so an
-        # unguarded failure here would fail documents on a configuration that
-        # read cleanly before this change — "upgrade, then everything stops", on
-        # a path EVERY configuration read now takes. Backfilling is a
-        # convenience; never being worse than not backfilling is the requirement.
-        # So a profile that validates on its own is returned on its own, and the
-        # refusal is logged loudly enough to act on.
-        try:
-            merged_config = IDPConfig(**merged_dict)
-        except Exception as exc:
-            if full_config_fallback is not None:
-                logger.warning(
-                    "Version %s does not validate when resolved against the "
-                    "default profile (%s); returning it unresolved. Fields it "
-                    "does not carry will fall back to their code defaults, which "
-                    "for a prompt is empty — reconcile the two configurations.",
-                    version,
-                    exc,
-                    exc_info=True,
-                )
-                return full_config_fallback
-            # A sparse profile has never been usable unmerged, so there is no
-            # better answer than the error the caller already handles.
-            raise
-
-        # ⚠️ Top-level SECTIONS only. In the case that motivates this — a nested
-        # key such as `classification.packet.task_prompt` appearing while
-        # `classification` itself is present — this list is empty, so an empty
-        # list does not mean nothing was backfilled.
-        backfilled = sorted(set(default_dict) - set(version_dict))
-        logger.info(
-            "Resolved version %s against the default profile%s",
+        merged_config, resolved = self._resolve_against_default(
             version,
-            f"; backfilled absent top-level section(s): {backfilled}"
-            if backfilled
-            else "",
+            version_dict,
+            default_config,
+            unresolved=lambda: full_config_fallback,
         )
+        if merged_config is None or not resolved:
+            return merged_config
 
         # ⚠️ Persist only when the resolution CHANGED something. Every read now
         # goes through the merge, so an unconditional save would rewrite every
@@ -653,6 +590,126 @@ class ConfigurationManager:
             logger.warning(f"Failed to auto-migrate version {version}: {e}")
 
         return merged_config
+
+    def _resolve_against_default(
+        self,
+        profile: str,
+        stored: Dict[str, Any],
+        default_config: Optional[IDPConfig],
+        unresolved: Callable[[], Optional[IDPConfig]],
+    ) -> Tuple[Optional[IDPConfig], bool]:
+        """
+        `stored` resolved against the `default` profile, for a head or a revision.
+
+        The one merge every runtime read of a profile goes through: the head
+        (`get_merged_configuration`) and a pinned revision (`_load_revision_config`)
+        both call it, so a profile and the revision its documents are pinned to
+        resolve identically (#1955). Start from `default`, then let every key
+        `stored` HAS override it: a key it holds wins even when empty, so a stored
+        `max_tokens: null` stays null (the model's maximum) rather than taking
+        `default`'s cap, and a key it LACKS is filled from `default`. `stored` is
+        never written anywhere by this.
+
+        `unresolved` supplies the configuration validated on its own, and is called
+        only when the resolution cannot be used: `default` is unreadable, or the
+        merge of two individually valid configurations fails a cross-field
+        validator. Returns ``(config, resolved)``; `resolved` is False when the
+        answer is `unresolved()`, or None when that supplies nothing.
+
+        Raises whatever `unresolved()` raises, and the merge's validation error
+        when there is no unresolved configuration to return.
+        """
+        from copy import deepcopy
+
+        from .migrations import migrate_config
+
+        if default_config is None:
+            fallback = unresolved()
+            if fallback is not None:
+                # A full config with no backfill is what every release before
+                # this one returned, so it is the right answer when there is
+                # nothing to backfill from.
+                logger.warning(
+                    "Default configuration not readable; returning %s without "
+                    "backfilling fields added since it was saved",
+                    profile,
+                )
+            else:
+                logger.warning(
+                    "Default configuration not found - cannot create merged config"
+                )
+            return fallback, False
+
+        stored = dict(stored)
+        # Remove format marker and discriminator if present; neither is a setting.
+        stored.pop(_FULL_CONFIG_MARKER, None)
+        stored.pop("config_type", None)
+
+        # Migrate the stored configuration to the current format BEFORE merging.
+        # The default is already current (`get_configuration` validates through
+        # IDPConfig, which migrates), so migrating first keeps the merge a clean
+        # current-over-current deep_update — a legacy `assessment.*` key correctly
+        # overrides the default's, instead of a hybrid where it would be shadowed
+        # by the default's new-home keys. Idempotent for a body already converted.
+        stored = migrate_config(stored)
+
+        # `managed` is record metadata, not a setting to inherit from `default`:
+        # a caller that holds it elsewhere (the head's `Managed` attribute) has
+        # already put it in, and otherwise the field default stands.
+        stored.setdefault("managed", IDPConfig.model_fields["managed"].default)
+
+        default_dict = default_config.model_dump(mode="python")
+        merged_dict = deepcopy(default_dict)
+        deep_update(merged_dict, stored)
+
+        # ⚠️ A merge of two individually VALID configurations can be invalid, so
+        # this validation is guarded. `IDPConfig` has cross-field validators, and
+        # one side of the merge supplies a field the other does not: a profile
+        # holding `packet.overlap_pages: 15` validates alone (against the model's
+        # `window_pages` default of 20) and so does a default holding
+        # `window_pages: 10` (against the `overlap_pages` default of 2), but
+        # merged they trip `overlap_pages >= window_pages`. Measured, not
+        # supposed.
+        #
+        # `ConfigurationReader.get_merged_configuration` re-raises, so an
+        # unguarded failure here would fail documents on a configuration that
+        # read cleanly on its own — "upgrade, then everything stops", on a path
+        # EVERY configuration read takes. Backfilling is a convenience; never
+        # being worse than not backfilling is the requirement. So a configuration
+        # that validates on its own is returned on its own, and the refusal is
+        # logged loudly enough to act on.
+        try:
+            merged_config = IDPConfig(**merged_dict)
+        except Exception as exc:
+            fallback = unresolved()
+            if fallback is None:
+                # A sparse profile has never been usable unmerged, so there is no
+                # better answer than the error the caller already handles.
+                raise
+            logger.warning(
+                "%s does not validate when resolved against the default profile "
+                "(%s); returning it unresolved. Fields it does not carry will fall "
+                "back to their code defaults, which for a prompt is empty — "
+                "reconcile the two configurations.",
+                profile,
+                exc,
+                exc_info=True,
+            )
+            return fallback, False
+
+        # ⚠️ Top-level SECTIONS only. In the case that motivates this — a nested
+        # key such as `classification.packet.task_prompt` appearing while
+        # `classification` itself is present — this list is empty, so an empty
+        # list does not mean nothing was backfilled.
+        backfilled = sorted(set(default_dict) - set(stored))
+        logger.info(
+            "Resolved %s against the default profile%s",
+            profile,
+            f"; backfilled absent top-level section(s): {backfilled}"
+            if backfilled
+            else "",
+        )
+        return merged_config, True
 
     def save_configuration(
         self,
@@ -905,13 +962,14 @@ class ConfigurationManager:
         """
         Record what resolving `profile` against `default` changes, as a revision.
 
-        Every profile is read against `default`, and a setting it lacks takes
-        `default`'s value. A pinned read builds `IDPConfig` from the revision body
-        without that resolution, so for a profile with revision history the two
-        differ whenever `default` holds a value the model's own default does not
-        (#1782). This saves the resolved configuration as a revision made by
-        `system`, with `RESOLVED_AGAINST_DEFAULT_NOTES`, and publishes it, so the
-        profile, its history and what new documents run agree.
+        Every profile is read against `default`, the head and a pinned revision
+        alike (#1955), and a setting it lacks takes `default`'s value. A revision's
+        stored body does not carry those values, so for a profile with revision
+        history the body Revision History shows and downloads differs from what
+        documents run whenever `default` fills something in (#1782). This saves
+        the resolved configuration as a revision made by `system`, with
+        `RESOLVED_AGAINST_DEFAULT_NOTES`, and publishes it, so the profile, its
+        stored history and what new documents run agree.
 
         It records only when both of these hold, and otherwise writes nothing:
 
@@ -919,8 +977,8 @@ class ConfigurationManager:
           The resolution starts from the head, so a head that differs for any
           other reason would be published under notes that describe only the
           fill-in. Such a profile is left for a person to save.
-        - **The resolution changes what the published revision runs**, comparing
-          against that revision's body as a pinned read builds it. An already
+        - **The resolution changes what the published revision stores**, comparing
+          against that revision's body validated on its own. An already
           converged profile is then a read, not a rewrite: no new `UpdatedAt`,
           and a published revision that has only the legacy `UpdatedAt <=
           createdAt` proof keeps it.
@@ -944,14 +1002,14 @@ class ConfigurationManager:
         body = self._read_revision_body(profile, published)
         if resolved is None or body is None:
             return None
-        runs = IDPConfig(
+        stored = IDPConfig(
             **{
                 k: v
                 for k, v in body.items()
                 if k not in (_FULL_CONFIG_MARKER, "config_type")
             }
         )
-        if self._config_to_dict(runs) == self._config_to_dict(resolved):
+        if self._config_to_dict(stored) == self._config_to_dict(resolved):
             return None
         self.save_configuration(
             CONFIG_TYPE_CONFIG,
@@ -1445,10 +1503,32 @@ class ConfigurationManager:
                 f"bucket's DataRetentionInDays lifecycle rule, or history is "
                 f"disabled). {EXPIRED_REVISION_REMEDY}"
             )
+        logger.info(f"Loaded configuration profile '{profile}' revision r{revision}")
+        return self._resolved_revision(profile, revision, body)
+
+    def _resolved_revision(
+        self, profile: str, revision: int, body: Dict[str, Any]
+    ) -> IDPConfig:
+        """
+        A revision body as documents pinned to it run it: resolved against the
+        current `default` profile through `_resolve_against_default`, the merge the
+        profile head goes through, so a setting the revision lacks (one added in a
+        later release) takes `default`'s value rather than the model's own default,
+        and every setting it holds is kept as saved, an empty one included (#1955).
+        The stored body is not changed.
+        """
         config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
         config_dict.pop("config_type", None)
-        logger.info(f"Loaded configuration profile '{profile}' revision r{revision}")
-        return IDPConfig(**config_dict)
+        default_config = self.get_configuration(CONFIG_TYPE_CONFIG, DEFAULT_VERSION)
+        resolved, _ = self._resolve_against_default(
+            f"{profile} r{revision}",
+            config_dict,
+            default_config if isinstance(default_config, IDPConfig) else None,
+            unresolved=lambda: IDPConfig(**config_dict),
+        )
+        if resolved is None:  # pragma: no cover — `unresolved` returns or raises
+            raise ValueError(f"Revision r{revision} of '{profile}' did not resolve")
+        return resolved
 
     def resolve_published_revision(self, profile: str) -> Optional[int]:
         """
@@ -1507,8 +1587,9 @@ class ConfigurationManager:
             raise ValueError(
                 f"Revision r{revision} of profile '{profile}' is no longer available"
             )
-        config_dict = {k: v for k, v in body.items() if k != _FULL_CONFIG_MARKER}
-        restored = IDPConfig(**config_dict)
+        # Restored as a pinned read runs it, so the new head resolves exactly as a
+        # document pinned to the restored revision does (#1955).
+        restored = self._resolved_revision(profile, revision, body)
         if write_guard is not None:
             write_guard(self._get_full_config_for_version(profile), restored, profile)
         self.save_configuration(

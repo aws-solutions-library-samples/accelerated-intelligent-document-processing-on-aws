@@ -13,6 +13,7 @@ The Utils module provides common utility functions used across the IDP pipeline.
 | `parse_s3_uri(s3_uri)` | Parse an S3 URI into `(bucket, key)` tuple |
 | `merge_metering_data(existing, new)` | Merge token usage / metering dictionaries (sums numeric values) |
 | `cumulative_metering(doc)` | A document's cumulative usage: `doc.metering_baseline` (earlier runs) plus `doc.metering` (this run's own), on deep copies. Accepts any object with a `metering` attribute; a missing baseline counts as empty |
+| `subtract_metering(total, baseline)` | The usage added since `baseline`, per service/unit, as floats: the inverse of `cumulative_metering`. A unit that did not grow is dropped, and one below its baseline is dropped with a warning rather than reported as negative. The workflow tracker uses it to recover a failed run's own usage |
 | `get_bedrock_region()` | Get the AWS region for Bedrock API calls |
 | `extract_structured_data_from_text(text)` | Extract JSON or YAML structured data from LLM response text |
 | `sanitize_event_for_logging(event)` | Deep-copy an event with denylisted keys redacted and long content-field strings truncated, for safe `logger` output. ⚠️ **Has vendored copies — see below** |

@@ -455,7 +455,9 @@ class TestSaveReportingDataSections:
         results = reporter.save(document_with_sections, ["metering", "sections"])
 
         # Verify calls
-        mock_save_metering.assert_called_once_with(document_with_sections)
+        mock_save_metering.assert_called_once_with(
+            document_with_sections, execution_status=None
+        )
         mock_save_sections.assert_called_once_with(document_with_sections)
         assert len(results) == 2
 

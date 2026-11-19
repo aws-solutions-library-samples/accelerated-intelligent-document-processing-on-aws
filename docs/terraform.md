@@ -350,16 +350,17 @@ created in the same apply) leaves the condition unknown, and `terraform plan` fa
 with `Invalid count argument` or `Invalid for_each argument`.
 
 The same holds for an input that only a nested module's conditions read, which is
-easier to miss because no condition in the root module names it. These root inputs
-are in that position, and each decides whether resources exist inside a nested
-module, so each must be known at plan time:
+easier to miss because no condition in the root module names it. `log_level` and
+`waf_allowed_ipv4_ranges` are in that position: they decide inside the API resolver
+stack whether the API's access logs and its web ACL exist, so each must be known at
+plan time. The headless module has no API resolver stack, so neither applies there.
 
-- `vpc_id`, when `deploy_in_vpc = "true"`: it decides inside the pattern stack
-  whether its VPC-only resources exist, so a VPC created in the same apply cannot
-  supply it.
-- `log_level` and `waf_allowed_ipv4_ranges`: they decide inside the API resolver
-  stack whether the API's access logs and its web ACL exist. The headless module has
-  no API resolver stack, so there only `vpc_id` applies.
+`vpc_id` can come from a VPC created in the same apply. The pattern stack asks only
+whether it is empty, and the template's `DeployInVPCRequiresParams` rule (below)
+refuses an empty `vpc_id` whenever `deploy_in_vpc = "true"`, so the module answers
+that question without the value: with `deploy_in_vpc = "true"` the pattern stack
+creates its VPC-only resources, and with `"false"` it creates none and is given an
+empty `vpc_id` whatever you set.
 
 The other inputs that only nested conditions read,
 `pattern2_custom_classification_model_arn`, `pattern2_custom_extraction_model_arn`,
@@ -370,13 +371,27 @@ and can come from resources created in the same apply. Create anything whose
 identifier feeds an input listed here in an earlier apply, or, for a value you choose
 yourself such as a bucket name, pass it to the module as a literal.
 
-The module does not enforce the template's `Rules`, the cross-parameter checks
+**The template's `Rules` are refused at plan.** These are the cross-parameter checks
 CloudFormation applies when a stack is submitted, such as "`VpcId` is required when
 `DeployInVPC=true`" and "the S3 VPC endpoint's id and DNS name are supplied
-together". A combination CloudFormation would refuse is planned and applied as
-given, so check those combinations yourself; whether the module should enforce them
-is tracked in
-[#2091](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2091).
+together". Each rule becomes a `terraform_data` resource in the root module's
+`rules.tf`, named `cfn_rule_<rule>`, with one precondition per assertion, so a
+combination CloudFormation refuses fails `terraform plan` with that assertion's
+description as the error, before anything is created:
+
+```text
+Error: Resource precondition failed
+...
+VpcId is required when DeployInVPC=true
+```
+
+Preconditions are used rather than variable validations because a validation that
+reads a second variable needs Terraform 1.9, and the module supports 1.7. A
+precondition whose inputs are not known at plan time, such as a `vpc_id` taken from
+a VPC created in the same apply, is checked during the apply instead. It still
+refuses an empty value then, but by that point resources that do not wait on the
+check may already have been created, so a value that could turn out empty at apply
+is better checked in your own configuration.
 
 The translator declares a variable with the suffix `__cond` for every input a
 condition reads, in each module of the tree, so this lists them (a nested module's
@@ -634,10 +649,13 @@ way the CloudFormation delete path does, then removes from Terraform state every
 resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 `RetainExceptOnCreate`), and then runs `terraform destroy`. Removing a resource from
 state means Terraform forgets it without deleting it, so the resources CloudFormation
-would retain are retained here too: the logging bucket, the data buckets and the other
-resources the templates mark that way. The command reports which retained resources
-were left, as the CloudFormation path does, naming the Region-wide API Gateway account
-setting for what it is rather than by its identifier.
+would retain are retained here too: the logging bucket, the data buckets, the KMS key
+that encrypts them, and the other resources the templates mark that way. The command
+reports which retained resources were left, as the CloudFormation path does, naming the
+Region-wide API Gateway account setting and the KMS key for what they are rather than
+by their identifiers. For the key it also prints the `aws kms schedule-key-deletion`
+command to run once none of the retained data is needed; the key costs about $1 a
+month until then. See [The retained KMS key](./idp-cli.md#the-retained-kms-key).
 
 It also lists the log groups AWS services created on the deployment's behalf, which
 neither `terraform destroy` nor a CloudFormation stack delete removes, because neither
@@ -704,22 +722,45 @@ To upgrade, point the module at the new release's URL and apply:
 The label stack's description and metadata move to the new version in the same apply.
 With `idp-cli`, run `idp-cli deploy --terraform` again with the same `--stack-name`
 and `--terraform-dir`, and the new `--terraform-module-url` (or none, for the latest).
-You do not need to repeat the `--parameters` you passed before: `idp-cli` remembers
-them, by CloudFormation parameter name, in `idp-cli-parameters.json` in that
-directory, and applies the parameters you pass now over them. A remembered parameter
-the new module no longer has is dropped with a warning.
+You do not need to repeat the `--parameters` you passed before: as a CloudFormation
+update does, the upgrade keeps the value the deployment has for every parameter you
+do not pass, whether you set it or it took the default, and applies the parameters
+you pass now over them. A parameter that is new in the release takes its default.
 
-⚠️ `idp-cli` remembers only the values that were passed, not the defaults that were
-in effect, so a parameter you have never passed takes the new module's default. This
-differs from a CloudFormation update through `idp-cli`, which keeps the previous value
-of every parameter it is not given. When a release changes a parameter's default, the
-upgrade applies the new default unless you pass the old value. For example, release
-0.6.15 changed the default of `EnableMCP` from `true` to `false`, so upgrading a
-deployment from an earlier release without `--parameters EnableMCP=true` removes its
-MCP integration. Read the release's `CHANGELOG.md` for changed defaults before
-upgrading. The same applies to your own root configuration: a variable you do not set
-takes the new module's default. The deploy runs `init -upgrade` because the
-module source changed, and refuses the plan if it would delete or replace a stateful
+The values come from the deployment's [label stack](#the-read-only-label-stack),
+whose parameters Terraform writes at every apply with each parameter's value in
+effect. The label stack lives with the deployment rather than in your directory, so
+a second operator who deploys from another directory against the same state backend
+gets the deployment's current settings rather than the module's defaults. It is
+also what lets a deployment made with an earlier `idp-cli`, which recorded only the
+values that were passed, keep its defaulted values on its first upgrade: in
+particular, release 0.6.15 changed the default of `EnableMCP` from `true` to
+`false`, and a deployment that never passed it keeps `EnableMCP=true`. The label
+stack leaves `NoEcho` parameters out, so their values come only from the directory's
+`idp-cli-parameters.json`; a second operator must pass any that the deployment set.
+If the label stack and the directory disagree (another operator changed a setting
+since), the label stack's value is used, because it is the value last applied.
+
+After each apply, `idp-cli-parameters.json` records every parameter's value in
+effect, defaulted ones included, so a later upgrade from that directory keeps them
+even where the label stack cannot be read. Before the plan, the output lists the
+values the upgrade kept that differ from the new module's defaults, and the new
+parameters that took their defaults. A parameter no longer in the new module is
+dropped with a message.
+
+⚠️ Without a label stack (`enable_cfn_stack_label = false`), a deployment whose directory has only the passed
+values, as an earlier `idp-cli` wrote it, falls back to those: every parameter never
+passed takes the new module's default. The deploy then prints a warning naming each
+such parameter whose default differs between the installed module and the new one,
+so you can pass the old value with `--parameters`. A second operator in a fresh
+directory without the label stack gets the module's defaults with no warning,
+because nothing distinguishes that from a first deploy; pass every setting the
+deployment has.
+
+Your own root configuration does not get this: a variable you do not set takes the
+new module's default, so read the release's `CHANGELOG.md` for changed defaults
+before upgrading it. The `idp-cli` deploy runs `init -upgrade` because the module
+source changed, and refuses the plan if it would delete or replace a stateful
 or retained resource (see
 [With `idp-cli deploy --terraform`](#with-idp-cli-deploy---terraform)).
 
@@ -779,6 +820,148 @@ applied, re-planned and destroyed in a development account (see the developer
 notes linked below); the property comparison has been run on one nested stack and
 not yet on the full stack.
 
+## Security scanner findings on the module
+
+The CloudFormation templates record the scanner findings that were reviewed and
+accepted, either as a `# checkov:skip=<rule>: <reason>` comment inside a resource or
+as a cfn_nag `rules_to_suppress` entry in its `Metadata`. The module carries a
+checkov suppression over as `#checkov:skip=<rule>:<reason>` inside every Terraform
+resource block generated from that CloudFormation resource, with the same reason,
+when checkov's Terraform rule inspects the same setting and fails in the same cases
+as its CloudFormation rule. That covers the Lambda dead-letter, concurrency and VPC
+rules, the ECR, DynamoDB, CloudWatch Logs, CloudFront, WAF and S3 access-logging
+rules the templates suppress, and the IAM write-access rule, which checkov numbers
+`CKV_AWS_111` for CloudFormation and `CKV_AWS_290` for Terraform. The list of
+rules, and the reason each pair is the same rule, is
+[`SUPPRESSION_EQUIVALENTS` in the translator](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/terraform/translator/idp_tf/suppressions.py).
+
+So checkov run over the module reports those findings as skipped, with the reason
+the template gives. It still reports:
+
+- the suppressions in the table below, which are not carried. cfn_nag has no
+  Terraform rules, and a checkov rule whose Terraform version fails in cases its
+  CloudFormation version passes is not carried, because the recorded review did not
+  consider those cases. The rules in that position are named above the table;
+- findings on rules that exist only for Terraform, such as X-Ray tracing on Lambda
+  functions. Their accepted counts and reasons are pinned in
+  [`scripts/terraform_scan_tf_only_baseline.json`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/scripts/terraform_scan_tf_only_baseline.json);
+- findings the CloudFormation templates fail without a recorded suppression, which
+  a checkov scan of the templates reports too.
+
+Other scanners, such as Trivy, read their own suppression comments with their own
+rule identifiers. The module does not carry suppressions for them, so they report
+every finding they detect.
+
+<details>
+<summary>Suppressions recorded in the templates and not carried into the module</summary>
+
+The table is generated from the templates by `python -m idp_tf.suppressions`, run
+in `terraform/translator`, and a test fails when it is out of date.
+
+<!-- uncarried-suppressions:begin (generated; see terraform/translator/idp_tf/suppressions.py) -->
+
+- checkov `CKV_AWS_173` is not carried: checkov's Terraform rule also fails a function with a KMS key and no environment variables, which the CloudFormation rule passes.
+- checkov `CKV_AWS_99` is not carried: checkov's Terraform rule requires KMS modes and keys the CloudFormation rule does not.
+
+| Rule | Reason recorded in the template | Resources |
+|---|---|---|
+| cfn_nag `F3` | bedrock-agentcore:* covers the AgentCore Gateway and gateway target lifecycle (list, get, create, update, delete); the CloudWatch Logs actions are the deletes that remove the log group and delivery resources older gateways created, and are not wildcards | `AgentCoreGatewayManagerFunction` |
+| cfn_nag `F38` | PassRole is required to delegate the execution role to the Bedrock AgentCore Gateway service, and is scoped to the single AgentCoreGatewayExecutionRole ARN | `AgentCoreGatewayManagerFunction` |
+| cfn_nag `W11` | CloudWatch Logs require wildcard for log group creation | `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunctionRole` |
+| cfn_nag `W11` | CloudWatch does not support resource-level permissions | `APIRESOLVERSTACK/SyncBdaIdpResolverFunction`, `PATTERNSTACK/MLflowLoggerFunction` |
+| cfn_nag `W11` | Cloudwatch does not support resource-level permissions | `PATTERNSTACK/BDACompletionFunction`, `PATTERNSTACK/BDAProcessResultsFunction`, `PATTERNSTACK/ClassificationFunction`, `PATTERNSTACK/InvokeBDAFunction`, `PATTERNSTACK/ProcessResultsFunction`, `PATTERNSTACK/RuleValidationFunction`, `PATTERNSTACK/RuleValidationOrchestrationFunction`, `PATTERNSTACK/RuleValidationPolicyClassificationFunction`, `PATTERNSTACK/SummarizationFunction`, `PATTERNSTACK/TestExecutionAggregationFunction` |
+| cfn_nag `W11` | Cloudwatch does not support resource-level permissions, and Bedrock should support any enabled Bedrock model_id or inference profile | `PATTERNSTACK/AssessmentFunction`, `PATTERNSTACK/ExtractionFunction`, `PATTERNSTACK/ShardRuntimeFunction` |
+| cfn_nag `W11` | Every statement is scoped to the InputBucket, the CMK, or the GuardDuty-managed rule name prefix; no wildcard resources | `MalwareScanRole` |
+| cfn_nag `W11` | Role requires * for Bedrock marketplace and CloudWatch Metrics | `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction` |
+| cfn_nag `W11` | Role requires * resource access for CloudWatch Dashboards | `DashboardMergerFunction` |
+| cfn_nag `W11` | Role requires * resource access for CloudWatch Logs and CloudFormation custom resource operations | `PATTERNSTACK/CodeBuildExecutionRole`, `StartUICodeBuildExecutionRole` |
+| cfn_nag `W11` | Role requires * resource access for CloudWatch Metrics and Logs | `AgentChatProcessorFunction`, `AgentProcessorFunction`, `BlueprintOptimizationFunction`, `DiscoveryProcessorFunction`, `PATTERNSTACK/EvaluationFunction`, `SaveReportingDataFunctionV2`, `WorkflowTracker` |
+| cfn_nag `W11` | Role requires * resource access for Marketplace | `DOCUMENTKB/KnowledgeBaseServiceRole` |
+| cfn_nag `W11` | Role requires * resource access for Marketplace and CloudWatch Metrics and Logs | `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction` |
+| cfn_nag `W11` | Role requires * resource access for Marketplace, CloudWatch Metrics and Logs | `APIRESOLVERSTACK/AgentChatResolverFunction` |
+| cfn_nag `W11` | Specified permissions do not appy to specific resources | `DOCUMENTKB/OpenSearchLambdaExecutionRole` |
+| cfn_nag `W11` | Textract DetectDocumentText API and Cloudwatch APIs do not support resource-level permissions | `PATTERNSTACK/OCRFunction` |
+| cfn_nag `W11` | The s3vectors bucket statements are scoped to this account and Region with the bucket segment left as a wildcard (bucket/*): the handler sanitizes the bucket name it derives from the stack name, and a template-side copy of that name (S3VectorBucketNameLowercase) matches it only for stack names the parent stack produces, so narrowing the create grant to it would make Create fail for any other name. The index name is exact. ListIndexes, and DeleteIndex on any index, are granted only on this stack's own bucket, named exactly, because a mismatch there falls back to deleting the named index. What remains unscoped is the Bedrock knowledge base control plane (Create/Delete/Get/Update/ListKnowledgeBases), whose knowledge base id is service-generated and does not exist at create time. iam:PassRole is not granted here; S3VectorManagerPassRolePolicy grants it on KnowledgeBaseServiceRole alone. | `DOCUMENTKB/S3VectorManagerRole` |
+| cfn_nag `W11` | Wildcard permissions required for CloudWatch Logs creation | `PATTERNSTACK/DockerBuildRole` |
+| cfn_nag `W11` | Wildcard permissions required for CloudWatch Logs creation and ECR auth | `MULTIDOCDISCOVERYSTACK/CodeBuildRole` |
+| cfn_nag `W11` | Wildcard resource required as AgentCore Gateway ARNs are dynamically generated and unknown at deployment time | `AgentCoreGatewayManagerFunction` |
+| cfn_nag `W11` | X-Ray daemon actions and CloudWatch Logs log-delivery actions genuinely require Resource=*: the X-Ray tracing API accepts no resource ARN, and CloudWatch Logs log-delivery calls (logs:CreateLogDelivery / GetLogDelivery / UpdateLogDelivery / DeleteLogDelivery / ListLogDeliveries) also accept no resource ARN. The sibling DataMartRollupFunction role at line 5497 carries an equivalent W12 suppression for the same reason. | `DataMartMigrationStateMachineRole` |
+| cfn_nag `W11` | aws-marketplace and logs:DescribeLogGroups APIs do not support resource-level permissions | `AgentCoreMCPHandlerFunction` |
+| cfn_nag `W11` | cloudwatch:PutMetricData takes no resource-level permissions; it is scoped by namespace condition | `ReviewQueueSweeperFunction`, `TestRunSweeperFunction` |
+| cfn_nag `W11` | servicequotas:GetServiceQuota and ListServiceQuotas APIs do not support resource-level permissions | `CalculateCapacityFunction` |
+| cfn_nag `W12` | Amazon Inspector ListCoverage and ListFindings require wildcard resource per AWS documentation | `PATTERNSTACK/DockerBuildRole` |
+| cfn_nag `W12` | Lambda requires CloudWatch logs permissions | `APIRESOLVERSTACK/AbortTestRunsResolverFunction`, `APIRESOLVERSTACK/AbortWorkflowResolverFunction`, `APIRESOLVERSTACK/BulkReviewResolverFunction`, `APIRESOLVERSTACK/BulkReviewWorkerFunction`, `APIRESOLVERSTACK/ConfigurationResolverFunction`, `APIRESOLVERSTACK/CopyToBaselineResolverFunction`, `APIRESOLVERSTACK/CreateDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteTestsResolverFunction`, `APIRESOLVERSTACK/DiscoveryUploadResolverFunction`, `APIRESOLVERSTACK/DocumentVersionsResolverFunction`, `APIRESOLVERSTACK/GetFileContentsResolverFunction`, `APIRESOLVERSTACK/GetSampleDocumentResolverFunction`, `APIRESOLVERSTACK/ListDocumentsByDateRangeResolverFunction`, `APIRESOLVERSTACK/NotificationsResolverFunction`, `APIRESOLVERSTACK/ProcessChangesResolverFunction`, `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction`, `APIRESOLVERSTACK/ReprocessDocumentResolverFunction`, `APIRESOLVERSTACK/ReviewQueuesResolverFunction`, `APIRESOLVERSTACK/SendChatDocumentMessageResolverFunction`, `APIRESOLVERSTACK/TestResultsResolverFunction`, `APIRESOLVERSTACK/TestRunnerFunction`, `APIRESOLVERSTACK/TestSetResolverFunction`, `APIRESOLVERSTACK/UploadResolverFunction`, `BlueprintOptimizationFunction`, `DiscoveryProcessorFunction`, `TestFileCopierFunction`, `TestSetFileCopierFunction` |
+| cfn_nag `W12` | cloudwatch:GetMetricData and resourcegroupstaggingapi:GetResources require * resource — no partition-level scoping available | `DataMartRollupFunction` |
+| cfn_nag `W35` | This is the logging destination bucket - does not require its own access logging | `LoggingBucket` |
+| cfn_nag `W58` | DLQ not required for Cfn Custom Resource function | `AgentChatProcessorFunction`, `AgentProcessorFunction`, `DOCUMENTKB/S3VectorManagerFunction`, `DOCUMENTKB/StartIngestionJobFunction` |
+| cfn_nag `W58` | DLQ not required: invoked synchronously by the API dispatcher, which returns errors to the caller | `APIRESOLVERSTACK/AgentChatResolverFunction`, `APIRESOLVERSTACK/GetStepFunctionExecutionResolverFunction` |
+| cfn_nag `W58` | Lambda function has permission to write CloudWatch Logs via the attached IAM role | `APIRESOLVERSTACK/SyncBdaIdpResolverFunction` |
+| cfn_nag `W70` | Minimum TLS version is determined by CloudFrontDefaultCertificate true | `CloudFrontDistribution` |
+| cfn_nag `W76` | Suppressing W76: SPCM for IAM policy document is higher than 25 | `AgentChatProcessorFunction`, `AgentProcessorFunction`, `PATTERNSTACK/ExtractionFunction`, `PATTERNSTACK/ShardRuntimeFunction` |
+| cfn_nag `W78` | Point-in-time recovery not required for concurrency tracking table as data is transient | `ConcurrencyTable` |
+| cfn_nag `W84` | LogGroup does not require KMS Key Id | `ReadPreviousIDPPatternFunctionLogGroup` |
+| cfn_nag `W84` | LogGroup does not require KMS Key Id, since it's only logging checks on stack name length | `StacknameCheckFunctionLogGroup` |
+| cfn_nag `W89` | Dispatcher only calls SFN StartExecution + SSM DeleteParameter + urllib to CFN — no VPC needed | `DataMartMigrationDispatcherFunction` |
+| cfn_nag `W89` | Function does not require VPC access | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction`, `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `CompleteSectionReviewFunction`, `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction`, `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction`, `ReadPreviousIDPPatternFunction`, `UserManagementFunction`, `UserSyncFunction` |
+| cfn_nag `W89` | Function does not require VPC access as it has no network access | `StacknameCheckFunction` |
+| cfn_nag `W89` | Function does not require VPC access as it only interacts with AWS services via APIs | `APIRESOLVERSTACK/AbortTestRunsResolverFunction`, `APIRESOLVERSTACK/AbortWorkflowResolverFunction`, `APIRESOLVERSTACK/AgentChatResolverFunction`, `APIRESOLVERSTACK/AgentRequestHandlerFunction`, `APIRESOLVERSTACK/ConfigurationResolverFunction`, `APIRESOLVERSTACK/CopyToBaselineResolverFunction`, `APIRESOLVERSTACK/CreateDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteAgentChatSessionFunction`, `APIRESOLVERSTACK/DeleteDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteTestsResolverFunction`, `APIRESOLVERSTACK/DiscoveryUploadResolverFunction`, `APIRESOLVERSTACK/DocumentVersionsResolverFunction`, `APIRESOLVERSTACK/GetAgentChatMessagesFunction`, `APIRESOLVERSTACK/GetFileContentsResolverFunction`, `APIRESOLVERSTACK/GetSampleDocumentResolverFunction`, `APIRESOLVERSTACK/GetStepFunctionExecutionResolverFunction`, `APIRESOLVERSTACK/ListAgentChatSessionsFunction`, `APIRESOLVERSTACK/ListDocumentsByDateRangeResolverFunction`, `APIRESOLVERSTACK/ProcessChangesResolverFunction`, `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction`, `APIRESOLVERSTACK/ReprocessDocumentResolverFunction`, `APIRESOLVERSTACK/SendChatDocumentMessageResolverFunction`, `APIRESOLVERSTACK/TestResultsResolverFunction`, `APIRESOLVERSTACK/TestRunnerFunction`, `APIRESOLVERSTACK/TestSetResolverFunction`, `APIRESOLVERSTACK/UploadResolverFunction`, `AgentChatProcessorFunction`, `AgentCoreGatewayManagerFunction`, `AgentCoreMCPHandlerFunction`, `AgentProcessorFunction`, `BlueprintOptimizationFunction`, `CalculateCapacityFunction`, `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction`, `CognitoUserPoolEmailDomainVerifyFunction`, `DOCUMENTKB/CreateOSSIndexLambdaFunction`, `DOCUMENTKB/GetAdjustedStackNameFunction`, `DOCUMENTKB/GetSeedUrlsFunction`, `DOCUMENTKB/S3VectorManagerFunction`, `DOCUMENTKB/StartIngestionJobFunction`, `DashboardMergerFunction`, `DiscoveryProcessorFunction`, `ExternalIdPGroupMappingFunction`, `FccDatasetDeployerFunction`, `GetDomainLambda`, `InitializeConcurrencyTableLambda`, `LookupFunction`, `McpCredentialManagerFunction`, `McpDefaultCredentialFunction`, `McpIdentityInterceptorFunction`, `McpInterceptorAttachFunction`, `MeteringHourMigrationFunction`, `OcrBenchmarkDeployerFunction`, `PATTERNSTACK/BDAOCRProjectFunction`, `PATTERNSTACK/CodeBuildTrigger`, `PATTERNSTACK/EvaluationFunction`, `PostProcessingDecompressor`, `QueueProcessor`, `QueueSender`, `ResolveOIDCClientSecretFunction`, `ReviewQueueSweeperFunction`, `RvlCdipNmpDeployerFunction`, `SaveReportingDataFunctionV2`, `StartUICodeBuild`, `TestFileCopierFunction`, `TestRunSweeperFunction`, `TestSetBucketAutoDeleteFunction`, `TestSetBucketNotificationFunction`, `TestSetFileCopierFunction`, `UpdateConfigurationFunction`, `UpdateSettingsFunction`, `W2DatasetDeployerFunction`, `WorkflowTracker` |
+| cfn_nag `W89` | Function does not require VPC access as it only interacts with DynamoDB | `BackfillWorkerFunction` |
+| cfn_nag `W89` | Function does not require VPC access as it only interacts with DynamoDB via AWS APIs | `APIRESOLVERSTACK/NotificationsResolverFunction` |
+| cfn_nag `W89` | Function does not require VPC access as it only interacts with DynamoDB, S3, SQS and Cognito via AWS APIs | `APIRESOLVERSTACK/BulkReviewResolverFunction`, `APIRESOLVERSTACK/BulkReviewWorkerFunction`, `APIRESOLVERSTACK/ReviewQueuesResolverFunction` |
+| cfn_nag `W89` | Function does not require VPC access as it only interacts with S3 | `ConfigurationCopyFunction` |
+| cfn_nag `W89` | Function does not require VPC access as it only interacts with local agent factory | `APIRESOLVERSTACK/ListAvailableAgentsFunction` |
+| cfn_nag `W89` | Function does not require VPC access — only reads from public S3 bucket via unsigned requests | `VersionCheckResolverFunction` |
+| cfn_nag `W89` | Function interacts only with AWS APIs; no VPC access required | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
+| cfn_nag `W89` | Function only calls Cognito control-plane APIs; no VPC access required | `WebUIClientOAuthUrlsFunction` |
+| cfn_nag `W89` | Function only interacts with AWS APIs (Athena, Glue, CloudWatch, S3) — no VPC needed | `DataMartRollupFunction` |
+| cfn_nag `W89` | Lambda function does not need to be deployed inside a VPC | `APIRESOLVERSTACK/SyncBdaIdpResolverFunction` |
+| cfn_nag `W89` | Lambda function does not need to be in VPC | `TestSetZipExtractorFunction` |
+| cfn_nag `W89` | This Lambda function does not require VPC access as it only interacts with AWS services via AWS APIs | `PATTERNSTACK/AssessmentFunction`, `PATTERNSTACK/BDACompletionFunction`, `PATTERNSTACK/ClassificationFunction`, `PATTERNSTACK/ExtractionFunction`, `PATTERNSTACK/InvokeBDAFunction`, `PATTERNSTACK/MLflowLoggerFunction`, `PATTERNSTACK/OCRFunction`, `PATTERNSTACK/ProcessResultsFunction`, `PATTERNSTACK/RuleValidationFunction`, `PATTERNSTACK/RuleValidationOrchestrationFunction`, `PATTERNSTACK/RuleValidationPolicyClassificationFunction`, `PATTERNSTACK/ShardRuntimeFunction`, `PATTERNSTACK/SummarizationFunction`, `PATTERNSTACK/TestExecutionAggregationFunction` |
+| cfn_nag `W89` | This Lambda function does not require VPC access as it only interacts with AWS services via AWS APIs — placed in VPC when ApiGatewayVisibility=PRIVATE | `PATTERNSTACK/BDAProcessResultsFunction` |
+| cfn_nag `W89` | VPC attachment is conditional on ApiGatewayVisibility=PRIVATE (see VpcConfig below). The resolver must live in the same VPC as the private REST API so its DynamoDB reads can traverse a gateway endpoint. On the default/public path the resolver only talks to DynamoDB and Lambda over AWS-managed networking and VPC access is not required. | `APIRESOLVERSTACK/CircuitBreakerResolverFunction` |
+| cfn_nag `W89` | VPC attachment is conditional: required when ApiGatewayVisibility=PRIVATE (the private REST API and its callers only resolve inside the VPC) or DeployInVPC=true (DynamoDB reached via gateway endpoint). On the default/public path the function only talks to DynamoDB, SNS, and CloudWatch over AWS-managed networking and VPC access is not required. | `CircuitBreakerManagerFunction` |
+| cfn_nag `W92` | Concurrency is bounded by the event source mapping's MaximumConcurrency and the job lock, not reserved concurrency | `APIRESOLVERSTACK/BulkReviewWorkerFunction` |
+| cfn_nag `W92` | Custom resource scales on demand; no reserved concurrency needed | `WebUIClientOAuthUrlsFunction` |
+| cfn_nag `W92` | Function does not require concurrent execution limits as it is designed to scale based on demand | `PATTERNSTACK/AssessmentFunction`, `PATTERNSTACK/BDACompletionFunction`, `PATTERNSTACK/BDAProcessResultsFunction`, `PATTERNSTACK/ClassificationFunction`, `PATTERNSTACK/ExtractionFunction`, `PATTERNSTACK/InvokeBDAFunction`, `PATTERNSTACK/MLflowLoggerFunction`, `PATTERNSTACK/OCRFunction`, `PATTERNSTACK/ProcessResultsFunction`, `PATTERNSTACK/RuleValidationFunction`, `PATTERNSTACK/RuleValidationOrchestrationFunction`, `PATTERNSTACK/RuleValidationPolicyClassificationFunction`, `PATTERNSTACK/ShardRuntimeFunction`, `PATTERNSTACK/SummarizationFunction`, `PATTERNSTACK/TestExecutionAggregationFunction` |
+| cfn_nag `W92` | Function does not require reserved concurrency | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction`, `BackfillTriggerFunction`, `BackfillWorkerFunction`, `CalculateCapacityResolverFunction`, `CircuitBreakerManagerFunction`, `CompleteSectionReviewFunction`, `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction`, `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction`, `UserManagementFunction`, `UserSyncFunction`, `VersionCheckResolverFunction` |
+| cfn_nag `W92` | Function does not require reserved concurrency (one-shot CFN custom resource) | `MeteringHourMigrationFunction` |
+| cfn_nag `W92` | Function does not require reserved concurrency as it scales based on demand | `APIRESOLVERSTACK/AbortTestRunsResolverFunction`, `APIRESOLVERSTACK/AbortWorkflowResolverFunction`, `APIRESOLVERSTACK/AgentChatResolverFunction`, `APIRESOLVERSTACK/AgentRequestHandlerFunction`, `APIRESOLVERSTACK/CircuitBreakerResolverFunction`, `APIRESOLVERSTACK/ConfigurationResolverFunction`, `APIRESOLVERSTACK/CopyToBaselineResolverFunction`, `APIRESOLVERSTACK/CreateDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteAgentChatSessionFunction`, `APIRESOLVERSTACK/DeleteDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteTestsResolverFunction`, `APIRESOLVERSTACK/DiscoveryUploadResolverFunction`, `APIRESOLVERSTACK/DocumentVersionsResolverFunction`, `APIRESOLVERSTACK/GetAgentChatMessagesFunction`, `APIRESOLVERSTACK/GetFileContentsResolverFunction`, `APIRESOLVERSTACK/GetSampleDocumentResolverFunction`, `APIRESOLVERSTACK/GetStepFunctionExecutionResolverFunction`, `APIRESOLVERSTACK/ListAgentChatSessionsFunction`, `APIRESOLVERSTACK/ListAvailableAgentsFunction`, `APIRESOLVERSTACK/ListDocumentsByDateRangeResolverFunction`, `APIRESOLVERSTACK/ProcessChangesResolverFunction`, `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction`, `APIRESOLVERSTACK/ReprocessDocumentResolverFunction`, `APIRESOLVERSTACK/SendChatDocumentMessageResolverFunction`, `APIRESOLVERSTACK/TestResultsResolverFunction`, `APIRESOLVERSTACK/TestRunnerFunction`, `APIRESOLVERSTACK/TestSetResolverFunction`, `APIRESOLVERSTACK/UploadResolverFunction`, `AgentChatProcessorFunction`, `AgentCoreGatewayManagerFunction`, `AgentCoreMCPHandlerFunction`, `AgentProcessorFunction`, `BlueprintOptimizationFunction`, `CalculateCapacityFunction`, `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction`, `CognitoUserPoolEmailDomainVerifyFunction`, `DOCUMENTKB/CreateOSSIndexLambdaFunction`, `DOCUMENTKB/GetAdjustedStackNameFunction`, `DOCUMENTKB/GetSeedUrlsFunction`, `DOCUMENTKB/S3VectorManagerFunction`, `DOCUMENTKB/StartIngestionJobFunction`, `DashboardMergerFunction`, `DiscoveryProcessorFunction`, `ExternalIdPGroupMappingFunction`, `FccDatasetDeployerFunction`, `GetDomainLambda`, `InitializeConcurrencyTableLambda`, `LookupFunction`, `McpCredentialManagerFunction`, `McpIdentityInterceptorFunction`, `OcrBenchmarkDeployerFunction`, `PATTERNSTACK/BDAOCRProjectFunction`, `PATTERNSTACK/CodeBuildTrigger`, `PATTERNSTACK/EvaluationFunction`, `PostProcessingDecompressor`, `QueueProcessor`, `QueueSender`, `ResolveOIDCClientSecretFunction`, `RvlCdipNmpDeployerFunction`, `SaveReportingDataFunctionV2`, `StartUICodeBuild`, `TestFileCopierFunction`, `TestSetBucketAutoDeleteFunction`, `TestSetBucketNotificationFunction`, `TestSetFileCopierFunction`, `UpdateConfigurationFunction`, `UpdateSettingsFunction`, `W2DatasetDeployerFunction`, `WorkflowTracker` |
+| cfn_nag `W92` | Function does not require reserved concurrency as it scales with UI polling demand | `APIRESOLVERSTACK/NotificationsResolverFunction` |
+| cfn_nag `W92` | Function does not require reserved concurrency as it scales with reviewer UI demand | `APIRESOLVERSTACK/BulkReviewResolverFunction`, `APIRESOLVERSTACK/ReviewQueuesResolverFunction` |
+| cfn_nag `W92` | Function does not require reserved concurrency; it runs only during stack operations | `McpDefaultCredentialFunction`, `McpInterceptorAttachFunction` |
+| cfn_nag `W92` | Lambda function does not need reserved concurrency | `APIRESOLVERSTACK/SyncBdaIdpResolverFunction`, `TestSetZipExtractorFunction` |
+| cfn_nag `W92` | One-shot per stack update; no ReservedConcurrentExecutions required | `DataMartMigrationDispatcherFunction` |
+| cfn_nag `W92` | Reserved concurrency not required | `ApiHandlerFunction`, `BatchPreProcessorFunction`, `ConfigurationCopyFunction`, `ReadPreviousIDPPatternFunction`, `StacknameCheckFunction` |
+| cfn_nag `W92` | Reserved concurrency not required; scales on demand | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
+| cfn_nag `W92` | ReservedConcurrentExecutions=12 pins concurrency (was 1, bumped to accommodate the migration state machine's Map MaxConcurrency=8 + 3 scheduled crons + 1 headroom); the setting is present, not absent | `DataMartRollupFunction` |
+| checkov `CKV_AWS_173` | Env vars are non-sensitive (table names, ARNs) | `APIRESOLVERSTACK/HttpApiDispatcherFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration | `FinetuningDeploymentHandlerFunction`, `FinetuningJobCreatorFunction`, `FinetuningJobStatusCheckerFunction`, `FinetuningJobsResolverFunction`, `FinetuningListDocumentsFunction`, `FinetuningMergeDataFunction`, `FinetuningProcessDocumentFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values | `APIRESOLVERSTACK/AbortTestRunsResolverFunction`, `APIRESOLVERSTACK/DeleteTestsResolverFunction`, `APIRESOLVERSTACK/TestResultsResolverFunction`, `APIRESOLVERSTACK/TestSetResolverFunction`, `MeteringHourMigrationFunction`, `TestSetZipExtractorFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (Cognito pool and group IDs) | `UserManagementFunction`, `UserSyncFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (DynamoDB table name) | `CompleteSectionReviewFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (bucket name, prefix, log level) | `VersionCheckResolverFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (bucket names and log level) | `TestFileCopierFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level and feature flags) | `CalculateCapacityFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain non-sensitive configuration values (log level only) | `BackfillTriggerFunction`, `CalculateCapacityResolverFunction`, `ReadPreviousIDPPatternFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain only configuration | `DataMartMigrationDispatcherFunction`, `DataMartRollupFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain only non-sensitive configuration | `ChatStreamProcessorFunction`, `ChatWithDocumentProcessorFunction` |
+| checkov `CKV_AWS_173` | Environment variables contain only non-sensitive configuration values (log levels, table names) - no secrets or PII | `APIRESOLVERSTACK/ListDocumentsGSIResolverFunction` |
+| checkov `CKV_AWS_173` | Environment variables do not contain sensitive data | `APIRESOLVERSTACK/CircuitBreakerResolverFunction`, `APIRESOLVERSTACK/SendChatDocumentMessageResolverFunction`, `BackfillWorkerFunction`, `CircuitBreakerManagerFunction`, `PATTERNSTACK/ShardRuntimeFunction` |
+| checkov `CKV_AWS_173` | Environment variables do not contain sensitive data - only configuration values | `APIRESOLVERSTACK/ListDocumentsByDateRangeResolverFunction`, `PATTERNSTACK/MLflowLoggerFunction`, `PATTERNSTACK/RuleValidationOrchestrationFunction`, `PATTERNSTACK/TestExecutionAggregationFunction` |
+| checkov `CKV_AWS_173` | Environment variables do not contain sensitive data - only configuration values like feature flags and non-sensitive settings | `APIRESOLVERSTACK/AbortWorkflowResolverFunction`, `APIRESOLVERSTACK/AgentChatResolverFunction`, `APIRESOLVERSTACK/AgentRequestHandlerFunction`, `APIRESOLVERSTACK/ConfigurationResolverFunction`, `APIRESOLVERSTACK/CopyToBaselineResolverFunction`, `APIRESOLVERSTACK/CreateDocumentResolverFunction`, `APIRESOLVERSTACK/DeleteAgentChatSessionFunction`, `APIRESOLVERSTACK/DeleteDocumentResolverFunction`, `APIRESOLVERSTACK/DiscoveryUploadResolverFunction`, `APIRESOLVERSTACK/DocumentVersionsResolverFunction`, `APIRESOLVERSTACK/GetAgentChatMessagesFunction`, `APIRESOLVERSTACK/GetStepFunctionExecutionResolverFunction`, `APIRESOLVERSTACK/ListAgentChatSessionsFunction`, `APIRESOLVERSTACK/ListAvailableAgentsFunction`, `APIRESOLVERSTACK/ProcessChangesResolverFunction`, `APIRESOLVERSTACK/QueryKnowledgeBaseResolverFunction`, `APIRESOLVERSTACK/ReprocessDocumentResolverFunction`, `APIRESOLVERSTACK/SyncBdaIdpResolverFunction`, `APIRESOLVERSTACK/TestRunnerFunction`, `APIRESOLVERSTACK/UploadResolverFunction`, `AgentChatProcessorFunction`, `AgentCoreGatewayManagerFunction`, `AgentCoreMCPHandlerFunction`, `AgentProcessorFunction`, `BlueprintOptimizationFunction`, `CognitoUserPoolEmailDomainVerifyFunction`, `ConfigurationCopyFunction`, `DOCUMENTKB/CreateOSSIndexLambdaFunction`, `DOCUMENTKB/GetAdjustedStackNameFunction`, `DOCUMENTKB/GetSeedUrlsFunction`, `DOCUMENTKB/S3VectorManagerFunction`, `DOCUMENTKB/StartIngestionJobFunction`, `DashboardMergerFunction`, `DiscoveryProcessorFunction`, `FccDatasetDeployerFunction`, `InitializeConcurrencyTableLambda`, `LookupFunction`, `OcrBenchmarkDeployerFunction`, `PATTERNSTACK/AssessmentFunction`, `PATTERNSTACK/BDACompletionFunction`, `PATTERNSTACK/BDAProcessResultsFunction`, `PATTERNSTACK/ClassificationFunction`, `PATTERNSTACK/EvaluationFunction`, `PATTERNSTACK/ExtractionFunction`, `PATTERNSTACK/InvokeBDAFunction`, `PATTERNSTACK/OCRFunction`, `PATTERNSTACK/ProcessResultsFunction`, `PATTERNSTACK/RuleValidationFunction`, `PATTERNSTACK/RuleValidationPolicyClassificationFunction`, `PATTERNSTACK/SummarizationFunction`, `PostProcessingDecompressor`, `QueueProcessor`, `QueueSender`, `RvlCdipNmpDeployerFunction`, `SaveReportingDataFunctionV2`, `StacknameCheckFunction`, `TestSetFileCopierFunction`, `UpdateConfigurationFunction`, `W2DatasetDeployerFunction`, `WorkflowTracker` |
+| checkov `CKV_AWS_173` | Environment variables do not contain sensitive data - only group name mappings | `ExternalIdPGroupMappingFunction` |
+| checkov `CKV_AWS_173` | Environment variables hold no sensitive data | `McpDefaultCredentialFunction`, `McpInterceptorAttachFunction` |
+| checkov `CKV_AWS_173` | Environment variables hold only a table name, log level and stack name - no sensitive data | `APIRESOLVERSTACK/NotificationsResolverFunction` |
+| checkov `CKV_AWS_173` | Environment variables hold only resource names and settings - no sensitive data | `ReviewQueueSweeperFunction`, `TestRunSweeperFunction` |
+| checkov `CKV_AWS_173` | Environment variables hold only resource names, log level and stack name - no sensitive data | `APIRESOLVERSTACK/BulkReviewResolverFunction`, `APIRESOLVERSTACK/BulkReviewWorkerFunction`, `APIRESOLVERSTACK/ReviewQueuesResolverFunction` |
+| checkov `CKV_AWS_173` | Environment variables hold resource names and ids only | `McpCredentialManagerFunction`, `McpIdentityInterceptorFunction` |
+| checkov `CKV_AWS_173` | No sensitive env vars | `MULTIDOCDISCOVERYSTACK/DockerBuildRunFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryAnalyzeFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryClusterFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoveryEmbedFunction`, `MULTIDOCDISCOVERYSTACK/MultiDocDiscoverySaveFunction`, `MultiDocDiscoveryPrepareFunction` |
+| checkov `CKV_AWS_99` | Encryption is already enabled with SSE-KMS | `DocumentSectionsCrawlerSecurityConfigurationV2` |
+
+<!-- uncarried-suppressions:end -->
+
+</details>
+
 ## Differences from CloudFormation and current limitations
 
 A Terraform deployment runs the same functions with the same configuration as a
@@ -812,8 +995,8 @@ CloudFormation deployment of the same version, but these things differ:
   with its template and resource directory in that bucket, and the IAM-propagation
   waits.
 - A failed apply is not rolled back, as described under [Deploying](#deploying).
-- The template's `Rules` are not enforced, so a parameter combination CloudFormation
-  refuses at submit is accepted; see
+- The template's `Rules` are checked at plan rather than at submit, and a rule whose
+  inputs are not known until apply is checked during the apply; see
   [Using the module beside your own resources](#using-the-module-beside-your-own-resources).
 - The full stack has been applied, re-planned with no changes, and destroyed with both
   Terraform and OpenTofu, in a development account. The headless and GovCloud

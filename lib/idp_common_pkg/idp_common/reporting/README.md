@@ -198,6 +198,25 @@ attribute keeps the cumulative total (`idp_common.utils.cumulative_metering`), w
 is what the Web UI's Estimated Cost shows. Rows already written for documents
 reprocessed before this split was introduced are not rewritten.
 
+### One record per execution, whatever its status
+
+`save(document, data_to_save, execution_status=...)` passes the execution's terminal
+status to `save_metering_data`, which writes it to every row as `execution_status`
+alongside `execution_arn` (from `document.workflow_execution_arn`). When the ARN is
+known the parquet object is named after the execution
+(`<doc>_exec_<execution name>_results.parquet`) rather than the write time, so writing
+the same execution twice in one hour replaces the object. Both columns are NULL when
+the caller supplies neither, as on rows written before they existed.
+
+The workflow tracker reports every execution this way. For one that did not succeed
+(`FAILED`, `TIMED_OUT`, `ABORTED`) there is no output document, so the tracker takes
+the tracking row's cumulative `Metering` and subtracts the `metering_baseline` of the
+execution input's start document (`idp_common.utils.subtract_metering`), and reports
+that usage only — no sections or rule-validation rows. After SaveReportingData answers
+200 it writes a `meter#<execution ARN>` marker to the concurrency table, so a
+redelivered event for the same execution in a later hour (and so a later partition) is
+not reported again.
+
 ### One rate per unit: pricing sees sums, never single requests
 
 Step 4 prices an **aggregate**. By the time `save_metering_data` runs, every call

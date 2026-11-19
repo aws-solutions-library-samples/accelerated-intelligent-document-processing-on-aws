@@ -116,8 +116,11 @@ classification:
       temperature: '0.0'
       top_p: '0.0'
       top_k: '5'
-      # Optional output cap; empty uses the model's maximum.
-      max_tokens: ''
+      # Output cap. A classification reply is short, and Bedrock holds input +
+      # max_tokens of the tokens-per-minute quota while a call runs, so this is
+      # capped below Nova 2 Lite's 64,000-token limit. Empty uses the selected
+      # model's maximum (model_config_limits.yaml).
+      max_tokens: '10000'
       # How hard a reasoning-capable model thinks before answering. Ignored by
       # models with no effort control (Nova, Sonnet 4.5, Haiku 4.5).
       reasoning_effort: medium
@@ -237,8 +240,11 @@ classification:
         temperature: '0.0'
         top_p: '0.0'
         top_k: '5'
-        # Optional output cap; empty uses the model's maximum.
-        max_tokens: ''
+        # Output cap. A classification reply is short, and Bedrock holds input +
+        # max_tokens of the tokens-per-minute quota while a call runs, so this is
+        # capped below Nova 2 Lite's 64,000-token limit. Empty uses the selected
+        # model's maximum (model_config_limits.yaml).
+        max_tokens: '10000'
         # How hard a reasoning-capable model thinks before answering. Ignored by
         # models with no effort control (Nova, Sonnet 4.5, Haiku 4.5).
         reasoning_effort: medium
@@ -263,8 +269,11 @@ classification:
         temperature: '0.0'
         top_p: '0.0'
         top_k: '5'
-        # Optional output cap; empty uses the model's maximum.
-        max_tokens: ''
+        # Output cap. A classification reply is short, and Bedrock holds input +
+        # max_tokens of the tokens-per-minute quota while a call runs, so this is
+        # capped below Nova 2 Lite's 64,000-token limit. Empty uses the selected
+        # model's maximum (model_config_limits.yaml).
+        max_tokens: '10000'
         # How hard a reasoning-capable model thinks before answering. Ignored by
         # models with no effort control (Nova, Sonnet 4.5, Haiku 4.5).
         reasoning_effort: medium

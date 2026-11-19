@@ -2265,7 +2265,7 @@ def _validate_max_tokens(merged_config: Dict[str, Any], result: Dict[str, Any]) 
                     f"{section_name}.max_tokens ({max_tokens}) exceeds model limit ({model_limit:,}) "
                     f"for {model_id}. "
                     f"Reduce max_tokens to {model_limit:,} or less, or choose a different model. "
-                    f"Model limits: Claude 4.x=64,000, Nova=10,000, Claude 3.x=8,192"
+                    f"Model limits: Claude 4.x=64,000, Nova=10,000 (Nova 2 Lite=64,000), Claude 3.x=8,192"
                 )
         except Exception as e:
             logger.warning(

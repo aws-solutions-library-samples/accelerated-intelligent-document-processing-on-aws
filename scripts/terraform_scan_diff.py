@@ -23,7 +23,10 @@ over:
   ``AWS::Lambda::Function`` as the translator sees it. A result from either
   counts; a skip in the source wins;
 - the Terraform side: the module the translator generates offline from the
-  standard ``template.yaml``.
+  standard ``template.yaml``. It carries a source skip as a Terraform
+  ``#checkov:skip`` where ``terraform/translator/idp_tf/suppressions.py`` maps the
+  rule exactly, so such a finding is skipped on both sides and is not counted
+  here at all.
 
 Each finding is reduced to (resource identity, check id). The identity is the
 nested-stack path and logical id the translator's manifest records for every

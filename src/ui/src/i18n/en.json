@@ -143,6 +143,18 @@
     "defaultMessage": "Upload Documents",
     "description": "Last crumb of the breadcrumb trail on the Upload Documents page: the page itself."
   },
+  "capacityPlanning.escalationRate.description": {
+    "defaultMessage": "Share of documents assumed to fail validation and be re-extracted with the escalation model. Used only until enough processed documents are available to measure the rate from metering. The results say which rate was used.",
+    "description": "Help text under the escalation rate field on the capacity planning page."
+  },
+  "capacityPlanning.escalationRate.label": {
+    "defaultMessage": "Escalation rate when not measured (%)",
+    "description": "Label of an optional number field on the capacity planning page, shown only when extraction validation failures are re-extracted with an escalation model."
+  },
+  "capacityPlanning.escalationRate.placeholder": {
+    "defaultMessage": "Default: 15",
+    "description": "Placeholder of the empty escalation rate field. 15 is the percentage the planner uses when the field is left empty."
+  },
   "capacityPlanning.quotaNotRead.body": {
     "defaultMessage": "The quota analysis below leaves out the steps that use these models.",
     "description": "Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated."
@@ -2080,8 +2092,16 @@
     "description": "Error shown when Save changes is chosen on the Pricing page while some prices are invalid. {count} is how many."
   },
   "pricing.layout.defaultUnitsAlwaysApply": {
-    "defaultMessage": "Your saved prices are applied over the default prices. A default unit you delete comes back at its default price after you save and reload. To make a default unit cost nothing, set its price to 0.",
-    "description": "Note above the pricing tables on the Pricing page: deleting a default unit does not persist, because saved prices are merged over the defaults per unit."
+    "defaultMessage": "Your saved prices are applied over the default prices, so a default unit cannot be deleted. To make a default unit cost nothing, set its price to 0. To undo a change to a default unit, choose Restore default price on its row.",
+    "description": "Note above the pricing tables on the Pricing page: default units cannot be deleted because saved prices are merged over the defaults per unit; explains how to zero or restore one instead."
+  },
+  "pricing.layout.deleteDefaultUnitDisabledReason": {
+    "defaultMessage": "This unit is in the default price list, so it cannot be deleted: it would come back at its default price after you save and reload. Set its price to 0 to make it cost nothing.",
+    "description": "Tooltip on the disabled Delete unit button of a default pricing row on the Pricing page, explaining why it is disabled."
+  },
+  "pricing.layout.deleteUnit": {
+    "defaultMessage": "Delete unit",
+    "description": "Accessible label of the icon button that deletes one pricing unit row on the Pricing page."
   },
   "pricing.layout.invalidPrice": {
     "defaultMessage": "Enter a non-negative decimal number with no spaces, such as 0.0015 or 6.0E-8.",
@@ -2094,6 +2114,14 @@
   "pricing.layout.invalidPricesHeader": {
     "defaultMessage": "Invalid prices",
     "description": "Header of the warning that lists every price on the Pricing page that cannot be saved."
+  },
+  "pricing.layout.restoreDefaultPrice": {
+    "defaultMessage": "Restore default price",
+    "description": "Accessible label of the icon button that sets one default pricing unit back to its default price on the Pricing page."
+  },
+  "pricing.layout.restoreDefaultPriceDisabledReason": {
+    "defaultMessage": "This unit already has its default price.",
+    "description": "Tooltip on the disabled Restore default price button of a pricing row whose price equals the default."
   },
   "reviewBulk.bulkResultsModal.close": {
     "defaultMessage": "Close",
@@ -2650,6 +2678,14 @@
   "reviewQueues.queuePage.skipResultsHeader": {
     "defaultMessage": "Skip All Reviews results",
     "description": "Header of the dialog listing the per-document outcomes of a bulk Skip All Reviews that ran inline."
+  },
+  "reviewQueues.reasons.extractionFailed": {
+    "defaultMessage": "Extraction failed",
+    "description": "Chip text of a review reason for a section whose extraction failed and left it with no extracted data (for example, a content filter withheld the model reply). Also the Reason column of a work list."
+  },
+  "reviewQueues.taskContext.extractionFailed": {
+    "defaultMessage": "Extraction failed for this section, so it has no extracted data to check.",
+    "description": "Popover text on an \"Extraction failed\" review reason: the section was held for review because its extraction did not succeed (for example, a content filter withheld the model reply), not because of a field confidence."
   },
   "reviewQueues.taskContext.sentBy": {
     "defaultMessage": "By {requestedBy}",

@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from . import hcl
+from . import hcl, suppressions
 from .awscc_schema import ANY, AwsccSchema, Hint, awscc_type_name
 
 NO_VALUE = {"Ref": "AWS::NoValue"}
@@ -63,6 +63,28 @@ RESERVED_VARS = (STACK_NAME_VAR, BRIDGE_KMS_VAR, BRIDGE_LOG_BUCKET_VAR)
 # which is exactly what CloudFormation's condition sees: a resource id is never
 # empty and never equals a literal the template compares it with.
 COND_SUFFIX = "__cond"
+# What a nested condition is given in place of a value a parent template Rule
+# guarantees is not empty, when every condition reading that parameter only asks
+# whether it is empty. The value may be unknown until apply (a VPC created in
+# the same apply), but the Rule fixes the answer. See
+# ``Translator._rule_backed_stand_in``.
+PRESENT_VALUE_STAND_IN = "present"
+# The template ``Rules`` functions the translator renders (operands are
+# literals, list literals, and ``Ref`` to a parameter or pseudo parameter). The others
+# (Fn::RefAll, Fn::ValueOf, Fn::ValueOfAll) read values from the AWS account
+# by parameter type, which a plan-time check cannot do; a rule using one fails
+# the translation rather than being left out.
+RULE_FUNCTIONS = (
+    "Fn::Equals",
+    "Fn::Not",
+    "Fn::And",
+    "Fn::Or",
+    "Fn::Contains",
+    "Fn::EachMemberEquals",
+    "Fn::EachMemberIn",
+)
+#: Prefix of the ``terraform_data`` resource each template rule becomes.
+RULE_RESOURCE_PREFIX = "cfn_rule_"
 CUSTOM_TYPES = ("Custom::", "AWS::CloudFormation::CustomResource")
 
 # CloudFormation `Ref` returns something other than the Cloud Control
@@ -264,6 +286,9 @@ class Translator:
                 v = "param_" + v
             self.param_vars[p] = v
         self.conditions: dict[str, Any] = template.get("Conditions", {})
+        # CloudFormation evaluates these when a stack is submitted; they become
+        # plan-time preconditions (see ``_rules``).
+        self.rules: dict[str, Any] = template.get("Rules", {}) or {}
         self.mappings: dict[str, Any] = template.get("Mappings", {})
         self.report = Report()
         self.retained: list[str] = []
@@ -278,6 +303,9 @@ class Translator:
         # known at plan; see emit_module and COND_SUFFIX.
         self.cond_params: set[str] = set()
         self._collect_cond_params(self.conditions)
+        # The subset of cond_params every condition reads only through an
+        # emptiness test; the parent may pass those a plan-known stand-in.
+        self.emptiness_only_params = self._emptiness_only_params()
         self._in_conditions = False
         self._opaque = False
         # True while rendering a STABLE_CUSTOM_OUTPUTS replacement key.
@@ -297,6 +325,9 @@ class Translator:
         self._directory_mode = False
         # Set when an inline function imports CloudFormation's cfnresponse.
         self.needs_cfnresponse = False
+        # Scanner suppressions of the source template by logical id, set by
+        # suppressions.attach; the carried ones are written into each resource.
+        self.suppressions: dict[str, list[Any]] = {}
         self.plans: dict[str, Plan] = {}
         self._refs: set[str] = set()
         self._current: str = ""
@@ -367,6 +398,101 @@ class Translator:
         elif isinstance(node, list):
             for v in node:
                 self._collect_cond_params(v)
+
+    def _emptiness_only_params(self) -> set[str]:
+        """Parameters whose every read in Conditions is ``Fn::Equals`` against
+        ``""``, in either operand order (``!Not`` of one is the same read).
+
+        A list-typed parameter is never one: its condition value is a join or a
+        select, not the parameter compared with ``""``.
+        """
+        tested: set[str] = set()
+        other: set[str] = set()
+
+        def walk(node: Any) -> None:
+            if isinstance(node, dict):
+                if self._is_param_ref(node):
+                    other.add(node["Ref"])
+                    return
+                operand = _emptiness_operand(node)
+                if operand is not None and self._is_param_ref(operand):
+                    tested.add(operand["Ref"])
+                    return
+                for v in node.values():
+                    walk(v)
+            elif isinstance(node, list):
+                for v in node:
+                    walk(v)
+
+        walk(self.conditions)
+        return {p for p in tested - other if not self._is_list_param(p)}
+
+    def _is_param_ref(self, node: Any) -> bool:
+        return (
+            isinstance(node, dict)
+            and set(node) == {"Ref"}
+            and node["Ref"] in self.params
+        )
+
+    def _is_list_param(self, name: str) -> bool:
+        ptype = str(self.params.get(name, {}).get("Type", "String"))
+        return ptype.startswith("List<") or ptype == "CommaDelimitedList"
+
+    def _rule_guarantees_present(self, param: str, true_conditions: set[str]) -> bool:
+        """Whether a template Rule refuses ``param`` being empty whenever every
+        condition in ``true_conditions`` holds.
+
+        A rule counts when one of its assertions is exactly ``!Not [!Equals
+        [!Ref param, ""]]`` and it has no RuleCondition, or its RuleCondition is
+        the definition of one of ``true_conditions``. ``_rules`` refuses the
+        plan otherwise, so a value that reaches the resources is not empty.
+        """
+        definitions = [self.conditions[c] for c in true_conditions]
+        for spec in self.rules.values():
+            asserted = False
+            for a in spec.get("Assertions") or []:
+                inner = a.get("Assert")
+                if isinstance(inner, dict) and set(inner) == {"Fn::Not"}:
+                    operand = _emptiness_operand(inner["Fn::Not"][0])
+                    if operand == {"Ref": param}:
+                        asserted = True
+            if not asserted:
+                continue
+            if "RuleCondition" not in spec or spec["RuleCondition"] in definitions:
+                return True
+        return False
+
+    def _rule_backed_stand_in(self, value: Any) -> str:
+        """The ``__cond`` input for a nested parameter whose conditions only test
+        emptiness: empty exactly when ``value`` is, and plan-known where one of
+        this template's Rules fixes that.
+
+        ``Fn::If`` keeps its condition and takes each branch through the same
+        rule, knowing the condition is true in the first. A ``Ref`` to a
+        parameter a Rule guarantees is not empty under the conditions known to
+        hold becomes PRESENT_VALUE_STAND_IN. Anything else renders as every
+        other ``__cond`` input does, so a value with no such guarantee gives the
+        input it always did.
+        """
+
+        def known(v: Any, holding: frozenset[str]) -> str:
+            if isinstance(v, dict) and set(v) == {"Fn::If"}:
+                cond, a, b = v["Fn::If"]
+                return (
+                    f"({self.cond_ref(cond)} ? {known(a, holding | {cond})} : "
+                    f"{known(b, holding)})"
+                )
+            if self._is_param_ref(v) and self._rule_guarantees_present(
+                v["Ref"], set(holding)
+            ):
+                return hcl.string(PRESENT_VALUE_STAND_IN)
+            self._opaque = True
+            try:
+                return self.expr(v)
+            finally:
+                self._opaque = False
+
+        return known(value, frozenset())
 
     def _plan_module(self, plan: Plan) -> None:
         if self.nested_loader is None:
@@ -876,7 +1002,10 @@ class Translator:
                 # CloudFormation passes every parameter as text.
                 expr = f'compact(split(",", {expr}))'
             lines.append(f"{child.param_vars[p]} = {expr}")
-            if p in child.cond_params:
+            if p in child.emptiness_only_params:
+                known = self._rule_backed_stand_in(value)
+                lines.append(f"{child.param_vars[p]}{COND_SUFFIX} = {known}")
+            elif p in child.cond_params:
                 self._opaque = True
                 try:
                     known = self.expr(value)
@@ -987,8 +1116,13 @@ class Translator:
                     chunk = self.emit_module(plan, res)
                 else:
                     chunk = self.mappers[plan.cfn_type].emit(self, plan, res)
-                resources.append(chunk)
+                # The completeness check reads ``emitted``, so it gets the chunk
+                # before the skip comments: their reason text must not make a
+                # value that was dropped appear present.
                 self.emitted[lid] = chunk
+                resources.append(
+                    suppressions.annotate(chunk, self.suppressions.get(lid, []))
+                )
             except (TranslationError, KeyError) as exc:
                 if not self.survey:
                     raise
@@ -999,6 +1133,8 @@ class Translator:
             "locals.tf": self._locals(),
             "outputs.tf": self._outputs(),
         }
+        if self.rules:
+            files["rules.tf"] = self._rules()
         self.last_render = files
         return files
 
@@ -1370,6 +1506,129 @@ class Translator:
             out.append((p, value, str(spec.get("Description", ""))))
         return out
 
+    # ----------------------------------------------------------------- rules
+    def _rules(self) -> str:
+        """The template's ``Rules``, one ``terraform_data`` per rule with a
+        precondition per assertion, so a parameter combination CloudFormation
+        refuses when the stack is submitted fails ``terraform plan`` with the
+        rule's AssertDescription. Cross-variable ``validation`` blocks would
+        need Terraform 1.9; preconditions work from the module's floor. A
+        precondition whose inputs are unknown at plan is checked during apply.
+        """
+        names = {p.name for p in self.plans.values()}
+        out = []
+        for rule, spec in self.rules.items():
+            where = f"Rules.{rule}"
+            self.begin(where)
+            if not isinstance(spec, dict) or set(spec) - {
+                "RuleCondition",
+                "Assertions",
+            }:
+                raise TranslationError(f"{where}: unsupported rule keys")
+            assertions = spec.get("Assertions")
+            if not isinstance(assertions, list) or not assertions:
+                raise TranslationError(f"{where}: a rule needs Assertions")
+            applies = (
+                self._rule_expr(spec["RuleCondition"], where)
+                if "RuleCondition" in spec
+                else None
+            )
+            checks = []
+            for i, a in enumerate(assertions):
+                if (
+                    not isinstance(a, dict)
+                    or "Assert" not in a
+                    or set(a)
+                    - {
+                        "Assert",
+                        "AssertDescription",
+                    }
+                ):
+                    raise TranslationError(f"{where}: unsupported assertion {i}")
+                test = self._rule_expr(a["Assert"], f"{where}.Assertions[{i}]")
+                condition = f"!{applies} || {test}" if applies else test
+                message = str(
+                    a.get("AssertDescription") or f"Template rule {rule} failed."
+                )
+                checks.append(
+                    hcl.block(
+                        "precondition",
+                        [
+                            f"condition = {condition}",
+                            f"error_message = {hcl.string(message)}",
+                        ],
+                    ).rstrip()
+                )
+            name = RULE_RESOURCE_PREFIX + hcl.snake(rule)
+            if name in names:
+                raise TranslationError(f"{where}: {name} is also a resource name")
+            out.append(
+                hcl.block(
+                    f'resource "terraform_data" "{name}"',
+                    [
+                        f"# CloudFormation template rule {rule}, checked at plan.",
+                        hcl.block("lifecycle", checks).rstrip(),
+                    ],
+                )
+            )
+        return "\n".join(out)
+
+    def _rule_expr(self, node: Any, where: str) -> str:
+        """A boolean ``Rules`` expression. Rules compare parameter values as
+        text, so every operand is a literal, a parameter, or a pseudo
+        parameter; a resource, a condition or an unrendered function fails."""
+        if not (isinstance(node, dict) and len(node) == 1):
+            raise TranslationError(f"{where}: a rule expression must be a function")
+        fn, arg = next(iter(node.items()))
+        if fn not in RULE_FUNCTIONS:
+            raise TranslationError(f"{where}: unsupported rule function {fn}")
+        if fn == "Fn::Not":
+            return f"!{self._rule_expr(arg[0], where)}"
+        if fn in ("Fn::And", "Fn::Or"):
+            op = " && " if fn == "Fn::And" else " || "
+            return "(" + op.join(self._rule_expr(x, where) for x in arg) + ")"
+        a, b = arg
+        if fn == "Fn::Equals":
+            return f"({self._rule_scalar(a, where)} == {self._rule_scalar(b, where)})"
+        if fn == "Fn::Contains":
+            return (
+                f"contains({self._rule_list(a, where)}, {self._rule_scalar(b, where)})"
+            )
+        if fn == "Fn::EachMemberEquals":
+            return (
+                f"alltrue([for m in {self._rule_list(a, where)} : "
+                f"m == {self._rule_scalar(b, where)}])"
+            )
+        return (
+            f"alltrue([for m in {self._rule_list(a, where)} : "
+            f"contains({self._rule_list(b, where)}, m)])"
+        )
+
+    def _rule_scalar(self, node: Any, where: str) -> str:
+        if isinstance(node, str):
+            return hcl.string(node)
+        if isinstance(node, (int, float, bool)):
+            return f"tostring({self.expr(node)})"
+        if isinstance(node, dict) and set(node) == {"Ref"}:
+            name = node["Ref"]
+            if name in self.params and self._is_list_param(name):
+                raise TranslationError(
+                    f"{where}: {name} is a list; compare it with Fn::Contains or "
+                    "Fn::EachMember*"
+                )
+            if name in self.params or (
+                name.startswith("AWS::") and name != "AWS::NoValue"
+            ):
+                return f"tostring({self.ref(name)})"
+        raise TranslationError(f"{where}: unsupported rule operand {node!r}")
+
+    def _rule_list(self, node: Any, where: str) -> str:
+        if isinstance(node, list):
+            return hcl.lst([self._rule_scalar(x, where) for x in node])
+        if self._is_param_ref(node) and self._is_list_param(node["Ref"]):
+            return f"[for v in {self.ref(node['Ref'])} : tostring(v)]"
+        raise TranslationError(f"{where}: unsupported rule list operand {node!r}")
+
     def _locals(self) -> str:
         lines = []
         self._in_conditions = True
@@ -1496,6 +1755,17 @@ class Translator:
                 "value = local.cfn_resource_directory_self",
             ],
         )
+
+
+def _emptiness_operand(node: Any) -> Any:
+    """The other operand of ``Fn::Equals [x, ""]`` or ``Fn::Equals ["", x]``,
+    else None."""
+    if not (isinstance(node, dict) and set(node) == {"Fn::Equals"}):
+        return None
+    args = node["Fn::Equals"]
+    if not (isinstance(args, list) and len(args) == 2 and "" in args):
+        return None
+    return args[1] if args[0] == "" else args[0]
 
 
 def _drop_empty_templates(integration: Any) -> Any:

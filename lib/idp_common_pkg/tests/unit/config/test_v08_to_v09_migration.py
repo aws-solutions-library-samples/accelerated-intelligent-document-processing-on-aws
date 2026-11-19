@@ -95,10 +95,15 @@ class TestTheShippedDefaultsAreEquivalent:
             load_system_defaults("pattern-2")["classification"]
         )
         frozen = _fixture("base-classification-0.8.yaml")["classification"]
-        assert (
-            IDPConfig(classification=frozen).classification.model_dump()
-            == IDPConfig(classification=shipped).classification.model_dump()
-        )
+        old = IDPConfig(classification=frozen).classification.model_dump()
+        new = IDPConfig(classification=shipped).classification.model_dump()
+        # One deliberate difference: the shipped defaults cap every call's output
+        # at 10000 (#2048), and the frozen 0.8 file's `max_tokens: ""` still means
+        # the model's maximum, so a profile holding it keeps that meaning.
+        for path in CALLS:
+            assert _at(old, path).pop("max_tokens") is None
+            assert _at(new, path).pop("max_tokens") == 10000
+        assert old == new
 
     def test_the_0_6_12_defaults_send_what_0_6_12_sent(self):
         """The last release's defaults, read now, send its prompts, its model and

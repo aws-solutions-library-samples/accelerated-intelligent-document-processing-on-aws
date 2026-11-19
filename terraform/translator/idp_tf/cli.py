@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from . import completeness, moved, safety
+from . import completeness, moved, safety, suppressions
 from .assets import deterministic_zip
 from .awscc_schema import AwsccSchema
 from .expand import expand, load_template, offline_placeholders
@@ -339,6 +339,13 @@ def main(argv: list[str] | None = None) -> int:
         "(default: terraform/translator/renames.yaml)",
     )
     ap.add_argument(
+        "--suppressions-source",
+        type=Path,
+        help="source template whose scanner suppressions are carried into the "
+        "module, with its nested templates resolved as --offline resolves them "
+        "(default with --offline: the template itself; otherwise none)",
+    )
+    ap.add_argument(
         "--survey",
         action="store_true",
         help="collect every failure and print them instead of stopping",
@@ -373,6 +380,11 @@ def main(argv: list[str] | None = None) -> int:
             nested_loader=loader,
         )
         tr.directory_readers = args.label_template is not None
+        suppression_source = args.suppressions_source or (
+            args.template if args.offline else None
+        )
+        if suppression_source is not None:
+            suppressions.attach(tr, suppressions.read_tree(suppression_source))
         files = tr.render()
         render_tree(tr)
         errors, stale_declarations, edges = tree_checks(tr)

@@ -676,11 +676,11 @@ idp-cli delete [OPTIONS]
 - `--terraform-assume-role-arn`: IAM role both Terraform providers assume during the delete (used with `--terraform`)
 
 **S3 Bucket Behavior:**
-- **LoggingBucket**: `DeletionPolicy: Retain` - Always kept (unless using `--force-delete-all`)
-- **All other buckets**: `DeletionPolicy: RetainExceptOnCreate` - Deleted if empty
-- CloudFormation can ONLY delete S3 buckets if they're empty
+- **LoggingBucket, ConfigurationBucket, TestSetBucket and WebUIBucket**: `DeletionPolicy: Retain` - kept when the stack is deleted (unless using `--force-delete-all`)
+- **The other data buckets** (input, output, working, discovery, reporting, evaluation baseline, MCP content and fine-tuning data): `DeletionPolicy: RetainExceptOnCreate` - also kept when the stack is deleted; CloudFormation deletes them only when the stack's own creation fails and rolls back. The API Gateway hosting staging bucket is the exception: it is deleted with the stack
 - Use `--empty-buckets` to automatically empty buckets before deletion
 - Use `--force-delete-all` to delete ALL remaining resources after CloudFormation completes
+- The KMS key that encrypts the buckets is retained too, and costs about $1 a month until you schedule its deletion; see [The retained KMS key](#the-retained-kms-key)
 
 **Force Delete All Behavior:**
 
@@ -720,6 +720,10 @@ from one that deleted cleanly.
 - All CloudWatch Log Groups (retained by CloudFormation)
 - All S3 buckets including LoggingBucket
 - Handles nested stack resources automatically
+
+The retained KMS key is **not** deleted by `--force-delete-all`; the cleanup summary
+names it and prints the `aws kms schedule-key-deletion` command. See
+[The retained KMS key](#the-retained-kms-key) below.
 
 **Examples:**
 
@@ -892,6 +896,36 @@ Proceeding with stack deletion...
 
 **Note:** CREATE operations cannot be cancelled directly - they must complete or roll back naturally. UPDATE operations can be cancelled immediately.
 
+#### The retained KMS key
+
+The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
+data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
+leave every object in the retained buckets unreadable once its deletion window ended.
+Its alias, `alias/<stack-name>-customer-encryption-key`, is deleted with the stack, so
+a new stack with the same name creates its own key and alias. The key's description
+names the stack it belonged to.
+
+A retained key costs about $1 a month, rising to at most $3 a month once its yearly
+automatic rotation has run twice. A key scheduled for deletion is not charged. `delete`
+does not delete it, with or without `--force-delete-all`, because scheduling a key's
+deletion makes everything it encrypted unreadable, including data copied out of the
+buckets with its encryption intact. Once you no longer need any of the retained data:
+
+1. Find the key id. After a `--force-delete-all` or Terraform delete the CLI prints it.
+   Otherwise it is the `KMSMasterKeyID` of a retained bucket's default encryption
+   (`aws s3api get-bucket-encryption --bucket <retained-bucket-name>`), or the physical
+   id of `CustomerManagedEncryptionKey` in
+   `aws cloudformation list-stack-resources --stack-name <stack-id>`, which works for a
+   deleted stack when given its stack id.
+2. Delete the retained buckets, or make sure nothing you still need is encrypted with
+   the key.
+3. Schedule the key's deletion. The waiting period is 7 to 30 days, and
+   `aws kms cancel-key-deletion` undoes it until then:
+
+   ```bash
+   aws kms schedule-key-deletion --key-id <key-id> --pending-window-in-days 7
+   ```
+
 #### Deleting a Terraform deployment
 
 `delete --terraform` removes a Terraform deployment, keeping the resources CloudFormation would retain. See [Terraform deployments](#terraform-deployments-1) below and [Terraform Deployment](./terraform.md#deleting).
@@ -918,7 +952,7 @@ With `--from-code`, `deploy --terraform` first builds and publishes the template
 
 When the module comes from the pointer, idp-cli downloads the zip to read its `idp-terraform.json` and refuses it if its SHA-256 differs from the pointer's `sha256`. That is a consistency check of the copy idp-cli reads, against the manifest beside it: Terraform downloads the module again itself, and that download is not checked. A module named with `--terraform-module-url` is not checked at all, because there is no pointer to compare it with; to verify an archive, see [Verifying the archive](./terraform.md#verifying-the-archive).
 
-The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, the values of the earlier deploy, remembered by CloudFormation parameter name in `idp-cli-parameters.json`, are kept and the new `--parameters` applied over them. Only values that were passed are remembered, not the defaults in effect, so a parameter never passed takes the new module's default: unlike a CloudFormation update, which keeps the previous value of every parameter it is not given, an upgrade to a release that changed a default applies the new one. Pass the old value explicitly to keep it (see [Upgrading](./terraform.md#upgrading)). An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
+The command writes `main.tf` (the aws and awscc providers in the region and `module "idp"`), `terraform.tfvars` and `idp-cli-parameters.json` (both created readable by their owner only, as they can hold `NoEcho` values) into the directory. It then runs `init` (with `-upgrade` only when the module source changed since the last deploy from that directory, so providers do not float otherwise), `plan -out`, and `show -json` on the saved plan, and refuses the plan, applying nothing and listing the addresses, if it deletes or replaces a resource that holds data or that CloudFormation would retain (the `statefulAddresses` and `retainedAddresses` of the installed and the new module). `--terraform-allow-replace-stateful` applies such a plan anyway, losing those resources' data. Otherwise it applies exactly the saved plan. Output streams to stderr. State is local in that directory unless you add a backend block in another `.tf` file there. `main.tf` carries an idp-cli marker comment, and a `main.tf` without it is never overwritten. On a later deploy, as on a CloudFormation update, every parameter not passed keeps the value the deployment has, whether it was set or defaulted, and the new `--parameters` are applied over them; a parameter new in the release takes its default. The values are read from the deployment's label stack, which records each parameter's value in effect, so a second operator deploying from another directory against the same state gets the same settings, and a deployment made by an earlier `idp-cli` keeps its defaulted values on its first upgrade. `NoEcho` values, which the label stack leaves out, come from the directory's `idp-cli-parameters.json`, which after each apply records every parameter's value in effect by CloudFormation parameter name. Before the plan the command lists the kept values that differ from the new module's defaults and the new parameters that took their defaults. Without a label stack (`enable_cfn_stack_label = false`), a directory an earlier `idp-cli` wrote holds only the passed values, so the parameters never passed take the new defaults, and the command warns, naming each whose default changed (see [Upgrading](./terraform.md#upgrading)). An S3 module URL is written as an `s3::` source so Terraform downloads it with your AWS credentials.
 
 `delete --terraform` (options `--stack-name`, `--terraform-dir`, `--terraform-bin`, `--terraform-assume-role-arn`, `--region`, `--force`) uses the role the deploy wrote into `main.tf`, or, with `--terraform-assume-role-arn`, rewrites the two provider blocks to assume that one first; then it runs `init`, empties every bucket in the state that `destroy` will delete, removes the resources CloudFormation would retain (the module's `retainedAddresses`, under `module.idp.`) from the state so they stay, then runs `destroy -auto-approve`, and lists what was retained, plus the log groups AWS services created for the deployment's resources, which the destroy leaves (see [Deleting](./terraform.md#deleting)). `--force-delete-all` does not apply.
 

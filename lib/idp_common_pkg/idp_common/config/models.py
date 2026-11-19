@@ -2446,12 +2446,13 @@ class ClassificationModelSettings(RegionalModelDefaults):
         default=DEFAULT_REASONING_EFFORT, description=_REASONING_EFFORT_DESCRIPTION
     )
     max_tokens: Optional[int] = Field(
-        default=None,
+        default=10000,
         gt=0,
         description=(
-            "Optional cap on output tokens. Leave empty to use the selected "
-            "model's maximum output limit (recommended). If set, it must not "
-            "exceed the model's limit."
+            "Cap on output tokens (default 10000). A classification reply is "
+            "short, and Bedrock holds input + max_tokens of the tokens-per-minute "
+            "quota while a call runs. Leave empty to use the selected model's "
+            "maximum output limit. If set, it must not exceed the model's limit."
         ),
     )
     modality: ClassificationModalityConfig = Field(
@@ -3458,6 +3459,16 @@ class OCRConfig(BaseModel):
     task_prompt: Optional[str] = Field(
         default=None, description="Task prompt for Bedrock OCR"
     )
+    max_tokens: Optional[int] = Field(
+        default=10000,
+        gt=0,
+        description=(
+            "Cap on output tokens for each Bedrock OCR page call (bedrock backend "
+            "only; default 10000). Bedrock holds input + max_tokens of the "
+            "tokens-per-minute quota while a call runs. Leave empty to use the "
+            "selected model's maximum output limit."
+        ),
+    )
     reasoning_effort: str = Field(
         default="medium",
         description=(
@@ -3477,6 +3488,12 @@ class OCRConfig(BaseModel):
     )
     max_workers: int = Field(default=20, gt=0, description="Max concurrent workers")
     image: ImageConfig = Field(default_factory=ImageConfig)
+
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def parse_max_tokens(cls, v: Any) -> Optional[int]:
+        """Parse optional max_tokens (empty/0 -> None = use model max)."""
+        return _parse_optional_max_tokens(v)
 
     @field_validator("max_workers", mode="before")
     @classmethod
@@ -4568,9 +4585,15 @@ class EvaluationLLMMethodConfig(RegionalModelDefaults):
 
     top_p: float = Field(default=0.0, ge=0.0, le=1.0)
     max_tokens: Optional[int] = Field(
-        default=None,
+        default=10000,
         gt=0,
-        description="Optional cap on output tokens. Leave empty to use the selected model's maximum output limit (recommended). If set, it must not exceed the model's limit.",
+        description=(
+            "Cap on output tokens (default 10000). A comparison reply is a short "
+            "JSON object, and Bedrock holds input + max_tokens of the "
+            "tokens-per-minute quota while a call runs. Leave empty to use the "
+            "selected model's maximum output limit. If set, it must not exceed "
+            "the model's limit."
+        ),
     )
     top_k: float = Field(default=5.0, ge=0.0)
     reasoning_effort: str = Field(
