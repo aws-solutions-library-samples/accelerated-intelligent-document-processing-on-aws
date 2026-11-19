@@ -143,6 +143,18 @@
     "defaultMessage": "Upload Documents",
     "description": "Last crumb of the breadcrumb trail on the Upload Documents page: the page itself."
   },
+  "capacityPlanning.escalationRate.description": {
+    "defaultMessage": "Share of documents assumed to fail validation and be re-extracted with the escalation model. Used only until enough processed documents are available to measure the rate from metering. The results say which rate was used.",
+    "description": "Help text under the escalation rate field on the capacity planning page."
+  },
+  "capacityPlanning.escalationRate.label": {
+    "defaultMessage": "Escalation rate when not measured (%)",
+    "description": "Label of an optional number field on the capacity planning page, shown only when extraction validation failures are re-extracted with an escalation model."
+  },
+  "capacityPlanning.escalationRate.placeholder": {
+    "defaultMessage": "Default: 15",
+    "description": "Placeholder of the empty escalation rate field. 15 is the percentage the planner uses when the field is left empty."
+  },
   "capacityPlanning.quotaNotRead.body": {
     "defaultMessage": "The quota analysis below leaves out the steps that use these models.",
     "description": "Text under that heading, above the list of models whose quota could not be read. Each list item comes from the server untranslated."

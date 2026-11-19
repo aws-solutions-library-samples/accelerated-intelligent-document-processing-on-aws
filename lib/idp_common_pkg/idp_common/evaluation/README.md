@@ -539,6 +539,16 @@ so `evaluate_document` submits each section through
 the same, or its calls are billed and recorded nowhere. `compare_llm` called
 outside any `collect_evaluation_metering()` block records nothing.
 
+Capacity Planning reads these keys to measure judge requests per evaluated
+document for its Evaluation demand line (`EVALUATION_METERING_PREFIX` in
+`src/lambda/calculate_capacity/index.py`, checked against
+`EVALUATION_METERING_CONTEXT` by the test beside it). Until any are recorded it
+counts one request per `LLM`-compared field of the class schema
+(`countLlmComparisons` in `src/ui/src/components/capacity-planning/demand-lines.ts`),
+following the call pattern above: an `LLM` method on an object or a structured
+list makes no call of its own, and a field inside a structured list is counted
+only when it opts in with `x-aws-idp-evaluation-allow-llm-in-list`.
+
 #### DATE method configuration
 
 The `DATE` method accepts an optional `x-aws-idp-evaluation-method-config` object that is passed through to Stickler's `DateComparator`:

@@ -974,6 +974,12 @@ STEP_MODEL_CONFIG_KEYS = {
     "Assessment": "assessment_model",
     "Summarization": "summarization_model",
     "OCR": "ocr_model",
+    # The two demand lines below are charged to the model that serves them, not
+    # to a processing step's model. The UI sets `evaluation_model` only while
+    # evaluation is enabled and `escalation_model` only while validation failures
+    # escalate, so an absent key is how "this line does not apply" arrives.
+    "Evaluation": "evaluation_model",
+    "Escalation": "escalation_model",
 }
 PATTERN_BEDROCK_STEPS = {
     "pattern-1": ("Summarization",),
@@ -983,9 +989,76 @@ PATTERN_BEDROCK_STEPS = {
         "Assessment",
         "Summarization",
         "OCR",
+        "Evaluation",
+        "Escalation",
     ),
     "pattern-3": ("Extraction", "Assessment", "Summarization", "OCR"),
 }
+
+
+# Metering contexts of the validation-escalation re-extraction call. The current
+# spelling is `ESCALATION_METERING_CONTEXT` in `idp_common.extraction.service`;
+# Simple-mode rows from earlier releases carry `Extraction-Escalation`. Both
+# contain "extraction", so without this the Extraction step's substring match
+# counted every escalation request as an extraction request on the extraction
+# model, which is the wrong model whenever an escalation model is configured.
+ESCALATION_METERING_PREFIXES = ("extractionescalation/", "extraction-escalation/")
+EVALUATION_METERING_PREFIX = "evaluation/"
+
+# Share of documents assumed to escalate when metering cannot supply the rate.
+# Measured, not guessed: with `fail_action: warn` (validation on, nothing
+# re-run) the benchmark suite's `core` corpus left at least one section failing
+# full-schema validation on 12.8%-14.9% of documents across the v0.6.8-v0.6.14
+# runs of 46-47 documents, and on 13.5% of the 141-document v0.6.11 run, which
+# is the share `fail_action: escalate` would re-extract. Rounded up to 15%,
+# because a planner that undershoots reports a quota as sufficient when it is
+# not. A request's `escalationRate` overrides it.
+DEFAULT_ESCALATION_RATE = 0.15
+
+# Documents with extraction metering a sample needs before the measured
+# escalation rate replaces the default. At the default rate the standard error
+# of a 20-document estimate is sqrt(0.15 * 0.85 / 20) = 0.08, about half the
+# rate itself; fewer documents and the measurement is mostly noise.
+MIN_ESCALATION_SAMPLE_DOCUMENTS = 20
+
+# Bedrock requests one escalated document is assumed to make when the rate is
+# the default. Simple mode re-extracts in one call; agentic mode runs an agent
+# loop that can take several, which only a measured rate captures.
+DEFAULT_REQUESTS_PER_ESCALATION = 1
+
+# Tokens one evaluation LLM comparison is assumed to spend when a document type
+# carries no measured evaluation tokens. The shipped judge prompt is 955
+# characters (system plus task template), about 240 tokens at the four
+# characters per token `idp_common.extraction.sharding.estimate_tokens` uses;
+# the class, attribute, both values and the short JSON verdict add roughly
+# another 100-150. Rounded up to 400.
+DEFAULT_EVALUATION_TOKENS_PER_COMPARISON = 400
+
+
+def _metering_key_belongs_to(step_name, key_lower):
+    """Whether a lower-cased `{context}/bedrock/{model}` key is this step's.
+
+    Assessment is matched separately by its caller, because its regular and
+    granular entries are counted under a configuration flag.
+    """
+    is_escalation = key_lower.startswith(ESCALATION_METERING_PREFIXES)
+    if step_name == "Escalation":
+        return is_escalation
+    if step_name == "Evaluation":
+        return key_lower.startswith(EVALUATION_METERING_PREFIX)
+    if is_escalation:
+        return False
+    return step_name.lower() in key_lower
+
+
+def _metered_tokens(value):
+    """Total tokens of one metering entry, as the UI's populate step reads it."""
+    total = value.get("totalTokens")
+    if total:
+        return float(total)
+    return float(value.get("inputTokens", 0) or 0) + float(
+        value.get("outputTokens", 0) or 0
+    )
 
 
 def plan_model_ids(pattern, model_config):
@@ -1385,6 +1458,76 @@ def _lookup_quota(quotas_dict, model_id):
     return None
 
 
+def _plan_escalation_line(
+    *,
+    model_id,
+    peak_extraction_tpm,
+    escalation_rate,
+    population,
+    escalated_documents,
+    escalation_requests_total,
+    escalation_tokens_total,
+    population_extraction_tokens,
+    demand_notes,
+):
+    """Peak escalation TPM and requests per document, and the note saying why.
+
+    Escalation re-extracts a document that failed validation, so its token
+    demand is expressed as a share of extraction's: measured, it is the
+    escalation tokens the sample spent over the extraction tokens of the same
+    documents; by default, each escalated document is assumed to spend its
+    extraction tokens again, so the share is the escalation rate itself.
+
+    The measured rate is used only when the sample holds at least
+    `MIN_ESCALATION_SAMPLE_DOCUMENTS` documents with extraction metering **and**
+    at least one escalation. A sample with none is not read as a measured zero:
+    a history recorded under `fail_action: warn` has no escalations however
+    often validation failed, and planning nothing for it is the under-provisioned
+    direction.
+    """
+    measured = (
+        population >= MIN_ESCALATION_SAMPLE_DOCUMENTS
+        and escalation_requests_total > 0
+        and population_extraction_tokens > 0
+    )
+    if measured:
+        token_share = escalation_tokens_total / population_extraction_tokens
+        requests_per_doc = escalation_requests_total / population
+        demand_notes.append(
+            f"Escalation demand on {model_id} uses the rate measured from metering: "
+            f"{escalated_documents} of {population} sampled documents escalated "
+            f"({escalated_documents / population:.1%}), making "
+            f"{requests_per_doc:.2f} escalation requests per document and spending "
+            f"{token_share:.1%} of the extraction tokens again."
+        )
+    else:
+        rate = DEFAULT_ESCALATION_RATE if escalation_rate is None else escalation_rate
+        source = (
+            "the default"
+            if escalation_rate is None
+            else "the requested"
+        )
+        if population < MIN_ESCALATION_SAMPLE_DOCUMENTS:
+            reason = (
+                f"only {population} sampled documents carry extraction metering and "
+                f"a measured rate needs at least {MIN_ESCALATION_SAMPLE_DOCUMENTS}"
+            )
+        else:
+            reason = (
+                f"none of the {population} sampled documents escalated, which is also "
+                f"what a history processed before `fail_action: escalate` looks like"
+            )
+        token_share = rate
+        requests_per_doc = rate * DEFAULT_REQUESTS_PER_ESCALATION
+        demand_notes.append(
+            f"Escalation demand on {model_id} uses {source} rate of {rate:.1%} of "
+            f"documents, because {reason}. Each escalated document is assumed to "
+            f"spend its extraction tokens again in "
+            f"{DEFAULT_REQUESTS_PER_ESCALATION} request."
+        )
+    return token_share * peak_extraction_tpm, requests_per_doc
+
+
 def build_simple_quota_requirements(
     pages_per_hour,
     tokens_per_hour,
@@ -1397,12 +1540,22 @@ def build_simple_quota_requirements(
     latency_distribution=None,
     document_configs=None,
     granular_assessment_enabled=True,
+    escalation_rate=None,
+    demand_notes=None,
 ):
     """Build quota requirements analysis using peak hour demand per inference type.
     
     Args:
         granular_assessment_enabled: When False, GranularAssessment requests are excluded from Assessment RPM calculation.
+        escalation_rate: Share of documents (0-1) assumed to escalate when the
+            metering sample cannot supply a measured rate; None means
+            `DEFAULT_ESCALATION_RATE`.
+        demand_notes: Optional list this function appends one sentence to for
+            each of the Evaluation and Escalation lines it plans, saying which
+            basis (measured or derived/default) the line's figures rest on.
     """
+    if demand_notes is None:
+        demand_notes = []
     requirements = []
 
     print(f"Starting quota requirements build for {pattern}")
@@ -1415,6 +1568,10 @@ def build_simple_quota_requirements(
     peak_extraction_tpm = 0
     peak_assessment_tpm = 0
     peak_summarization_tpm = 0
+    peak_evaluation_tpm = 0
+    # LLM comparisons the evaluation configuration implies, per hour. A request
+    # count rather than tokens, so it is not scaled to a per-minute figure here.
+    peak_evaluation_comparisons_per_hour = 0
 
     # Add 10% buffer to base demand for safety margin
     BUFFER_FACTOR = 1.1  # 10% buffer
@@ -1432,12 +1589,18 @@ def build_simple_quota_requirements(
         extraction_tpm = hour_data["extractionTokensPerHour"] / 60 * BUFFER_FACTOR
         assessment_tpm = hour_data["assessmentTokensPerHour"] / 60 * BUFFER_FACTOR
         summarization_tpm = hour_data["summarizationTokensPerHour"] / 60 * BUFFER_FACTOR
+        evaluation_tpm = hour_data["evaluationTokensPerHour"] / 60 * BUFFER_FACTOR
 
         peak_ocr_tpm = max(peak_ocr_tpm, ocr_tpm)
         peak_classification_tpm = max(peak_classification_tpm, classification_tpm)
         peak_extraction_tpm = max(peak_extraction_tpm, extraction_tpm)
         peak_assessment_tpm = max(peak_assessment_tpm, assessment_tpm)
         peak_summarization_tpm = max(peak_summarization_tpm, summarization_tpm)
+        peak_evaluation_tpm = max(peak_evaluation_tpm, evaluation_tpm)
+        peak_evaluation_comparisons_per_hour = max(
+            peak_evaluation_comparisons_per_hour,
+            hour_data["evaluationComparisonsPerHour"],
+        )
 
     print(
         f"🔍 Peak demands (10% buffer applied) - OCR: {peak_ocr_tpm:.0f}, Classification: {peak_classification_tpm:.0f}, Extraction: {peak_extraction_tpm:.0f}, Assessment: {peak_assessment_tpm:.0f}, Summarization: {peak_summarization_tpm:.0f}"
@@ -1472,6 +1635,17 @@ def build_simple_quota_requirements(
         ocr_model = model_config.get("ocr_model")
         if ocr_model and ocr_model.strip():
             inference_demands["OCR"] = (peak_ocr_tpm, ocr_model.strip())
+        # Evaluation's LLM judge and validation escalation are separate demand
+        # lines, each on the model that serves it. Escalation's token figure is a
+        # share of extraction's and is only known once the metering sample has
+        # been read, so it is filled in below.
+        if model_config.get("evaluation_model"):
+            inference_demands["Evaluation"] = (
+                peak_evaluation_tpm,
+                model_config.get("evaluation_model"),
+            )
+        if model_config.get("escalation_model"):
+            inference_demands["Escalation"] = (None, model_config.get("escalation_model"))
     else:  # pattern-3
         # Use only configured models - no defaults
         if model_config.get("extraction_model"):
@@ -1548,6 +1722,14 @@ def build_simple_quota_requirements(
         # none can be inferred, so the RPM row is withheld while the TPM row —
         # which needs no metering — is still reported.
         rpm_measurable = True
+        # Escalation only: documents carrying extraction metering (the population
+        # an escalation rate is a share of), the documents among them that
+        # escalated, and both steps' tokens over that population.
+        escalation_population = 0
+        escalated_documents = 0
+        escalation_requests_total = 0
+        escalation_tokens_total = 0.0
+        population_extraction_tokens = 0.0
 
         if metering_table_name:
             try:
@@ -1672,8 +1854,10 @@ def build_simple_quota_requirements(
                                 # Continue iterating to find all assessment-related entries
                                 continue
                             else:
-                                # For other steps, use standard substring matching
-                                if step_name.lower() not in key_lower:
+                                # Substring matching on the step name, except that
+                                # escalation and evaluation keys belong to their own
+                                # lines (see `_metering_key_belongs_to`).
+                                if not _metering_key_belongs_to(step_name, key_lower):
                                     continue
                                 
                                 # Use actual requests from metering data, continuing
@@ -1689,6 +1873,32 @@ def build_simple_quota_requirements(
                         total_requests += requests_for_doc
                         doc_count += 1
                         metering_data_available = True
+
+                    if step_name == "Escalation":
+                        bedrock_entries = [
+                            (key.lower(), value)
+                            for key, value in metering_data.items()
+                            if isinstance(value, dict) and "bedrock" in key.lower()
+                        ]
+                        extraction_entries = [
+                            value
+                            for key_lower, value in bedrock_entries
+                            if _metering_key_belongs_to("Extraction", key_lower)
+                            and value.get("requests", 0) > 0
+                        ]
+                        if extraction_entries:
+                            escalation_population += 1
+                            population_extraction_tokens += sum(
+                                _metered_tokens(value) for value in extraction_entries
+                            )
+                            if found_data_for_doc:
+                                escalated_documents += 1
+                                escalation_requests_total += requests_for_doc
+                                escalation_tokens_total += sum(
+                                    _metered_tokens(value)
+                                    for key_lower, value in bedrock_entries
+                                    if _metering_key_belongs_to("Escalation", key_lower)
+                                )
                 
                 # Calculate average requests per document
                 if doc_count > 0:
@@ -1706,6 +1916,39 @@ def build_simple_quota_requirements(
                 print(f"⚠️ Could not read metering data for {step_name}: {e}")
         else:
             print("⚠️ METERING_TABLE_NAME not configured - using estimation")
+
+        if step_name == "Escalation":
+            peak_tpm, requests_per_doc = _plan_escalation_line(
+                model_id=model_id,
+                peak_extraction_tpm=peak_extraction_tpm,
+                escalation_rate=escalation_rate,
+                population=escalation_population,
+                escalated_documents=escalated_documents,
+                escalation_requests_total=escalation_requests_total,
+                escalation_tokens_total=escalation_tokens_total,
+                population_extraction_tokens=population_extraction_tokens,
+                demand_notes=demand_notes,
+            )
+            # The rate is either measured or the stated default, so a request
+            # figure always exists; zero only when extraction has no demand.
+            metering_data_available = True
+        elif step_name == "Evaluation":
+            if doc_count > 0:
+                demand_notes.append(
+                    f"Evaluation demand on {model_id}: {requests_per_doc:.1f} judge "
+                    f"requests per document, measured from the metering of {doc_count} "
+                    f"evaluated documents. The plan assumes every scheduled document "
+                    f"is evaluated."
+                )
+            elif peak_evaluation_comparisons_per_hour > 0 or peak_tpm > 0:
+                demand_notes.append(
+                    f"Evaluation demand on {model_id} is derived from the evaluation "
+                    f"configuration (one judge request per LLM-compared field per "
+                    f"document), because no evaluation metering has been recorded "
+                    f"yet. LLM-compared fields inside a list cost one request per "
+                    f"pair of rows, so a document with long lists needs more. The "
+                    f"plan assumes every scheduled document is evaluated."
+                )
         
         # Calculate actual requests per hour based on scheduled docs/hour and avg requests/doc
         actual_requests_per_hour = 0
@@ -1722,6 +1965,11 @@ def build_simple_quota_requirements(
             )
             actual_requests_per_hour = requests_per_doc * peak_scheduled_docs_per_hour
             print(f"🔍 {step_name} RPM calc: {requests_per_doc:.1f} req/doc × {peak_scheduled_docs_per_hour} docs/hour (peak hour) = {actual_requests_per_hour:.1f} requests/hour")
+        elif step_name == "Evaluation" and peak_evaluation_comparisons_per_hour > 0:
+            # No evaluation metering yet: one judge request per LLM comparison the
+            # configuration implies, at the hour that implies the most.
+            actual_requests_per_hour = peak_evaluation_comparisons_per_hour
+            metering_data_available = True
         
         # If no metering data available and no demand, skip this step quietly
         if (not metering_data_available or actual_requests_per_hour == 0) and peak_tpm == 0:
@@ -2123,7 +2371,19 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             "assessment_model": user_config.get("assessment_model", ""),
             "summarization_model": user_config.get("summarization_model", ""),
             "ocr_model": user_config.get("ocr_model", ""),
+            # Set by the caller only while the feature is on: evaluation enabled,
+            # and validation failures escalating (`fail_action: escalate`).
+            "evaluation_model": user_config.get("evaluation_model", ""),
+            "escalation_model": user_config.get("escalation_model", ""),
         }
+
+        # Share of documents assumed to escalate when metering cannot measure it.
+        # Range-checked by `validate_capacity_input`.
+        escalation_rate = input_data.get("escalationRate")
+        if escalation_rate is not None and escalation_rate != "":
+            escalation_rate = float(escalation_rate)
+        else:
+            escalation_rate = None
 
         print(f"Model config for quota builder: {model_config}")
 
@@ -2157,6 +2417,8 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 "extractionTokensPerHour": 0,
                 "assessmentTokensPerHour": 0,
                 "summarizationTokensPerHour": 0,
+                "evaluationTokensPerHour": 0,
+                "evaluationComparisonsPerHour": 0,
                 "documentType": "No processing scheduled",
             }
 
@@ -2179,6 +2441,18 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 extraction_tokens = doc_config.get("extractionTokens", 0)
                 summarization_tokens = doc_config.get("summarizationTokens", 0)
                 assessment_tokens = doc_config.get("assessmentTokens", 0)
+                # Judge requests one document of this type makes: the LLM-compared
+                # fields of its class schema, counted by the caller. Tokens are the
+                # measured figure when the type has one, else that count at the
+                # per-comparison estimate.
+                evaluation_comparisons = float(
+                    doc_config.get("evaluationComparisons", 0) or 0
+                )
+                evaluation_tokens = float(doc_config.get("evaluationTokens", 0) or 0)
+                if evaluation_tokens <= 0:
+                    evaluation_tokens = (
+                        evaluation_comparisons * DEFAULT_EVALUATION_TOKENS_PER_COMPARISON
+                    )
 
                 print(
                     f"🔍 Hour {hour}, DocType: {doc_type}, DocsPerHour: {docs_per_hour}, OCR tokens: {ocr_tokens}"
@@ -2201,6 +2475,12 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                 )
                 hourly_breakdown[hour]["summarizationTokensPerHour"] += (
                     summarization_tokens * docs_per_hour
+                )
+                hourly_breakdown[hour]["evaluationTokensPerHour"] += (
+                    evaluation_tokens * docs_per_hour
+                )
+                hourly_breakdown[hour]["evaluationComparisonsPerHour"] += (
+                    evaluation_comparisons * docs_per_hour
                 )
 
                 # Pattern-1 (BDA) only uses summarization tokens
@@ -2286,6 +2566,7 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
 
         # Build quota requirements using Applied account-level quota values
         # Pass granular_assessment_enabled directly (not via latency_distribution)
+        demand_notes = []
         quota_requirements = build_simple_quota_requirements(
             total_pages_per_hour,
             total_tokens_per_hour,
@@ -2298,6 +2579,8 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
             latency_distribution,  # Pass latency distribution for concurrency calculation
             document_configs,  # Pass document configs for request count data
             granular_assessment_enabled,  # Pass granular assessment flag directly
+            escalation_rate=escalation_rate,
+            demand_notes=demand_notes,
         )
 
         print(f"Returning {len(quota_requirements)} quota requirements")
@@ -2333,6 +2616,9 @@ def lambda_handler(event: Dict[str, Any], context) -> Dict[str, Any]:
                     for planned in plan_model_ids(pattern, model_config)
                 )
             ]
+            # Which basis the Evaluation and Escalation lines rest on — for
+            # escalation, the measured or the default rate, and its value.
+            + demand_notes
             + generate_adaptive_recommendations(
                 latency_distribution,
                 quota_requirements,
