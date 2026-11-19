@@ -16,6 +16,7 @@ import {
   Box,
   Button,
   ColumnLayout,
+  DatePicker,
   ExpandableSection,
   FileUpload,
   FormField,
@@ -27,6 +28,7 @@ import {
   SpaceBetween,
   StatusIndicator,
   Tiles,
+  TimeInput,
   Wizard,
 } from '@cloudscape-design/components';
 import type { SelectProps } from '@cloudscape-design/components';
@@ -40,6 +42,7 @@ import { DISCOVERY_PATH } from '../../routes/constants';
 import useGenerateSyntheticForm from './useGenerateSyntheticForm';
 import { formatLeftOut, patternPreviewMessages, splitPatternMatches } from './patternPreview';
 import { createLatestResponseGuard } from './latestResponseOnly';
+import { customCutoffIsInvalid, invalidCustomField, modifiedAfterMessages, resolveModifiedAfter } from './modifiedAfter';
 import {
   BUCKET_OPTIONS,
   CREATE_SOURCES,
@@ -126,6 +129,13 @@ const CreateTestSetWizard = ({
   const [customTime, setCustomTime] = useState('00:00:00');
   const [fileCount, setFileCount] = useState(0);
   const [leftOut, setLeftOut] = useState('');
+  // The cutoff the count above was computed against. A relative window ("last 24
+  // hours") is resolved to an absolute time when the check is sent, and submit
+  // sends that same time: resolving it again would move the cutoff later and
+  // leave out counted files that aged out in between. The cutoff is a lower
+  // bound only, so files added after the check are still copied. Null until a
+  // check has answered.
+  const [checkedCutoff, setCheckedCutoff] = useState<{ modifiedAfter: string | undefined } | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   // A check's reply describes the bucket, pattern and time filter it was sent
   // with; one landing after any of them changed must not set the count.
@@ -153,6 +163,7 @@ const CreateTestSetWizard = ({
     checkGuard.current.claim();
     setFileCount(0);
     setLeftOut('');
+    setCheckedCutoff(null);
     setError('');
   };
 
@@ -171,6 +182,7 @@ const CreateTestSetWizard = ({
     setCustomTime('00:00:00');
     setFileCount(0);
     setLeftOut('');
+    setCheckedCutoff(null);
     setError('');
   };
 
@@ -179,21 +191,21 @@ const CreateTestSetWizard = ({
     onDismiss();
   };
 
-  const getModifiedAfter = (): string | undefined => {
-    if (!timeFilter.value) return undefined;
-    if (timeFilter.value === 'custom') {
-      return customDate ? new Date(`${customDate}T${customTime}`).toISOString() : undefined;
-    }
-    const hours = parseInt(timeFilter.value, 10);
-    return new Date(Date.now() - hours * 3600 * 1000).toISOString();
-  };
+  const getModifiedAfter = (): string | undefined => resolveModifiedAfter(timeFilter.value, customDate, customTime);
+  const customDateTimeInvalid = customCutoffIsInvalid(timeFilter.value, customDate, customTime);
+  const invalidCustomDateTimeText = intl.formatMessage(modifiedAfterMessages.invalidCustomDateTime);
 
   const handleCheckFiles = async () => {
     if (!filePattern.trim()) {
       setError('Enter a file pattern first');
       return;
     }
+    if (customDateTimeInvalid) {
+      setError(invalidCustomDateTimeText);
+      return;
+    }
     const isCurrent = checkGuard.current.claim();
+    const modifiedAfter = getModifiedAfter();
     setIsChecking(true);
     setError('');
     try {
@@ -202,7 +214,7 @@ const CreateTestSetWizard = ({
         variables: {
           bucketType: bucket.value ?? '',
           filePattern: filePattern.trim(),
-          modifiedAfter: getModifiedAfter(),
+          modifiedAfter,
         },
       });
       if (!isCurrent()) return;
@@ -210,6 +222,7 @@ const CreateTestSetWizard = ({
       // A new set holds nothing yet, so only the .zip matches are left out.
       const split = splitPatternMatches(bucket.value ?? '', matched);
       setFileCount(split.documents.length);
+      setCheckedCutoff({ modifiedAfter });
       const leftOutText = formatLeftOut(intl, split);
       setLeftOut(leftOutText);
       if (matched.length === 0) setError('No files matched that pattern');
@@ -305,7 +318,8 @@ const CreateTestSetWizard = ({
       filePattern: filePattern.trim(),
       bucketType: bucket.value ?? '',
       fileCount,
-      modifiedAfter: getModifiedAfter(),
+      // Unchecked, there is no count to agree with, so the window is resolved now.
+      modifiedAfter: checkedCutoff ? checkedCutoff.modifiedAfter : getModifiedAfter(),
     };
     if (documentClassType.value) {
       variables.documentClassType = documentClassType.value as DocumentClassType;
@@ -347,6 +361,10 @@ const CreateTestSetWizard = ({
     }
     if (description && !validateDescription(description.trim())) {
       setError('Description cannot exceed 500 characters');
+      return;
+    }
+    if (source === 'existing-files' && customDateTimeInvalid) {
+      setError(invalidCustomDateTimeText);
       return;
     }
     if (!(await nameIsFree())) return;
@@ -530,24 +548,33 @@ const CreateTestSetWizard = ({
           </FormField>
           {timeFilter.value === 'custom' && (
             <ColumnLayout columns={2}>
-              <FormField label="Date">
-                <Input
+              <FormField
+                label="Date"
+                errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'date' ? invalidCustomDateTimeText : undefined}
+              >
+                <DatePicker
                   value={customDate}
                   onChange={({ detail }) => {
                     setCustomDate(detail.value);
                     clearCheck();
                   }}
-                  placeholder="YYYY-MM-DD"
+                  placeholder="YYYY/MM/DD"
+                  openCalendarAriaLabel={(selectedDate) => `Choose date${selectedDate ? `, selected date is ${selectedDate}` : ''}`}
                 />
               </FormField>
-              <FormField label="Time">
-                <Input
+              <FormField
+                label="Time"
+                constraintText={intl.formatMessage(modifiedAfterMessages.customTimeIsUtc)}
+                errorText={customDateTimeInvalid && invalidCustomField(customDate) === 'time' ? invalidCustomDateTimeText : undefined}
+              >
+                <TimeInput
                   value={customTime}
                   onChange={({ detail }) => {
                     setCustomTime(detail.value);
                     clearCheck();
                   }}
-                  placeholder="00:00:00"
+                  format="hh:mm:ss"
+                  placeholder="HH:mm:ss"
                 />
               </FormField>
             </ColumnLayout>
@@ -648,6 +675,10 @@ const CreateTestSetWizard = ({
               }
               if (source === 'existing-files' && !filePattern.trim()) {
                 setError('Enter a file pattern to continue');
+                return;
+              }
+              if (source === 'existing-files' && customDateTimeInvalid) {
+                setError(invalidCustomDateTimeText);
                 return;
               }
             }

@@ -16,6 +16,7 @@ The S3 module provides utilities for reading, writing, and listing objects in Am
 | `write_content(content, bucket, key, content_type)` | Write string, bytes, dict, or list to S3 |
 | `list_images_from_path(image_path)` | List image files from an S3 prefix or local directory |
 | `find_matching_files(bucket, pattern, modified_after=None)` | Find S3 keys matching a glob pattern (`**` any depth, `*` one folder level, `?` one character; case-insensitive after the folder prefix) |
+| `parse_modified_after(value)` | The cutoff `find_matching_files` applies for a `modified_after` value: `None` for an empty value, otherwise an aware `datetime` (a value with no offset is UTC); raises `ValueError` for anything else. Call it to refuse a value before queuing work that would match with it |
 
 ## Usage
 

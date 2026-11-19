@@ -130,14 +130,13 @@ class PublishOperation:
             IDPConfigurationError: If source_dir doesn't contain publish.py.
             IDPStackError: If build fails.
         """
-        region = region or self._client._region
-        if not region:
-            session = boto3.Session()
-            region = session.region_name
+        from idp_sdk._core.region import resolve_region
+
+        region = resolve_region(region or self._client._region)
         if not region:
             raise IDPConfigurationError(
                 "Region is required for publish. Specify via --region, client region, "
-                "or AWS_DEFAULT_REGION environment variable."
+                "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
             )
 
         source_dir = os.path.abspath(source_dir)

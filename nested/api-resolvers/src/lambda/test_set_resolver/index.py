@@ -81,7 +81,7 @@ from idp_common.review_queues.testset_summaries import (  # type: ignore
     list_baseline_sections,
     summarize_document,
 )
-from idp_common.s3 import find_matching_files  # type: ignore
+from idp_common.s3 import find_matching_files, parse_modified_after  # type: ignore
 from idp_common.testset_label_jobs import (  # type: ignore
     drafting_run_ids,
     legacy_drafting_run,
@@ -684,6 +684,10 @@ def add_test_set(args):
     if description and not validate_description(description):
         raise ValueError("Description cannot exceed 500 characters")
 
+    # Before the row is written: the copier parses this the same way, and a value
+    # it cannot read would otherwise leave a queued set that fails with no files.
+    parse_modified_after(args.get("modifiedAfter"))
+
     # Generate test set ID with name format, replace spaces with dashes
     test_set_id = f"{test_set_name.replace(' ', '-').lower()}"
 
@@ -926,6 +930,10 @@ def add_documents_to_test_set(args):
     test_set_id = args["testSetId"]
     file_pattern = args["filePattern"]
     bucket_type = args["bucketType"]
+
+    # Before the set is claimed for the append, so a cutoff the copier cannot
+    # read is a 400 here rather than a set marked UPDATING and then failed.
+    parse_modified_after(args.get("modifiedAfter"))
 
     item, tracking_table = _begin_test_set_append(test_set_id)
 

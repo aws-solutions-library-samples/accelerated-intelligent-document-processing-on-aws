@@ -42,6 +42,7 @@ import csv
 import json
 from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
 from click.testing import CliRunner
 
@@ -116,44 +117,99 @@ class TestTestResultRegionResolution:
         assert result.exit_code == 0, result.output
         factory.assert_called_once_with(stack_name="IDP", region="eu-central-1")
 
-    def test_without_region_it_reads_aws_region(self, runner, monkeypatch):
+    @pytest.mark.parametrize(
+        ("command", "method", "ids"),
+        [
+            ("test-result", "get_test_result", ["--test-run-id", "r1"]),
+            ("test-compare", "compare_test_runs", ["--test-run-ids", "a,b"]),
+            ("abort-test-run", "abort_test_run", ["--test-run-ids", "r1", "--force"]),
+        ],
+    )
+    def test_with_only_aws_region_set_it_is_used(
+        self, runner, monkeypatch, command, method, ids
+    ):
+        """A shell that sets only `AWS_REGION` keeps working, and the Region is
+        handed to the SDK client explicitly, since boto3 would not find it."""
         monkeypatch.setenv("AWS_REGION", "ap-southeast-2")
-        p, client = _patched_client(
-            get_test_result=MagicMock(return_value=_test_run_result())
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        p, client = _patched_client()
+        getattr(client.testing, method).return_value = (
+            _test_run_result()
+            if method == "get_test_result"
+            else {"success": True, "message": "ok", "abortedCount": 1}
         )
         with p as factory:
-            result = runner.invoke(
-                cli_module.cli,
-                ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
-            )
+            runner.invoke(cli_module.cli, [command, "--stack-name", "IDP", *ids])
 
-        assert result.exit_code == 0, result.output
         factory.assert_called_once_with(stack_name="IDP", region="ap-southeast-2")
 
-    def test_with_no_region_anywhere_it_falls_back_to_us_east_1(
-        self, runner, monkeypatch
+    @pytest.mark.parametrize(
+        ("command", "method", "ids"),
+        [
+            ("test-result", "get_test_result", ["--test-run-id", "r1"]),
+            ("test-compare", "compare_test_runs", ["--test-run-ids", "a,b"]),
+            ("abort-test-run", "abort_test_run", ["--test-run-ids", "r1", "--force"]),
+        ],
+    )
+    @pytest.mark.parametrize("source", ["AWS_DEFAULT_REGION", "profile"])
+    def test_without_region_it_uses_the_region_boto3_resolves(
+        self, runner, monkeypatch, tmp_path, command, method, ids, source
     ):
-        """
-        The fallback is a hardcoded `us-east-1`, not an error.
+        """boto3's Region comes before `AWS_REGION`, and no hard-coded one is used.
 
-        Worth pinning because it is the surprising half: a Test Studio stack in
-        `us-west-2`, read with no `--region` and no `AWS_REGION`, is looked for in
-        `us-east-1` and reports "not found" rather than "no region configured".
-        `AWS_DEFAULT_REGION` is deliberately not consulted here, unlike in `deploy`.
+        `AWS_REGION` names another Region throughout, so a command preferring it,
+        or falling back to `us-east-1`, would look for the stack's tables in a
+        Region none of its clients' lookups agree with.
         """
-        monkeypatch.delenv("AWS_REGION", raising=False)
-        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
-        p, client = _patched_client(
-            get_test_result=MagicMock(return_value=_test_run_result())
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        if source == "AWS_DEFAULT_REGION":
+            monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-southeast-2")
+        else:
+            config = tmp_path / "aws-config"
+            config.write_text("[default]\nregion = ap-southeast-2\n", encoding="utf-8")
+            monkeypatch.setenv("AWS_CONFIG_FILE", str(config))
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        p, client = _patched_client()
+        getattr(client.testing, method).return_value = (
+            _test_run_result()
+            if method == "get_test_result"
+            else {"success": True, "message": "ok", "abortedCount": 1}
         )
         with p as factory:
+            runner.invoke(cli_module.cli, [command, "--stack-name", "IDP", *ids])
+
+        factory.assert_called_once_with(stack_name="IDP", region="ap-southeast-2")
+
+    @pytest.mark.parametrize(
+        ("command", "ids"),
+        [
+            ("test-result", ["--test-run-id", "r1"]),
+            ("test-compare", ["--test-run-ids", "a,b"]),
+            ("abort-test-run", ["--test-run-ids", "r1", "--force"]),
+        ],
+    )
+    def test_with_no_region_anywhere_it_is_refused(
+        self, runner, monkeypatch, command, ids
+    ):
+        """No hard-coded Region stands in for a missing one.
+
+        A `us-east-1` fallback looked for a stack in another Region in `us-east-1`
+        and reported it not found, rather than saying no Region was configured.
+        """
+        monkeypatch.delenv("AWS_REGION")
+        monkeypatch.delenv("AWS_DEFAULT_REGION")
+        monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+        p, client = _patched_client()
+        with p as factory:
             result = runner.invoke(
-                cli_module.cli,
-                ["test-result", "--stack-name", "IDP", "--test-run-id", "r1"],
+                cli_module.cli, [command, "--stack-name", "IDP", *ids]
             )
 
-        assert result.exit_code == 0, result.output
-        factory.assert_called_once_with(stack_name="IDP", region="us-east-1")
+        assert result.exit_code == 1, result.output
+        assert "Region could not be determined" in result.output
+        factory.assert_not_called()
 
 
 class TestTestResultOutput:

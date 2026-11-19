@@ -450,17 +450,30 @@ TEMPLATE_URLS = {
 
 
 def _resolve_region(region: Optional[str]) -> str:
-    if region:
-        return region
-    import boto3
+    """``--region``, else the Region boto3 resolves; refuses when there is none.
 
-    found = boto3.session.Session().region_name  # type: ignore
+    ``idp_sdk.resolve_region``: ``--region``, then boto3's Region, then
+    ``AWS_REGION``. The answer is passed to the SDK client explicitly, which is
+    what makes an ``AWS_REGION``-only shell work although boto3 does not read it.
+    """
+    from idp_sdk import resolve_region
+
+    found = resolve_region(region)
     if not found:
         raise ValueError(
-            "Region could not be determined. Please specify --region or "
-            "configure AWS_DEFAULT_REGION"
+            "Region could not be determined. Please specify --region, or set "
+            "AWS_DEFAULT_REGION, AWS_REGION or a region in your AWS profile."
         )
     return found
+
+
+def _region_or_exit(region: Optional[str]) -> str:
+    """``_resolve_region``, printing its refusal and exiting 1 instead of raising."""
+    try:
+        return _resolve_region(region)
+    except ValueError as e:
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
 
 
 def _deploy_terraform(
@@ -1024,17 +1037,7 @@ def deploy(
             )
             sys.exit(1)
         if from_code:
-            build_region = region
-            if not build_region:
-                import boto3
-
-                build_region = boto3.session.Session().region_name  # type: ignore
-                if not build_region:
-                    console.print(
-                        "[red]✗ Error: Region could not be determined. Please specify "
-                        "--region or configure AWS_DEFAULT_REGION.[/red]"
-                    )
-                    sys.exit(1)
+            build_region = _region_or_exit(region)
             if headless and govcloud:
                 console.print(
                     "[red]✗ Error: --headless and --govcloud are mutually exclusive. "
@@ -1119,16 +1122,8 @@ def deploy(
             )
             sys.exit(1)
 
-        # Auto-detect region if not provided
-        if not region:
-            import boto3
-
-            session = boto3.session.Session()  # type: ignore
-            region = session.region_name
-            if not region:
-                raise ValueError(
-                    "Region could not be determined. Please specify --region or configure AWS_DEFAULT_REGION"
-                )
+        # `--region`, else boto3's Region, else `AWS_REGION`; refuses when none.
+        region = _resolve_region(region)
 
         # Handle deployment from local code
         template_path = None
@@ -7922,8 +7917,7 @@ def test_result(
       # Save results to file
       idp-cli test-result --stack-name my-stack --test-run-id fake-w2-20260409-123456 --wait --output-dir ./results
     """
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Use SDK to get test result
@@ -8065,8 +8059,7 @@ def test_compare(
     import csv
     from datetime import datetime, timezone
 
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Parse test run IDs. Blank segments are dropped, so a trailing comma no
@@ -8308,8 +8301,7 @@ def abort_test_run(
       idp-cli abort-test-run --stack-name my-stack \\
         --test-run-ids "run1" --force
     """
-    if not region:
-        region = os.environ.get("AWS_REGION", "us-east-1")
+    region = _region_or_exit(region)
 
     try:
         # Parse test run IDs. Blank segments are dropped, which is what makes the

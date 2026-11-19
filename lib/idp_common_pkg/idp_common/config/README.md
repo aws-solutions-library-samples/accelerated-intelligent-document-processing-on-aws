@@ -1086,9 +1086,10 @@ convenience wrapper take an optional `region`, which is passed to the DynamoDB
 resource they build and, through `ConfigRevisionStore`, to the S3 client used for
 revision history.
 
-`region=None` means "let boto3 resolve it" — `AWS_REGION`, then
-`AWS_DEFAULT_REGION`, then the profile, then IMDS. That is the right value inside
-a Lambda, where the runtime always sets `AWS_REGION`, and it is why these classes
+`region=None` means "let boto3 resolve it" — `AWS_DEFAULT_REGION`, then the
+profile (boto3 does not read `AWS_REGION`, and does not take the Region from
+instance metadata). That is the right value inside a Lambda, where the runtime
+sets both `AWS_REGION` and `AWS_DEFAULT_REGION`, and it is why these classes
 worked for years without the parameter.
 
 **An out-of-region caller must pass it.** A DynamoDB table name is not
