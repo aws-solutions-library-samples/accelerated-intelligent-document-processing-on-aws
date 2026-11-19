@@ -16,7 +16,7 @@ The GenAIIDP solution includes a built-in evaluation framework to assess the acc
 ## Enhanced Reporting
 
 The evaluation framework runs on the pinned `stickler-eval` release
-(currently 1.0.1 — see `stickler_version.STICKLER_VERSION` for the resolved
+(currently 1.0.0 — see `stickler_version.STICKLER_VERSION` for the resolved
 version). Reports include confidence calibration metrics:
 
 - **📊 Confidence Calibration Metrics** - ECE (Expected Calibration Error), Brier score, and AUROC analyze how well-calibrated confidence predictions are
@@ -131,7 +131,7 @@ The evaluation framework is powered by [Stickler](https://github.com/awslabs/sti
 - **Extensible Comparators**: Support for exact, fuzzy, numeric, semantic, and LLM-based comparison
 - **Native JSON Schema Support**: Direct use of JSON Schema with custom extensions
 
-The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.1`, verified at import via `idp_common.evaluation.stickler_version`).
+The IDP solution installs Stickler from PyPI (`stickler-eval==1.0.0`, verified at import via `idp_common.evaluation.stickler_version`).
 
 ### Architecture
 
@@ -452,13 +452,6 @@ LineItems:
 Setting an evaluation method on the **array itself** has no effect and never has
 (lists are scored through their item fields, and row pairing is Hungarian). That
 is now reported as a warning instead of being silently ignored.
-
-Two rules decide how list rows are counted. A `null` element in either list is
-treated as absent: it is not paired, not counted as a missed or false-alarm row,
-and not scored, so `[A, null, B]` scores the same as `[A, B]`. And a similarity
-that falls short of a threshold by less than `1e-10` counts as meeting it, so a
-score that floating-point rounding leaves a hair under the threshold still
-matches.
 
 > **`LLM`-method scores from releases before 0.6.6 are not comparable with current
 > ones.** The comparison prompt includes the document class, field name and field
@@ -1645,7 +1638,7 @@ All existing configurations are compatible through the `SticklerConfigMapper`, w
 
 ### Stickler Version Information
 
-The solution installs Stickler from PyPI (`stickler-eval==1.0.1`, pinned in
+The solution installs Stickler from PyPI (`stickler-eval==1.0.0`, pinned in
 `lib/idp_common_pkg/pyproject.toml`). The resolved version is
 exposed at runtime via
 `idp_common.evaluation.stickler_version.STICKLER_VERSION` — derived from

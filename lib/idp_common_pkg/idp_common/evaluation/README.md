@@ -460,15 +460,6 @@ Note also that an evaluation method on the **array itself** has never had any
 effect (lists score through their item fields, and row matching is Hungarian).
 That is now logged as a warning rather than silently discarded.
 
-List rows are counted by two rules. A `None` element in either list is absent:
-`EvaluationService._remove_none_values` drops it before Stickler builds the
-models (Stickler 1.0.1 applies the same rule itself), so it is not paired, is
-neither a false negative nor a false alarm, and `[A, None, B]` evaluates as
-`[A, B]`. And a similarity less than `1e-10` under a threshold meets it
-(Stickler's `ThresholdHelper`; from 1.0.1 the comparators' binary verdict and the
-Hungarian matcher's match count use it as well), so floating-point rounding cannot
-turn a threshold-exact score into a non-match.
-
 #### Field context in the `LLM` prompt
 
 The `LLM` prompt interpolates `{DOCUMENT_CLASS}`, `{ATTRIBUTE_NAME}` and
