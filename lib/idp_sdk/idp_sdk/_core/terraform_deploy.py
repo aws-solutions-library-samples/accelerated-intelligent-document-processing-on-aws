@@ -231,7 +231,8 @@ def translator_command(
     by ``TemplateURL`` into ``nested_cache``. The same template labels the
     deployment, at ``version``. ``previous_manifest`` is the path of the
     previous release's ``idp-terraform.json``, from which the translator writes
-    ``moved`` blocks for resources whose address changed.
+    ``moved`` blocks for resources whose address changed. The checkout's
+    ``template.yaml`` supplies the scanner suppressions carried into the module.
     """
     translator = Path(source_dir) / "terraform" / "translator"
     if not (translator / "idp_tf" / "cli.py").is_file():
@@ -267,6 +268,11 @@ def translator_command(
     ]
     if previous_manifest:
         cmd += ["--previous-manifest", previous_manifest]
+    # The published template has lost its comments, so the scanner suppressions
+    # the module carries are read from the source template it was packaged from.
+    source_template = Path(source_dir) / "template.yaml"
+    if source_template.is_file():
+        cmd += ["--suppressions-source", str(source_template)]
     return cmd, env
 
 
