@@ -28,6 +28,7 @@ from idp_common.review_queues.testset_docs import (
     TestSetDocStore as DocStore,  # aliased: pytest would try to collect "Test*"
 )
 from idp_common.review_queues.testset_labels import LabelEditor
+from tests.unit.notifications._cfn_yaml import load_cfn_yaml
 from tests.unit.review_queues._table import create_review_table
 
 #: The resolver's per-set check: the shared `assert_can_access_test_set`, given its
@@ -9613,6 +9614,242 @@ class TestMembershipEditing:
         assert "Item" not in publish_table.get_item(
             Key={"PK": "testset#ts1", "SK": "version#000001"}
         )
+
+
+def _tracking_table_definition():
+    """The parent template's TrackingTable keys and indexes, as create_table takes them."""
+    template = load_cfn_yaml(
+        pathlib.Path(__file__).resolve().parents[4] / "template.yaml"
+    )
+    props = template["Resources"]["TrackingTable"]["Properties"]
+    definition = {
+        key: props[key]
+        for key in ("AttributeDefinitions", "KeySchema", "GlobalSecondaryIndexes")
+    }
+    # Non-empty, or a renamed resource would build a table with no key at all.
+    assert {k["AttributeName"] for k in definition["KeySchema"]} == {"PK", "SK"}
+    return definition
+
+
+@pytest.fixture
+def create_env():
+    """The resolver's real DynamoDBClient over a moto table shaped like TrackingTable.
+
+    Real client rather than the module's mock or ``_db_client_on``: the refusal
+    depends on the error code the real client raises for a failed condition, so
+    a double translating that error would be testing itself.
+    """
+    region_env = {
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "AWS_REGION": "us-east-1",
+        "TRACKING_TABLE": "tracking-for-create",
+        "TEST_SET_BUCKET": "test-set-bucket",
+        "TEST_SET_COPY_QUEUE_URL": (
+            "https://sqs.us-east-1.amazonaws.com/123456789012/create-copy-queue"
+        ),
+    }
+    with mock_aws(), patch.dict(os.environ, region_env):
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.create_table(
+            TableName="tracking-for-create",
+            BillingMode="PAY_PER_REQUEST",
+            **_tracking_table_definition(),
+        )
+        sqs = boto3.client("sqs", region_name="us-east-1")
+        queue_url = sqs.create_queue(QueueName="create-copy-queue")["QueueUrl"]
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.create_bucket(Bucket="test-set-bucket")
+        client = RealDynamoDBClient(
+            table_name="tracking-for-create", region="us-east-1"
+        )
+        with (
+            patch.object(test_set_index, "db_client", client),
+            patch.object(test_set_index, "s3_client", s3),
+        ):
+            yield table, sqs, queue_url, s3
+
+
+def _existing_set(table, test_set_id="my-set"):
+    row = {
+        "PK": f"testset#{test_set_id}",
+        "SK": "metadata",
+        "ItemType": "testset",
+        "InitialEventTime": "2026-01-01T00:00:00Z",
+        "id": test_set_id,
+        "name": "My Set",
+        "description": "the original",
+        "filePattern": "orig/*",
+        "fileCount": 7,
+        "source": "uploaded",
+        "status": "COMPLETED",
+        "labelState": "labeled",
+        "createdAt": "2026-01-01T00:00:00Z",
+    }
+    table.put_item(Item=row)
+    return row
+
+
+def _row(table, test_set_id="my-set"):
+    return table.get_item(Key={"PK": f"testset#{test_set_id}", "SK": "metadata"}).get(
+        "Item"
+    )
+
+
+def _queued_messages(sqs, queue_url):
+    return sqs.receive_message(QueueUrl=queue_url, MaxNumberOfMessages=10).get(
+        "Messages", []
+    )
+
+
+@pytest.mark.unit
+class TestCreatingATestSetNeverReplacesAnExistingOne:
+    """Every create path refuses an id that already has a row.
+
+    The id is the slugged name, so "my-set" and "My Set" are the same set. Only
+    ``createEmptyTestSet`` used to refuse; the bucket-pattern and zip paths wrote
+    unconditionally and replaced the existing set's record.
+    """
+
+    def _add(self, name):
+        return test_set_index.add_test_set(
+            {
+                "name": name,
+                "filePattern": "new/*",
+                "fileCount": 1,
+                "bucketType": "input",
+            }
+        )
+
+    def _upload(self, name):
+        return test_set_index.add_test_set_from_upload(
+            {"input": {"fileName": "Archive.zip", "fileSize": 1, "name": name}}
+        )
+
+    @pytest.mark.parametrize("name", ["my-set", "My Set"])
+    def test_a_bucket_pattern_create_is_refused_and_queues_no_copy(
+        self, create_env, name
+    ):
+        table, sqs, queue_url, _s3 = create_env
+        original = _existing_set(table)
+
+        with pytest.raises(ValueError, match="'my-set' already exists"):
+            self._add(name)
+
+        assert _row(table) == original
+        assert _queued_messages(sqs, queue_url) == []
+
+    @pytest.mark.parametrize("name", ["my-set", "My Set"])
+    def test_a_zip_upload_create_is_refused(self, create_env, name):
+        table, _sqs, _queue_url, _s3 = create_env
+        original = _existing_set(table)
+
+        with pytest.raises(ValueError, match="'my-set' already exists"):
+            self._upload(name)
+
+        assert _row(table) == original
+
+    def test_an_empty_create_is_refused_and_writes_no_marker(self, create_env):
+        table, _sqs, _queue_url, s3 = create_env
+        original = _existing_set(table)
+
+        with pytest.raises(ValueError, match="'my-set' already exists"):
+            test_set_index.create_empty_test_set({"name": "My Set"})
+
+        assert _row(table) == original
+        assert "Contents" not in s3.list_objects_v2(
+            Bucket="test-set-bucket", Prefix="my-set/"
+        )
+
+    def test_each_path_still_creates_a_new_id(self, create_env):
+        # The other half: a condition that refused everything would pass the
+        # three tests above.
+        table, sqs, queue_url, _s3 = create_env
+
+        self._add("from pattern")
+        self._upload("from zip")
+        test_set_index.create_empty_test_set({"name": "from empty"})
+
+        assert _row(table, "from-pattern")["status"] == "QUEUED"
+        assert _row(table, "from-zip")["status"] == "QUEUED"
+        assert _row(table, "from-empty")["status"] == "COMPLETED"
+        assert len(_queued_messages(sqs, queue_url)) == 1
+
+    def test_the_refusal_reaches_the_caller_as_a_bad_argument(self, create_env):
+        # ValueError is what the dispatcher maps to 400; anything else is a 500.
+        table, _sqs, _queue_url, _s3 = create_env
+        _existing_set(table)
+        event = {
+            "info": {"fieldName": "addTestSet"},
+            "arguments": {
+                "name": "my-set",
+                "filePattern": "new/*",
+                "fileCount": 1,
+                "bucketType": "input",
+            },
+            "identity": _ADMIN_IDENTITY,
+        }
+
+        with pytest.raises(ValueError, match="already exists"):
+            test_set_index.handler(event, {})
+
+    def test_a_failure_other_than_the_condition_is_not_reported_as_a_duplicate(
+        self, create_env
+    ):
+        table, _sqs, _queue_url, _s3 = create_env
+        table.delete()
+
+        with pytest.raises(DynamoDBError) as raised:
+            self._add("my-set")
+
+        assert raised.value.error_code == "ResourceNotFoundException"
+
+    def test_discovery_keeps_a_row_created_since_the_scan_read_the_table(
+        self, create_env
+    ):
+        # getTestSets registers a folder it found with no row. A create landing
+        # between that read and this write owns the row; discovery must not
+        # replace it with a description-less, discovery-shaped one.
+        table, _sqs, _queue_url, _s3 = create_env
+        original = _existing_set(table)
+
+        registered = test_set_index._create_test_set_tracking_entry(
+            "my-set", "my-set", 3, "COMPLETED", source="uploaded"
+        )
+
+        assert registered is False
+        assert _row(table) == original
+
+    def test_a_scan_that_loses_the_race_does_not_list_its_own_copy(self, create_env):
+        # End to end through getTestSets: the folder has no row when the scan
+        # reads the table, and a create takes the id before discovery writes.
+        table, _sqs, _queue_url, s3 = create_env
+        s3.put_object(Bucket="test-set-bucket", Key="my-set/input/a.pdf", Body=b"x")
+        real_check = test_set_index._is_valid_test_set_structure
+
+        def create_lands_mid_scan(client, bucket, prefix):
+            if prefix == "my-set":
+                _existing_set(table)
+            return real_check(client, bucket, prefix)
+
+        with patch.object(
+            test_set_index, "_is_valid_test_set_structure", create_lands_mid_scan
+        ):
+            listed = test_set_index.get_test_sets()
+
+        assert _row(table)["description"] == "the original"
+        assert [
+            s for s in listed if s["id"] == "my-set" and s["name"] == "my-set"
+        ] == []
+
+    def test_discovery_still_registers_a_folder_with_no_row(self, create_env):
+        table, _sqs, _queue_url, _s3 = create_env
+
+        registered = test_set_index._create_test_set_tracking_entry(
+            "found", "found", 3, "COMPLETED", source="uploaded"
+        )
+
+        assert registered is True
+        assert _row(table, "found")["fileCount"] == 3
 
 
 @pytest.mark.unit
