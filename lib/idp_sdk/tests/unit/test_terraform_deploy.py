@@ -339,6 +339,19 @@ class TestTranslatorCommand:
             tmp_path / "terraform" / "translator"
         )
 
+    def test_suppressions_come_from_the_checkouts_source_template(self, tmp_path):
+        """The published template has no comments left, so the translator is
+        pointed at the source template for the checkov skips it carries."""
+        (tmp_path / "terraform" / "translator" / "idp_tf").mkdir(parents=True)
+        (tmp_path / "terraform" / "translator" / "idp_tf" / "cli.py").write_text("")
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert "--suppressions-source" not in cmd
+        (tmp_path / "template.yaml").write_text("Resources: {}\n")
+        cmd, _ = tf.translator_command(str(tmp_path), "t.yaml", "out", "cache", "9")
+        assert cmd[cmd.index("--suppressions-source") + 1] == str(
+            tmp_path / "template.yaml"
+        )
+
     def test_missing_translator_is_refused(self, tmp_path):
         with pytest.raises(IDPConfigurationError, match="translator not found"):
             tf.translator_command(str(tmp_path), "t", "o", "c", "1")
