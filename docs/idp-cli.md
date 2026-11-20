@@ -1269,6 +1269,11 @@ idp-cli reprocess \
     --monitor
 ```
 
+**Documents that could not be queued** are listed after the summary, one per line,
+with the reason. `Document not found` means the stack's tracking table has no record
+for that key. Any other failure — a stack with no tracking table, a DynamoDB error,
+a document the malware gate refuses — is printed as itself.
+
 **What Gets Cleared:**
 
 | Step | Clears | Keeps |

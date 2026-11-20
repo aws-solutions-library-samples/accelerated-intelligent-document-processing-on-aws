@@ -205,6 +205,61 @@ and the session go together. Protection against the process itself dying has to 
 from outside, and nothing in this tree provides it; recovery is a human noticing, and
 what makes that cheap is the state file plus the journals.
 
+### Every subagent arms its own watchdog, and the coordinator measures idleness
+
+**A subagent that ends its turn waiting on a notification can wait forever.** This is
+the single most expensive failure measured in this loop: in one overnight run about
+six fixers went silent for 1.5 to 4 hours each, every one of them waiting on a
+backgrounded test run or a nested reviewer whose completion notice never reached it —
+in two cases the reviewer's report was delivered to the coordinator instead. Nothing
+was wrong with the work; the agent simply had nothing left that would wake it.
+
+So two rules, one for each side, and both go into every brief:
+
+> **Subagent rule.** Prefer running long commands in the foreground with `timeout`
+> (cap 1200 s). Whenever you do background anything — a test run, a reviewer, a CI
+> poll — you must also background a watchdog in the same turn, so you are woken even
+> if the notification never comes:
+>
+> ```bash
+> # run_in_background: true — wakes you in 5 minutes whatever else happens
+> sleep 300; echo "WATCHDOG: check your background work's log/report file directly"
+> ```
+>
+> On a `WATCHDOG` return, read the job's log or the reviewer's report file yourself
+> (reviewers write theirs to `scratch/backlog/reports/review-<slug>.md`), decide, and
+> re-arm the watchdog if you are still waiting. Never end a turn whose only pending
+> work is a notification you did not also put a watchdog on.
+>
+> **Before you send your final report, stop every watchdog you started** (record each
+> one's PID when you start it, then `kill <pid>`). Never kill by pattern (`pkill -f`, `kill $(pgrep -f "sleep 300")`):
+> every agent and every session on the host runs the same watchdog, and a pattern kill
+> has already terminated other agents' timers. A watchdog left running fires after
+> the work is done and sends the coordinator an empty notification each time.
+
+> **Coordinator rule.** On every heartbeat, measure each fixer's idleness as the later
+> of its worktree's newest file mtime **and its newest commit time** (`git log -1
+> --format=%cd`) — file mtimes alone stop moving once work is committed, and stopping
+> two agents that were mid-work on that basis is a measured mistake. After **20
+> minutes** idle with no running process in its tree, message it for a two-line status.
+> After **45 minutes** idle with no reply, stop it, push any unpushed commits to
+> `wip/<slug>`, and dispatch a replacement scoped to finishing from that branch.
+
+The watchdog is cheap — one sleeping process per agent — and it converts an unbounded
+wait into a five-minute one. It does not help an agent that is genuinely thinking for a
+long time, which is why the coordinator's measurement uses commits as well as files.
+
+### Coordinate with other sessions before claiming an issue
+
+Other sessions may be working the same repository. Before dispatching a fixer on an
+issue, check its comments for a `Being worked by session <name>` claim and skip any
+issue another session has claimed; when you dispatch, post that comment yourself with
+this session's name. **Also check for an open pull request that already addresses
+the issue** (`gh pr list --search "<issue number>" --state open`), including ones a
+human opened against `develop`: one run duplicated an issue author's own same-day PR
+and had to revert its merge from staging. `ListAgents` shows the peer sessions on this machine; message one
+with `SendMessage` to agree the split at the start of a run.
+
 ### `ScheduleWakeup` is the better child, and it is safe with agents in flight
 
 Prefer `ScheduleWakeup` over the backgrounded `sleep` wherever the wait is time-based
@@ -270,7 +325,7 @@ anything older than four hours, which is the blunter instrument.
   "integrationEvery": 5,
   "tokensUsedThisCycle": 1850000,
   "tokensUsedTotal": 9400000,
-  "deploysAuthorized": false,
+  "deploysAuthorized": true,
   "stagingBranch": "backlog/staging",
   "lastPromotedSha": "2c87fa0b9",
   "runId": "2026-09-23-1",
@@ -600,8 +655,14 @@ a cosmetic nit and a risky architectural change.
   PR. Batch by **kind** though, not count — mechanical issues batch well, and an
   issue needing a design decision should go alone or the whole batch pays the
   investigation tax.
-- **Demote anything needing a live stack deploy** unless the user has authorized
-  it for this run. Ask before scheduling one.
+- **Live stack tests are authorized standing, for every run.** The user has said so
+  explicitly: an issue that can only be verified against a deployed stack is not
+  demoted and not parked for want of a deploy. Group `needsDeploy` items so one stack
+  covers several, deploy it with `run-stack-tests.md` or `transform-deploy-test.md`,
+  and **tear it down when the item is verified**. Report each deploy (stack name,
+  Region, what it verified, teardown confirmed) at the next check-in. What still needs
+  asking is anything outside a throwaway test stack: touching an existing named stack,
+  a shared or production account, or a cost far beyond an ordinary test deploy.
 - **Demote feature requests** (`enhancement` label, "[Feature]:" titles) below
   defects unless the user says otherwise. They are design work and do not fit
   this loop.
@@ -1393,9 +1454,11 @@ the N slots while it runs. Its brief:
   needing its own review.
 - **Decide for itself whether stack tests are needed** to cover the code in the
   recent PRs, and say why either way. If it judges they are: `run-stack-tests.md`
-  and `transform-deploy-test.md` are the procedures. ⚠️ **Stack tests deploy real
-  AWS resources and cost money — it must ask the user through you before running
-  one**, unless the user has already authorized deploys for this run.
+  and `transform-deploy-test.md` are the procedures. Stack tests are
+  authorized standing (see section 1): run them when they are needed, on a throwaway
+  stack named for this run, and tear the stack down afterwards. ⚠️ They deploy real AWS
+  resources and cost money, so report each one — and never reuse or modify a stack
+  this run did not create.
 - Report: the frozen SHA, every suite's exact pass/fail counts, what it fixed,
   what it filed rather than fixed, and what it decided about stack tests with the
   reasoning.
@@ -1780,7 +1843,7 @@ specifies, add it to `parked` with a link to that comment, label it, and move on
 | Condition | What to do |
 |---|---|
 | A fix needs a **product decision** — a default changes, a public interface moves, a user-visible behaviour is ambiguous, or output changes for a deployment working today | **park** |
-| A fix needs a **stack deploy** and `deploysAuthorized` is false | **park**, and note which other parked items one deploy would cover |
+| A fix needs a **stack deploy** | **not a park**: deploys are authorized standing. Batch it with the other `needsDeploy` items one stack can cover, verify, tear down |
 | Two agents' changes conflict in a way that needs a **design call** | **park the later one**, let the first land |
 | A **merge conflict outside `CHANGELOG.md`** that is not mechanical | **park**, re-dispatch on a fresh base if the conflict was staleness |
 | An **externally-reported issue whose fix touches a protected surface** from section 0b | **park** with the issue's `author_association`, the surface, and the change it argues for |

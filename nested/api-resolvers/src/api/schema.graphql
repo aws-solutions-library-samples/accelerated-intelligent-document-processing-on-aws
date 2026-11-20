@@ -2386,6 +2386,7 @@ type Mutation {
     skipJobCreation: Boolean
     discoveryType: String
     saveMode: String
+    policyGroup: String
   ): DisPresignedUrlResponse!
     @aws_cognito_user_pools(cognito_groups: ["Admin", "Author"])
   autoDetectSections(

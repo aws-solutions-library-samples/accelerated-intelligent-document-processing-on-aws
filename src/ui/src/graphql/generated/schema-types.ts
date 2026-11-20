@@ -1926,6 +1926,7 @@ export type MutationUploadDiscoveryDocumentArgs = {
   groundTruthFileName?: InputMaybe<Scalars['String']['input']>;
   pageLabels?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
   pageRanges?: InputMaybe<Array<InputMaybe<Scalars['String']['input']>>>;
+  policyGroup?: InputMaybe<Scalars['String']['input']>;
   prefix?: InputMaybe<Scalars['String']['input']>;
   saveMode?: InputMaybe<Scalars['String']['input']>;
   skipJobCreation?: InputMaybe<Scalars['Boolean']['input']>;

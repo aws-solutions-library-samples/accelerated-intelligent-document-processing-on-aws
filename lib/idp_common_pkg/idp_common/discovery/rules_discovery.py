@@ -15,16 +15,21 @@ read. (The LLM emits `x-aws-idp-rule-type`; `to_policy_class` converts it. The
 `rule_classes` config key was renamed to `policy_classes` in v0.5.9.)
 """
 
+import contextlib
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, cast
+import re
+import secrets
+import time
+from typing import Any, Dict, Iterator, List, Optional, cast
 
 from idp_common import bedrock, image
 from idp_common.bedrock.client import document_blocks_unsupported_reason
 from idp_common.config import ConfigurationReader
 from idp_common.config.configuration_manager import ConfigurationManager
 from idp_common.config.models import IDPConfig
+from idp_common.config.schema_constants import X_AWS_IDP_POLICY_GROUP
 from idp_common.discovery.discovered_text import clean_rule_classes
 from idp_common.utils import extract_json_from_text
 from idp_common.utils.s3util import S3Util
@@ -52,6 +57,78 @@ MISSING_VERSION_MESSAGE = (
     "Rules discovery needs the configuration profile to save into: pass version=. "
     "There is no fallback to the active profile."
 )
+
+
+#: Longest policy group name accepted, after surrounding whitespace is removed.
+POLICY_GROUP_MAX_LENGTH = 64
+
+# A group name starts with a letter or digit and holds letters, digits, spaces,
+# underscores, hyphens and dots. It is shown back to the user and stored on the
+# policy class, and the class name is derived from it, so the alphabet is kept to
+# what survives that derivation recognisably.
+_POLICY_GROUP_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.\-]*$")
+
+#: How long one rules-discovery save may hold a profile's save lease before
+#: another save may take it over. A save is one configuration read and one write
+#: (plus its revision), so this is far above what one needs; it bounds how long a
+#: save that died while holding the lease can block the next one.
+POLICY_SAVE_LEASE_SECONDS = 300
+
+#: How long a save waits for another save into the same profile to finish.
+POLICY_SAVE_LEASE_WAIT_SECONDS = 60
+
+
+def normalize_policy_group(value: Any) -> Optional[str]:
+    """Validate a user-named policy group, returning it normalised or None.
+
+    None, an empty string and whitespace mean "no group": the upload keeps the
+    per-upload class naming it has always had. Anything else must be a string of
+    at most :data:`POLICY_GROUP_MAX_LENGTH` characters matching
+    ``_POLICY_GROUP_PATTERN``; runs of whitespace are collapsed to one space.
+    Raises ``ValueError`` naming the rule otherwise. This is the one definition:
+    the upload resolver calls it to refuse a bad name before anything is
+    uploaded, and :class:`RulesDiscovery` calls it again before saving.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("policyGroup must be a string")
+    normalized = " ".join(value.split())
+    if not normalized:
+        return None
+    if len(normalized) > POLICY_GROUP_MAX_LENGTH:
+        raise ValueError(
+            f"policyGroup must be at most {POLICY_GROUP_MAX_LENGTH} characters"
+        )
+    if not _POLICY_GROUP_PATTERN.match(normalized):
+        raise ValueError(
+            "policyGroup must start with a letter or digit and contain only "
+            "letters, digits, spaces, underscores, hyphens and dots"
+        )
+    return normalized
+
+
+def policy_group_key(group: str) -> str:
+    """The identity two group names are compared by: case and spacing ignored.
+
+    ``"NCCI Manual"`` and ``"ncci  manual"`` are the same group, so a chapter
+    uploaded with a differently-typed name still lands in the class the earlier
+    chapters built rather than silently starting a second one.
+    """
+    return " ".join(group.split()).casefold()
+
+
+def policy_group_class_name(group: str) -> str:
+    """The policy class name a group's first upload creates.
+
+    Deterministic, unlike ``_derive_class_name_from_key``'s per-upload random
+    suffix, so every upload in the group names the same class. The class is found
+    again by its stored group (``x-aws-idp-policy-group``), not by this name, so a
+    collision with an unrelated class only changes the name the group's class is
+    created under (``_2``), never which class later uploads append to.
+    """
+    sanitized = re.sub(r"[^A-Za-z0-9]+", "_", group).strip("_")
+    return sanitized or "policy_group"
 
 
 def to_policy_class(rule_class: Dict[str, Any], unique_type: str) -> Dict[str, Any]:
@@ -261,7 +338,10 @@ class RulesDiscovery:
         self.bedrock_client = bedrock.BedrockClient(region=self.region)
 
     def discovery_rules_from_document(
-        self, input_bucket: str, input_prefix: str
+        self,
+        input_bucket: str,
+        input_prefix: str,
+        policy_group: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Extract rules from a policy document stored in S3.
@@ -272,6 +352,11 @@ class RulesDiscovery:
         Args:
             input_bucket: S3 bucket name
             input_prefix: S3 key for the policy document
+            policy_group: Optional user-named policy group. Uploads naming the
+                same group accumulate into one policy class: the first creates
+                it, later ones append their rules to it (see
+                ``_save_rules_to_config``). Without one, each upload creates its
+                own class, as it always has.
 
         Returns:
             Dict with status and extracted rules
@@ -285,6 +370,7 @@ class RulesDiscovery:
         # Refuse before the model runs rather than after: the save is what needs it.
         if self.config_manager and not self.version:
             raise ValueError(MISSING_VERSION_MESSAGE)
+        group = normalize_policy_group(policy_group)
 
         try:
             file_in_bytes = S3Util.get_bytes(bucket=input_bucket, key=input_prefix)
@@ -304,7 +390,13 @@ class RulesDiscovery:
             # Override the model-assigned rule type with a filename-derived
             # name so each uploaded document produces a distinguishable policy
             # class in the UI (e.g. "NCCI_Medicare_Policy_ab12cd34").
-            derived_name = self._derive_class_name_from_key(input_prefix)
+            # A grouped upload is named after its group instead, so every upload
+            # in the group names the same class.
+            derived_name = (
+                policy_group_class_name(group)
+                if group
+                else self._derive_class_name_from_key(input_prefix)
+            )
             if derived_name:
                 for rc in extracted_rules:
                     rc["x-aws-idp-rule-type"] = derived_name
@@ -312,7 +404,7 @@ class RulesDiscovery:
             # Save to configuration if config_manager is available
             self._save_warnings = []
             if self.config_manager:
-                self._save_rules_to_config(extracted_rules)
+                self._save_rules_to_config(extracted_rules, policy_group=group)
 
             # Warnings ride along on the result so the calling Lambda can put
             # them in the job's statusMessage. A CloudWatch WARNING alone does
@@ -900,9 +992,6 @@ class RulesDiscovery:
         fresh name (the append-only merge logic in ``_save_rules_to_config``
         then appends a new policy class entry per upload).
         """
-        import re
-        import secrets
-
         filename = os.path.basename(s3_key or "")
         stem = os.path.splitext(filename)[0]
         stem = re.sub(r"^\d{8}_\d{6}_", "", stem)
@@ -919,17 +1008,102 @@ class RulesDiscovery:
             return f"policy_{suffix}"
         return f"{sanitized}_{suffix}"
 
-    def _save_rules_to_config(self, rules: List[Dict[str, Any]]) -> List[str]:
+    @contextlib.contextmanager
+    def _policy_save_lease(self, version: str) -> Iterator[None]:
+        """Hold the profile's rules-discovery save lease for one read-modify-write.
+
+        ``_save_rules_to_config`` reads the profile, adds to ``policy_classes`` and
+        writes the whole profile back, so two discovery jobs saving into one profile
+        at once would each write a list missing the other's rules — for two
+        chapters of one policy group, a chapter's rules silently gone. The lease is
+        one item in the configuration table, created with a conditional put that
+        succeeds only when no unexpired lease exists, and deleted on exit only by
+        its holder. A save that cannot take it within
+        :data:`POLICY_SAVE_LEASE_WAIT_SECONDS` fails the job rather than writing
+        unguarded. A holder that died is taken over once its lease is older than
+        :data:`POLICY_SAVE_LEASE_SECONDS`.
+
+        It serialises rules-discovery saves only. The profile's other writers do
+        not take it — a Policy Schema edit saved from the UI, a classes-discovery
+        save, and the upload resolver's Replace clear — so one of those overlapping
+        a rules save into the same profile can still overwrite one with the other.
+        """
+        from botocore.exceptions import ClientError
+
+        table = self.config_manager.table
+        key = {"Configuration": f"PolicyDiscoverySaveLease#{version}"}
+        token = secrets.token_hex(16)
+        deadline = time.monotonic() + POLICY_SAVE_LEASE_WAIT_SECONDS
+        delay = 0.05
+        while True:
+            now = int(time.time())
+            try:
+                table.put_item(
+                    Item={
+                        **key,
+                        "LeaseToken": token,
+                        "LeaseExpiresAt": now + POLICY_SAVE_LEASE_SECONDS,
+                    },
+                    ConditionExpression=(
+                        "attribute_not_exists(Configuration) OR LeaseExpiresAt < :now"
+                    ),
+                    ExpressionAttributeValues={":now": now},
+                )
+                break
+            except ClientError as e:
+                if (
+                    e.response.get("Error", {}).get("Code")
+                    != "ConditionalCheckFailedException"
+                ):
+                    raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Configuration profile '{version}' has been held by another "
+                    f"Policy Discovery save for over {POLICY_SAVE_LEASE_WAIT_SECONDS}s, "
+                    f"so this job's rules were not saved. Either another job is still "
+                    f"saving, or one stopped while saving and its hold expires "
+                    f"{POLICY_SAVE_LEASE_SECONDS}s after it began. Run the upload again."
+                )
+            time.sleep(delay)
+            delay = min(delay * 2, 2.0)
+        try:
+            yield
+        finally:
+            try:
+                table.delete_item(
+                    Key=key,
+                    ConditionExpression="LeaseToken = :token",
+                    ExpressionAttributeValues={":token": token},
+                )
+            except ClientError as e:
+                # Expired and taken over by another save: that save owns it now.
+                logger.warning(f"Could not release the policy save lease: {e}")
+
+    def _save_rules_to_config(
+        self, rules: List[Dict[str, Any]], policy_group: Optional[str] = None
+    ) -> List[str]:
         """
         Save extracted rules to the configuration as policy_classes.
 
         Saves to the versioned configuration record ("Config#<version>") so the
-        UI's version-aware Policy Schema tab displays them. Merges with
-        existing policy_classes by x-aws-idp-rule-type, replacing rules of the
-        same type.
+        UI's version-aware Policy Schema tab displays them.
+
+        Without ``policy_group`` the save is append-only by class: each rule class
+        becomes a new policy class, its type name suffixed (``_2``, ...) if it
+        collides with an existing one.
+
+        With ``policy_group``, every rule from every rule class goes into the ONE
+        policy class carrying that group (``x-aws-idp-policy-group``, compared by
+        :func:`policy_group_key`). The first upload creates it; a later upload
+        **appends** its rules to it and leaves everything else on the class — its
+        name, description and any document-matching regex the user has added —
+        as it was. Nothing is superseded: a rule whose name the class already holds
+        is added under a suffixed name (``_2``, ...) and reported, never merged
+        into or replacing the earlier one.
 
         Args:
             rules: List of rule_class objects to save into policy_classes
+            policy_group: Normalised policy group name, or None
         """
         version = getattr(self, "version", None)
         if not version:
@@ -937,7 +1111,15 @@ class RulesDiscovery:
             # into whichever profile documents are currently processed under, which
             # is not a profile anyone chose for this run.
             raise ValueError(MISSING_VERSION_MESSAGE)
+        group = normalize_policy_group(policy_group)
 
+        with self._policy_save_lease(version):
+            return self._save_rules_to_config_locked(rules, version, group)
+
+    def _save_rules_to_config_locked(
+        self, rules: List[Dict[str, Any]], version: str, group: Optional[str]
+    ) -> List[str]:
+        """The read-modify-write of ``_save_rules_to_config``, under its lease."""
         existing_item_raw = self.config_manager.get_configuration(
             "Config", version=version
         )
@@ -957,22 +1139,28 @@ class RulesDiscovery:
         existing_types = {
             rc.get("x-aws-idp-policy-type") for rc in existing_policy_classes
         }
-        assigned_types: List[str] = []
-        for new_rule in rules:
-            new_type = (
-                new_rule.get("x-aws-idp-rule-type")
-                or new_rule.get("x-aws-idp-policy-type")
-                or "policy_rules"
+        group_warnings: List[str] = []
+        if group:
+            assigned_types, group_warnings = self._merge_into_group(
+                rules, group, existing_policy_classes, existing_types
             )
-            unique_type = new_type
-            suffix = 2
-            while unique_type in existing_types:
-                unique_type = f"{new_type}_{suffix}"
-                suffix += 1
-            assigned_types.append(unique_type)
+        else:
+            assigned_types = []
+            for new_rule in rules:
+                new_type = (
+                    new_rule.get("x-aws-idp-rule-type")
+                    or new_rule.get("x-aws-idp-policy-type")
+                    or "policy_rules"
+                )
+                unique_type = new_type
+                suffix = 2
+                while unique_type in existing_types:
+                    unique_type = f"{new_type}_{suffix}"
+                    suffix += 1
+                assigned_types.append(unique_type)
 
-            existing_policy_classes.append(to_policy_class(new_rule, unique_type))
-            existing_types.add(unique_type)
+                existing_policy_classes.append(to_policy_class(new_rule, unique_type))
+                existing_types.add(unique_type)
 
         if not existing_item:
             existing_item = IDPConfig()
@@ -989,7 +1177,9 @@ class RulesDiscovery:
 
         logger.info(
             f"Saved {len(rules)} rule classes to Config#{version}.policy_classes "
-            f"(total: {len(existing_policy_classes)}, assigned: {assigned_types})"
+            f"(total: {len(existing_policy_classes)}, assigned: {assigned_types}"
+            + (f", policy group: {group!r}" if group else "")
+            + ")"
         )
 
         # Report the two states this save can silently create. Both are checked
@@ -1001,10 +1191,102 @@ class RulesDiscovery:
             for w in (
                 self._warn_if_no_regex(existing_policy_classes, version),
                 self._warn_if_rules_duplicated(existing_policy_classes, rules),
+                *group_warnings,
             )
             if w
         ]
         return assigned_types
+
+    @staticmethod
+    def _merge_into_group(
+        rules: List[Dict[str, Any]],
+        group: str,
+        policy_classes: List[Dict[str, Any]],
+        existing_types: set,
+    ) -> "tuple[List[str], List[str]]":
+        """Append every rule in ``rules`` to the group's one policy class.
+
+        Mutates ``policy_classes`` in place: the group's class is updated, or
+        created and appended when no class carries the group yet. Returns the
+        class name assigned to each rule class (the same name for all of them) and
+        any warnings to report.
+        """
+        key = policy_group_key(group)
+        matches = [
+            pc
+            for pc in policy_classes
+            if isinstance(pc.get(X_AWS_IDP_POLICY_GROUP), str)
+            and policy_group_key(pc[X_AWS_IDP_POLICY_GROUP]) == key
+        ]
+        if len(matches) > 1:
+            names = ", ".join(
+                str(pc.get("x-aws-idp-policy-type") or "?") for pc in matches
+            )
+            raise ValueError(
+                f"Policy group '{group}' is carried by {len(matches)} policy classes "
+                f"({names}), so there is no one class to add this upload's rules to. "
+                f"Merge them, or remove the group from all but one, in Configuration "
+                f"→ Policy Schema, then run the upload again."
+            )
+
+        incoming: List[tuple] = []  # (rule name, reshaped rule definition)
+        for rc in rules:
+            reshaped = to_policy_class(rc, "_")
+            incoming.extend((reshaped["rule_properties"]).items())
+
+        if matches:
+            target = matches[0]
+            props = target.get("rule_properties")
+            if not isinstance(props, dict):
+                props = {}
+            target["rule_properties"] = props
+            class_name = str(
+                target.get("x-aws-idp-policy-type")
+                or target.get("x-aws-idp-rule-type")
+                or target.get("$id")
+            )
+        else:
+            base = policy_group_class_name(group)
+            class_name = base
+            suffix = 2
+            while class_name in existing_types:
+                class_name = f"{base}_{suffix}"
+                suffix += 1
+            first = next((rc for rc in rules if rc.get("description")), None)
+            target = to_policy_class(
+                {"description": first.get("description")} if first else {},
+                class_name,
+            )
+            target[X_AWS_IDP_POLICY_GROUP] = group
+            props = target["rule_properties"]
+            policy_classes.append(target)
+            existing_types.add(class_name)
+
+        renamed: List[str] = []
+        for name, definition in incoming:
+            unique = name
+            suffix = 2
+            while unique in props:
+                unique = f"{name}_{suffix}"
+                suffix += 1
+            if unique != name:
+                renamed.append(f"{name} → {unique}")
+            props[unique] = definition
+
+        warnings: List[str] = []
+        if renamed:
+            shown = ", ".join(renamed[:10])
+            more = f" (and {len(renamed) - 10} more)" if len(renamed) > 10 else ""
+            message = (
+                f"{len(renamed)} rule name(s) from this upload already existed in "
+                f"policy group '{group}' and were added alongside the existing rule "
+                f"under a new name, not in place of it: {shown}{more}. Each copy is "
+                f"evaluated on every document. If they are the same rule, remove one "
+                f"in Configuration → Policy Schema."
+            )
+            logger.warning(message)
+            warnings.append(message)
+        return [class_name] * len(rules), warnings
 
     @staticmethod
     def _warn_if_no_regex(
