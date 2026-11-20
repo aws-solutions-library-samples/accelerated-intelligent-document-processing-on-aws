@@ -539,7 +539,11 @@ ui_tests:
     # job still passed, but anything that failed after that point would have had no
     # diagnostic in the log at all, which is the worst shape a CI failure can have.
     # It silences console output from tests only; failure output is unaffected.
-    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent)
+    # --testTimeout: on the 32-CPU code.aws.dev pod vitest runs ~31 workers at once, and
+    # the heaviest render tests (DocumentList add-to-test-set, capacity-planning populate)
+    # then take ~10.3s against the 10s default. Headroom here, not fewer workers, keeps
+    # the suite at full speed. CI only; `make ui-test` is unchanged.
+    - (cd src/ui && npm ci --prefer-offline --no-audit && npx vitest run --silent --testTimeout=20000)
 
 # The Terraform offline gate: translate template.yaml with terraform/translator,
 # then `init -backend=false` and `validate` the generated module with every pinned
@@ -1297,6 +1301,9 @@ srt_security_review:
         [ -f ".srt/syft-summary.json" ] && cp .srt/syft-summary.json srt-syft-summary.json
         echo "✓ SRT reports captured for download"
       fi
+    # The status badge `pages` publishes. Rendered even when the scan stopped
+    # early: badge.py reads a missing verdict as "no result", never as a pass.
+    - python scripts/srt/badge.py .srt/verdict.json srt-badge.svg || true
 
   artifacts:
     when: always
@@ -1305,9 +1312,39 @@ srt_security_review:
       - srt-dashboard.html
       - srt-bandit-summary.json
       - srt-syft-summary.json
+      - srt-badge.svg
     reports:
       # Future: Add security scanning report format when GitLab supports it
     expire_in: 1 week
+
+# Publishes the SRT gate's verdict on develop as a status badge, the only file on
+# this project's Pages site (shown by the "SRT" project badge). It is published
+# from here rather than read from the job's artifacts because GitLab's "latest
+# artifacts for a ref" URL serves only the latest SUCCESSFUL pipeline, so a
+# failing gate would keep showing the last green badge; `when: always` is what
+# lets it publish after srt_security_review fails. The package registry was
+# tried too and serves the file as octet-stream with nosniff, which no browser
+# renders as an image. Not a gate: it reports the gate's outcome.
+pages:
+  stage: notify
+  needs:
+    - job: srt_security_review
+      artifacts: true
+      optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"
+      when: always
+  script:
+    - mkdir -p public
+    - |
+      if [ -f srt-badge.svg ]; then
+        cp srt-badge.svg public/srt-badge.svg
+      else
+        python scripts/srt/badge.py /nonexistent public/srt-badge.svg
+      fi
+  artifacts:
+    paths:
+      - public
 
 # Dependency vulnerability gate (SCA). Complements srt_security_review rather
 # than duplicating it: SRT runs syft, which builds an SBOM but does NO
