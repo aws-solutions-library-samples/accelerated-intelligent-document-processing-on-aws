@@ -139,6 +139,16 @@ class TestProtectedProfiles:
         cm.list_config_versions.assert_called_once_with(raise_errors=True)
         cm.save_raw_configuration.assert_not_called()
 
+    def test_a_protected_target_is_refused_before_any_model_call(self):
+        cm = self._manager([])
+        bedrock = Mock()
+        req = bootstrap.BootstrapRequest(prompt="a paystub", target_version="default")
+        result = bootstrap.run_bootstrap(req, config_manager=cm, bedrock_client=bedrock)
+        assert not result.success
+        assert result.error and "'default'" in result.error
+        bedrock.invoke_model.assert_not_called()
+        cm.save_raw_configuration.assert_not_called()
+
     @pytest.mark.parametrize(
         "versions",
         [[], [{"versionName": "team-invoices", "managed": False}]],

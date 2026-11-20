@@ -149,7 +149,7 @@ const AgentChatLayout = ({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [completedJobId, setCompletedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const { versions, loaded: versionsLoaded, error: versionsError, setActiveVersion, fetchVersions } = useConfigurationVersions();
+  const { versions, loaded: versionsLoaded, error: versionsError, setActiveVersion } = useConfigurationVersions();
   const navigate = useNavigate();
 
   const discoveryTargetRef = useRef<string | null>(null);
@@ -181,16 +181,13 @@ const AgentChatLayout = ({
         return;
       }
       setActiveVersion(result.configVersion)
-        .then(() => {
-          void fetchVersions();
-          send(true);
-        })
+        .then(() => send(true))
         .catch((e) => {
           logger.error('Failed to activate the Quick Start profile:', e);
           send(false);
         });
     },
-    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions],
+    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion],
   );
 
   const handleUploadError = useCallback((message: string) => {

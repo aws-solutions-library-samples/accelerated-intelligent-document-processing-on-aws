@@ -271,6 +271,9 @@ flows:
     ux_watch:
       - Before anything is sent, is it clear what Quick Start will create and that
         it will make the result the active configuration?
+      - Before files are attached, is it clear that they are saved into a new
+        configuration profile, and that the user is asked before it becomes the
+        active one?
       - Does the panel say which files can be attached, before the file chooser
         opens?
       - Does the panel cover controls on the page behind it?

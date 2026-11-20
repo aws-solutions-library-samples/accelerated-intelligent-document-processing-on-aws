@@ -26,6 +26,7 @@ describe('the profile a Quick Start conversation saves into', () => {
   const target = 'quickstart-20261120-090507';
 
   it.each([
+    ['the stack has no profile at all', [], true],
     ['only default exists', [{ versionName: 'default', isActive: true }], true],
     [
       'it is already the active profile',
@@ -59,7 +60,7 @@ describe('the profile a Quick Start conversation saves into', () => {
 
   it('tells the agent it is active only once the activation has succeeded', () => {
     const layout = readFileSync(join(__dirname, '..', 'AgentChatLayout.tsx'), 'utf-8');
-    expect(layout).toMatch(/setActiveVersion\(result\.configVersion\)\s*\.then\(\(\) => \{\s*void fetchVersions\(\);\s*send\(true\);/);
+    expect(layout).toMatch(/setActiveVersion\(result\.configVersion\)\s*\.then\(\(\) => send\(true\)\)/);
     expect(layout).toMatch(/\.catch\(\(e\) => \{[^}]*send\(false\);/);
   });
 

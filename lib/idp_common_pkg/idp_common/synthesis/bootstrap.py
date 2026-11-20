@@ -174,6 +174,15 @@ def run_bootstrap(
         if status_cb:
             status_cb(pct, msg)
 
+    if request.target_version:
+        try:
+            refuse_protected_profile(
+                request.target_version, config_manager=config_manager
+            )
+        except Exception as e:
+            result.error = f"Failed to create config version: {e}"
+            return result
+
     config_classes: List[Dict[str, Any]] = []
     if request.config_version:
         try:
