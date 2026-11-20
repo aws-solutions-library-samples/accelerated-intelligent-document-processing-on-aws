@@ -22,7 +22,8 @@ import { generateClient } from '../../api/client-shim';
 import { listDocumentVersions, getDocumentVersion, compareDocumentVersions, deleteDocumentVersion } from '../../graphql/generated';
 import useUserRole from '../../hooks/use-user-role';
 import { describeApiError } from '../../hooks/utils/graphql-error';
-import { useFormatters, type Formatters } from '../../i18n/format';
+import { useFormatters } from '../../i18n/format';
+import { formatStoredTime } from './stored-time';
 
 const logger = new ConsoleLogger('DocumentVersionsPanel');
 const client = generateClient();
@@ -414,16 +415,6 @@ const formatValue = (v: unknown): string => {
   if (v === null || v === undefined) return '∅';
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
-};
-
-/**
- * A stored timestamp, a UTC ISO string, as a date and time in the UI locale and the browser's
- * time zone, as the document list shows it. No value, or one `Date` cannot parse, is shown as
- * stored, so an empty time stays empty. Display only.
- */
-const formatStoredTime = (value: string | undefined, formatDateTime: Formatters['formatDateTime']): string | undefined => {
-  const date = new Date(value ?? '');
-  return Number.isNaN(date.getTime()) ? value : formatDateTime(date);
 };
 
 // A status missing from the switch reads as Identical, as it always has.

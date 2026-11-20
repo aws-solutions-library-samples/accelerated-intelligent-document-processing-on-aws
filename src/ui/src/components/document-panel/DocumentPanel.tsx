@@ -37,7 +37,8 @@ import { documentName } from '../review-queues/review-api';
 import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
-import { useFormatters, type Formatters } from '../../i18n/format';
+import { useFormatters } from '../../i18n/format';
+import { formatStoredTime } from './stored-time';
 import type { CallerAttributeEntry } from '../common/caller-attributes';
 // Uncomment the line below to enable debugging
 
@@ -357,16 +358,6 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
     <div>{children}</div>
   </div>
 );
-
-/**
- * A stored timestamp, a UTC ISO string, as a date and time in the UI locale and the browser's
- * time zone, as the document list shows it. No value, or one `Date` cannot parse, is shown as
- * stored, so an empty time stays empty. Display only.
- */
-const formatStoredTime = (value: string | undefined, formatDateTime: Formatters['formatDateTime']): string | undefined => {
-  const date = new Date(value ?? '');
-  return Number.isNaN(date.getTime()) ? value : formatDateTime(date);
-};
 
 /**
  * Document Details: four aligned columns, fewer on a narrow screen (`minColumnWidth`).
