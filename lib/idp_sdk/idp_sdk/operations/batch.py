@@ -7,6 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+from idp_common.models import DOCUMENT_STATUS_VALUES
 from idp_sdk._core.document_processor import _section_instances
 from idp_sdk._core.naming import resolve_config_profile
 from idp_sdk.exceptions import (
@@ -891,7 +892,14 @@ class BatchOperation:
                 wildcard selection pass ``pattern`` instead, where the breadth is
                 visible in what you wrote.
             pattern: Wildcard pattern to match document keys (e.g. ``"batch-123/*.pdf"``)
-            status_filter: Optional status filter (e.g., 'FAILED', 'COMPLETED')
+            status_filter: Only delete documents whose current status is exactly
+                this value. Must be one of
+                ``idp_common.models.DOCUMENT_STATUS_VALUES`` (e.g. ``'FAILED'``,
+                ``'COMPLETED'``, ``'QUEUED'``); a document still being processed
+                carries the name of its current step, such as ``'OCR'`` or
+                ``'EXTRACTING'``. Any other value raises
+                :class:`IDPConfigurationError`, because it could only ever select
+                nothing.
             stack_name: Optional stack name override
             dry_run: If True, only simulate deletion without actually deleting
             continue_on_error: If True, continue deleting other documents if one fails
@@ -912,6 +920,15 @@ class BatchOperation:
             raise IDPConfigurationError("Must specify either batch_id or pattern")
         if batch_id and pattern:
             raise IDPConfigurationError("Cannot specify both batch_id and pattern")
+        if status_filter and status_filter not in DOCUMENT_STATUS_VALUES:
+            # No tracking record carries any other value, so the scan would match
+            # nothing and the call would report zero deletions as a success.
+            raise IDPConfigurationError(
+                f"Unknown status_filter {status_filter!r}: a document's status is "
+                f"one of {', '.join(DOCUMENT_STATUS_VALUES)}. A document still being "
+                "processed carries the name of its current step (e.g. OCR, "
+                "EXTRACTING), not PROCESSING"
+            )
 
         name = self._client._require_stack(stack_name)
         resources = self._client._get_stack_resources(name)
@@ -1360,14 +1377,26 @@ class BatchOperation:
         page_docs = document_ids[offset : offset + limit]
         has_more = offset + limit < total_in_batch
 
-        # Retrieve confidence scores for each document
+        # Retrieve confidence scores for each document. The submission time is
+        # passed for the same reason `get_status` passes it: without it a document
+        # whose tracking row has not landed yet reads FAILED instead of QUEUED.
+        started_at = _batch_started_at(batch_info)
         documents = []
 
         for doc_id in page_docs:
             try:
-                confidence_data = analyzer.get_confidence(doc_id, section_id)
-                status_data = monitor.get_batch_status([doc_id])
-                status = _single_document_status(status_data)
+                # The status comes from the tracking record whether or not the
+                # assessment file exists, so a document with no confidence yet
+                # reports where it actually is (QUEUED, RUNNING, FAILED, ...).
+                # It used to report PROCESSING, which is not a status any
+                # document carries.
+                status = _single_document_status(
+                    monitor.get_batch_status([doc_id], batch_started_at=started_at)
+                )
+                try:
+                    confidence_data = analyzer.get_confidence(doc_id, section_id)
+                except FileNotFoundError:
+                    confidence_data = {}
 
                 attributes = confidence_data.get("attributes", {})
                 documents.append(
@@ -1375,14 +1404,6 @@ class BatchOperation:
                         "document_id": doc_id,
                         "attributes": attributes,
                         "status": status,
-                    }
-                )
-            except FileNotFoundError:
-                documents.append(
-                    {
-                        "document_id": doc_id,
-                        "attributes": {},
-                        "status": "PROCESSING",
                     }
                 )
             except Exception as e:

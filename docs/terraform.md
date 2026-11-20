@@ -785,7 +785,10 @@ Add `--terraform-dir DIR` if you deployed with a directory other than the defaul
 `--terraform-assume-role-arn` keeps that role in `main.tf`, so the delete uses it
 too; pass `--terraform-assume-role-arn` to the delete to set or change it, which
 rewrites the two provider blocks before `init`. The command empties the deployment's buckets the
-way the CloudFormation delete path does, then removes from Terraform state every
+way the CloudFormation delete path does, except the module's custom-resource bridge
+buckets (`cfn_bridge`, created with `force_destroy`): those hold the physical ID of each
+custom resource, which the resource's delete needs, and `terraform destroy` empties
+them itself after the custom resources are deleted. It then removes from Terraform state every
 resource whose CloudFormation `DeletionPolicy` keeps it (`Retain` or
 `RetainExceptOnCreate`), and then runs `terraform destroy`. Removing a resource from
 state means Terraform forgets it without deleting it, so the resources CloudFormation
@@ -841,6 +844,17 @@ staging bucket when `EnableJobsApi` is `true`:
 terraform state list | grep -E '^module\.idp\..*(aws|awscc)_s3_bucket\.' \
   | grep -v '\.cfn_bridge$'
 ```
+
+Leave the bridge buckets alone even if they hold objects: each custom resource's
+physical ID is recorded there, and the custom-resource bridge refuses to delete a
+custom resource whose record is missing, failing the destroy with a message naming
+the resource and the missing record. That refusal is part of the bridge the
+deployment applied, so a deployment applied from a module released before it instead
+deletes the resource with an invented ID and ignores a failure; apply the current
+module first, or keep the bridge buckets intact, to avoid leaving resources behind. If that happens, either put the record back
+(`state/<stack_name>/<LogicalId>.json` in that module's bridge bucket, holding
+`{"PhysicalResourceId": "<id>"}`) and run `terraform destroy` again, or delete the
+resource yourself and `terraform state rm` its `aws_lambda_invocation` first.
 
 Buckets of your own in the same root configuration need the same treatment. Then run
 `terraform destroy`. Retained resources keep running up costs (storage, mostly) until
@@ -950,6 +964,20 @@ empty object it had stored for that unset header. The policy now sets
 the policy in place, including on a deployment that an earlier failure left part
 way, and so do later changes to it. CloudFormation deployments were never
 affected.
+
+The two Lambda asynchronous-invocation settings (`awscc_lambda_event_invoke_config`,
+for the queue sender and the reporting rollup function) failed the same way on any
+upgrade that changed their retry count, event age or destination: Lambda reports an
+unset success or failure destination as an empty object, and Cloud Control refuses
+an in-place update while one is present. No value avoids that, since any destination
+changes where results go, so the module now replaces these two resources instead of
+updating them: a change to any of their settings deletes the configuration and
+creates it again in the same apply, and the plan shows it as replaced "due to
+changes in replace_triggered_by". Between the delete and the create, asynchronous
+invocations of that function use Lambda's defaults. Whether the first upgrade to a
+module with this change replaces them depends on the binary: measured with the
+releases `make terraform-check` pins, OpenTofu 1.13 replaces them once, and
+Terraform 1.7 and 1.17 and OpenTofu 1.7 do not.
 
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade

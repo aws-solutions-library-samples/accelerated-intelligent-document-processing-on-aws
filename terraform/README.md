@@ -153,6 +153,20 @@ returns it; a `FAILED` response fails the apply with the handler's reason. Becau
 Terraform passes the previous input but not the previous result on update and delete,
 the bridge keeps each resource's physical ID in its bucket between calls.
 
+A delete with no recorded physical ID fails, naming the resource and the missing
+record, and does not call the handler. CloudFormation always sends a delete its
+physical ID, and several of this solution's handlers delete by it, among them the S3
+Vectors knowledge base's, the OpenSearch index's and the MCP gateway interceptor
+attachment's. Given an invented ID, such a handler either fails or finds nothing under
+that ID and reports success, and either way the real resource stays in the account.
+A successful Delete keeps the record, so a Delete that Terraform sends again (because
+it never saved the first one's result) still finds it. The record is lost only if the
+bridge bucket is emptied before `terraform destroy`, which is why `idp-cli delete
+--terraform` leaves the `force_destroy` bridge buckets for destroy to empty.
+The bridge that runs during a destroy is the one the deployment last applied, so a
+deployment applied from an earlier module keeps the earlier behaviour (an invented ID,
+a failure ignored) until it is applied with a module that has this one.
+
 Three behaviours of the bridge exist because a live run needed them. It is granted
 `s3:ListBucket` on its bucket, since without it a missing response object reads as
 `AccessDenied` rather than `NoSuchKey`. It retries `AccessDenied` for up to 60 seconds
@@ -423,6 +437,18 @@ reason. `STABLE_CUSTOM_OUTPUTS` and `PASS_THROUGH_ATTRS` are described under
   resource rewrites at deploy time. An entry naming a resource the standard template
   no longer has is reported, and `tests/test_upgrade_safety.py` fails on it, so an
   override cannot outlive what it described.
+- **`UPDATED_BY_REPLACEMENT`**, keyed by type. Cloud Control applies an update's
+  patch to the model its read handler returns and validates the result against the
+  registry schema, so a type whose read model carries an object without that object's
+  required keys can never be updated in place, whatever the module sends. For such a
+  type, every property the template sets other than the create-only ones is emitted
+  with `ignore_changes` and copied into a `terraform_data` `<name>_settings_key` the
+  resource is `replace_triggered_by`, so a change to any of them deletes and recreates
+  the resource. The one entry today is `AWS::Lambda::EventInvokeConfig`, which Lambda
+  reads back with an empty `OnSuccess` or `OnFailure` destination when the template
+  sets only one or neither (#2183). `tests/test_upgrade_safety.py` fails if an entry's
+  type no longer reaches the standard module, or if the ignored attributes go beyond
+  the type's settable ones.
 - **A hand mapper's `ignore_changes`** (`SpecMapper.ignore_changes` in
   `aws_mappers.py`, which the pool user's mapper in `aws_mappers_storage.py` also
   subclasses), for a property the service cannot change after creation.

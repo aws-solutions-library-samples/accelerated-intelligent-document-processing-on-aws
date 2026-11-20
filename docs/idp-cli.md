@@ -1422,6 +1422,15 @@ For each metric, you'll see:
 - Average, Median, Min, Max, Standard Deviation, Total
 - ObjectKey for min/max values (helps identify outliers)
 
+With `--format json`, `--get-time` writes these statistics to stdout as one JSON object
+instead of the tables: `processing_time`, `queue_time` and `total_time` (each with
+`average`, `median`, `min`, `min_key`, `max`, `max_key`, `stdev` and `total`, in
+seconds), `valid_count` and `missing_data_count`, plus `metering` and `metering_count`
+when `--include-metering` is given. `success` is `false`, with an `error` message, when
+no matching document has the timestamps the statistics need. The exit code is `0` in
+either case, as it is for the table form. `--format json` is still ignored with
+`--wait`.
+
 **Lambda Metering:**
 
 When using `--include-metering` with `--get-time`, you'll see GB-seconds usage by stage:

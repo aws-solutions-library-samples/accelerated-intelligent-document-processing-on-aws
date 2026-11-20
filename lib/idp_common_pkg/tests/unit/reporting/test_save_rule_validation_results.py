@@ -459,6 +459,8 @@ class TestRuleValidationGlueTable:
 
     def test_an_existing_table_with_all_the_columns_is_left_alone(self):
         # Calling update_table on every document would be a needless write per document.
+        # Nothing was created or updated, so the helper reports False, as its
+        # docstring and the document sections helper both say.
         saver = self._saver()
         saver.glue_client.get_table.return_value = {
             "Table": {
@@ -471,7 +473,7 @@ class TestRuleValidationGlueTable:
             saver._create_or_update_rule_validation_glue_table(
                 "rule_validation_summary", self.SCHEMA
             )
-            is True
+            is False
         )
         saver.glue_client.update_table.assert_not_called()
         saver.glue_client.create_table.assert_not_called()

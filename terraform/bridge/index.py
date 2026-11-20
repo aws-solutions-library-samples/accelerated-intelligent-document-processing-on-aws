@@ -123,6 +123,18 @@ def _call(event: dict[str, Any], token: str, context: Any) -> dict[str, Any]:
     )
 
 
+def unrecorded_delete_message(stack: str, logical_id: str, token: str) -> str:
+    return (
+        f"{logical_id} Delete refused: the bridge has no record of its physical "
+        f"id (s3://{BUCKET}/{_state_key(stack, logical_id)} is missing), so its "
+        f"handler {token} cannot be told which resource to delete. Either put "
+        'the record back as {"PhysicalResourceId": "<id>"} and run terraform '
+        "destroy again, or delete the resource yourself and remove this "
+        "custom resource's aws_lambda_invocation from the Terraform state "
+        "(terraform state rm) before running destroy again."
+    )
+
+
 def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     tf = event.get("tf", {})
     action = tf.get("action", "create")
@@ -152,20 +164,14 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             cfn_event["OldResourceProperties"] = _stringify(
                 prev.get("ResourceProperties", {})
             )
-        if request_type == "Delete" and not state:
-            # The record of this resource is gone (the bridge bucket was emptied
-            # by hand). Still give the handler its Delete, since most handlers
-            # clean up by their properties rather than by physical id, but do
-            # not let a failure here block terraform destroy.
-            cfn_event["PhysicalResourceId"] = f"{stack}-{logical_id}"
-            try:
-                response = _call(cfn_event, token, context)
-                logger.info(
-                    "%s: unrecorded Delete -> %s", logical_id, response.get("Status")
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("%s: unrecorded Delete failed; continuing", logical_id)
-            return {"PhysicalResourceId": "", "Data": {}}
+        if request_type == "Delete" and "PhysicalResourceId" not in state:
+            # Every successful Create and Update records the physical id, so a
+            # Delete without one means the record was lost (the bridge bucket
+            # was emptied before destroy). Refuse rather than invent an id: a
+            # handler that deletes by physical id would be pointed at a
+            # resource that does not exist, and either fail or report the
+            # Delete done while the real resource stays in the account.
+            raise RuntimeError(unrecorded_delete_message(stack, logical_id, token))
 
     response = _call(cfn_event, token, context)
     for attempt in range(IAM_RETRIES):
@@ -204,8 +210,11 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         _call(cleanup, token, context)
 
     data = response.get("Data") or {}
-    if request_type == "Delete":
-        s3.delete_object(Bucket=BUCKET, Key=_state_key(stack, logical_id))
-    else:
+    if request_type != "Delete":
         _write_state(stack, logical_id, {"PhysicalResourceId": physical})
+    # A Delete keeps the record. If Terraform never saves the Delete's result
+    # (the invoke's response is lost), destroy sends the Delete again, and it
+    # must find the id rather than be refused as unrecorded; handlers take a
+    # repeated Delete, as they do from CloudFormation. A later Create of the
+    # same resource overwrites the record, and destroy deletes the bucket.
     return {"PhysicalResourceId": physical, "Data": data}

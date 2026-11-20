@@ -52,8 +52,9 @@ _IMPORT_ERROR: Optional[ImportError] = None
 # handler could explain what went wrong. So report and exit here instead.
 #
 # `idp_common.models` is tier 1 for the same reason: the status choices of
-# `delete-documents --status-filter` and `status --object-status` are built from
-# its `Status` enum at module level. It imports only the standard library.
+# `delete-documents --status-filter` and `status --object-status` are its
+# `DOCUMENT_STATUS_VALUES`, derived from the `Status` enum and shared with the
+# SDK's `status_filter` check. It imports only the standard library.
 try:
     import boto3
     import click
@@ -62,7 +63,7 @@ try:
     from rich.markup import escape
     from rich.table import Table
 
-    from idp_common.models import Status as DocumentStatus
+    from idp_common.models import DOCUMENT_STATUS_VALUES
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
     print(f"Underlying import error: {exc}", file=sys.stderr)
@@ -96,22 +97,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-#: Jobs API statuses that share the enum but are never a document's
-#: ``ObjectStatus``: ``PENDING_UPLOAD`` is a job's status before its files arrive and
-#: ``IN_PROGRESS`` a file's status inside a ``job#`` record, which has no
-#: ``ObjectStatus`` at all.
-JOB_LEVEL_STATUSES = frozenset(
-    {DocumentStatus.PENDING_UPLOAD, DocumentStatus.IN_PROGRESS}
-)
-
-#: Every status a document tracking record can carry, in enum order. Each writer
-#: stores ``document.status.value`` in ``ObjectStatus``, so this is derived from the
-#: enum rather than listed: a hand-written list offered ``PROCESSING``, which no
-#: record ever carries, and none of the step statuses an in-progress document has.
-DOCUMENT_STATUS_VALUES = tuple(
-    status.value for status in DocumentStatus if status not in JOB_LEVEL_STATUSES
-)
 
 # Console is guaranteed importable — a missing rich exits above, not stubs to None.
 #
@@ -734,7 +719,9 @@ def _delete_terraform(
         console.print(f"Deployment: [cyan]{stack_name}[/cyan]")
         console.print(f"Region: {region}")
         console.print(
-            "Every bucket that will be destroyed is emptied first, then `destroy` runs."
+            "Every bucket that will be destroyed is emptied first, except the "
+            "custom-resource bridge buckets, which `destroy` empties after the "
+            "custom resources are deleted; then `destroy` runs."
         )
         console.print("[bold red]This action cannot be undone.[/bold red]")
         console.print("━" * 60)
@@ -3397,10 +3384,16 @@ def status(
 
         # Handle timing statistics display (only for batch-id searches)
         if get_time and batch_id:
-            console.print()
             timing_stats = searcher.calculate_timing_statistics(
                 search_results, include_metering=include_metering
             )
+            if output_format == "json" and not wait:
+                # The statistics dict is the payload. This branch used to render
+                # the Rich tables whatever `--format` said, so `--get-time
+                # --format json` never produced JSON at all.
+                emit_json(timing_stats)
+                sys.exit(0)
+            console.print()
             searcher.display_timing_statistics(timing_stats)
 
             # If not waiting, we're done
