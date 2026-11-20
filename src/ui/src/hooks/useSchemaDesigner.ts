@@ -4,6 +4,7 @@ import {
   X_AWS_IDP_DOCUMENT_TYPE,
   X_AWS_IDP_POLICY_TYPE,
   X_AWS_IDP_POLICY_GROUP,
+  X_AWS_IDP_POLICY_UPLOADS,
   X_AWS_IDP_EXAMPLES,
   X_AWS_IDP_DOCUMENT_NAME_REGEX,
   X_AWS_IDP_PAGE_CONTENT_REGEX,
@@ -277,6 +278,8 @@ const convertJsonSchemaToClasses = (jsonSchema: JsonSchemaProperty | JsonSchemaP
         ...(schema[X_AWS_IDP_DOCUMENT_NAME_REGEX] ? { [X_AWS_IDP_DOCUMENT_NAME_REGEX]: schema[X_AWS_IDP_DOCUMENT_NAME_REGEX] } : {}),
         // Preserve the Policy Discovery group: later uploads into the group find the class by it
         ...(schema[X_AWS_IDP_POLICY_GROUP] ? { [X_AWS_IDP_POLICY_GROUP]: schema[X_AWS_IDP_POLICY_GROUP] } : {}),
+        // Preserve the record of which upload supplied and superseded which rule
+        ...(schema[X_AWS_IDP_POLICY_UPLOADS] ? { [X_AWS_IDP_POLICY_UPLOADS]: schema[X_AWS_IDP_POLICY_UPLOADS] } : {}),
         ...(schema[X_AWS_IDP_PAGE_CONTENT_REGEX] ? { [X_AWS_IDP_PAGE_CONTENT_REGEX]: schema[X_AWS_IDP_PAGE_CONTENT_REGEX] } : {}),
         // Preserve extraction model override if it exists in the schema
         ...(schema[X_AWS_IDP_EXTRACTION_MODEL] ? { [X_AWS_IDP_EXTRACTION_MODEL]: schema[X_AWS_IDP_EXTRACTION_MODEL] } : {}),
@@ -368,6 +371,7 @@ const convertJsonSchemaToClasses = (jsonSchema: JsonSchemaProperty | JsonSchemaP
     // Preserve regex fields if they exist in the schema
     ...(jsonSchema[X_AWS_IDP_DOCUMENT_NAME_REGEX] ? { [X_AWS_IDP_DOCUMENT_NAME_REGEX]: jsonSchema[X_AWS_IDP_DOCUMENT_NAME_REGEX] } : {}),
     ...(jsonSchema[X_AWS_IDP_POLICY_GROUP] ? { [X_AWS_IDP_POLICY_GROUP]: jsonSchema[X_AWS_IDP_POLICY_GROUP] } : {}),
+    ...(jsonSchema[X_AWS_IDP_POLICY_UPLOADS] ? { [X_AWS_IDP_POLICY_UPLOADS]: jsonSchema[X_AWS_IDP_POLICY_UPLOADS] } : {}),
     ...(jsonSchema[X_AWS_IDP_PAGE_CONTENT_REGEX] ? { [X_AWS_IDP_PAGE_CONTENT_REGEX]: jsonSchema[X_AWS_IDP_PAGE_CONTENT_REGEX] } : {}),
     // Preserve extraction model override if it exists in the schema
     ...(jsonSchema[X_AWS_IDP_EXTRACTION_MODEL] ? { [X_AWS_IDP_EXTRACTION_MODEL]: jsonSchema[X_AWS_IDP_EXTRACTION_MODEL] } : {}),
@@ -880,6 +884,7 @@ export const useSchemaDesigner = (
             ? { [X_AWS_IDP_PAGE_CONTENT_REGEX]: docTypeClass[X_AWS_IDP_PAGE_CONTENT_REGEX] }
             : {}),
           ...(docTypeClass[X_AWS_IDP_POLICY_GROUP] ? { [X_AWS_IDP_POLICY_GROUP]: docTypeClass[X_AWS_IDP_POLICY_GROUP] } : {}),
+          ...(docTypeClass[X_AWS_IDP_POLICY_UPLOADS] ? { [X_AWS_IDP_POLICY_UPLOADS]: docTypeClass[X_AWS_IDP_POLICY_UPLOADS] } : {}),
           ...(docTypeClass[X_AWS_IDP_EXTRACTION_MODEL] ? { [X_AWS_IDP_EXTRACTION_MODEL]: docTypeClass[X_AWS_IDP_EXTRACTION_MODEL] } : {}),
           ...(docTypeClass[X_AWS_IDP_EXTRACTION_ESCALATION_MODEL]
             ? { [X_AWS_IDP_EXTRACTION_ESCALATION_MODEL]: docTypeClass[X_AWS_IDP_EXTRACTION_ESCALATION_MODEL] }

@@ -38,6 +38,7 @@ export default defineConfig({
               slug: "references",
             },
             { label: "Hands-on Workshops", slug: "workshops" },
+            { label: "Solution Profile", slug: "solution-profile" },
           ],
         },
         {

@@ -327,6 +327,8 @@ class TestModuleDefaults:
             "empty": [],
             "tricky": 'q"${x}%{y}\\',
             "secret": "",
+            # The module's tags input, which every translated module declares.
+            "tags": {},
         }
 
     def test_an_unreadable_default_is_left_out(self):

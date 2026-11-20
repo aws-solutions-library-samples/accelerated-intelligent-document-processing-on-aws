@@ -114,6 +114,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Circuit Breaker](./circuit-breaker.md) - Automatic protection from cascading failures during Bedrock outages
 - [Cross-Account Bedrock](./cross-account-bedrock.md) - Route all Bedrock invocations through a centralized hub account via STS AssumeRole
 - [Cost Calculator](./cost-calculator.md) - Framework for estimating solution costs
+- [Solution Profile](./solution-profile.md) - The versioned, machine-readable description of the accelerator attached to each release: what it does, where it stops, how to extend it and how to judge fit
 - [Release Runbook](./release-runbook.md) - How a release is built and published to S3, for publishing releases to buckets in your own account: preconditions, ordered steps, failure and recovery, post-release verification
 - [Version Update Indicator](./version-update-indicator.md) - The Web UI badge shown when a newer template version has been published
 

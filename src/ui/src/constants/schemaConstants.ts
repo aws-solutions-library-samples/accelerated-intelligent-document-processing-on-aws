@@ -202,6 +202,9 @@ export const X_AWS_IDP_POLICY_TYPE = 'x-aws-idp-policy-type';
 /** The Policy Discovery group a policy class accumulates (#608); later uploads naming it find the class by this key */
 export const X_AWS_IDP_POLICY_GROUP = 'x-aws-idp-policy-group';
 
+/** The Policy Discovery uploads that built a policy class, oldest first, with the rules each supplied and superseded (#608) */
+export const X_AWS_IDP_POLICY_UPLOADS = 'x-aws-idp-policy-uploads';
+
 /** Classification metadata for document type */
 export const X_AWS_IDP_CLASSIFICATION = 'x-aws-idp-classification';
 

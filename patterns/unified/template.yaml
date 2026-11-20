@@ -1118,13 +1118,13 @@ Resources:
                         type: string
                         title: System prompt (page)
                         format: textarea
-                        description: "System prompt for page calls. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.system_prompt`)"
+                        description: "System prompt for page calls. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.system_prompt.txt) (`combined.page.system_prompt`)"
                         order: 1
                       task_prompt:
                         type: string
                         title: Task prompt (page)
                         format: textarea
-                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.page.task_prompt`)"
+                        description: "Asks for one page's class plus whether that page starts a new section. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES} (each class's examples; renders empty when there are none, so it is safe to leave in), {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}, and optionally {CLASS_AND_ATTRIBUTE_NAMES_AND_DESCRIPTIONS} to add schema field names. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. Removing a placeholder is the same as turning its Modality flag off. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.page.task_prompt.txt) (`combined.page.task_prompt`)"
                         order: 2
                   packet:
                     type: object
@@ -1154,13 +1154,13 @@ Resources:
                         type: string
                         title: System prompt (packet)
                         format: textarea
-                        description: "System prompt for packet calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.system_prompt`)"
+                        description: "System prompt for packet calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.system_prompt.txt) (`combined.packet.system_prompt`)"
                         order: 2
                       task_prompt:
                         type: string
                         title: Task prompt (packet)
                         format: textarea
-                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`combined.packet.task_prompt`)"
+                        description: "Must ask for a `segments` array of ordinal_start_page, ordinal_end_page and type. Page numbers count from the first page the call is shown, not the document's page 1. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Use <<CACHEPOINT>> to mark the static prefix for prompt caching. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.packet.task_prompt.txt) (`combined.packet.task_prompt`)"
                         order: 3
                   llm:
                     type: object
@@ -1412,21 +1412,21 @@ Resources:
                             type: string
                             title: Top-K instruction block
                             format: textarea
-                            description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                            description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk.txt) (`combined.llm.confidence.task_prompt_topk`)"
                             order: 2
                             dependsOn: { field: "mode", value: "topk" }
                           task_prompt_verbalized:
                             type: string
                             title: Verbalized instruction block
                             format: textarea
-                            description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                            description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized.txt) (`combined.llm.confidence.task_prompt_verbalized`)"
                             order: 3
                             dependsOn: { field: "mode", value: "verbalized" }
                           task_prompt_topk_packet:
                             type: string
                             title: Top-K instruction block (packet)
                             format: textarea
-                            description: "The 'topk' block used at packet granularity, where the unit is a section rather than a page. Empty falls back to the page block above."
+                            description: "The 'topk' block used at packet granularity, where the unit is a section rather than a page. Empty falls back to the page block above. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_topk_packet.txt) (`combined.llm.confidence.task_prompt_topk_packet`)"
                             order: 4
                             dependsOn: { field: "mode", value: "topk" }
                             showWhen: [{ field: "granularity", value: "packet" }]
@@ -1434,7 +1434,7 @@ Resources:
                             type: string
                             title: Verbalized instruction block (packet)
                             format: textarea
-                            description: "The 'verbalized' block used at packet granularity, on the same per-section rules as the packet Top-K block."
+                            description: "The 'verbalized' block used at packet granularity, on the same per-section rules as the packet Top-K block. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/combined.llm.confidence.task_prompt_verbalized_packet.txt) (`combined.llm.confidence.task_prompt_verbalized_packet`)"
                             order: 5
                             dependsOn: { field: "mode", value: "verbalized" }
                             showWhen: [{ field: "granularity", value: "packet" }]
@@ -1506,13 +1506,13 @@ Resources:
                                 type: string
                                 title: System prompt (page)
                                 format: textarea
-                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.system_prompt`)"
+                                description: "System prompt for the per-page splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.system_prompt.txt) (`split_then_classify.splitting.llm.page.system_prompt`)"
                                 order: 1
                               task_prompt:
                                 type: string
                                 title: Task prompt (page)
                                 format: textarea
-                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.page.task_prompt`)"
+                                description: "Asks only whether this page starts a new section; must return a `document_boundary` of start or continue. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Not the class list or examples — those are the prefix this stage exists to drop, and they render empty here. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.page.task_prompt.txt) (`split_then_classify.splitting.llm.page.task_prompt`)"
                                 order: 2
                           packet:
                             type: object
@@ -1542,13 +1542,13 @@ Resources:
                                 type: string
                                 title: System prompt (packet)
                                 format: textarea
-                                description: "System prompt for the packet splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.system_prompt`)"
+                                description: "System prompt for the packet splitting calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.system_prompt.txt) (`split_then_classify.splitting.llm.packet.system_prompt`)"
                                 order: 2
                               task_prompt:
                                 type: string
                                 title: Task prompt (packet)
                                 format: textarea
-                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.splitting.llm.packet.task_prompt`)"
+                                description: "Asks for a `segments` array of ordinal_start_page and ordinal_end_page — ranges only, no type. Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Page numbers count from the first page the call is shown. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.splitting.llm.packet.task_prompt.txt) (`split_then_classify.splitting.llm.packet.task_prompt`)"
                                 order: 3
                           model:
                             type: string
@@ -1786,13 +1786,13 @@ Resources:
                             type: string
                             title: System prompt
                             format: textarea
-                            description: "System prompt for the section classification calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.system_prompt`)"
+                            description: "System prompt for the section classification calls. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.system_prompt.txt) (`split_then_classify.section_classification.llm.system_prompt`)"
                             order: 6
                           task_prompt:
                             type: string
                             title: Task prompt
                             format: textarea
-                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml) (`split_then_classify.section_classification.llm.task_prompt`)"
+                            description: "Given one section's pages, returns its class. Asked for a `class` only — the boundary was already decided. Placeholders: {CLASS_NAMES_AND_DESCRIPTIONS}, {FEW_SHOT_EXAMPLES}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. Empty uses the shipped default. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.task_prompt.txt) (`split_then_classify.section_classification.llm.task_prompt`)"
                             order: 7
                           model:
                             type: string
@@ -2037,14 +2037,14 @@ Resources:
                                 type: string
                                 title: Top-K instruction block
                                 format: textarea
-                                description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely."
+                                description: "The instruction spliced into this call's task prompt in 'topk' mode. Inserted before the document content (so it stays inside the Bedrock prompt-cache prefix). {TOP_K_CANDIDATES} is replaced with the resolved candidate count. Keep the <class-confidence> wrapper: a task prompt that already contains one is left alone, which is how you take over the wording completely. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_topk.txt) (`split_then_classify.section_classification.llm.confidence.task_prompt_topk`)"
                                 order: 2
                                 dependsOn: { field: "mode", value: "topk" }
                               task_prompt_verbalized:
                                 type: string
                                 title: Verbalized instruction block
                                 format: textarea
-                                description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block."
+                                description: "The instruction spliced into this call's task prompt in 'verbalized' mode, on the same rules as the Top-K block. [Default prompt](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/lib/idp_common_pkg/idp_common/config/system_defaults/prompts/classification/split_then_classify.section_classification.llm.confidence.task_prompt_verbalized.txt) (`split_then_classify.section_classification.llm.confidence.task_prompt_verbalized`)"
                                 order: 3
                                 dependsOn: { field: "mode", value: "verbalized" }
                       decision_model:

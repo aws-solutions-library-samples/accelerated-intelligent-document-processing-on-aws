@@ -23,6 +23,7 @@ import ObjectConstraints from './constraints/ObjectConstraints';
 import MetadataFields from './constraints/MetadataFields';
 import ValueConstraints from './constraints/ValueConstraints';
 import ExamplesEditor from './constraints/ExamplesEditor';
+import PolicyUploadHistory from './PolicyUploadHistory';
 import PageTypesEditor, { PageTypeEntry } from './constraints/PageTypesEditor';
 import {
   TYPE_OPTIONS,
@@ -39,6 +40,7 @@ import {
   X_AWS_IDP_CONFIDENCE_THRESHOLD,
   X_AWS_IDP_EXAMPLES,
   X_AWS_IDP_DOCUMENT_NAME_REGEX,
+  X_AWS_IDP_POLICY_UPLOADS,
   X_AWS_IDP_PAGE_CONTENT_REGEX,
   X_AWS_IDP_EXTRACTION_MODEL,
   X_AWS_IDP_EXTRACTION_ESCALATION_MODEL,
@@ -554,6 +556,13 @@ const SchemaInspector = ({
               placeholder="Describe what this class represents"
             />
           </FormField>
+
+          {/* Only for a class Policy Discovery built: one with an upload record (#608). */}
+          {isRuleSchema &&
+            Array.isArray(selectedClass[X_AWS_IDP_POLICY_UPLOADS]) &&
+            (selectedClass[X_AWS_IDP_POLICY_UPLOADS] as unknown[]).length > 0 && (
+              <PolicyUploadHistory uploads={selectedClass[X_AWS_IDP_POLICY_UPLOADS]} />
+            )}
 
           {!!selectedClass[X_AWS_IDP_DOCUMENT_TYPE] && (
             <>

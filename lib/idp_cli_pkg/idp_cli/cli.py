@@ -490,6 +490,7 @@ def _deploy_terraform(
     govcloud: bool = False,
     assume_role_arn: Optional[str] = None,
     allow_replace_retained: bool = False,
+    tags: Optional[Dict[str, str]] = None,
 ) -> None:
     """`idp-cli deploy --terraform`. The work is in the SDK's
     `client.stack.deploy_terraform`; this resolves the default module the way
@@ -560,6 +561,7 @@ def _deploy_terraform(
             terraform_bin=terraform_bin,
             assume_role_arn=assume_role_arn,
             allow_replace_retained=allow_replace_retained,
+            tags=tags,
         )
         console.print(f"\n[green]✓ Terraform {result.operation} complete![/green]\n")
         outputs = result.outputs
@@ -900,7 +902,10 @@ def cli():
     help=(
         "Stack tags as key=value,key2=value2. Propagated by CloudFormation "
         "to all taggable resources and nested stacks. On update, providing "
-        "tags replaces the stack's tag set; omitting them preserves existing tags."
+        "tags replaces the stack's tag set; omitting them preserves existing tags. "
+        "With --terraform, the module tags every taggable resource the same way, "
+        "and omitting them keeps the tags of the previous deploy from "
+        "--terraform-dir."
     ),
 )
 @click.option("--wait", is_flag=True, help="Wait for stack operation to complete")
@@ -1114,7 +1119,6 @@ def deploy(
             "--template-url": template_url,
             "--template-file": template_file,
             "--custom-config": custom_config,
-            "--tags": tags,
             "--role-arn": role_arn,
             "--no-rollback": no_rollback,
             "--log-level": log_level,
@@ -1133,6 +1137,9 @@ def deploy(
             govcloud=govcloud,
             assume_role_arn=terraform_assume_role_arn,
             allow_replace_retained=terraform_allow_replace_retained,
+            # As on the CloudFormation path, no tags (or only blank segments)
+            # keeps the deployment's tags.
+            tags=_parse_tags(tags) or None,
         )
         return
     if terraform_assume_role_arn:

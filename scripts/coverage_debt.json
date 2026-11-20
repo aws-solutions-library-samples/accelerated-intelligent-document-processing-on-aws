@@ -352,6 +352,7 @@
       "files": {
         "scripts/api_rbac_mcp.py": 28.48,
         "scripts/api_security_cases.py": 93.65,
+        "scripts/build_solution_profile.py": 78.77,
         "scripts/check_account_ids.py": 97.42,
         "scripts/check_coverage_debt.py": 96.92,
         "scripts/check_data_plane_tags.py": 85.71,
@@ -360,6 +361,7 @@
         "scripts/check_lint_debt.py": 77.67,
         "scripts/check_markdown_links.py": 98.38,
         "scripts/check_python_arn_partitions.py": 78.23,
+        "scripts/check_solution_profile.py": 91.73,
         "scripts/check_threat_model_currency.py": 84.09,
         "scripts/check_ui_i18n_catalog.py": 95.62,
         "scripts/check_ui_string_debt.py": 95.53,

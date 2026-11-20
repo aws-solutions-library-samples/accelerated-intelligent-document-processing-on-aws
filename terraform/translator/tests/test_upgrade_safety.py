@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from idp_tf import completeness, moved, safety, translate
+from idp_tf import completeness, create_only, moved, safety, translate
 from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
 from idp_tf.translate import Translator
@@ -784,6 +784,14 @@ def _translate_owned_ignores(schema: AwsccSchema) -> dict[str, set[str]]:
         found = schema.hint(cfn_type).attr(prop)
         assert found is not None, (cfn_type, prop)
         owned.setdefault(awscc_type_name(cfn_type), set()).add(found[0])
+    # Tags the registry makes create-only are set at creation and kept
+    # (translate.tags_are_create_only), for every type the vendored schemas cover.
+    for cfn_type in create_only._load():
+        if not schema.has(cfn_type):
+            continue
+        tag = schema.tag_attribute(cfn_type)
+        if tag and translate.tags_are_create_only(cfn_type, tag[0]):
+            owned.setdefault(awscc_type_name(cfn_type), set()).add(tag[0])
     return owned
 
 
