@@ -288,6 +288,55 @@ The module's outputs keep the CloudFormation output names (`module.idp.Applicati
 `module.idp.S3InputBucketName`, `module.idp.StateMachineArn`, and so on); its
 `outputs.tf` lists them all.
 
+#### Tagging the deployment
+
+The module has a `tags` variable, a `map(string)` that is empty by default. It plays
+the role of CloudFormation stack tags. Set it on the module and give the same map to
+the `aws` provider's `default_tags`:
+
+```hcl
+locals {
+  idp_tags = { CostCenter = "42", Owner = "document-team" }
+}
+
+provider "aws" {
+  region = "us-west-2"
+  default_tags {
+    tags = local.idp_tags
+  }
+}
+
+module "idp" {
+  # ...
+  tags = local.idp_tags
+}
+```
+
+Both halves are needed, because `default_tags` reaches only the `aws` resources. The
+`hashicorp/awscc` provider has no `default_tags`, so a tag set there does not reach any
+`awscc` resource: the alarms, queues, SSM parameters, state machines, the REST API and
+its stage, the KMS key and the others the module creates through Cloud Control. The
+module merges `tags` into each `awscc` resource that accepts tags instead, in that
+resource's own tag shape. Which resources those are is read from the `awscc` provider
+schema when the module is generated, so a resource type gains the merge when the
+provider adds tags to it.
+
+A tag key a template sets on a resource itself, such as `Name` on the Lambda security
+group, keeps the template's value, as it does with `default_tags`. Keys starting with
+`aws:` are refused at plan, because AWS reserves them. OpenSearch Serverless
+collections accept tags only when they are created, so a collection gets the tags the
+module has when it is created, and a later change to `tags` does not change them,
+rather than replacing the collection and its vector index. With `tags` left empty, the
+module plans exactly what it did before it had the variable.
+
+Two limits follow from how the tags are applied. `default_tags` also tags the
+module's S3 objects (the label stack's template and the resource directory), and S3
+allows an object at most 10 tags, so keep the map to 10 tags; `idp-cli` refuses more.
+And emptying `tags` after it held some is not a reliable way to remove them from the
+`awscc` resources: a resource whose template sets no tags is then given `null`, which
+the `awscc` provider may treat as "keep what is there". Removing a tag from the map
+does remove it, because the attribute then carries the remaining tags.
+
 As with a CloudFormation deployment, the first apply sends a temporary password to
 `admin_email`, and a second email asks you to confirm the alerts subscription. Confirm
 it, or alarm notifications reach nobody (see
@@ -481,6 +530,7 @@ The options are:
 | `--stack-name` | the deployment name, which becomes `stack_name` |
 | `--admin-email` | the administrator's email address, which becomes `admin_email` |
 | `--parameters "K=V,K2=V2"` | settings by their CloudFormation parameter names, as on the CloudFormation path; an unknown name is an error |
+| `--tags "K=V,K2=V2"` | tags for every taggable resource, as CloudFormation stack tags are: `main.tf` gives them to the module's `tags` variable and to the `aws` provider's `default_tags` (see [Tagging the deployment](#tagging-the-deployment)), and `terraform.tfvars` records them. Passing tags replaces the deployment's tags; omitting them keeps the ones `terraform.tfvars` in the directory holds from the previous deploy, as a CloudFormation update keeps a stack's. A deploy from a new directory has no record of earlier tags, so pass them again there. At most 10 tags (see [Tagging the deployment](#tagging-the-deployment)); a module published before the module had a `tags` variable refuses them |
 | `--terraform-module-url URL` | the module source URL; by default the CLI uses the latest published module for the Region, chosen the same way the CloudFormation deploy chooses its default template |
 | `--from-code DIR` | build the templates from a local checkout, publish them with the Terraform module (`idp-cli publish --terraform`), and deploy that module. The build options `--bucket-basename`, `--prefix`, `--public`, `--build-max-workers`, `--clean-build` and `--no-validate-template` apply as on the CloudFormation path. With `--headless` or `--govcloud` it builds and deploys that variant's module. It cannot be combined with `--terraform-module-url` |
 | `--headless` / `--govcloud` | use the latest headless or GovCloud module instead of the standard one; they cannot be combined with each other or with `--terraform-module-url`, and `--admin-email` is ignored with `--headless` |

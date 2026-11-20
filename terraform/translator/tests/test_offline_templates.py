@@ -53,6 +53,8 @@ def test_generated_module_carries_the_parameter_map_and_retained_list(
     meta = json.loads((out / "idp-terraform.json").read_text())
     assert meta["parameters"]["AdminEmail"]["variable"] == "admin_email"
     assert meta["parameters"]["AdminEmail"]["required"] is True
+    # idp-cli passes --tags only to a module that names its tags input.
+    assert meta["tagsVariable"] == "tags"
     assert any(a.startswith("aws_s3_bucket.") for a in meta["retainedAddresses"])
     versions = (out / "versions.tf").read_text()
     assert "AWSCC_VERSION" not in versions
