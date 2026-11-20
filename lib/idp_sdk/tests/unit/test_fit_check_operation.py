@@ -179,3 +179,56 @@ def test_an_unknown_config_profile_is_refused(tmp_path):
         )
     op._submit.assert_not_called()
     assert op._snapshot.call_count == 2  # checked again on the way out
+
+
+@pytest.mark.unit
+def test_a_failed_cleanup_still_checks_the_guard_and_writes_the_report(tmp_path):
+    from idp_sdk.exceptions import IDPProcessingError
+
+    op = _operation(tmp_path, [SAME, dict(SAME)])
+    op._cleanup.side_effect = RuntimeError("scan hit an unreadable record")
+    out = tmp_path / "out"
+    with pytest.raises(IDPProcessingError, match="cleanup did not finish"):
+        op.run(str(_samples(tmp_path)), "S", cleanup=True, output_dir=str(out))
+    assert op._snapshot.call_count == 2
+    record = json.loads((out / "fit-run-record.json").read_text())
+    assert record["guard"]["unchanged"] is True
+    assert "Cleanup failed" in record["cleanup"]["summary"]
+
+
+@pytest.mark.unit
+def test_cleanup_deletes_each_uploaded_key_and_reads_back(tmp_path, monkeypatch):
+    client = MagicMock(spec=IDPClient)
+    client._region = "us-west-2"
+    client.document = MagicMock()
+    client.document.delete.return_value.success = True
+    client.evaluation = MagicMock()
+    client.config = MagicMock()
+    client.config.delete.return_value.success = True
+    op = FitCheckOperation(client)
+    op._profile_names = MagicMock(return_value={"default": True})
+    s3 = MagicMock()
+    s3.list_objects_v2.return_value = {"KeyCount": 0}
+    monkeypatch.setattr("boto3.client", lambda *a, **k: s3)
+    keys = ["fit-check-x/a.pdf", "fit-check-x/b.png"]
+    summary = op._cleanup(
+        "S",
+        {"InputBucket": "in", "OutputBucket": "out"},
+        keys,
+        [],
+        "fit-check-x",
+        print,
+    )
+    assert [c.args[0] for c in client.document.delete.call_args_list] == keys
+    client.config.delete.assert_called_once_with(
+        stack_name="S", config_profile="fit-check-x"
+    )
+    assert summary["documents_deleted"] == 2
+    assert summary["objects_remaining"] == {"InputBucket": 0, "OutputBucket": 0}
+    assert summary["profile_remaining"] is False and "error" not in summary
+    # Anything left behind is an error, not a silent success.
+    s3.list_objects_v2.return_value = {"KeyCount": 3}
+    assert (
+        "remain"
+        in op._cleanup("S", {"InputBucket": "in"}, keys, [], None, print)["error"]
+    )

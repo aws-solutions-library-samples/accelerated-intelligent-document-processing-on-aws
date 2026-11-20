@@ -138,7 +138,8 @@ class FitCheckOperation:
         say(_guard_line("before", record["guard"]["before"]))
 
         generated_name: Optional[str] = None
-        uploaded: List[str] = []
+        submitted: List[str] = []
+        failure: Optional[BaseException] = None
         try:
             if config_profile:
                 if config_profile not in self._profile_names(name):
@@ -169,29 +170,45 @@ class FitCheckOperation:
                 f"{sorted(settings['classes'])}"
             )
 
-            uploaded = self._submit(name, batch_id, profile, accepted, ground_truth_dir)
+            # Recorded before the upload starts, so a failure part-way through
+            # still has every key cleanup may need to remove.
+            submitted = [f"{batch_id}/{s.file}" for s in accepted]
+            self._submit(name, batch_id, profile, accepted, ground_truth_dir)
             say(f"Submitted batch {batch_id}; waiting for results")
             statuses = self._wait(name, batch_id, timeout_seconds, poll_seconds, say)
             record["documents"] = self._collect(
                 name, resources, accepted, batch_id, statuses, bool(ground_truth_dir)
             )
-        finally:
-            if cleanup:
+        except BaseException as e:  # still clean up and check the guard
+            failure = e
+
+        cleanup_error: Optional[str] = None
+        if cleanup:
+            try:
                 record["cleanup"] = self._cleanup(
                     name,
                     resources,
-                    batch_id if uploaded else None,
-                    uploaded if ground_truth_dir else [],
+                    submitted,
+                    submitted if ground_truth_dir else [],
                     generated_name
                     if generated_name and generated_name in self._profile_names(name)
                     else None,
                     say,
                 )
-            record["guard"]["after"] = self._snapshot(name)
-            say(_guard_line("after", record["guard"]["after"]))
-            record["guard"]["unchanged"] = (
-                record["guard"]["before"] == record["guard"]["after"]
-            )
+                cleanup_error = record["cleanup"].get("error")
+            except Exception as e:
+                cleanup_error = str(e)
+                record["cleanup"] = {"summary": f"Cleanup failed: {e}", "error": str(e)}
+                say(record["cleanup"]["summary"])
+        record["guard"]["after"] = self._snapshot(name)
+        say(_guard_line("after", record["guard"]["after"]))
+        record["guard"]["unchanged"] = (
+            record["guard"]["before"] == record["guard"]["after"]
+        )
+        if failure is not None:
+            if not record["guard"]["unchanged"]:
+                say("The active configuration changed during the failed run")
+            raise failure
 
         result = self._write(record, out, say, write_record=True)
         result.config_profile = record["configuration"].get("profile")
@@ -200,6 +217,10 @@ class FitCheckOperation:
             raise IDPError(
                 "The active configuration changed during the fit check: "
                 f"before {record['guard']['before']}, after {record['guard']['after']}"
+            )
+        if cleanup_error:
+            raise IDPProcessingError(
+                f"The report was written, but cleanup did not finish: {cleanup_error}"
             )
         return result
 
@@ -391,42 +412,56 @@ class FitCheckOperation:
             )
         return documents
 
-    def _cleanup(self, name, resources, batch_id, baseline_keys, profile, say):
+    def _cleanup(self, name, resources, document_keys, baseline_keys, profile, say):
+        """Delete what this run created, then read back what is left.
+
+        Documents are deleted one key at a time (``document.delete``) rather than
+        by batch: the run knows exactly which keys it uploaded, and selecting by
+        batch scans the whole tracking table, so one unreadable record anywhere in
+        it stops the delete.
+        """
         import boto3
 
+        batch_id = document_keys[0].split("/", 1)[0] if document_keys else None
         summary: Dict[str, Any] = {"batch_id": batch_id, "profile": profile}
         lines = []
-        if batch_id:
-            deletion = self._client.batch.delete_documents(
-                batch_id=batch_id, stack_name=name
-            )
-            summary["documents_deleted"] = deletion.deleted_count
-            summary["documents_failed"] = deletion.failed_count
+        errors = []
+        deleted = 0
+        for key in document_keys:
+            try:
+                result = self._client.document.delete(key, stack_name=name)
+                if result.success:
+                    deleted += 1
+                else:
+                    errors.append(f"{key}: {'; '.join(result.errors)}")
+            except Exception as e:
+                errors.append(f"{key}: {e}")
+        if document_keys:
+            summary["documents_deleted"] = deleted
             lines.append(
-                f"Deleted {deletion.deleted_count} document(s) of batch {batch_id} "
-                f"({deletion.failed_count} failed): input objects, every output "
-                "version, tracking and list records, run records and review items."
+                f"Deleted {deleted} of {len(document_keys)} document(s) of batch "
+                f"{batch_id}: input objects, every output version, tracking and list "
+                "records, run records and review items."
             )
         for key in baseline_keys:
             try:
                 self._client.evaluation.delete_baseline(key, stack_name=name)
             except Exception as e:
-                lines.append(f"Baseline {key} not deleted: {e}")
+                errors.append(f"baseline {key}: {e}")
         if baseline_keys:
             lines.append(f"Deleted the baselines of {len(baseline_keys)} document(s).")
         if profile:
-            deleted = self._client.config.delete(
+            removed = self._client.config.delete(
                 stack_name=name, config_profile=profile
             )
-            summary["profile_deleted"] = deleted.success
-            lines.append(
-                f"Deleted configuration profile {profile}."
-                if deleted.success
-                else f"Profile {profile} not deleted: {deleted.error}"
-            )
+            summary["profile_deleted"] = removed.success
+            if removed.success:
+                lines.append(f"Deleted configuration profile {profile}.")
+            else:
+                errors.append(f"profile {profile}: {removed.error}")
         # Read back what was meant to go.
         s3 = boto3.client("s3", region_name=self._client._region)
-        remaining = {}
+        remaining: Dict[str, int] = {}
         if batch_id:
             for bucket_key in ("InputBucket", "OutputBucket"):
                 bucket = resources.get(bucket_key)
@@ -436,19 +471,22 @@ class FitCheckOperation:
         summary["objects_remaining"] = remaining
         if profile:
             summary["profile_remaining"] = profile in self._profile_names(name)
-        lines.append(
-            "Read back: "
-            + ", ".join(
-                f"{k} objects under the batch prefix: {v}" for k, v in remaining.items()
-            )
-            + (
-                f"; profile {profile} still listed: {summary['profile_remaining']}"
-                if profile
-                else ""
-            )
-            + ". Reporting-database rows, logs and Step Functions history are kept "
-            "under the stack's retention settings."
+        read_back = ", ".join(
+            f"{k} objects under the batch prefix: {v}" for k, v in remaining.items()
         )
+        if profile:
+            read_back += (
+                f"; profile {profile} still listed: {summary['profile_remaining']}"
+            )
+        lines.append(
+            f"Read back: {read_back}. Reporting-database rows, logs and Step "
+            "Functions history are kept under the stack's retention settings."
+        )
+        if any(remaining.values()) or summary.get("profile_remaining"):
+            errors.append("objects or the profile remain after cleanup")
+        if errors:
+            summary["error"] = "; ".join(errors)
+            lines.append(f"Cleanup errors: {summary['error']}")
         summary["summary"] = " ".join(lines)
         for line in lines:
             say(line)
