@@ -1170,60 +1170,107 @@ integration_tests:
       - slack_posted.txt
     expire_in: 1 week
 
-# The weekly load probe: a few dozen sample packets submitted at once to an
-# EXISTING stack (scripts/sdlc/load_probe.py, `make stacktest-load`). It deploys
-# nothing. It runs on ONE trigger only: a scheduled pipeline carrying
-# IDP_RUN_LOAD_PROBE=true. Never on a merge request, never on a push, never on the
-# nightly or any other schedule, and there is no manual button; to run it on demand,
-# press Run on its schedule in Build › Pipeline schedules, or run the make target.
+# The weekly load probe: a few dozen sample packets submitted at once to the
+# long-lived load-probe stack, idp-loadprobe (scripts/sdlc/load_probe.py). It runs
+# on ONE trigger only: a scheduled pipeline carrying IDP_RUN_LOAD_PROBE=true. Never
+# on a merge request, never on a push, never on the nightly or any other schedule,
+# and there is no manual button; to run it on demand, press Run on its schedule in
+# Build › Pipeline schedules.
 #
-# The schedule is a GitLab project setting, not something in this file, and it is
-# inactive until somebody creates it. It must carry:
-#   IDP_RUN_LOAD_PROBE=true      the selector (set it on this schedule ONLY: as a
-#                                project or group variable it would reach every
-#                                schedule, and the rules below would then take the
-#                                nightly's deploy off every one of them)
-#   IDP_LOAD_PROBE_STACK=<name>  the existing stack to probe; no default, the job
-#                                refuses without it
+# It runs THROUGH the CodePipeline/CodeBuild path, like integration_tests, rather
+# than on the runner. The runner role (idp-sdlc-GitLab) has no rights on an IDP
+# stack, and the build does: codebuild_deployment.run_load_probe updates
+# idp-loadprobe in place to this run's freshly published template (creating it on
+# first use), then probes it, so the probe always measures current code. It shares
+# integration_tests' resource group because both drive the one pipeline.
+#
+# The schedule is a GitLab project setting, not something in this file. It must carry:
+#   IDP_RUN_LOAD_PROBE=true         the selector (set it on this schedule ONLY: as a
+#                                   project or group variable it would reach every
+#                                   schedule, and the rules below would then take the
+#                                   nightly's deploy off every one of them)
+#   IDP_LOAD_PROBE_STACK=idp-loadprobe  the stack; the build refuses any other
 # and may carry IDP_LOAD_PROBE_REGION (default us-east-1),
 # IDP_LOAD_PROBE_DECIDER_ARN (enables the decision-model arm) and
 # IDP_LOAD_PROBE_ARGS (extra driver options, e.g. a different --max-cost-usd).
 #
 # On that schedule deployment_validation, integration_tests, nightly_notification
-# and the nightly story jobs are ruled out, so the pipeline deploys nothing and
-# posts nothing to Slack; a red run is this probe's result alone. The fast_checks
-# jobs still run, as on every scheduled pipeline, and `needs: []` keeps this job
-# from waiting for them. See scripts/sdlc/docs/CI_TEST_COVERAGE.md.
+# and the nightly story jobs are ruled out, so the pipeline posts nothing to Slack;
+# a red run is this probe's result alone. The fast_checks jobs still run, as on
+# every scheduled pipeline, and `needs: []` keeps this job from waiting for them.
+# See scripts/sdlc/docs/CI_TEST_COVERAGE.md.
 load_probe:
   stage: integration_tests
   needs: []
   interruptible: false
-  # The driver's own deadline is 45 minutes from its start; this leaves room for
-  # the install and the report without GitLab killing the job first.
-  timeout: 75m
-  # Two probe runs against one stack would share its concurrency and read each
-  # other's throttling as their own.
-  resource_group: load_probe
+  # publish (~25 min) + the in-place update (~15-40 min) + the probe (<=45 min)
+  timeout: 4h30m
+  resource_group: integration_deploy
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
       when: on_success
     - when: never
-  before_script: *python_setup
+  before_script:
+    - apt-get update -y
+    - apt-get install zip unzip curl python3-pip -y
+    - curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+    - unzip -q awscliv2.zip
+    - ./aws/install
+    - pip install boto3 rich
   script:
     - |
       if [ -z "${IDP_LOAD_PROBE_STACK:-}" ]; then
-        echo "❌ IDP_LOAD_PROBE_STACK is not set on the schedule: name the existing stack to probe."
+        echo "❌ IDP_LOAD_PROBE_STACK is not set on the schedule: name the load-probe stack (idp-loadprobe)."
         exit 2
       fi
-    - export AWS_DEFAULT_REGION="${IDP_LOAD_PROBE_REGION:-us-east-1}"
-    # on-pass: a green run deletes the profiles and documents it created; a red
-    # run keeps them for diagnosis.
-    - make stacktest-load STACK_NAME="$IDP_LOAD_PROBE_STACK" REGION="$AWS_DEFAULT_REGION" LOAD_PROBE_ARGS="--cleanup on-pass --report-dir load-probe ${IDP_LOAD_PROBE_ARGS:-}"
+    - aws sts get-caller-identity --no-cli-pager
+    # The account the job's credentials are in (the CI account), so this job adds
+    # no second copy of the IDP_ACCOUNT_ID default.
+    - export IDP_ACCOUNT_ID=${IDP_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}
+    - REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env)
+    - eval "$REGION_ENV"
+    - export IDP_PIPELINE_NAME=genaiic-sdlc-deploy-pipeline
+    # Writes load_probe into ci_run_options.json (IDP_RUN_LOAD_PROBE and the
+    # IDP_LOAD_PROBE_* schedule variables), uploads, and monitors the build.
+    - python3 scripts/sdlc/integration_test_deployment.py
+  after_script:
+    - |
+      if [ -f "aws_after_script_creds.env" ]; then . ./aws_after_script_creds.env; fi
+      REGION_ENV=$(python3 scripts/sdlc/integration_test_deployment.py --region-env 2>/dev/null) || REGION_ENV=""
+      eval "$REGION_ENV"
+      export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+      mkdir -p load-probe
+      if [ ! -f pipeline_execution_id.txt ]; then
+        echo "⚠️ No pipeline execution id: the build never started, so there is no report"; exit 0
+      fi
+      EXECUTION_ID=$(cat pipeline_execution_id.txt)
+      BUILD_ID=""
+      for attempt in $(seq 1 12); do
+        BUILD_ID=$(aws codepipeline list-action-executions --pipeline-name ${IDP_PIPELINE_NAME:-genaiic-sdlc-deploy-pipeline} --filter pipelineExecutionId=$EXECUTION_ID --query 'actionExecutionDetails[?actionName==`BuildAction`].output.executionResult.externalExecutionId' --output text 2>/dev/null || true)
+        [ -n "$BUILD_ID" ] && [ "$BUILD_ID" != "None" ] && break
+        sleep 5
+      done
+      if [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "None" ]; then
+        echo "⚠️ Could not resolve the CodeBuild id; no report to fetch"; exit 0
+      fi
+      BUILD="${BUILD_ID#*:}"
+      ACCOUNT="${IDP_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}"
+      SOURCE_BUCKET="genaiic-sdlc-sourcecode-${ACCOUNT}-${AWS_DEFAULT_REGION}"
+      aws s3 cp "s3://${SOURCE_BUCKET}/deploy/summaries/${BUILD}.txt" load-probe/summary.txt 2>/dev/null && cat load-probe/summary.txt || echo "⚠️ No build summary found"
+      if aws s3 cp "s3://${SOURCE_BUCKET}/deploy/summaries/${BUILD}.load-probe.json" load-probe/report.json 2>/dev/null; then
+        RUN_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("run_id", "run"))' load-probe/report.json 2>/dev/null || echo run)
+        mkdir -p "load-probe/$RUN_ID" && mv load-probe/report.json "load-probe/$RUN_ID/report.json"
+        echo "📁 Report: load-probe/$RUN_ID/report.json"
+      else
+        echo "⚠️ No load-probe report was uploaded (the probe may not have run; see the summary)"
+      fi
+    - rm -f aws_after_script_creds.env
   artifacts:
     when: always
     paths:
       - load-probe/
     expire_in: 90 days
+
 
 srt_security_review:
   stage: fast_checks

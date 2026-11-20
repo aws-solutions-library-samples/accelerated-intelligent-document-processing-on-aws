@@ -8,6 +8,7 @@ Handles IDP stack deployment and testing in AWS CodeBuild environment.
 import hashlib
 import json
 import os
+import pathlib
 import re
 import secrets
 import shlex
@@ -628,7 +629,7 @@ def _first_failure_reason(existing, candidate):
 #: test_startup_sweep_outcomes.py computes that no name opening with a member's
 #: name carries one.
 #: Registered in scripts/tests/gate_exemptions.json.
-SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly"})
+SWEEP_EXEMPT_STACK_NAMES = frozenset({"idp-ux-nightly", "idp-loadprobe"})
 
 
 def _named_for_exempt_stack(name: str) -> bool:
@@ -1142,6 +1143,20 @@ _REGIONAL_CONFIGS: dict[tuple[str, str], str] = {}
 #: a run prefix and none of its names does. A test pins that membership, so
 #: renaming one without the other fails.
 UX_NIGHTLY_STACK_NAME = "idp-ux-nightly"
+#: The long-lived stack the weekly load probe (scripts/sdlc/load_probe.py) runs
+#: against. The load-probe schedule's build updates it in place to that run's
+#: template (creating it on first use), then probes it, so the probe always
+#: measures current code. A SWEEP_EXEMPT_STACK_NAMES member for the same reason as
+#: the review stack: it has to outlive every run.
+LOAD_PROBE_STACK_NAME = "idp-loadprobe"
+#: Where the probe writes its report in the build, and the S3 key the GitLab
+#: load_probe job reads it back from: beside the build summary, under
+#: deploy/summaries/, the one prefix the runner role may read.
+LOAD_PROBE_REPORT_DIR = "load-probe"
+LOAD_PROBE_REPORT_KEY = "deploy/summaries/{build}.load-probe.json"
+#: The probe's own deadline is 45 minutes (load_probe.py --deadline-minutes);
+#: this bounds the subprocess a little above it.
+LOAD_PROBE_TIMEOUT_SECONDS = 70 * 60
 #: Written at the zip root by scripts/sdlc/integration_test_deployment.py: the one
 #: fact CodeBuild cannot otherwise see, namely which GitLab pipeline source started
 #: the run. Read fail-closed.
@@ -11006,6 +11021,9 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
     So does a Terraform run (options ``iac``, or IDP_IAC in the build's
     environment): it is a scheduled run of develop too, and the review stack is a
     CloudFormation stack the nightly moves.
+
+    And so does the weekly load-probe run (options ``load_probe``): it updates its
+    own long-lived stack, LOAD_PROBE_STACK_NAME, and nothing else.
     """
     env = os.environ if environ is None else environ
     switch = str(env.get(UX_NIGHTLY_DISABLE_ENV, "true")).strip().lower()
@@ -11022,6 +11040,7 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         and not terraform_run(env)
         and options.get("terraform_migration") is not True
         and not terraform_migration_mode(env)
+        and not load_probe_options(options)
     )
 
 
@@ -11045,8 +11064,11 @@ def _described_parameter(stack: dict, key: str) -> str:
     return ""
 
 
-def update_ux_nightly_stack(template_url: str) -> dict:
-    """Update UX_NIGHTLY_STACK_NAME in place to tonight's template. Never raises.
+def update_ux_nightly_stack(template_url: str, stack_name: str | None = None) -> dict:
+    """Update a long-lived stack in place to tonight's template. Never raises.
+
+    `stack_name` defaults to UX_NIGHTLY_STACK_NAME; the load-probe run passes
+    LOAD_PROBE_STACK_NAME (ensure_load_probe_stack).
 
     The thread main() submits beside the primary suite on the scheduled run. The
     stack is long-lived and shared, so two rules shape everything here: it only
@@ -11076,6 +11098,7 @@ def update_ux_nightly_stack(template_url: str) -> dict:
     exit code, since an exit of 0 alone can mean nothing was applied.
     """
     _thread_local.never_abort = True
+    name = stack_name or UX_NIGHTLY_STACK_NAME
     started_mono = time.monotonic()
     started_utc = datetime.now(timezone.utc)
 
@@ -11090,15 +11113,15 @@ def update_ux_nightly_stack(template_url: str) -> dict:
             "minutes": round((time.monotonic() - started_mono) / 60, 1),
         }
 
-    iam_stack_name = f"{UX_NIGHTLY_STACK_NAME}-iam"
+    iam_stack_name = f"{name}-iam"
     try:
         cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
         try:
-            stack = cf.describe_stacks(StackName=UX_NIGHTLY_STACK_NAME)["Stacks"][0]
+            stack = cf.describe_stacks(StackName=name)["Stacks"][0]
         except Exception as e:  # noqa: BLE001
             if _is_stack_gone(e):
                 return outcome("skipped", reason="not_deployed", phase="precheck")
-            print(f"⚠️ {UX_NIGHTLY_STACK_NAME}: could not read the stack: {e}")
+            print(f"⚠️ {name}: could not read the stack: {e}")
             return outcome("failed", phase="precheck")
         status = str(stack.get("StackStatus", ""))
         if status.endswith("_IN_PROGRESS"):
@@ -11121,7 +11144,7 @@ def update_ux_nightly_stack(template_url: str) -> dict:
         )
         policy_name = boundary.partition(":policy/")[2]
         its_own = policy_name in (
-            f"{UX_NIGHTLY_STACK_NAME}-PermissionsBoundary",
+            f"{name}-PermissionsBoundary",
             SHARED_BOUNDARY_POLICY_NAME,
         )
         if not (boundary and created_boundary == boundary and its_own):
@@ -11173,13 +11196,13 @@ def update_ux_nightly_stack(template_url: str) -> dict:
             return outcome("failed", phase="iam")
 
         result = run_command(
-            f"idp-cli deploy --stack-name {UX_NIGHTLY_STACK_NAME} "
+            f"idp-cli deploy --stack-name {name} "
             f"--template-url {template_url} --role-arn {role_arn} --wait",
             check=False,
             timeout=UX_NIGHTLY_DEPLOY_TIMEOUT_SECONDS,
         )
 
-        after = cf.describe_stacks(StackName=UX_NIGHTLY_STACK_NAME)["Stacks"][0]
+        after = cf.describe_stacks(StackName=name)["Stacks"][0]
         status = str(after.get("StackStatus", ""))
         updated_at = after.get("LastUpdatedTime")
         if isinstance(updated_at, datetime) and updated_at.tzinfo is None:
@@ -11192,8 +11215,184 @@ def update_ux_nightly_stack(template_url: str) -> dict:
             return outcome("up_to_date", status=status)
         return outcome("failed", phase="stack", status=status)
     except Exception as e:  # noqa: BLE001
-        print(f"⚠️ {UX_NIGHTLY_STACK_NAME}: update raised {type(e).__name__}: {e}")
+        print(f"⚠️ {name}: update raised {type(e).__name__}: {e}")
         return outcome("failed", phase="thread")
+
+
+def load_probe_options(options: dict) -> dict:
+    """The load-probe request in ci_run_options.json, or {} when there is none.
+
+    Only the load-probe schedule asks for it (IDP_RUN_LOAD_PROBE, written by
+    integration_test_deployment.write_ci_run_options), and only a scheduled run
+    is honoured. Like the review-stack guard, this is a correctness guard, not a
+    security control: an MR-button run executes the MR's own harness.
+    """
+    if not isinstance(options, dict) or options.get("pipeline_source") != "schedule":
+        return {}
+    request = options.get("load_probe")
+    return request if isinstance(request, dict) and request.get("requested") else {}
+
+
+def load_probe_stack_refusal(stack_name: str) -> str:
+    """Why this build refuses to update and probe `stack_name`, or "" when it may.
+
+    The run updates the stack in place before probing it, so it must be a
+    long-lived stack this harness owns: LOAD_PROBE_STACK_NAME, which is in
+    SWEEP_EXEMPT_STACK_NAMES. Never the review stack, which nothing but the
+    nightly may move, and never an arbitrary stack named on a schedule.
+    """
+    if stack_name == UX_NIGHTLY_STACK_NAME:
+        return f"{stack_name} is the UX review stack; the load probe must not use it"
+    if stack_name != LOAD_PROBE_STACK_NAME:
+        return (
+            f"IDP_LOAD_PROBE_STACK={stack_name!r}: this build only updates and probes "
+            f"{LOAD_PROBE_STACK_NAME}, the long-lived stack registered for it"
+        )
+    return ""
+
+
+def ensure_load_probe_stack(stack_name: str, template_url: str) -> dict:
+    """Bring the long-lived load-probe stack to this run's template. Never raises.
+
+    An existing stack is updated in place exactly as the review stack is
+    (update_ux_nightly_stack). A missing one is created the way the primary suite
+    creates its stack, under its own -iam pre-stack and boundary, which is the
+    shape that update path then accepts, with termination protection on and the
+    purpose=load-probe tag. Returns {"state": ..., ...}: created, updated,
+    up_to_date, or failed/skipped with a reason.
+    """
+    cf = boto3.client("cloudformation", config=_THROTTLE_RETRY_CONFIG)
+    try:
+        cf.describe_stacks(StackName=stack_name)
+    except Exception as e:  # noqa: BLE001
+        if not _is_stack_gone(e):
+            return {"state": "failed", "phase": "precheck", "reason": str(e)[:200]}
+        print(f"🆕 {stack_name} does not exist yet: creating it")
+        role_arn, boundary_arn = create_iam_resources(stack_name)
+        if not role_arn or not boundary_arn:
+            return {
+                "state": "failed",
+                "phase": "iam",
+                "reason": "create_iam_resources failed",
+            }
+        pairs = _primary_param_pairs(boundary_arn, _integration_malware_mode())
+        cmd = (
+            f"idp-cli deploy --stack-name {stack_name} --template-url {template_url} "
+            f"--admin-email {SUPPRESS_INVITE_ADMIN_EMAIL} --role-arn {role_arn} --wait"
+            f' --parameters "{",".join(pairs)}"'
+        )
+        run_command(cmd, check=False, timeout=3 * 3600)
+        try:
+            status = cf.describe_stacks(StackName=stack_name)["Stacks"][0][
+                "StackStatus"
+            ]
+        except Exception as e2:  # noqa: BLE001
+            return {"state": "failed", "phase": "stack", "reason": str(e2)[:200]}
+        if status != "CREATE_COMPLETE":
+            return {"state": "failed", "phase": "stack", "status": status}
+        try:
+            cf.update_termination_protection(
+                EnableTerminationProtection=True, StackName=stack_name
+            )
+        except Exception as e3:  # noqa: BLE001
+            print(f"⚠️ {stack_name}: termination protection not enabled: {e3}")
+        try:  # best effort: tags only on creation, and never fail the run over them
+            stack = cf.describe_stacks(StackName=stack_name)["Stacks"][0]
+            cf.update_stack(
+                StackName=stack_name,
+                UsePreviousTemplate=True,
+                RoleARN=role_arn,
+                Capabilities=[
+                    "CAPABILITY_IAM",
+                    "CAPABILITY_NAMED_IAM",
+                    "CAPABILITY_AUTO_EXPAND",
+                ],
+                Parameters=[
+                    {"ParameterKey": q["ParameterKey"], "UsePreviousValue": True}
+                    for q in stack.get("Parameters", [])
+                ],
+                Tags=[{"Key": "purpose", "Value": "load-probe"}],
+            )
+            cf.get_waiter("stack_update_complete").wait(
+                StackName=stack_name, WaiterConfig={"MaxAttempts": 120, "Delay": 15}
+            )
+        except Exception as e4:  # noqa: BLE001
+            print(f"⚠️ {stack_name}: purpose tag not applied: {e4}")
+        return {"state": "created", "status": "CREATE_COMPLETE"}
+    return update_ux_nightly_stack(template_url, stack_name=stack_name)
+
+
+def run_load_probe(request: dict, template_url: str) -> tuple[bool, str]:
+    """The load-probe run: bring the stack to this run's template, then probe it.
+
+    Replaces the primary suite, the headless check and the variant probes, the way
+    run_terraform_migration does. The verdict is the probe's: green only when the
+    stack is current AND the probe passed. A stack that could not be brought to
+    this run's template is a red run, because a green probe of old code would
+    report on software that no longer ships.
+    """
+    stack_name = str(request.get("stack") or LOAD_PROBE_STACK_NAME).strip()
+    region = str(
+        request.get("region") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
+    )
+    refusal = load_probe_stack_refusal(stack_name)
+    if refusal:
+        return False, f"❌ load probe refused: {refusal}"
+    print(f"🧪 Load-probe run: stack {stack_name} ({region}), template {template_url}")
+
+    stack_outcome = ensure_load_probe_stack(stack_name, template_url)
+    print(f"   stack outcome: {stack_outcome}")
+    if stack_outcome.get("state") not in ("created", "updated", "up_to_date"):
+        return False, (
+            f"❌ {stack_name} could not be brought to this run's template "
+            f"({stack_outcome}); the probe did not run, so it does not report on old code"
+        )
+
+    args = [
+        "python3",
+        "scripts/sdlc/load_probe.py",
+        "--stack-name",
+        stack_name,
+        "--region",
+        region,
+        "--cleanup",
+        "on-pass",
+        "--report-dir",
+        LOAD_PROBE_REPORT_DIR,
+    ]
+    if request.get("decider_arn"):
+        args += ["--decision-model-endpoint", str(request["decider_arn"])]
+    extra = str(request.get("args") or "").split()
+    cmd = " ".join(shlex.quote(a) for a in args + extra)
+    probe = run_command(cmd, check=False, timeout=LOAD_PROBE_TIMEOUT_SECONDS)
+    ok = probe.returncode == 0
+
+    reports = sorted(pathlib.Path(LOAD_PROBE_REPORT_DIR).glob("*/report.json"))
+    report_note = "no report.json was written"
+    if reports:
+        report_note = f"report {reports[-1]}"
+        bucket = os.environ.get("SOURCE_BUCKET", "")
+        build_id = os.environ.get("CODEBUILD_BUILD_ID", "")
+        if bucket and build_id:
+            key = LOAD_PROBE_REPORT_KEY.format(build=build_id.split(":")[-1])
+            try:
+                boto3.client("s3").put_object(
+                    Bucket=bucket, Key=key, Body=reports[-1].read_bytes()
+                )
+                report_note += f" (uploaded to s3://{bucket}/{key})"
+            except Exception as e:  # noqa: BLE001
+                report_note += f" (upload failed: {e})"
+    tail = "\n".join(
+        ((probe.stdout or "") + (probe.stderr or "")).strip().splitlines()[-25:]
+    )
+    verdict = {0: "passed", 1: "FAILED", 2: "refused (exit 2)"}.get(
+        probe.returncode, f"exit {probe.returncode}"
+    )
+    summary = (
+        f"🧪 WEEKLY LOAD PROBE — {stack_name} ({stack_outcome.get('state')} to this run's template): "
+        f"probe {verdict}; {report_note}\n\n{tail}"
+    )
+    return ok, summary
 
 
 def join_ux_nightly_update(
@@ -12509,6 +12708,26 @@ def main():
             send_failure_notification(
                 failure_subject(stack_name), f"Stack: {stack_name}\n\n{text}"
             )
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0 if ok else 1)
+
+    # The weekly load-probe run ends here too: it replaces the primary suite, the
+    # headless check and the probes. It updates LOAD_PROBE_STACK_NAME in place to
+    # this run's template, probes it, and its summary is the result. It posts
+    # nothing to Slack or email: a red run is the probe's own result.
+    load_probe_request = load_probe_options(run_options)
+    if load_probe_request:
+        if publish_success:
+            ok, probe_summary = run_load_probe(load_probe_request, template_url)
+        else:
+            ok, probe_summary = False, f"❌ publish failed: {failure_reason}"
+        text = label_ci_run(
+            ("✅ PASSED\n\n" if ok else "❌ FAILED\n\n") + probe_summary
+        )
+        print(DEPLOYMENT_SUMMARY_LOG_MARKER)
+        print(text)
+        publish_summary_to_s3(text)
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0 if ok else 1)

@@ -112,7 +112,7 @@ nightly schedule or on request.
 | **deployment_validation** | IAM service-role permission pre-check | Yes (read-only) | seconds |
 | **integration_tests** | Full stack deploy + primary suite (the numbered steps) on the **primary shared stack**. The deployment-variant probes run here only on the **weekly variant-probe schedule** — see below. | Yes (deploys) | ~1 hour; longer with the probes |
 | **ux_review** | `ux_test_build` (builds the MR's `src/ui`) and `ai_ux_test` (advisory UX test with video)³, only on non-Draft MRs to `develop` that change `src/ui/`; `ai_ux_test_stories` (advisory first-time-user stories)⁴, only on non-Draft MRs to `develop` that change `CHANGELOG.md` | Yes (Bedrock, Polly; reads the review stack) | ~20–30 min, UI MRs only; the stories job stops at its precheck in about a minute on most CHANGELOG MRs, and otherwise keeps to the catalogue's deadline inside a 60-minute job |
-| **integration_tests** (`load_probe`) | The load probe against an existing stack, only on the **weekly load-probe schedule** (`IDP_RUN_LOAD_PROBE=true`); that schedule runs no deploy — see "Weekly load probe" below | Yes (processes documents; deploys nothing) | under an hour, capped by an estimated-cost limit |
+| **integration_tests** (`load_probe`) | The load probe, only on the **weekly load-probe schedule** (`IDP_RUN_LOAD_PROBE=true`): through CodeBuild, it updates the long-lived `idp-loadprobe` stack to the run's template, then probes it; that schedule runs no primary suite — see "Weekly load probe" below | Yes (updates one long-lived stack, processes documents) | under an hour, capped by an estimated-cost limit |
 | **notify** | `nightly_notification`: on a scheduled pipeline, posts the result to Slack when `integration_tests` did not | No | seconds |
 | **ux_nightly** | `ai_ux_test_stories_nightly` (the nightly story set, in parallel shards), then `ai_ux_test_stories_digest` (merges the shards into the night's digest and, on the schedule, compares it with earlier scheduled nights)⁴; on the scheduled `develop` pipeline (not the weekly variant-probe or region schedules, nor the nightly Terraform schedule), on a manual one with `UX_TEST_STORIES_RUN=all`, and as a manual button on a push to `develop` | Yes for the shards (Bedrock, Polly; they read the review stack); the digest needs none | after `notify`, so `nightly_notification` never waits for it; each shard keeps to the catalogue's dollar cap and deadline inside a 60-minute job |
 
@@ -646,9 +646,10 @@ only with one model's reply habits are invisible to the unit suites, which use
 fakes, and to the primary suite, which processes a handful of documents at low
 concurrency. The load probe is the tier that can see them. It is
 `scripts/sdlc/load_probe.py`, run by `make stacktest-load STACK_NAME=…` on demand
-and by the GitLab `load_probe` job on a schedule of its own. It is not a merge gate.
+and, on a schedule of its own, by the GitLab `load_probe` job through CodeBuild. It
+is not a merge gate.
 
-**What it does.** Against an **existing** stack (it deploys nothing) it uploads one
+**What it does.** Against an **existing** stack (the driver deploys nothing) it uploads one
 new configuration profile per arm, named `loadprobe-<run id>-<arm>`, never `default`
 and never a name the stack already has. Each arm is a preset from
 `config_library/unified` plus an overlay, with that preset's sample packet:
@@ -703,12 +704,24 @@ pages and an estimate of $17.60.
 scheduled pipeline carrying `IDP_RUN_LOAD_PROBE=true`. It never runs on a merge
 request, a push, the nightly or any other schedule, and it has no manual button. On
 that schedule `deployment_validation`, `integration_tests`, `nightly_notification`
-and the two nightly story jobs are ruled out, so the pipeline deploys nothing and
-posts nothing to Slack, and a red run is the probe's own result. The `fast_checks`
-jobs still run on it, as on every scheduled pipeline; the probe job has `needs: []`
-and does not wait for them. It holds its own size-1 `load_probe` resource group, not
-`integration_deploy`, because it deploys nothing; two probe runs against one stack
-would share its concurrency. `scripts/sdlc/tests/test_load_probe.py` asserts the
+and the two nightly story jobs are ruled out, so the pipeline runs no primary
+suite and posts nothing to Slack, and a red run is the probe's own result. The
+`fast_checks` jobs still run on it, as on every scheduled pipeline; the probe job has
+`needs: []` and does not wait for them.
+
+**How it runs.** The runner role has no rights on an IDP stack, so the job runs the
+probe the way `integration_tests` runs the primary suite: it uploads the source with
+a `load_probe` request in `ci_run_options.json` (`load_probe_request` in
+`scripts/sdlc/integration_test_deployment.py`) and monitors the CodePipeline build.
+The build (`run_load_probe` in `scripts/sdlc/codebuild_deployment.py`) publishes the
+run's template, brings `idp-loadprobe` to it (updated in place exactly as the UX
+review stack is; created with its own `-iam` pre-stack, termination protection and
+the `purpose=load-probe` tag on first use), then runs the driver against it. A stack
+that cannot be brought to the run's template is a red run and the probe does not
+run, so a green probe never reports on code that no longer ships. The build refuses
+any stack but `idp-loadprobe`, which is a `SWEEP_EXEMPT_STACK_NAMES` member so the
+start-of-run sweeps never reap it. The job holds `integration_deploy`, shared with
+`integration_tests`, because both drive the one CodePipeline. `scripts/sdlc/tests/test_load_probe.py` asserts the
 rules, including that every other job a schedule admits refuses this one first.
 
 **Creating the schedule** is a step in the GitLab project's settings, outside this
@@ -719,16 +732,17 @@ the target stack is otherwise idle, and these variables:
 | Variable | Required | Meaning |
 |---|---|---|
 | `IDP_RUN_LOAD_PROBE` | yes, `true` | the selector. Set it on this schedule **only**: as a project or group variable it reaches every schedule, and the rules above would then take the nightly's deploy off all of them |
-| `IDP_LOAD_PROBE_STACK` | yes | the existing stack to probe. There is no default; the job exits 2 without it. Use a stack nothing else writes to during the run, not the UX review stack, which is never written to |
+| `IDP_LOAD_PROBE_STACK` | yes, `idp-loadprobe` | the stack to update and probe. There is no default; the job exits 2 without it, and the build refuses any other name, the UX review stack included |
 | `IDP_LOAD_PROBE_REGION` | no, default `us-east-1` | the stack's region |
 | `IDP_LOAD_PROBE_DECIDER_ARN` | no | a `GENAIIDP-` decision-model Lambda ARN; enables the `decision-model` arm |
 | `IDP_LOAD_PROBE_ARGS` | no | extra driver options, for example `--max-cost-usd 15 --docs-per-arm 6` |
 
-The job runs on the runner fleet's own credentials, like `integration_tests`, and
-prints the caller identity before it starts. It passes `--cleanup on-pass`: a green
-run deletes the profiles and documents it created, and a red run keeps them for
-diagnosis. Its report is the job artifact `load-probe/<run id>/report.json`, kept
-for 90 days. To run it on demand inside a pipeline, press **Run** on that schedule;
+The job prints the runner's caller identity before it starts. The build passes
+`--cleanup on-pass`: a green run deletes the profiles and documents it created, and
+a red run keeps them for diagnosis. The build uploads the report beside its summary,
+`deploy/summaries/<build>.load-probe.json`, and the job's `after_script` fetches both
+into the job artifact `load-probe/<run id>/report.json` (and `load-probe/summary.txt`),
+kept for 90 days. To run it on demand inside a pipeline, press **Run** on that schedule;
 outside one, `make stacktest-load STACK_NAME=… DRY_RUN=1` shows the plan and
 validates the configurations without touching AWS, and the same command without
 `DRY_RUN` runs it (`LOAD_PROBE_ARGS="…"` passes driver options).

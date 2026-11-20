@@ -575,6 +575,30 @@ MONITOR_HANDOFF_MARKER = "monitor_handoff.txt"
 CI_RUN_OPTIONS_FILE = "ci_run_options.json"
 
 
+LOAD_PROBE_VARIABLE = "IDP_RUN_LOAD_PROBE"
+
+
+def load_probe_request(environ: dict | None = None) -> dict:
+    """The load-probe schedule's request for CodeBuild, or {} on any other run.
+
+    Only the weekly load-probe schedule sets IDP_RUN_LOAD_PROBE=true (on the
+    schedule, never as a project variable). The build then updates the long-lived
+    load-probe stack to this run's template and probes it instead of running the
+    primary suite (codebuild_deployment.run_load_probe). The stack, region, decider
+    ARN and extra driver options come from the schedule's IDP_LOAD_PROBE_* variables.
+    """
+    env = os.environ if environ is None else environ
+    if str(env.get(LOAD_PROBE_VARIABLE, "")).strip().lower() != "true":
+        return {}
+    return {
+        "requested": True,
+        "stack": str(env.get("IDP_LOAD_PROBE_STACK", "")).strip(),
+        "region": str(env.get("IDP_LOAD_PROBE_REGION", "")).strip(),
+        "decider_arn": str(env.get("IDP_LOAD_PROBE_DECIDER_ARN", "")).strip(),
+        "args": str(env.get("IDP_LOAD_PROBE_ARGS", "")).strip(),
+    }
+
+
 def write_ci_run_options(
     path: str = CI_RUN_OPTIONS_FILE, environ: dict | None = None
 ) -> dict:
@@ -586,10 +610,12 @@ def write_ci_run_options(
     whether this is the weekly variant-probe run (variant_probes_requested), which
     leaves the review stack alone: that stack moves once a night, on the nightly
     run. ``iac`` says how the build deploys (iac_requested); a Terraform run
-    leaves the review stack alone too. This is a correctness guard, not a security control: an MR-button run
+    leaves the review stack alone too. ``load_probe`` is the load-probe
+    schedule's request (load_probe_request), which replaces the primary suite.
+    This is a correctness guard, not a security control: an MR-button run
     executes the MR's own codebuild_deployment.py, which reads or ignores this file
-    however its author wrote it. What it does prevent is the ordinary mistake, a button press moving
-    the shared review stack onto an unmerged template.
+    however its author wrote it. What it does prevent is the ordinary mistake, a
+    button press moving the shared review stack onto an unmerged template.
 
     Written with pathlib rather than through run_command, so the zip stays
     create_deployment_package's first command. Best effort: a write that fails
@@ -607,6 +633,7 @@ def write_ci_run_options(
         "region_run": region_run_requested(env) or "",
         "iac": iac_requested(env),
         "terraform_migration": terraform_migration_requested(env),
+        "load_probe": load_probe_request(env),
     }
     try:
         pathlib.Path(path).write_text(

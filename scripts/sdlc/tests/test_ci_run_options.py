@@ -70,7 +70,8 @@ def test_the_options_are_written_in_the_documented_shape(itd):
         '  "variant_probes": false,\n'
         '  "region_run": "",\n'
         '  "iac": "cloudformation",\n'
-        '  "terraform_migration": false\n'
+        '  "terraform_migration": false,\n'
+        '  "load_probe": {}\n'
         "}\n"
     )
     assert json.loads(text) == returned
@@ -90,6 +91,7 @@ def test_a_variable_gitlab_did_not_set_is_written_empty(itd):
         "region_run": "",
         "iac": "cloudformation",
         "terraform_migration": False,
+        "load_probe": {},
     }
     assert json.loads(Path("elsewhere.json").read_text(encoding="utf-8")) == returned
 
@@ -185,3 +187,30 @@ def test_no_zip_exclude_keeps_the_options_file_out_of_the_package(itd, monkeypat
     for name in (f"./{itd.CI_RUN_OPTIONS_FILE}", itd.CI_RUN_OPTIONS_FILE):
         matched = [p for p in excludes if fnmatch.fnmatch(name, p)]
         assert matched == [], f"{name} is dropped from the zip by {matched}"
+
+
+@pytest.mark.unit
+def test_the_load_probe_schedule_writes_its_request(itd):
+    returned = itd.write_ci_run_options(
+        "lp.json",
+        environ={
+            "CI_PIPELINE_SOURCE": "schedule",
+            "IDP_RUN_LOAD_PROBE": " TRUE ",
+            "IDP_LOAD_PROBE_STACK": "idp-loadprobe",
+            "IDP_LOAD_PROBE_ARGS": "--max-cost-usd 20",
+        },
+    )
+
+    assert returned["load_probe"] == {
+        "requested": True,
+        "stack": "idp-loadprobe",
+        "region": "",
+        "decider_arn": "",
+        "args": "--max-cost-usd 20",
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["", "false", "yes", "1"])
+def test_anything_but_true_requests_no_load_probe(itd, value):
+    assert itd.load_probe_request({"IDP_RUN_LOAD_PROBE": value}) == {}

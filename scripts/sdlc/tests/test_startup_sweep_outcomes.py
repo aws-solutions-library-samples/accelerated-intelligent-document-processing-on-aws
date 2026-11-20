@@ -2012,6 +2012,8 @@ def test_a_name_with_no_run_prefix_is_never_reaped(cbd, monkeypatch, name):
 #: Spelled out rather than read off the module, so a change to the module's set
 #: fails the pin below instead of re-pointing every case in this section.
 LONG_LIVED_STACK = "idp-ux-nightly"
+#: The weekly load probe's long-lived stack (codebuild_deployment.LOAD_PROBE_STACK_NAME).
+LOAD_PROBE_STACK = "idp-loadprobe"
 
 #: An ordinary run listed beside it, whose leftovers every sweep should take.
 OLD_RUN_STACK = "idp-1013-131553"
@@ -2393,21 +2395,22 @@ def _counted_as_undecided(finding):
 
 
 def test_the_long_lived_stack_set_is_pinned(cbd):
-    """Count-pinned: exactly the one stack it was registered with.
+    """Count-pinned: exactly the two stacks registered for it.
 
     A name added here takes a stack and its `-iam` pre-stack out of the stack
     sweep, which exists because leaked runs exhausted the account's role quota,
     and every bucket named for it out of the bucket sweep. The BDA, IAM-role and
     IAM-policy sweeps reap nothing of that stack's either, since none of its
     names carries a run prefix, so whatever it leaks is left for somebody to
-    remove by hand. The expected count is therefore one, the member is the one
-    registered in scripts/tests/gate_exemptions.json, and adding a second is an
-    edit to this assertion and to that entry rather than a one-word change in
-    the harness.
+    remove by hand. The expected members are therefore exactly the review stack
+    and the load-probe stack, both registered in scripts/tests/gate_exemptions.json,
+    and adding a third is an edit to this assertion and to that entry rather than a
+    one-word change in the harness.
     """
-    assert cbd.SWEEP_EXEMPT_STACK_NAMES == frozenset({LONG_LIVED_STACK}), (
+    pinned = frozenset({LONG_LIVED_STACK, LOAD_PROBE_STACK})
+    assert cbd.SWEEP_EXEMPT_STACK_NAMES == pinned, (
         f"SWEEP_EXEMPT_STACK_NAMES is {sorted(cbd.SWEEP_EXEMPT_STACK_NAMES)}, not "
-        f"the pinned [{LONG_LIVED_STACK!r}]. Each member holds a stack's IAM roles "
+        f"the pinned {sorted(pinned)}. Each member holds a stack's IAM roles "
         f"for as long as it stands and nothing reaps what it leaks: change this "
         f"pin and its entry in scripts/tests/gate_exemptions.json together, with "
         f"the reason the new stack has to outlive every run"
