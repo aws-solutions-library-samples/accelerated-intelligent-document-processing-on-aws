@@ -72,3 +72,21 @@ describe('confidence-alert count uses the other rule', () => {
     expect(row.confidenceAlertCount).toBe(4);
   });
 });
+
+describe('document-level processing issues (#597)', () => {
+  it('carries the ingest warning through to the panel', () => {
+    const issue = {
+      stage: 'ingest',
+      severity: 'warning',
+      code: 'config_prefix_mapping_lookup_failed',
+      message: 'The configuration prefix mappings could not be read.',
+    };
+    const row = mapOne({ ObjectKey: 'd.pdf', ProcessingIssues: [issue], ProcessingIssueCount: 1 });
+    expect(row.documentProcessingIssues).toEqual([issue]);
+    expect(row.processingIssueCount).toBe(1);
+  });
+
+  it('is an empty list for a document with none', () => {
+    expect(mapOne({ ObjectKey: 'd.pdf' }).documentProcessingIssues).toEqual([]);
+  });
+});

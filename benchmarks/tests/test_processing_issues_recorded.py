@@ -73,15 +73,16 @@ IDP_COMMON = Path(idp_common.__file__).parent
 # an issue some other site already built, and each entry is bounded to one function
 # so the reason is a property of that member rather than of a directory:
 #
-# * ``dynamodb.service._document_from_item`` rehydrates issues off a stored DynamoDB
-#   item (``iss.get("code", "")``) — its universe is whatever was written earlier.
+# * ``models.deserialize_issue_list`` rehydrates issues off a stored DynamoDB item
+#   (``iss.get("code", "")``), for a section and for the document-level list alike —
+#   its universe is whatever was written earlier.
 # * ``document_failure._record`` copies a ``diagnosis`` built by its caller.
 #
 # Pinned rather than skipped: a THIRD unresolvable site means a service now emits
 # codes this discovery cannot see, and the parametrised tests below would quietly
 # stop covering them. The failure names the site.
 ISSUE_CODE_PASS_THROUGH_SITES = {
-    ("dynamodb/service.py", "_dynamodb_item_to_document"),
+    ("models.py", "deserialize_issue_list"),
     ("document_failure.py", "record_section_failure"),
 }
 

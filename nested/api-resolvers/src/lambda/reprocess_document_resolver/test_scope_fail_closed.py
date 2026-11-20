@@ -770,3 +770,44 @@ class TestConfigPrefixMappingsOnReprocess:
         assert built == ["table-a", "table-b"]
 
         index._CONFIG_MANAGERS.clear()
+
+
+class TestAnUnresolvableMappingRefusesTheReprocess:
+    """#597: a mapping naming a profile that does not exist fails the request,
+    rather than reprocessing under the caller's profile or the active one."""
+
+    @staticmethod
+    def _deleted_profile(monkeypatch):
+        manager = MagicMock()
+        manager.resolve_active_version.return_value = "active"
+        manager.resolve_published_revision.return_value = None
+        monkeypatch.setattr(index, "_configuration_manager", lambda: manager)
+        monkeypatch.setattr(
+            index, "_profile_head_exists", lambda _m, profile: profile != "deleted"
+        )
+        monkeypatch.setattr(
+            index,
+            "_prefix_mappings",
+            lambda: [{"prefix": "acme/", "configProfile": "deleted"}],
+        )
+        calls = []
+        monkeypatch.setattr(
+            index,
+            "reprocess_document",
+            lambda key, version=None, revision=None, **kwargs: calls.append(key),
+        )
+        return calls
+
+    @pytest.mark.parametrize("requested", [None, "chosen"])
+    def test_nothing_is_queued_and_the_refusal_names_the_mapping(
+        self, users_table, document_version, monkeypatch, requested
+    ):
+        users_table(items=[])
+        document_version("tenant-a")
+        calls = self._deleted_profile(monkeypatch)
+
+        with pytest.raises(ValueError, match="does not exist") as excinfo:
+            index.handler(_event(_author_claims(), version=requested), None)
+
+        assert calls == []
+        assert "'acme/'" in str(excinfo.value)

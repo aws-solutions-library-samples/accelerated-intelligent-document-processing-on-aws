@@ -26,7 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from idp_common.config.models import IDPConfig
-from idp_common.models import Document, Section, Status
+from idp_common.models import Document, ProcessingIssue, Section, Status
 from tests.unit.lambdas._goldens import load_handler, normalise, read_golden, snapshot
 
 HANDLER_DIR = "bda_processresults"
@@ -140,7 +140,9 @@ def _case(case_id: str):
     raise KeyError(case_id)
 
 
-def run_case(case_id: str, review_store=None) -> dict:
+def run_case(
+    case_id: str, review_store=None, existing_issues=None, written=None
+) -> dict:
     """Run one case against the real handler and return the normalised outcome."""
     config, event, custom_output = _case(case_id)
     patches = []
@@ -151,10 +153,18 @@ def run_case(case_id: str, review_store=None) -> dict:
 
     existing = _stored_document([])
     existing.sections = []
+    if existing_issues is not None:
+        existing.processing_issues = list(existing_issues)
     doc_service = MagicMock()
     doc_service.get_document.return_value = existing
     update_calls: list = []
-    doc_service.update_document.side_effect = lambda d: update_calls.append(snapshot(d))
+
+    def _update(d):
+        update_calls.append(snapshot(d))
+        if written is not None:
+            written.append(d)
+
+    doc_service.update_document.side_effect = _update
 
     def _sections(bucket, prefix, output_bucket, object_key, document, threshold, cfg):
         document.sections = [
@@ -218,3 +228,24 @@ class TestFeatureOffParity:
     @pytest.mark.parametrize("case_id", CASES)
     def test_case(self, case_id):
         assert run_case(case_id) == read_golden(HANDLER_DIR, case_id)
+
+
+@pytest.mark.unit
+def test_the_rows_ingest_issue_survives_the_rebuilt_document():
+    """#597: this handler builds a fresh Document, and the whole-document write
+    recomputes ProcessingIssueCount from it, so the ingest issue the row holds
+    has to be carried across or the list badge drops it while its text stays."""
+    issue = ProcessingIssue(
+        stage="ingest",
+        severity="warning",
+        code="config_prefix_mapping_lookup_failed",
+        message="The configuration prefix mappings could not be read.",
+    )
+    written: list = []
+    run_case("no_trigger", existing_issues=[issue], written=written)
+    assert written, "the handler made no whole-document write"
+    final = written[-1]
+    assert [i.code for i in final.processing_issues] == [
+        "config_prefix_mapping_lookup_failed"
+    ]
+    assert final.processing_issue_count >= 1

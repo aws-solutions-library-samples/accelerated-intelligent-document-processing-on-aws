@@ -117,6 +117,7 @@ def manager(monkeypatch, store):
         ("listConfigPrefixMappings", {}),
         ("putConfigPrefixMapping", {"prefix": "acme/", "configProfile": "lending"}),
         ("deleteConfigPrefixMapping", {"prefix": "acme/"}),
+        ("listConfigPrefixMappingHistory", {}),
     ],
 )
 @pytest.mark.parametrize("group", ["Author", "Viewer", "Reviewer", "Annotator"])
@@ -186,7 +187,8 @@ def test_delete_succeeds(manager, store):
         _event("deleteConfigPrefixMapping", {"prefix": "acme/"}), None
     )
     assert result["success"] is True
-    store.delete.assert_called_once_with("acme/")
+    # The caller is passed through, so the change log records who deleted it.
+    store.delete.assert_called_once_with("acme/", actor="admin@example.com")
 
 
 # ---------------------------------------------------------------------------
@@ -738,3 +740,140 @@ class TestTheRetentionPinIsTakenAfterTheMappingExists:
             None,
         )
         assert store.put.call_args.kwargs["enabled"] is True
+
+
+# ---------------------------------------------------------------------------
+# #597: the change history, end to end over a real (moto) table
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_table(manager, monkeypatch):
+    """The resolver over a moto ConfigurationTable holding one profile head."""
+    import boto3
+    from moto import mock_aws
+
+    from idp_common.config.prefix_mappings import PrefixMappingStore
+
+    with mock_aws():
+        table = boto3.resource("dynamodb", region_name="us-east-1").create_table(
+            TableName="history-test-config-table",
+            KeySchema=[{"AttributeName": "Configuration", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "Configuration", "AttributeType": "S"}
+            ],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        table.put_item(Item={"Configuration": "Config#lending"})
+        table.put_item(Item={"Configuration": "Config#invoices"})
+        manager.table = table
+        monkeypatch.setattr(
+            index, "_prefix_mapping_store", lambda m: PrefixMappingStore(m.table)
+        )
+        yield table
+
+
+@pytest.mark.unit
+def test_every_change_made_through_the_api_is_in_the_history(real_table):
+    index.handler(
+        _event(
+            "putConfigPrefixMapping",
+            {"prefix": "acme/", "configProfile": "lending"},
+            email="first@example.com",
+        ),
+        None,
+    )
+    index.handler(
+        _event(
+            "putConfigPrefixMapping",
+            {"prefix": "acme/", "configProfile": "invoices"},
+            email="second@example.com",
+        ),
+        None,
+    )
+    index.handler(
+        _event(
+            "deleteConfigPrefixMapping",
+            {"prefix": "acme/"},
+            email="third@example.com",
+        ),
+        None,
+    )
+
+    result = index.handler(
+        _event("listConfigPrefixMappingHistory", {"prefix": "acme/"}), None
+    )
+    assert result["success"] is True
+    assert [(e["action"], e["actor"]) for e in result["entries"]] == [
+        ("delete", "third@example.com"),
+        ("update", "second@example.com"),
+        ("create", "first@example.com"),
+    ]
+    update = result["entries"][1]
+    assert update["before"]["configProfile"] == "lending"
+    assert update["after"]["configProfile"] == "invoices"
+    assert result["nextBefore"] is None
+    # The deleted mapping is gone from the list and still in the log.
+    listed = index.handler(_event("listConfigPrefixMappings"), None)
+    assert listed["mappings"] == []
+
+
+@pytest.mark.unit
+def test_the_history_pages_with_a_cursor(real_table):
+    for profile in ("lending", "invoices", "lending"):
+        index.handler(
+            _event(
+                "putConfigPrefixMapping", {"prefix": "acme/", "configProfile": profile}
+            ),
+            None,
+        )
+    first = index.handler(_event("listConfigPrefixMappingHistory", {"limit": 2}), None)
+    assert [e["seq"] for e in first["entries"]] == [3, 2]
+    rest = index.handler(
+        _event(
+            "listConfigPrefixMappingHistory",
+            {"limit": 2, "before": first["nextBefore"]},
+        ),
+        None,
+    )
+    assert [e["seq"] for e in rest["entries"]] == [1]
+    assert rest["nextBefore"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "args",
+    [{"limit": 0}, {"limit": 101}, {"limit": "x"}, {"before": 0}, {"limit": True}],
+)
+def test_the_history_refuses_a_bad_page_argument(manager, store, args):
+    result = index.handler(_event("listConfigPrefixMappingHistory", args), None)
+    assert result["success"] is False
+    assert result["error"]["type"] == "ValidationError"
+    store.history.assert_not_called()
+
+
+@pytest.mark.unit
+def test_a_history_read_failure_is_reported_without_the_store_error(manager, store):
+    store.history.side_effect = RuntimeError("arn:aws:iam::123456789012:role/x")
+    result = index.handler(_event("listConfigPrefixMappingHistory"), None)
+    assert result["success"] is False
+    assert "123456789012" not in result["error"]["message"]
+
+
+@pytest.mark.unit
+def test_the_dry_run_reports_a_mapping_whose_profile_does_not_exist(manager, store):
+    """#597: the real resolver, with the existence probe answering "absent"."""
+    store.list.return_value = [{"prefix": "acme/", "configProfile": "deleted"}]
+    manager.table.get_item.side_effect = lambda **kw: (
+        {}
+        if kw["Key"]["Configuration"] == "Config#deleted"
+        else {"Item": {"Configuration": kw["Key"]["Configuration"]}}
+    )
+    result = index.handler(
+        _event("resolveConfigPrefixMapping", {"objectKey": "acme/x.pdf"}), None
+    )
+    assignment = result["assignment"]
+    assert assignment["rejected"] is True
+    assert assignment["source"] == "rejected"
+    assert assignment["configProfile"] is None
+    assert "does not exist" in assignment["reason"]
