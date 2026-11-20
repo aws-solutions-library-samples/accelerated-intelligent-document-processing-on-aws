@@ -62,6 +62,7 @@ from idp_common.decision_model import (
     estimate_tokens,
     fit_text,
     merge_metering,
+    require_room,
     state_budget,
 )
 
@@ -323,8 +324,16 @@ class DecisionModelConfidenceScorer:
         ]
 
     def _budget(self, question_tokens: float, images: int) -> float:
-        """The text one request may carry beside its question and images."""
-        return state_budget(int(self.cfg.max_input_tokens), question_tokens, images)
+        """The text one request may carry beside its question and images.
+
+        A question and images that overflow ``max_input_tokens`` on their own are
+        refused here, before any request is built, in every ``input`` mode.
+        """
+        max_input_tokens = int(self.cfg.max_input_tokens)
+        require_room(
+            max_input_tokens, question_tokens, images, "the section's confidence"
+        )
+        return state_budget(max_input_tokens, question_tokens, images)
 
     def _first_pages(self, pages: List[Any], what: str) -> List[Any]:
         """The first ``max_pages`` of ``pages``, with a warning when that drops some."""
@@ -392,6 +401,7 @@ class DecisionModelConfidenceScorer:
             )
         images = self._first_pages(images, "with an image")
         if mode != "both":
+            self._budget(question_tokens, images=1)
             return [
                 (f"page {index}", "", [encode_image(bytes(img))])
                 for index, img in images

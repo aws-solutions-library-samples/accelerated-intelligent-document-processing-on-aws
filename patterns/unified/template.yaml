@@ -2079,8 +2079,9 @@ Resources:
                           max_input_tokens:
                             type: integer
                             title: Maximum input tokens per request
-                            description: "The most tokens one request may hold: the section's OCR text, its page images and the class question with every class description together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', the section's text beyond the limit is cut from the end and never read by the decision model, so a class cue that appears only in the cut part is not seen. The first page is kept whole when it fits. Default 3584: the model's 4,096-token window less 512 for its own prompt."
+                            description: "The most tokens one request may hold: the section's OCR text, its page images and the class question with every class description together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', the section's text beyond the limit is cut from the end and never read by the decision model, so a class cue that appears only in the cut part is not seen. The first page is kept whole when it fits. Default and maximum 3584: the model's 4,096-token window less 512 for its own prompt."
                             minimum: 256
+                            maximum: 3584
                             default: 3584
                             order: 2.5
                           instructions:
@@ -2853,8 +2854,9 @@ Resources:
                       max_input_tokens:
                         type: integer
                         title: Maximum input tokens per request
-                        description: "The most tokens one request may hold: a page's OCR text, its image and the longest question together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', a page's text beyond the limit is cut from the end and never read by the decision model, so a value that appears only in the cut part is not seen. Default 3584: the model's 4,096-token window less 512 for its own prompt."
+                        description: "The most tokens one request may hold: a page's OCR text, its image and the longest question together. An estimate from characters, not the model's own count. With 'OCR text' or 'Both', a page's text beyond the limit is cut from the end and never read by the decision model, so a value that appears only in the cut part is not seen. Default and maximum 3584: the model's 4,096-token window less 512 for its own prompt."
                         minimum: 256
+                        maximum: 3584
                         default: 3584
                         order: 4.5
                       timeout_ms:
