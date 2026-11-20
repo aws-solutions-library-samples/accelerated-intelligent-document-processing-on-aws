@@ -245,8 +245,11 @@ def test_the_method_and_its_bounds_are_validated():
     assert section.method == "decision_model"
     with pytest.raises(Exception, match="endpoint is empty"):
         cfg({"method": "decision_model"})
-    with pytest.raises(Exception, match="1329"):
+    # Embeddings are implemented (#1657) and need the LLM fallback.
+    with pytest.raises(Exception, match="on_low_confidence 'llm'"):
         cfg({"method": "embeddings"})
+    with pytest.raises(Exception, match="must be one of"):
+        cfg({"method": "boundary_model"})
     with pytest.raises(Exception):
         cfg({"decision_model": {"max_pages": 5}})
     with pytest.raises(Exception, match="input must be"):
