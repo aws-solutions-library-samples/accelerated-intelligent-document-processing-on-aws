@@ -29,7 +29,7 @@ This guide establishes a native Windows development environment for the GenAI ID
    - ⚠️ **Important**: Check "Add Python to PATH" during installation
    - Verify: `python --version` or `python3 --version`
 
-2. **Node.js 22.12 or higher**
+2. **Node.js 22.15 or higher**
    - Download from: https://nodejs.org/
    - Installs both Node.js and npm
    - Verify: `node --version` and `npm --version`

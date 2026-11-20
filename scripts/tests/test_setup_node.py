@@ -169,7 +169,7 @@ def _calls(tmp_path: Path) -> list[str]:
 
 @pytest.mark.parametrize("variable", ["CI", "CODEBUILD_BUILD_ID", "SKIP_NODE_SETUP"])
 def test_auto_mode_installs_nothing_in_ci_or_when_told_not_to(tmp_path, variable):
-    result = _run(tmp_path, "auto", _bin(tmp_path, "22.12.0"), **{variable: "1"})
+    result = _run(tmp_path, "auto", _bin(tmp_path, "22.15.0"), **{variable: "1"})
     assert result.returncode == 0
     assert _calls(tmp_path) == []
 
@@ -189,9 +189,9 @@ def test_required_mode_without_node_fails(tmp_path):
 
 @pytest.mark.parametrize("mode, code", [("auto", 0), ("required", 1)])
 def test_an_old_node_is_refused(tmp_path, mode, code):
-    result = _run(tmp_path, mode, _bin(tmp_path, "22.11.9"))
+    result = _run(tmp_path, mode, _bin(tmp_path, "22.14.9"))
     assert result.returncode == code
-    assert "older than the 22.12.0" in result.stdout + result.stderr
+    assert "older than the 22.15.0" in result.stdout + result.stderr
     assert _calls(tmp_path) == []
 
 
@@ -207,6 +207,6 @@ def test_a_new_enough_node_runs_npm_ci_in_both_projects(tmp_path):
 
 @pytest.mark.parametrize("mode, code", [("auto", 0), ("required", 1)])
 def test_a_failed_install_is_reported(tmp_path, mode, code):
-    result = _run(tmp_path, mode, _bin(tmp_path, "22.12.0", npm_fails=True))
+    result = _run(tmp_path, mode, _bin(tmp_path, "22.15.0", npm_fails=True))
     assert result.returncode == code
     assert "install failed for: src/ui docs-site" in result.stdout + result.stderr

@@ -599,7 +599,7 @@ idp-cli publish [OPTIONS]
 - `--terraform`: After the CloudFormation publish, translate the published main template into a Terraform module (nested templates are fetched by their `TemplateURL`) and upload it to the same bucket and prefix: `<prefix>/<version>/terraform/idp-terraform-<version>.zip`, its `.zip.sha256`, and the pointer `<prefix>/terraform/idp-terraform-latest.json` (`{"version", "moduleUrl", "sha256"}`). The zip is deterministic, so republishing unchanged files gives the same checksum. Prints the module's HTTPS URL. With `--headless` and/or `--govcloud` as well, each variant template is also translated and published as its own module, named `idp-terraform-<variant>-<version>.zip` (plus `.sha256`) with the pointer `<prefix>/terraform/idp-terraform-<variant>-latest.json`; if a variant's translation fails, the publish fails and names the variant. Needs the source checkout's `terraform/translator`. See [Terraform deployments](#terraform-deployments).
 
 **Prerequisites** (same as `--from-code` deployments):
-- AWS SAM CLI, Docker (for container-image Lambdas), Node.js ≥ 22.12, npm ≥ 10, Python 3.12.
+- AWS SAM CLI, Docker (for container-image Lambdas), Node.js ≥ 22.15, npm ≥ 10, Python 3.12.
 
 **Examples:**
 

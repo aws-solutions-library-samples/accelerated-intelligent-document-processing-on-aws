@@ -102,7 +102,7 @@ builds anything. It requires:
 | AWS SAM CLI | **1.129.0** | `check_prerequisites()` compares `sam --version` against it and exits if lower |
 | AWS CLI (`aws`) | any | must be on `PATH` |
 | `uv` | any | must be on `PATH` — it is a hard requirement of the publish flow and is easy to miss |
-| Node.js | **22.12.0** | `engines` in `package.json` and `src/ui/package.json` |
+| Node.js | **22.15.0** | `engines` in `package.json` and `src/ui/package.json` |
 | npm | **11.0.0** | `engines` in root `package.json` (the UI's own floor is lower, 10.0.0, so the root value is the one to meet) |
 
 Two things the table above does not make obvious:
@@ -113,7 +113,7 @@ Two things the table above does not make obvious:
   [deployment.md](docs/deployment.md#option-3-build-and-deploy-from-source-code).
 - **Node.js is not version-checked by the publish script**, but the publish flow
   runs `npm ci` and `npm run build` over `src/ui`, so an older Node will fail
-  there instead. Treat 22.12+ as required.
+  there instead. Treat 22.15+ as required.
 
 Both CI systems build on **Python 3.13** (`python:3.13-bookworm`) and Node 22,
 so 3.12 is the floor rather than the tested version. Per-platform setup walkthroughs:
@@ -138,7 +138,7 @@ make setup-node                # only if the step above warned that Node was mis
 `make setup` and `make setup-venv` install `idp_common`, `idp_cli`, `idp_sdk`,
 `idp_mcp_connector`, `idp_feature_sdk`, the capacity-planning test dependencies,
 and the pinned `cfn-lint` and `ruff`, then verify that every first-party package
-resolved from the checkout. Their last step is the Node side: when Node 22.12 or
+resolved from the checkout. Their last step is the Node side: when Node 22.15 or
 later is on `PATH` they run `npm ci` in `src/ui/` and `docs-site/` and install
 `basedpyright`; otherwise they print a warning naming what was not installed and
 still succeed, because deploying and `idp-cli` need no Node. That step does nothing

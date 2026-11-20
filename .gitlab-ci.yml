@@ -153,7 +153,7 @@ stages:
   # Fail the build if any first-party package came from an index, not source.
   - python3 scripts/check_first_party_deps.py
 
-# Node 22.14.0, pinned. Only the jobs that need it install it — the four
+# Node 22.23.5, pinned. Only the jobs that need it install it — the four
 # `fast_checks` gate jobs, and the five AWS-facing ones below do not. Only
 # `ui_tests` needs it for a reason its own `script:` block shows. The two that
 # run `scripts/tests` — `unit_tests` and `package_tests` — need it for three
@@ -168,7 +168,7 @@ stages:
 .node_setup: &node_setup
   - NODE_ARCH=$(case "$(uname -m)" in x86_64) echo x64;; aarch64|arm64) echo arm64;; *) echo x64;; esac)
   - echo "Runner arch $(uname -m) -> node $NODE_ARCH"
-  - curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
+  - curl -fsSL https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-$NODE_ARCH.tar.xz | tar -xJ -C /usr/local --strip-components=1
   - npm install -g npm@11.1.0 || { echo "npm upgrade failed"; exit 1; }
 
 # Paths whose change can actually affect a real stack deploy / its behavior.

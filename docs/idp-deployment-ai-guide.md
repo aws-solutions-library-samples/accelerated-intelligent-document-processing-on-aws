@@ -202,7 +202,7 @@ conversation.  You can also read them directly if you prefer a traditional guide
 #### Build tools required
 - AWS CLI v2 (`aws --version`)
 - Python 3.12+ with `boto3` (`python --version`)
-- Node.js 22.12+ (`node --version`) — required by `idp-cli publish`
+- Node.js 22.15+ (`node --version`) — required by `idp-cli publish`
 - SAM CLI (`sam --version`)
 
 > **Docker is NOT required on your workstation.** `idp-cli publish` uploads source
@@ -532,7 +532,7 @@ parameters.
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `ModuleNotFoundError: No module named 'boto3'` | System Python used instead of venv | `make setup-venv && source .venv/bin/activate` |
-| `npm error engine Unsupported engine` | Node.js < 22.12 | `brew install node@22 && export PATH="/opt/homebrew/opt/node@22/bin:$PATH"` |
+| `npm error engine Unsupported engine` | Node.js < 22.15 | `brew install node@22 && export PATH="/opt/homebrew/opt/node@22/bin:$PATH"` |
 | `Stack fails with conflicting DNS domain` | VPC endpoint already exists | Re-run `deploy-vpc-endpoints.py` — it auto-detects and sets `Create*=false` |
 | `AccessDenied: kms:Decrypt` in CodeBuild (cause 1) | `ArtifactsBucketKmsKeyArn` not passed in `--parameters` at deploy time | Redeploy with `ArtifactsBucketKmsKeyArn=<arn>` appended to `--parameters` |
 | `AccessDenied: kms:Decrypt` in CodeBuild (cause 2) | KMS key policy does not allow CodeBuild roles to decrypt | Add a `*CodeBuild*` principal condition to the KMS key policy **before** deploying (see Q1c in System Prompt for the JSON) |

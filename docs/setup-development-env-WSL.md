@@ -82,7 +82,7 @@ Enter your AWS credentials when prompted. Refer to: https://docs.aws.amazon.com/
 python3 --version (Example: Python 3.12.3)
 aws --version (Example: aws-cli/2.28.26)
 sam --version (Example: SAM CLI, version 1.143.0)
-node --version (Example: v22.12.0)
+node --version (Example: v22.23.5)
 npm --version (Example: 11.0.0)
 ```
 ### 4.2 Install the IDP CLI
@@ -95,7 +95,7 @@ make setup-venv
 source .venv/bin/activate
 ```
 
-> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the Python tools the lint and test targets use. When Node.js 22.12 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker; without Node it prints a warning and finishes. `make setup-node` installs the Node side on its own and fails on any error. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
+> **Note**: This installs the `idp-cli` command along with all required Python dependencies, and the Python tools the lint and test targets use. When Node.js 22.15 or later is on `PATH`, it also installs the web UI and docs-site npm dependencies and the `basedpyright` type checker; without Node it prints a warning and finishes. `make setup-node` installs the Node side on its own and fails on any error. It installs every first-party package from `lib/` in one pass, at the versions the dependency lock records, and then checks that none of them came from the package index. See [Installing First-Party Packages Safely](dependency-confusion.md) for why that matters.
 
 ### 4.3 Test Build Process
 

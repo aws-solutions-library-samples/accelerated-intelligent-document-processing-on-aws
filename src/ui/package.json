@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=22.15.0",
     "npm": ">=10.0.0"
   },
   "dependencies": {
@@ -134,10 +134,9 @@
     "nanoid": "^3.3.18",
     "browserslist": ">=4.28.7",
     "fast-uri": "^3.1.9",
-    "@graphql-tools/utils": "12.0.1",
-    "@graphql-tools/executor-legacy-ws": "1.1.36",
+    "@graphql-tools/utils": "^12.1.0",
+    "@graphql-tools/executor-legacy-ws": "^1.1.36",
     "follow-redirects": "^1.16.2",
-    "@graphql-tools/url-loader": "9.1.9",
     "graphql-config": {
       "minimatch": "^11.0.1"
     },

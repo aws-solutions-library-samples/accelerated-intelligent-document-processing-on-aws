@@ -31,13 +31,13 @@ umask 022
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PREFIX="${UX_RUNNER_PREFIX:-/opt/ux-runner}"
-NODE_VERSION="v22.14.0"            # = .gitlab-ci.yml .node_setup (pinned by a test)
+NODE_VERSION="v22.23.5"            # = .gitlab-ci.yml .node_setup (pinned by a test)
 NPM_VERSION="11.1.0"               # = .gitlab-ci.yml .node_setup (pinned by a test)
 # The sha256 of node-<NODE_VERSION>-linux-<arch>.tar.xz for each architecture, from
 # https://nodejs.org/dist/<NODE_VERSION>/SHASUMS256.txt. Moving NODE_VERSION, with
 # .node_setup, means taking both of these again from that release's file.
-NODE_SHA256_X64="69b09dba5c8dcb05c4e4273a4340db1005abeafe3927efda2bc5b249e80437ec"
-NODE_SHA256_ARM64="08bfbf538bad0e8cbb0269f0173cca28d705874a67a22f60b57d99dc99e30050"
+NODE_SHA256_X64="cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8"
+NODE_SHA256_ARM64="2babb9eb5264860d540849f4b064a6fbdebcdc323657d9d382ce23d313fd5e09"
 # Chrome for Testing: the current Stable that ships both linux64 and linux-arm64,
 # and the sha256 of each platform's zip at that version. To move the pin, take the
 # Stable version from

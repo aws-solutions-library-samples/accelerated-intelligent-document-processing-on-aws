@@ -963,7 +963,7 @@ VPC that hosts the private API; the Route 53 private-hosted-zone A-alias avoids 
 | Issue | Resolution |
 |-------|-----------|
 | `ModuleNotFoundError: No module named 'boto3'` | Use venv Python. `make setup && source .venv/bin/activate` then retry. |
-| `npm error engine Unsupported engine` | Node.js 22.12+ required. `brew install node@22 && export PATH="/opt/homebrew/opt/node@22/bin:$PATH"` |
+| `npm error engine Unsupported engine` | Node.js 22.15+ required. `brew install node@22 && export PATH="/opt/homebrew/opt/node@22/bin:$PATH"` |
 | Stack fails with `conflicting DNS domain` | A VPC endpoint already exists for that service. Re-run `deploy-vpc-endpoints.py` — it auto-detects and skips existing ones. |
 | **Browser upload fails: `ERR_NAME_NOT_RESOLVED` on `bucket.vpce-...vpce.amazonaws.com`** | (a) Browser is not on the VPN — VPCE host is VPC-DNS-only. (b) Mode B: `S3VpcEndpointDnsNameOverride` was set without the AWS-assigned random suffix. Re-deploy with the full DNS from `aws ec2 describe-vpc-endpoints ... DnsEntries[0].DnsName` minus the `*.` prefix. |
 | **Browser upload fails: `Failed to fetch` / connect timeout** | (a) S3 VPCE endpoint SG missing ingress for VPN NAT-subnet CIDR (see SG matrix). (b) VPN association subnet differs from S3 VPCE subnets — return path is fine if SG has the NAT CIDR. |

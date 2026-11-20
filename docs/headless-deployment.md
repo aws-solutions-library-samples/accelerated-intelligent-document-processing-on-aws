@@ -173,7 +173,7 @@ Headless deployment is available through [`idp-cli`](./idp-cli.md) and the [`idp
 
 - AWS CLI with credentials for the target account/region
 - Python 3.12+ with the IDP CLI installed (`make setup-venv && source .venv/bin/activate`)
-- For `--from-code` builds only: AWS SAM CLI, Docker, Node.js >= 22.12, npm >= 10
+- For `--from-code` builds only: AWS SAM CLI, Docker, Node.js >= 22.15, npm >= 10
 
 ### Deploy in a Commercial Region (no local build)
 
