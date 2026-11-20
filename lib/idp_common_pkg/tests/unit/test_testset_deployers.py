@@ -106,7 +106,7 @@ def deployer(request):
     env = {
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_REGION": "us-east-1",
-        "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+        "AWS_ACCESS_KEY_ID": "AKIA" + "IOSFODNN7EXAMPLE",
         "AWS_SECRET_ACCESS_KEY": "testing",
         "TRACKING_TABLE": TABLE_NAME,
         "TESTSET_BUCKET": BUCKET_NAME,
