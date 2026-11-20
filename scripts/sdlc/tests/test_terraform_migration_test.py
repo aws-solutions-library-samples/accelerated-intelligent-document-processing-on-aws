@@ -2667,3 +2667,74 @@ def test_the_variants_sweep_deletes_only_the_runs_gateways(tmp_path, monkeypatch
     base = tmt.Run(_settings(tmp_path / "b"))
     monkeypatch.setattr(base, "boto", fake)
     assert tmt.Sweeper(base, {})._gateways() == []
+
+
+class _Stop(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "variant, boundary, expected",
+    [
+        ("base", None, None),
+        ("mcp-datasets", None, "EnableMCP=true"),
+        ("base", "arn:b", "PermissionsBoundaryArn=arn:b"),
+        ("mcp-datasets", "arn:b", "PermissionsBoundaryArn=arn:b,EnableMCP=true"),
+    ],
+)
+def test_the_plan_phase_passes_the_variants_parameters(
+    tmp_path, monkeypatch, variant, boundary, expected
+):
+    run = tmt.Run(
+        _settings(tmp_path, variant=variant, upstream_permissions_boundary_arn=boundary)
+    )
+    seen = {}
+    monkeypatch.setattr(run, "terraform_capture", lambda *a: "{}")
+    monkeypatch.setattr(run, "secrets", lambda: {"users": [{"username": "u"}]})
+
+    def migrate(phase, *args):
+        seen["args"] = list(args)
+        raise _Stop
+
+    monkeypatch.setattr(run, "migrate", migrate)
+    with pytest.raises(_Stop):
+        run.phase_migrate_plan()
+    args = seen["args"]
+    if expected is None:
+        assert "--parameters" not in args
+    else:
+        assert args[args.index("--parameters") + 1] == expected
+
+
+def test_the_variants_preflight_needs_pip3(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path, variant=tmt.MCP_DATASETS_VARIANT))
+    monkeypatch.setattr(run, "identity_problems", lambda: [])
+    monkeypatch.setattr(tmt.shutil, "which", lambda name: None)
+    with pytest.raises(tmt.PhaseFailed, match="pip3"):
+        run.phase_preflight()
+
+
+class _Control:
+    class exceptions:
+        class ValidationException(Exception):
+            pass
+
+    def __init__(self, busy):
+        self.busy, self.calls = busy, 0
+
+    def get_paginator(self, name):
+        return _Pages("items", [])
+
+    def delete_gateway(self, gatewayIdentifier):
+        self.calls += 1
+        if self.calls <= self.busy:
+            raise self.exceptions.ValidationException("targets still deleting")
+
+
+def test_a_gateway_delete_retries_while_its_targets_go_and_then_gives_up(monkeypatch):
+    monkeypatch.setattr(tmt.time, "sleep", lambda s: None)
+    control = _Control(busy=2)
+    tmt.delete_gateway(control, "g", timeout=60)
+    assert control.calls == 3
+    with pytest.raises(_Control.exceptions.ValidationException):
+        tmt.delete_gateway(_Control(busy=10**6), "g", timeout=0)
