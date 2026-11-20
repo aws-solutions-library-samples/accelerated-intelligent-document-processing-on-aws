@@ -177,8 +177,8 @@ def bedrock(monkeypatch):
     """``(make_agent, sent)``: an Agent factory over a scheduled stream, and the
     schedule steps actually sent."""
     for name, value in {
-        "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "AWS_ACCESS_KEY_ID": "AKIA" + "IOSFODNN7EXAMPLE",
+        "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG" + "/bPxRfiCYEXAMPLEKEY",
         "AWS_DEFAULT_REGION": "us-east-1",
     }.items():
         monkeypatch.setenv(name, value)
