@@ -87,6 +87,10 @@ resource "aws_dynamodb_table" "configuration" {
     name = "Configuration"
     type = "S"
   }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.cmk.arn
+  }
 }
 
 resource "aws_dynamodb_table" "discovery_tracking" {
@@ -96,6 +100,10 @@ resource "aws_dynamodb_table" "discovery_tracking" {
   attribute {
     name = "jobId"
     type = "S"
+  }
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.cmk.arn
   }
 }
 
