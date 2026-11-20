@@ -112,9 +112,7 @@ def no_oversize_requests():
 #: Dense page text in three shapes, each well over the window on its own: a table
 #: of figures (every digit a token), short lines of CJK text (a token a
 #: character), and long lines of plain words. Every shape has line breaks, as OCR
-#: text does. (The cut backs off to the last line break, so text whose only one
-#: is near its start keeps almost nothing; that fits the window, so it is not
-#: what this module checks.)
+#: text does; the tests for #2111 remove them to check a page with none.
 DENSE_STYLES = ("figures", "cjk", "words")
 
 
