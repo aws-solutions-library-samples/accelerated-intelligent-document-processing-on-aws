@@ -331,16 +331,21 @@ def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
     `terraform validate` reports)."""
     bridges = sorted(standard_module.rglob("bridge.tf"))
     assert len(bridges) > 1, bridges
-    root_key = "awscc_kms_key.customer_managed_encryption_key.arn"
+    # The deployment key: the supplied CustomerManagedKmsKeyArn, else the key
+    # the stack creates (#2016).
+    root_key = (
+        "(local.c_use_supplied_kms_key ? var.customer_managed_kms_key_arn : "
+        "one(awscc_kms_key.customer_managed_encryption_key[*].arn))"
+    )
     for bridge in bridges:
         text = bridge.read_text()
         where = bridge.relative_to(standard_module)
-        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S+)$", text, re.M)
+        kms = re.search(r"^\s*kms_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
         assert kms, f"{where}: the bridge log group is not encrypted"
         target = re.search(r"^\s*target_bucket\s*=\s*(\S+)$", text, re.M)
         assert target, f"{where}: the bridge bucket has no access logging"
         # The bridge bucket takes the same key as the bridge log group.
-        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S+)$", text, re.M)
+        bucket_key = re.search(r"^\s*kms_master_key_id\s*=\s*(\S.*?)\s*$", text, re.M)
         assert bucket_key, f"{where}: the bridge bucket is not encrypted with a key"
         assert bucket_key.group(1) == kms.group(1), where
         if bridge.parent == standard_module:

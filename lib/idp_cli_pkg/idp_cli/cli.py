@@ -585,10 +585,28 @@ _KMS_KEY_TYPES = ("AWS::KMS::Key", "aws_kms_key", "awscc_kms_key")
 
 
 def _print_retained_kms_keys(
-    key_ids: List[str], stack_id: Optional[str] = None
+    key_ids: List[str],
+    stack_id: Optional[str] = None,
+    supplied_key_arn: Optional[str] = None,
 ) -> None:
     """Say that the deployment's KMS key was kept, what it costs and how to
-    schedule its deletion. With no ``key_ids``, say how to find the key."""
+    schedule its deletion. With no ``key_ids``, say how to find the key.
+
+    A stack deployed with ``CustomerManagedKmsKeyArn`` created no key: its data
+    is encrypted with the supplied one, which is the customer's and may protect
+    other data too, so nothing here may suggest deleting it."""
+    if supplied_key_arn:
+        console.print(
+            "[bold]KMS key:[/bold] this stack encrypted its data with the key you "
+            "supplied (CustomerManagedKmsKeyArn). The stack did not create it and "
+            "did not delete it, and whatever data the stack wrote that still "
+            "exists stays encrypted with it:"
+        )
+        console.print(f"    - {supplied_key_arn}")
+        console.print(
+            "    Keep it while any of that data is needed; managing it is up to you."
+        )
+        return
     console.print(
         "[bold]KMS key kept:[/bold] the key that encrypts the retained buckets is "
         "retained so their data stays readable. It costs about $1 a month ($3 "
@@ -1803,6 +1821,15 @@ def delete(
         # Get bucket information
         console.print(f"[bold blue]Analyzing stack: {stack_name}[/bold blue]")
         bucket_info = client.stack.get_bucket_info()
+        # Read before the stack is gone: a supplied key is reported as the
+        # customer's, never as one to schedule for deletion.
+        stack_parameters = client.stack.get_parameters()
+        supplied = (
+            stack_parameters.get("CustomerManagedKmsKeyArn")
+            if isinstance(stack_parameters, dict)
+            else None
+        )
+        supplied_key_arn = supplied if isinstance(supplied, str) and supplied else None
 
         # Show warning with bucket details
         console.print()
@@ -2013,9 +2040,12 @@ def delete(
                         console.print(f"  • {error['type']}: {error['resource']}")
                         console.print(f"    Error: {error['error']}")
 
-                if cleanup_result.get("kms_keys_retained"):
+                if cleanup_result.get("kms_keys_retained") or supplied_key_arn:
                     console.print()
-                    _print_retained_kms_keys(cleanup_result["kms_keys_retained"])
+                    _print_retained_kms_keys(
+                        cleanup_result.get("kms_keys_retained") or [],
+                        supplied_key_arn=supplied_key_arn,
+                    )
 
                 console.print()
 
@@ -2037,7 +2067,9 @@ def delete(
             console.print("Delete it manually if no longer needed:")
             console.print("  [cyan]aws s3 rb s3://<logging-bucket-name> --force[/cyan]")
             console.print()
-            _print_retained_kms_keys([], stack_id=result.stack_id)
+            _print_retained_kms_keys(
+                [], stack_id=result.stack_id, supplied_key_arn=supplied_key_arn
+            )
             console.print()
 
         if deletion_failed:

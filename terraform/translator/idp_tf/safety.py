@@ -227,10 +227,17 @@ def _ref(node: _Node, name: str) -> frozenset[str]:
 
 
 def _getatt(node: _Node, name: str, attr: str) -> frozenset[str]:
+    from .translate import echoed_property
+
     plan = node.tr.plans.get(name)
     if plan is None:
         return EMPTY
     if plan.kind == "custom":
+        echoed = echoed_property(node.tr.t["Resources"][name], attr)
+        if echoed is not None:
+            # Rendered as the property itself (ECHOED_CUSTOM_ATTRS), so it is
+            # as known at plan as that property is.
+            return _sources(node, echoed)
         return frozenset({_source_id(node, name)})
     if plan.kind == "module":
         out = attr.removeprefix("Outputs.")

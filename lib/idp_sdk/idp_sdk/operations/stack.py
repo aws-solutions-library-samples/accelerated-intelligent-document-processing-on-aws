@@ -556,6 +556,26 @@ class StackOperation:
         deployer = StackDeployer(region=self._client._region)
         return deployer._stack_exists(name)
 
+    def get_parameters(
+        self,
+        stack_name: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, str]:
+        """
+        Get the parameter values a CloudFormation stack was deployed with.
+
+        Args:
+            stack_name: Stack name (uses default if not provided)
+
+        Returns:
+            ``{parameter name: value}``; empty if the stack cannot be read
+        """
+        from idp_sdk._core.stack import StackDeployer
+
+        name = self._client._require_stack(stack_name)
+        deployer = StackDeployer(region=self._client._region)
+        return deployer._get_stack_parameters(name)
+
     def get_status(
         self,
         stack_name: Optional[str] = None,

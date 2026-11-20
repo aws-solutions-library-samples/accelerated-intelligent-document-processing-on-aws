@@ -222,6 +222,7 @@ RUN_ROOTS = [
     "src/lambda/chat_with_document_processor/tests",
     "src/lambda/circuit_breaker_manager",
     "src/lambda/complete_section_review",
+    "src/lambda/customer_managed_kms_key_check",
     "src/lambda/external_idp_group_mapping",
     "src/lambda/finetuning_deployment_handler",
     "src/lambda/finetuning_job_creator/tests",

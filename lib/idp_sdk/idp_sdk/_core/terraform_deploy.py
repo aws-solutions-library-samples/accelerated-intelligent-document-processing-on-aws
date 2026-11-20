@@ -818,6 +818,45 @@ def label_parameter_values(stack: Optional[Dict[str, Any]]) -> Optional[Dict[str
     }
 
 
+def _refuse_changed_creation_fixed(
+    parameters: Dict[str, str],
+    effective: Dict[str, Any],
+    known: Dict[str, Any],
+) -> None:
+    """Refuse a ``CustomerManagedKmsKeyArn`` whose passed value differs from
+    the value the deployment has (empty when it has none), as the
+    CloudFormation deploy does (``guard_creation_fixed_parameters``).
+
+    Terraform has no rollback, so this is what keeps a changed key from being
+    applied part-way before the template's check refuses it. It is the only
+    creation-fixed parameter checked here: ``ExternalIdPEmailMutable`` is
+    derived by ``terraform_migrate`` from the user pool a migration adopts, so
+    the value a deployment "was created with" is not the module default there.
+    """
+    from idp_sdk._core.stack import guard_creation_fixed_parameters
+
+    given: Dict[str, str] = {}
+    current: Dict[str, str] = {}
+    for name in ("CustomerManagedKmsKeyArn",):
+        spec = known.get(name)
+        if spec is None or name not in parameters:
+            continue
+        given[name] = str(parameters[name])
+        value = effective.get(spec["variable"])
+        if value is not None:
+            current[name] = (
+                ("true" if value else "false")
+                if isinstance(value, bool)
+                else str(value)
+            )
+    try:
+        guard_creation_fixed_parameters(
+            given, stack_exists=True, current_params=current
+        )
+    except ValueError as e:
+        raise IDPConfigurationError(str(e)) from e
+
+
 def write_root_config(
     directory: Path,
     *,
@@ -951,6 +990,8 @@ def write_root_config(
     values = RootConfigValues(previous)
     values.update(from_label)
     passed = map_parameters(parameters, manifest)
+    if recorded is not None or tfvars.exists():
+        _refuse_changed_creation_fixed(parameters, values, known)
     values.update(passed)
     values["stack_name"] = stack_name
     passed_names = set(parameters)

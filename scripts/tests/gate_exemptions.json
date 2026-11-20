@@ -2540,7 +2540,7 @@
     },
     "scripts/tests/test_log_group_encryption.py::CUSTOM_RESOURCE_ONLY_EXEMPT": {
       "kind": "exemption",
-      "turnsOff": "the KmsKeyId requirement for two log groups",
+      "turnsOff": "the KmsKeyId requirement for the custom-resource-only log groups it lists, each with its own reason beside it",
       "premise": [
         "JUDGEMENT"
       ],

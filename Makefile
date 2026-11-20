@@ -1066,6 +1066,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# CustomerManagedKmsKeyArn check (#2016): a change on update is refused in either
+	@# direction, a supplied key is checked on create. Real botocore clients behind
+	@# Stubbers with an explicit region.
+	cd src/lambda/customer_managed_kms_key_check && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
 	@# filters) and the custom resource that attaches it to the gateway. moto for
 	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
