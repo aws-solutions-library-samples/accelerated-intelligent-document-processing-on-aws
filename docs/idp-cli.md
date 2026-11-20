@@ -3497,7 +3497,7 @@ Unlike `discover` (which analyzes one document at a time), `discover-multidoc` a
 
 **Requires:** `pip install -e "lib/idp_common_pkg[multi_document_discovery]"` (scikit-learn, scipy, numpy, strands-agents)
 
-**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. For discovering schemas from individual documents, use [`discover`](#discover) instead.
+**Note:** Requires at least **2 documents per expected class**. Clusters with fewer than 2 documents are filtered as noise. The summary lists the documents left in no class this way, and separately the documents whose embedding failed. For discovering schemas from individual documents, use [`discover`](#discover) instead.
 
 **Usage:**
 ```bash

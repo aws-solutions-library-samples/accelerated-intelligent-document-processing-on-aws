@@ -1509,7 +1509,9 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
 # continues a stopped or failed run from WORK_DIR. UPSTREAM_TAG=<tag> picks one of the
 # upstream releases the driver pins (default: the release a RESUME=1 run recorded,
-# else the newest; `rotate` takes this week's, as the weekly schedule does). See docs/testing.md and
+# else the newest; `rotate` takes this week's, as the weekly schedule does). VARIANT=mcp
+# also deploys upstream's MCP integration and runs the guide's manual procedure for it
+# before plan (VARIANT=mcp-datasets adds both test datasets). See docs/testing.md and
 # .claude/skills/release-validation.md (tier J).
 #   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
 #       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
@@ -1521,6 +1523,7 @@ _TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
 	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
 	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
 	$(if $(UPSTREAM_TAG),--upstream-tag $(UPSTREAM_TAG),) \
+	$(if $(VARIANT),--variant $(VARIANT),) \
 	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
 
 stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
