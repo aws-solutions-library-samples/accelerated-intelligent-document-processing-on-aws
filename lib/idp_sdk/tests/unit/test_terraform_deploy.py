@@ -458,18 +458,18 @@ class TestRootConfig:
         assert 'provider "aws" {\n  region = "us-west-2"' in main
         assert 'provider "awscc" {\n  region = "us-west-2"' in main
         assert (
-            'source = "s3::https://s3-us-west-2.amazonaws.com/'
+            'source                   = "s3::https://s3-us-west-2.amazonaws.com/'
             f'{BUCKET}/p/1/terraform/m.zip"'
         ) in main
         assert 'variable "max_concurrent_workflows" {\n  type = number' in main
-        assert 'variable "api_key" {\n  type = string\n  sensitive = true' in main
-        assert "  stack_name = var.stack_name" in main
+        assert 'variable "api_key" {\n  type      = string\n  sensitive = true' in main
+        assert "  stack_name               = var.stack_name" in main
         assert 'backend "' not in main
         tfvars = (tmp_path / "terraform.tfvars").read_text()
-        assert 'stack_name = "tfidp"' in tfvars
+        assert 'stack_name  = "tfidp"' in tfvars
         assert "max_concurrent_workflows = 7" in tfvars
         # A template sequence is escaped, so Terraform reads it literally.
-        assert 'api_key = "$${x}"' in tfvars
+        assert 'api_key                  = "$${x}"' in tfvars
         assert tf.parse_tfvars(tfvars) == values
         assert values["api_key"] == "${x}"
         assert (tmp_path / "terraform.tfvars").stat().st_mode & 0o077 == 0
@@ -477,7 +477,7 @@ class TestRootConfig:
     def test_list_values_render_as_hcl_lists(self, tmp_path):
         _write(tmp_path, parameters={"SubnetIds": "s-1,s-2"})
         assert (
-            'subnet_ids = ["s-1", "s-2"]' in (tmp_path / "terraform.tfvars").read_text()
+            'subnet_ids  = ["s-1", "s-2"]' in (tmp_path / "terraform.tfvars").read_text()
         )
         assert "type = list(string)" in (tmp_path / "main.tf").read_text()
 
@@ -632,9 +632,9 @@ variable "stack_name" {{
 }}
 
 module "idp" {{
-  source = "s3::https://s3-us-west-2.amazonaws.com/{BUCKET}/p/1/terraform/m.zip"
+  source      = "s3::https://s3-us-west-2.amazonaws.com/{BUCKET}/p/1/terraform/m.zip"
   admin_email = var.admin_email
-  stack_name = var.stack_name
+  stack_name  = var.stack_name
 }}
 """
 
@@ -656,7 +656,7 @@ class TestTags:
         ) in main
         assert 'provider "awscc" {\n  region = "us-west-2"\n}' in main
         assert 'variable "tags" {\n  type = map(string)\n}' in main
-        assert "  tags = var.tags\n}" in main
+        assert "  tags        = var.tags\n}" in main
         tfvars = tf.parse_tfvars((tmp_path / "terraform.tfvars").read_text())
         assert tfvars["tags"] == tags
         # Tags are not a parameter: they are kept out of the parameter record.
