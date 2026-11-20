@@ -165,8 +165,10 @@ rule_validation = [
 ]
 
 # Reporting module dependencies
+# pyarrow 26 has no numpy dependency, but refuses to import when numpy 1.x is
+# installed beside it, so every extra that brings numpy pins a 2.x release.
 reporting = [
-  "pyarrow==23.0.1", # For Parquet conversion
+  "pyarrow==26.0.1", # For Parquet conversion
 ]
 
 # Appsync module dependencies
@@ -253,7 +255,7 @@ test = [
                                     # `"Sample line one" in result` assertion compares
                                     # against a mock repr rather than parsed text.
   "requests (>=2.32.3,<3.0.0)",
-  "pyarrow==23.0.1",
+  "pyarrow==26.0.1",
   "PyYAML==6.0.2",
   "openpyxl==3.1.5",
   "xlrd==2.0.2",
@@ -278,7 +280,7 @@ test = [
   "stickler-eval[docsplit]==1.0.0",
   "munkres==1.1.4",  # see the evaluation extra
   "genson==1.3.0",
-  "numpy>=1.26,<3",
+  "numpy>=2.0,<3",  # pyarrow 26, below, refuses to import beside numpy 1.x
   "build==1.3.0",
   # scripts/tests/test_package_discovery.py imports setuptools directly (its
   # package finders and read_configuration) to check the packaging policy. No
@@ -345,7 +347,7 @@ all = [
   "scipy>=1.14.0",
   "jinja2>=3.1.0",
   "requests==2.33.0",
-  "pyarrow==23.0.1",
+  "pyarrow==26.0.1",
   "openpyxl==3.1.5",
   "xlrd==2.0.2",
   "python-docx==1.2.0",

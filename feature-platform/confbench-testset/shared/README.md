@@ -28,12 +28,12 @@ Without it SAM copies `shared/` verbatim, which is what we want.
 
 The layer also carries `pyarrow` (see `Makefile`), which makes its size a
 deployment concern rather than a footnote. `prune_layer.py` runs after the pip
-install, strips the ~35 MB of pyarrow that `pyarrow.parquet` never touches
-(`include/`, `src/`, `tests/`, Cython sources, the Arrow Flight RPC stack), and
-then **fails the build** if the result is still too big — 136 MB → 100 MB, against
-a 117.6 MB ceiling.
+install, strips the ~57 MB of pyarrow that `pyarrow.parquet` never touches
+(`include/`, `src/`, `tests/`, Cython sources, the Arrow Flight RPC stack, the S3
+filesystem), and then **fails the build** if the result is still too big — with
+pyarrow 26.0.1, 156 MB → 99 MB, against a 117.6 MB ceiling.
 
-That ceiling is not the obvious one. Steady state is only ~109 MB (layer + the
+That ceiling is not the obvious one. Steady state is only ~107 MB (layer + the
 8.5 MB `ingest/` code), nowhere near Lambda's 250 MiB cap. The binding constraint
 is the *transition*: CloudFormation attaches the new layer via
 `UpdateFunctionConfiguration` **before** `UpdateFunctionCode`, so mid-update the
@@ -49,6 +49,14 @@ run blind. Two guards, both covered by `tests/test_prune_layer.py`:
 |---|---|
 | every prune rule must match ≥1 file | a pyarrow layout change silently pruning nothing, so the layer quietly regrows |
 | no surviving `.so` may have a `DT_NEEDED` on a pruned library | a future pyarrow linking Flight from the parquet path — fails the build instead of the Lambda cold start |
+
+The S3 filesystem (`libarrow_s3`, 16 MB, and the `_s3fs` extension that alone
+links it) is pruned because nothing that mounts the layer reads S3 through
+pyarrow: the planner hands `pq.read_table` a local path from `hf_hub_download`.
+`import pyarrow.fs` still works without it; only `S3FileSystem` is missing.
+`tests/test_prune_layer.py` fails if a function that mounts the layer starts
+naming `pyarrow.fs`, `S3FileSystem` or an `s3://` URI in a pyarrow call — read
+such a file through boto3, or drop `PRUNE_GLOBS_S3` and re-check the ceiling.
 
 Do not widen the prune to `libarrow_substrait`, `libarrow_dataset`,
 `libarrow_acero`, or `libarrow_compute`: `lib.…so` and `_parquet.…so` link all

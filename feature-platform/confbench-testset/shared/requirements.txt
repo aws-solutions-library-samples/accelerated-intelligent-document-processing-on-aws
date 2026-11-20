@@ -4,4 +4,4 @@
 #
 # Reading the dataset's parquet metadata (PlannerFunction only, but the layer is
 # mounted by every ingest function).
-pyarrow==23.0.1
+pyarrow==26.0.1
