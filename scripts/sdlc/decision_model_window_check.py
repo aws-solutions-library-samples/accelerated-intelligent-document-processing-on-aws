@@ -138,10 +138,12 @@ CONFIDENCE_FIELDS = {
 
 #: The page text shapes sent in the text modes. Each is well over the window on
 #: its own, so every one is cut to the cap; what differs is how many real tokens
-#: the cut text costs against its estimate. ``table`` (a markdown statement table,
-#: as OCR emits for tabular pages) and ``codes`` (alphanumeric serials) are the
-#: densest measured against the pinned model's tokenizer, about 1.18 tokens per
-#: estimated token; ``figures`` about 1.12; ``cjk`` and ``words`` below 1 (#2051).
+#: the cut text costs against its estimate. Measured against the pinned model's
+#: tokenizer, ``figures`` costs about 1.03 tokens per estimated token, ``table`` (a
+#: markdown statement table, as OCR emits for tabular pages) about 1.01, ``codes``
+#: (alphanumeric serials) about 0.96, and ``cjk`` and ``words`` well below 1. Under
+#: the flat estimate before #2051 ``table`` and ``codes`` cost 1.17 to 1.21 and
+#: overflowed the window in extraction confidence.
 DENSE_STYLES = ("figures", "table", "codes", "cjk", "words")
 
 #: The characters of the ``codes`` style's serials: capitals and digits, without
