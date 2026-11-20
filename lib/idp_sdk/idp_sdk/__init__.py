@@ -105,6 +105,7 @@ from .models import (
     FailureAnalysis,
     FailureCause,
     FieldComparison,
+    FitCheckResult,
     # Manifest models
     LoadTestResult,
     ManifestDocument,
@@ -233,6 +234,7 @@ __all__ = [
     "FieldComparison",
     "DeleteResult",
     "UseAsBaselineResult",
+    "FitCheckResult",
     # Assessment models
     "AssessmentConfidenceResult",
     "AssessmentFieldConfidence",
