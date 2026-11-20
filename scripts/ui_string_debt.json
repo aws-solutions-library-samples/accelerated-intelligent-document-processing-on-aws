@@ -22,8 +22,8 @@
   "eslintConfig": "src/ui/eslint.i18n.config.js",
   "configSha256": "cb45fe1a1ae9ec571c38a4d7523f7a6f056bdcd2e432aee71b1a739e15359e33",
   "highWaterMark": {
-    "files": 219,
-    "findings": 5802
+    "files": 216,
+    "findings": 5750
   },
   "newDebtReasons": [
     "upstream dff175de8 (merged 2026-11-05, before this PR): the Prefix Mappings help panel added config-prefix-mappings/tools-panel.tsx (24 strings) and 2 strings to user-management/tools-panel.tsx; code written before the gate existed, converted with its screen in a later PR (#1770)",
@@ -36,9 +36,7 @@
   "stringDebt": {
     "src/ui/src/api/presign-batch.ts": 1,
     "src/ui/src/api/rest-client.ts": 1,
-    "src/ui/src/components/agent-chat/AgentChatLayout.tsx": 52,
-    "src/ui/src/components/agent-chat/QuickStartWidget.tsx": 7,
-    "src/ui/src/components/agent-chat/useQuickStartUpload.ts": 4,
+    "src/ui/src/components/agent-chat/AgentChatLayout.tsx": 17,
     "src/ui/src/components/capacity-planning/CapacityPlanningLayout.tsx": 443,
     "src/ui/src/components/capacity-planning/DocumentPickerModal.tsx": 24,
     "src/ui/src/components/capacity-planning/tools-panel.tsx": 12,
@@ -233,7 +231,6 @@
     "src/ui/src/components/user-management/UserManagementLayout.tsx": 98,
     "src/ui/src/components/user-management/tools-panel.tsx": 11,
     "src/ui/src/contexts/inbox.tsx": 10,
-    "src/ui/src/hooks/use-agent-chat.ts": 6,
     "src/ui/src/hooks/use-config-prefix-mappings.ts": 6,
     "src/ui/src/hooks/use-config-profile-revisions.ts": 10,
     "src/ui/src/hooks/use-configuration-versions.ts": 5,

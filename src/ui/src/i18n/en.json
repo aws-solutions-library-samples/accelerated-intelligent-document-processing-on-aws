@@ -83,13 +83,225 @@
     "defaultMessage": "Untitled Chat",
     "description": "Shown in the Agent Chat history list in place of the title of a session that has none."
   },
+  "agentChat.layout.agentThinking": {
+    "defaultMessage": "{agentName} - Thinking...",
+    "description": "Heading of the section that shows an agent working in the Agent Chat, while it works. {agentName} is the name of the agent."
+  },
+  "agentChat.layout.analysisFailed": {
+    "defaultMessage": "Document analysis failed",
+    "description": "Heading of the error under the Quick Start message box when discovery of the attached documents failed."
+  },
+  "agentChat.layout.attachDocuments": {
+    "defaultMessage": "Attach documents",
+    "description": "Screen-reader label of the paper-clip button that attaches example documents to a Quick Start message."
+  },
+  "agentChat.layout.chip.addDocumentType": {
+    "defaultMessage": "Add a new document type to my existing configuration",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.capabilities": {
+    "defaultMessage": "What capabilities do you have?",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.classificationPipeline": {
+    "defaultMessage": "Explain how the document classification pipeline works in the IDP accelerator",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.insuranceClaims": {
+    "defaultMessage": "Help me set up IDP for processing auto insurance claims",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.invoices": {
+    "defaultMessage": "I have invoices with vendor, amount, and due date — get me started",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.paystubs": {
+    "defaultMessage": "Bootstrap a config for employee paystubs",
+    "description": "Suggested prompt on the empty Quick Start chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.recentDocumentsTable": {
+    "defaultMessage": "Can you make a table of the documents uploaded in the last three days?",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.chip.recentErrors": {
+    "defaultMessage": "Analyze recent errors in document processing",
+    "description": "Suggested prompt on the empty Agent Chat. The English text is also the prompt the chat sends, so the agent always receives English; translate the chip only."
+  },
+  "agentChat.layout.clearChat": {
+    "defaultMessage": "Clear chat",
+    "description": "Button under the chat that clears the conversation and starts a new one."
+  },
+  "agentChat.layout.documentsAnalyzed": {
+    "defaultMessage": "Documents analyzed",
+    "description": "Shown under the Quick Start message box once discovery of the attached documents has finished."
+  },
+  "agentChat.layout.documentsAttached": {
+    "defaultMessage": "{count, plural, one {# document attached — send your message to analyze it.} other {# documents attached — send your message to analyze them.}}",
+    "description": "Note under the Quick Start message box once documents are attached and before the message is sent."
+  },
+  "agentChat.layout.enableCodeIntelligence": {
+    "defaultMessage": "Enable Code Intelligence Agent",
+    "description": "Checkbox under the Agent Chat input that lets the chat use the Code Intelligence Agent, the name of an optional agent."
+  },
   "agentChat.layout.enableExternalMcpAgents": {
     "defaultMessage": "Enable External MCP agents",
     "description": "Checkbox under the Agent Chat input that lets the chat use agents served by external MCP servers."
   },
+  "agentChat.layout.errorContent": {
+    "defaultMessage": "Error: {error}",
+    "description": "Shown in the Agent Chat in place of an answer that failed. {error} is the server's error, in English."
+  },
+  "agentChat.layout.files.errorIcon": {
+    "defaultMessage": "Error",
+    "description": "Screen-reader label of the error icon next to an attached document."
+  },
+  "agentChat.layout.files.remove": {
+    "defaultMessage": "Remove file {index, number}",
+    "description": "Screen-reader label of the button that removes an attached document. {index} is the position of the file in the list, from 1."
+  },
+  "agentChat.layout.files.showFewer": {
+    "defaultMessage": "Show fewer",
+    "description": "Button that collapses the list of attached documents under the Quick Start message box."
+  },
+  "agentChat.layout.files.showMore": {
+    "defaultMessage": "Show more",
+    "description": "Button that expands the list of attached documents under the Quick Start message box."
+  },
+  "agentChat.layout.loadingHistory": {
+    "defaultMessage": "Loading chat history...",
+    "description": "Shown over the Agent Chat messages while a previous conversation loads."
+  },
+  "agentChat.layout.newSessionNotice": {
+    "defaultMessage": "Started a new conversation. Code Intelligence and External MCP agents are not used in a conversation that includes Analytics or Error Analyzer results.",
+    "description": "Notice above the Agent Chat after turning on an optional agent started a new conversation. Code Intelligence, External MCP, Analytics and Error Analyzer are agent names."
+  },
+  "agentChat.layout.placeholder": {
+    "defaultMessage": "Ask me anything about documents, errors, or IDP code base",
+    "description": "Placeholder of the Agent Chat message box. IDP is the name of the solution."
+  },
+  "agentChat.layout.placeholderQuickStart": {
+    "defaultMessage": "Describe the documents you want to process, or attach examples to get started",
+    "description": "Placeholder of the Quick Start message box, where the user describes or attaches example documents."
+  },
+  "agentChat.layout.quickStartHint": {
+    "defaultMessage": "Quick Start helps you author a configuration for your document type. Describe your documents or attach examples to get started.",
+    "description": "Hint under the Quick Start message box."
+  },
+  "agentChat.layout.sampleOpenFailed": {
+    "defaultMessage": "Could not open sample",
+    "description": "Error next to a sample-document link in a Quick Start answer when the sample could not be opened."
+  },
+  "agentChat.layout.stepWithDocuments": {
+    "defaultMessage": "{step} ({count, plural, one {# doc} other {# docs}})",
+    "description": "Progress of the discovery of the documents attached in Quick Start. {step} is the current step as reported, possibly in English; the count is the number of documents."
+  },
+  "agentChat.layout.suggestedPrompts": {
+    "defaultMessage": "Suggested prompts",
+    "description": "Screen-reader name of the group of suggested prompts shown on the empty chat."
+  },
   "agentChat.layout.thirdPartyNotice": {
     "defaultMessage": "Avoid sharing sensitive information, the Code Intelligence Agent and External MCP agents may use third-party services.",
     "description": "Notice beside the agent opt-in checkboxes under the Agent Chat input. Code Intelligence Agent and External MCP agents are the names of the two optional agents."
+  },
+  "agentChat.layout.titleChat": {
+    "defaultMessage": "IDP Agent Companion Chat",
+    "description": "Heading of the Agent Chat page. IDP is the name of the solution; Agent Companion Chat is the name of the chat feature."
+  },
+  "agentChat.layout.titleQuickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Heading of the chat while it runs Quick Start, which drafts a configuration for a document type."
+  },
+  "agentChat.layout.viewDiscovery": {
+    "defaultMessage": "View full discovery details",
+    "description": "Link under the Quick Start message box to the page of the finished discovery job."
+  },
+  "agentChat.layout.welcome": {
+    "defaultMessage": "Welcome to <span>{name}</span>",
+    "description": "Greeting on the empty chat. {name} is Quick Start or Agent Companion Chat; the text inside <span> is shown in the accent colour."
+  },
+  "agentChat.layout.welcomeChat": {
+    "defaultMessage": "Agent Companion Chat",
+    "description": "Name shown in the greeting of the empty Agent Chat (\"Welcome to Agent Companion Chat\"). Agent Companion Chat is the name of the chat feature."
+  },
+  "agentChat.layout.welcomeQuickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Name shown in the greeting of the empty Quick Start chat (\"Welcome to Quick Start\")."
+  },
+  "agentChat.layout.welcomeQuickStartIntro": {
+    "defaultMessage": "Describe the documents you want to process and I'll help you set up a configuration — no prior setup needed.",
+    "description": "Paragraph under the greeting of the empty Quick Start chat. \"I\" is the Quick Start assistant."
+  },
+  "agentChat.layout.working": {
+    "defaultMessage": "Working on your request… this can take a minute.",
+    "description": "Shown in the Agent Chat under the last message while the agent prepares its answer."
+  },
+  "agentChat.quickStartUpload.analyzing": {
+    "defaultMessage": "Analyzing document",
+    "description": "Progress step under the Quick Start input while one attached document is analyzed, until the server reports its own step."
+  },
+  "agentChat.quickStartUpload.discoveryFailed": {
+    "defaultMessage": "Document discovery failed",
+    "description": "Error under the Quick Start input when discovery of the attached documents failed and the server gave no reason."
+  },
+  "agentChat.quickStartUpload.packaging": {
+    "defaultMessage": "Packaging documents",
+    "description": "Progress step under the Quick Start input while the attached documents are packaged for upload."
+  },
+  "agentChat.quickStartUpload.uploadFailed": {
+    "defaultMessage": "Upload failed",
+    "description": "Error under the Quick Start input when uploading the attached documents failed with no error message."
+  },
+  "agentChat.quickStartWidget.close": {
+    "defaultMessage": "Close",
+    "description": "Screen-reader label of the button that closes the floating assistant panel."
+  },
+  "agentChat.quickStartWidget.dialogAriaLabel": {
+    "defaultMessage": "Assistant",
+    "description": "Screen-reader name of the floating assistant panel that holds Quick Start and the Agent Companion Chat."
+  },
+  "agentChat.quickStartWidget.minimize": {
+    "defaultMessage": "Minimize",
+    "description": "Screen-reader label of the button that minimizes the floating assistant panel."
+  },
+  "agentChat.quickStartWidget.openAriaLabel": {
+    "defaultMessage": "Open Quick Start",
+    "description": "Screen-reader label of the round launcher button that opens the floating Quick Start panel."
+  },
+  "agentChat.quickStartWidget.resize": {
+    "defaultMessage": "Resize",
+    "description": "Screen-reader label of the corner handle that resizes the floating assistant panel."
+  },
+  "agentChat.quickStartWidget.titleChat": {
+    "defaultMessage": "Agent Companion Chat",
+    "description": "Title of the floating assistant panel while it runs the Agent Companion Chat. Agent Companion Chat is the name of the chat feature."
+  },
+  "agentChat.quickStartWidget.titleQuickStart": {
+    "defaultMessage": "Quick Start",
+    "description": "Title of the floating assistant panel while it runs Quick Start, which drafts a configuration for a document type."
+  },
+  "agentChat.session.accessDenied": {
+    "defaultMessage": "Access denied: {error}. Check your role permissions.",
+    "description": "Error above the Agent Chat messages when the user's role may not use the chat. {error} is the server's explanation, in English."
+  },
+  "agentChat.session.chartTitle": {
+    "defaultMessage": "Chart",
+    "description": "Title above a chart in an Agent Chat answer when the agent's chart has no title of its own."
+  },
+  "agentChat.session.connectionLost": {
+    "defaultMessage": "Connection to chat service lost. Please refresh the page.",
+    "description": "Error above the Agent Chat messages when the connection that delivers the answers fails."
+  },
+  "agentChat.session.generating": {
+    "defaultMessage": "Generating final result...",
+    "description": "Placeholder shown in the Agent Chat while the agent prepares a table or chart answer. The answer replaces it."
+  },
+  "agentChat.session.loadFailed": {
+    "defaultMessage": "Failed to load chat session. Please try again.",
+    "description": "Error above the Agent Chat messages when a previous conversation could not be loaded."
+  },
+  "agentChat.session.sendFailed": {
+    "defaultMessage": "Failed to send message. Please try again.",
+    "description": "Error above the Agent Chat messages when a message could not be sent and the server gave no reason."
   },
   "agentChat.tool.close": {
     "defaultMessage": "Close",

@@ -85,6 +85,9 @@ intl.formatMessage(messages.count, { count: rows.length });
 - **Never concatenate fragments** (`'Delete ' + n + ' items'`) and never put user-facing text in
   a `const ALL_CAPS = ...` constant (see the known gaps under the string-debt gate): a
   module-level label becomes a `defineMessages` descriptor formatted at render time.
+- **Text the UI sends to an agent.** A label shown for text the UI sends (a suggested prompt) is a
+  message; the text sent stays English and is read from the descriptor's `defaultMessage`, so it
+  is written once.
 
 ### Cloudscape and Amplify strings
 
