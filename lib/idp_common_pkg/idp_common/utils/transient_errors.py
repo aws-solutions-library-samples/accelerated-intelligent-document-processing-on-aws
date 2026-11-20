@@ -83,6 +83,7 @@ import botocore.exceptions
 
 from idp_common.bedrock.model_utils import bare_http_server_status
 from idp_common.utils.bedrock_utils import DEFAULT_RETRYABLE_ERRORS
+from idp_common.utils.metering import attach_failure_metering
 
 try:  # urllib3 is a botocore dependency, but keep the import defensive
     from urllib3.exceptions import NewConnectionError, ProtocolError
@@ -388,9 +389,18 @@ def raise_if_transient(exc: BaseException, where: str = "") -> None:
         raise TransientError(exc, where) from exc
 
 
-def reraise_if_transient(exc: BaseException, where: str = "") -> None:
+def reraise_if_transient(
+    exc: BaseException, where: str = "", metering: dict | None = None
+) -> None:
     """Surface ``exc`` as :class:`TransientError` — for an ``except`` that does NOT
     end in a bare ``raise``.
+
+    ``metering`` is the usage of the model calls the failed attempt completed
+    before ``exc``. When given, it is attached to the raised ``TransientError``
+    (``utils.attach_failure_metering``), replacing whatever was attached before, so
+    the handler can record that spend before Step Functions retries the step
+    (#2122). It must already include ``utils.failure_metering(exc)`` if ``exc``
+    carried any, because it replaces rather than adds.
 
     :func:`raise_if_transient` returns silently when ``exc`` already IS a
     ``TransientError``, because it is written for the pattern ::
@@ -411,6 +421,11 @@ def reraise_if_transient(exc: BaseException, where: str = "") -> None:
     where a bare ``raise`` follows. Neither ever wraps a ``TransientError`` in
     another one, so a chain of nested handlers reports one name and one cause.
     """
-    if isinstance(exc, TransientError):
-        raise exc
-    raise_if_transient(exc, where)
+    try:
+        if isinstance(exc, TransientError):
+            raise exc
+        raise_if_transient(exc, where)
+    except TransientError as transient:
+        if metering:
+            attach_failure_metering(transient, metering)
+        raise

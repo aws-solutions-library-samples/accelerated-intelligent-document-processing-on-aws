@@ -551,8 +551,14 @@ class _TransientCallFailure:
             for future in self._futures:
                 future.cancel()
 
-    def raise_first(self) -> None:
-        """Raise the first transient failure as ``TransientError``, if there was one."""
+    def raise_first(self, metering: Dict[str, Any]) -> None:
+        """Raise the first transient failure as ``TransientError``, if there was one.
+
+        ``metering`` is the usage of the pool's calls that completed. It goes onto
+        the raised error with the failed call's own (``utils.failure_metering``),
+        so the classification handler can record what the failed attempt spent
+        before the step is retried (#2122).
+        """
         if self.first is None:
             return
         where, exc = self.first
@@ -561,7 +567,13 @@ class _TransientCallFailure:
             "classification step is retried",
             self.count,
         )
-        reraise_if_transient(exc, where=where)
+        reraise_if_transient(
+            exc,
+            where=where,
+            metering=utils.merge_metering_data(
+                copy.deepcopy(metering), utils.failure_metering(exc)
+            ),
+        )
 
 
 class UnusablePacketReply(ValueError):
@@ -6232,12 +6244,15 @@ class ClassificationService:
                 # ProcessResults, with an error no retrier matches; raised, the
                 # classification step is retried and the windows still pending
                 # are never sent (#2034).
+                # ``metering`` already holds this window's received replies and
+                # every earlier window's, so the attempt's spend travels with it.
                 reraise_if_transient(
                     e,
                     where=(
                         f"Packet window {window_label} "
                         f"(pages {window_page_ids[0]}-{window_page_ids[-1]})"
                     ),
+                    metering=metering,
                 )
                 # A deterministic failure in one window does not discard the
                 # others' boundaries.
@@ -7119,6 +7134,9 @@ class ClassificationService:
             self.granularity,
         )
 
+        # The splitting calls' usage, once they have all returned: a transient
+        # failure in section classification raises it with its own (#2122).
+        splitting_metering: Dict[str, Any] = {}
         try:
             known = self._segments_from_document_shape(document)
             if known is not None:
@@ -7135,6 +7153,7 @@ class ClassificationService:
                 segments, metering, errors = known, {}, []
             else:
                 segments, metering, errors = self._detect_boundaries(document)
+            splitting_metering = metering
             document.metering = utils.merge_metering_data(document.metering, metering)
             document.errors.extend(errors)
 
@@ -7232,6 +7251,16 @@ class ClassificationService:
             )
 
         except Exception as e:
+            if is_transient_error(e):
+                # Not marked FAILED: the step is retried, and the handler records
+                # the attempt's usage without a failed status.
+                reraise_if_transient(
+                    e,
+                    where="split-then-classify",
+                    metering=utils.merge_metering_data(
+                        copy.deepcopy(splitting_metering), utils.failure_metering(e)
+                    ),
+                )
             error_msg = f"Error in split-then-classify: {str(e)}"
             document = self._update_document_status(
                 document, success=False, error_message=error_msg
@@ -7413,7 +7442,7 @@ class ClassificationService:
                     logger.error(error_msg)
                     with lock:
                         errors.append(error_msg)
-        transient.raise_first()
+        transient.raise_first(metering)
 
         if not verdicts:
             return [], metering, errors
@@ -7621,7 +7650,7 @@ class ClassificationService:
                     with lock:
                         errors.append(error_msg)
                         issues[index] = {"error": error_msg}
-        transient.raise_first()
+        transient.raise_first(metering)
 
         logger.info(
             "Section classification labeled %d/%d segment(s)",

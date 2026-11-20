@@ -124,13 +124,28 @@ continues, and the escalation's calls appear under `ExtractionEscalation`. When 
 extraction attempt fails with a transient error and Step Functions retries it, the
 calls of the failed attempt are not counted; only the attempt that finishes is.
 
+**A classification or summarization attempt that fails transiently records what it
+spent.** The step is retried, so the document keeps its `CLASSIFYING` or `SUMMARIZING`
+status rather than being shown as failed, and the usage of the calls the attempt
+completed is written to the document's tracking record. If the execution then ends
+unsuccessfully, that usage is in what it reports, but only for the **most recent**
+failed attempt: each attempt starts by writing the document it was given, which
+replaces the record's usage, so a step that failed transiently several times reports
+the last failed attempt's calls and not the earlier ones'. At page-level
+classification the pages earlier attempts classified are restored from the page
+cache on every attempt, so they stay counted. If a retry succeeds, the reported
+usage is the succeeding attempt's: at page-level classification that includes the
+pages the failed attempt classified, because the retry reuses them from the page cache,
+but under summarization, split-then-classify or packet granularity the failed
+attempt's calls are not in it.
+
 **A workflow that fails still reports what it spent.** A workflow execution that
 ends `FAILED`, `TIMED_OUT` or `ABORTED` writes its usage to the reporting `metering`
 table like one that succeeds, with `execution_status` saying how it ended, so the
 reports show actual spend including failed attempts. Its usage is what the stages
 that ran had recorded on the document's tracking record: the step that failed, and
 the shards of a section map that finished before another shard failed, are not in
-it. Each execution is reported once, under its `execution_arn`, and reprocessing a
+it, except for the classification and summarization attempts described above. Each execution is reported once, under its `execution_arn`, and reprocessing a
 failed document is a new execution with a record of its own. To see the failed
 attempts on their own, filter on `execution_status`; see
 [Reporting Database](reporting-database.md#metering-table).
