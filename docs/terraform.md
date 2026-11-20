@@ -965,6 +965,20 @@ the policy in place, including on a deployment that an earlier failure left part
 way, and so do later changes to it. CloudFormation deployments were never
 affected.
 
+The two Lambda asynchronous-invocation settings (`awscc_lambda_event_invoke_config`,
+for the queue sender and the reporting rollup function) failed the same way on any
+upgrade that changed their retry count, event age or destination: Lambda reports an
+unset success or failure destination as an empty object, and Cloud Control refuses
+an in-place update while one is present. No value avoids that, since any destination
+changes where results go, so the module now replaces these two resources instead of
+updating them: a change to any of their settings deletes the configuration and
+creates it again in the same apply, and the plan shows it as replaced "due to
+changes in replace_triggered_by". Between the delete and the create, asynchronous
+invocations of that function use Lambda's defaults. Whether the first upgrade to a
+module with this change replaces them depends on the binary: measured with the
+releases `make terraform-check` pins, OpenTofu 1.13 replaces them once, and
+Terraform 1.7 and 1.17 and OpenTofu 1.7 do not.
+
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade
 actions apply to both.
@@ -979,6 +993,12 @@ reading it, so three independent checks look at different things:
 | The translator's own checks and `terraform validate` on every pinned Terraform and OpenTofu release | every pull request | every type, property and value in the templates is translated and reaches the Terraform; no data-holding resource depends on a value Terraform cannot know at plan time without a declared reason; the module loads and type-checks |
 | A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (mostly on the custom-resource bridge the module adds); findings on rules only the Terraform scanner has are pinned per rule, so a new one fails too. The repository's SRT scan does not cover the generated module, which is never committed; this scan is what covers it |
 | A property comparison of a Terraform deployment with a CloudFormation deployment of the same release and parameters, every resource of both read back from AWS | release validation | the two deployments store the same configuration, beyond explained differences |
+
+The first check also runs `fmt -check -recursive` with every pinned binary over
+each template variant's module and over the root files `idp-cli deploy --terraform`
+writes, so the generated Terraform is already in `terraform fmt`'s layout and a
+repository that gates on `terraform fmt -check` accepts the module and those files
+as written.
 
 None of the three plans or applies on a pull request. The full stack has been
 applied, re-planned and destroyed in a development account (see the developer

@@ -402,3 +402,120 @@ class TestRuleValidationTable:
         assert glue.update_inputs[0]["StorageDescriptor"]["Columns"] == before + [
             {"Name": "Reasoning", "Type": "string"}
         ]
+
+
+def lowered_names(columns):
+    return [col["Name"].lower() for col in columns]
+
+
+class TestCreateCollapsesCaseVariants:
+    """A new table gets one column per lowercased name (GitHub #2200).
+
+    Glue stores names lowercased, so two of one document's names that differ only
+    in case would otherwise reach ``CreateTable`` as one name twice.
+    """
+
+    def test_the_section_table(self, glue):
+        saver = make_saver(glue)
+        schema = section_schema(saver, {"Name": "Jane", "name": "jane", "Other": "x"})
+        assert saver._create_or_update_glue_table(SECTION, schema) is True
+        names = lowered_names(glue.stored_columns())
+        assert "inference_result.name" in names
+        assert len(names) == len(set(names))
+
+    def test_the_rule_validation_table(self, glue):
+        saver = make_saver(glue)
+        schema = pa.schema(
+            [
+                ("document_id", pa.string()),
+                ("Reasoning", pa.string()),
+                ("reasoning", pa.string()),
+            ]
+        )
+        assert (
+            saver._create_or_update_rule_validation_glue_table("rule_t", schema) is True
+        )
+        assert lowered_names(glue.stored_columns("rule_t")) == [
+            "document_id",
+            "reasoning",
+        ]
+
+
+class TestRuleValidationReturnValue:
+    def test_an_unchanged_table_reports_false(self, glue):
+        saver = make_saver(glue)
+        assert (
+            saver._create_or_update_rule_validation_glue_table("rule_t", RULE_SCHEMA)
+            is True
+        )
+        assert (
+            saver._create_or_update_rule_validation_glue_table("rule_t", RULE_SCHEMA)
+            is False
+        )
+
+
+def add_foreign_parameters(client, table, parameters):
+    """Record table parameters the way another writer, such as a crawler, would."""
+    stored = client.get_table(DatabaseName=DATABASE, Name=table)["Table"]
+    table_input = {
+        key: stored[key]
+        for key in (
+            "Name",
+            "Description",
+            "StorageDescriptor",
+            "PartitionKeys",
+            "TableType",
+            "Parameters",
+        )
+        if key in stored
+    }
+    table_input["Parameters"] = {**stored.get("Parameters", {}), **parameters}
+    client.update_table(DatabaseName=DATABASE, TableInput=table_input)
+
+
+def stored_parameters(client, table):
+    return client.get_table(DatabaseName=DATABASE, Name=table)["Table"]["Parameters"]
+
+
+class TestUpdateKeepsTableParameters:
+    """``UpdateTable`` replaces table parameters, so the update carries the old ones."""
+
+    FOREIGN = {"UPDATED_BY_CRAWLER": "sections-crawler", "recordCount": "42"}
+
+    def test_the_section_table(self, aws_env, lowercasing_glue):
+        saver = make_saver(lowercasing_glue)
+        saver._create_or_update_glue_table(
+            SECTION, section_schema(saver, {"field_a": "1"})
+        )
+        add_foreign_parameters(
+            aws_env, TABLE, {**self.FOREIGN, "projection.enabled": "false"}
+        )
+
+        assert (
+            saver._create_or_update_glue_table(
+                SECTION, section_schema(saver, {"field_a": "1", "field_b": "2"})
+            )
+            is True
+        )
+
+        params = stored_parameters(aws_env, TABLE)
+        assert params.items() >= self.FOREIGN.items()
+        # A key the code manages is still set to the code's value.
+        assert params["projection.enabled"] == "true"
+        assert params["classification"] == "parquet"
+
+    def test_the_rule_validation_table(self, aws_env, lowercasing_glue):
+        saver = make_saver(lowercasing_glue)
+        saver._create_or_update_rule_validation_glue_table("rule_t", RULE_SCHEMA)
+        add_foreign_parameters(
+            aws_env, "rule_t", {**self.FOREIGN, "projection.enabled": "false"}
+        )
+
+        wider = RULE_SCHEMA.append(pa.field("reasoning", pa.string()))
+        assert (
+            saver._create_or_update_rule_validation_glue_table("rule_t", wider) is True
+        )
+
+        params = stored_parameters(aws_env, "rule_t")
+        assert params.items() >= self.FOREIGN.items()
+        assert params["projection.enabled"] == "true"

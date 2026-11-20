@@ -79,7 +79,7 @@ def test_every_directory_reader_is_in_the_standard_template():
 # ------------------------------------------------------------------ helpers
 RESOURCE_BLOCK = re.compile(r'^(resource|data) "([a-z0-9_]+)" "([a-z0-9_]+)" \{', re.M)
 MODULE_BLOCK = re.compile(r'^module "([a-z0-9_]+)" \{', re.M)
-DEPENDS_ON = re.compile(r"^\s*depends_on = \[(.*?)\]", re.M | re.S)
+DEPENDS_ON = re.compile(r"^\s*depends_on\s+= \[(.*?)\]", re.M | re.S)
 
 
 def _translate(out: Path, variant: str | None = None) -> Path:
@@ -215,16 +215,23 @@ def _load_gate():
 
 
 # ------------------------------------------------------------------ IAM roles
+def _attr(body: str, name: str, value: str) -> bool:
+    """Whether ``body`` sets ``name = value`` on a line of its own. The written
+    module is laid out by ``terraform fmt``'s rules, so the ``=`` may be padded
+    to align with its neighbours."""
+    return re.search(rf"^\s*{name}\s+= {re.escape(value)}$", body, re.M) is not None
+
+
 ROLE_BLOCK = re.compile(
     r'^resource "aws_iam_role" "([a-z0-9_]+)" \{\n(.*?)\n\}\n', re.M | re.S
 )
 DEFAULT_NAME = re.compile(
-    r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
+    r'^\s*name\s+= "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
     r'\$\{substr\(md5\("(?P=pair)(?P<region>-\$\{local\.pseudo\.region\})?"\), 0, 8\)\}"$',
     re.M,
 )
 NESTED_STACK_NAME = re.compile(
-    r'module "([a-z0-9_]+)" \{.*?\n\s*stack_name = "([^"]+)"', re.S
+    r'module "([a-z0-9_]+)" \{.*?\n\s*stack_name\s+= "([^"]+)"', re.S
 )
 
 
@@ -246,7 +253,7 @@ def _module_stack_names(root: Path, stack: str) -> dict[Path, str]:
 
 
 RETAINED_NAME = re.compile(
-    r'^\s*name = "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
+    r'^\s*name\s+= "\$\{substr\("(?P<pair>[^"]+)", 0, (?P<n>\d+)\)\}-'
     r'\$\{substr\(md5\("(?P=pair)-\$\{local\.pseudo\.region\}"\), 0, 8\)\}-'
     r'\$\{time_static\.[a-z0-9_]+(?:\[0\])?\.unix\}"$',
     re.M,
@@ -269,7 +276,7 @@ def _evaluate_name(body: str, stack: str) -> str | None:
         hashed = f"{pair}-{REGION}" if m["region"] else pair
         digest = hashlib.md5(hashed.encode()).hexdigest()[:8]  # nosec B324 - mirrors HCL md5()
         return f"{pair[: int(m['n'])]}-{digest}"
-    m = re.search(r'^\s*name = "([^"$]*\$\{var\.stack_name\}[^"]*)"$', body, re.M)
+    m = re.search(r'^\s*name\s+= "([^"$]*\$\{var\.stack_name\}[^"]*)"$', body, re.M)
     if m and "${" not in m[1].replace("${var.stack_name}", ""):
         return m[1].replace("${var.stack_name}", stack)
     return None
@@ -303,15 +310,15 @@ def test_every_role_is_named_after_the_stack_and_takes_the_boundary(standard_mod
                 problems.append(f"{where}: {name} is also {names[name]}")
             names[name] = where
             if not re.search(
-                r"^\s*permissions_boundary = .*var\.permissions_boundary_arn",
+                r"^\s*permissions_boundary\s+= .*var\.permissions_boundary_arn",
                 body,
                 re.M,
             ):
                 problems.append(f"{where}: no permissions_boundary")
-            if "create_before_destroy = true" not in body:
+            if not _attr(body, "create_before_destroy", "true"):
                 problems.append(f"{where}: a rename would delete before creating")
             generated = "md5(" in body or "time_static." in body
-            if generated and "ignore_changes = [name, name_prefix]" not in body:
+            if generated and not _attr(body, "ignore_changes", "[name, name_prefix]"):
                 # A generated name is kept for the role's life: replacing a role
                 # replaces the custom resources' dependants (see aws_mappers).
                 problems.append(f"{where}: a generated name could be changed")
@@ -366,7 +373,7 @@ def test_every_bridge_takes_the_stack_key_and_logs_to_the_logging_bucket(
     for body in readers:
         assert '"kms:Decrypt"' in body and root_key in body, body
     for name in ("cfn_bridge_kms_key_arn", "cfn_bridge_access_log_bucket"):
-        assert re.search(rf"^\s*{name} = (?!null)", main_tf, re.M), name
+        assert re.search(rf"^\s*{name}\s+= (?!null)", main_tf, re.M), name
     key = re.search(
         r'resource "awscc_kms_key" "customer_managed_encryption_key" \{(.*?)\n\}\n',
         main_tf,
@@ -410,7 +417,7 @@ def test_a_retained_role_keeps_its_name_and_cannot_collide_on_redeploy(
         bodies = dict(ROLE_BLOCK.findall(_module_text(module)))
         body = bodies[label]
         assert RETAINED_NAME.search(body), (address, body)
-        assert "ignore_changes = [name, name_prefix]" in body, address
+        assert _attr(body, "ignore_changes", "[name, name_prefix]"), address
 
 
 def test_a_permission_granted_to_a_role_survives_the_role_being_replaced(
@@ -428,8 +435,8 @@ def test_a_permission_granted_to_a_role_survives_the_role_being_replaced(
             r'^resource "aws_lambda_permission" "(\w+)" \{\n(.*?)^\}', text, re.M | re.S
         ):
             body = m.group(2)
-            if re.search(r"^\s*principal = aws_iam_role\.", body, re.M) and re.search(
-                r"^\s*statement_id = ", body, re.M
+            if re.search(r"^\s*principal\s+= aws_iam_role\.", body, re.M) and re.search(
+                r"^\s*statement_id\s+= ", body, re.M
             ):
                 problems.append(f"{module.name}: {m.group(1)}")
     assert not problems, problems[:20]
@@ -502,7 +509,7 @@ def test_only_account_wide_names_carry_the_region(standard_module):
             r'^resource "(\w+)" "(\w+)" \{\n(.*?)^\}', text, re.M | re.S
         ):
             kind, label, body = m.groups()
-            for line in re.findall(r"^\s*name = .*md5\(.*$", body, re.M):
+            for line in re.findall(r"^\s*name\s+= .*md5\(.*$", body, re.M):
                 regional = "local.pseudo.region" in line
                 if kind == "aws_iam_role":
                     roles += 1
@@ -550,8 +557,8 @@ def test_the_nested_vpc_condition_input_is_known_at_plan(standard_module):
     for name in ("patternstack", "multidocdiscoverystack"):
         start = main_tf.index(f'module "{name}" {{')
         block = main_tf[start : main_tf.index("\n}\n", start)]
-        assert 'vpc_id__cond = (local.c_deploy_in_vpc ? "present" : "")' in block
-        assert 'vpc_id = (local.c_deploy_in_vpc ? var.vpc_id : "")' in block
+        assert _attr(block, "vpc_id__cond", '(local.c_deploy_in_vpc ? "present" : "")')
+        assert _attr(block, "vpc_id", '(local.c_deploy_in_vpc ? var.vpc_id : "")')
 
 
 def _rule_cases(params: dict, rules: dict) -> list[tuple[str, dict, set]]:
@@ -710,7 +717,10 @@ def _security_header_members() -> list[str]:
 
 def _braced(text: str, opener: str) -> str:
     """The ``{...}`` object that ``opener`` (ending in ``{``) starts in ``text``."""
-    start = text.index(opener) + len(opener) - 1
+    # The written module pads `=` to align with its neighbours (terraform fmt).
+    found = re.search(re.escape(opener).replace(r"\ =", r"\s+="), text)
+    assert found, f"{opener!r} not found"
+    start = found.end() - 1
     depth = 0
     for i, ch in enumerate(text[start:], start):
         depth += {"{": 1, "}": -1}.get(ch, 0)
@@ -741,11 +751,12 @@ def test_every_security_header_the_policy_can_carry_is_set(variant, tmp_path):
     assert len(blocks) == (1 if variant is None else 0), len(blocks)
     for block in blocks:
         config = _braced(block, "security_headers_config = {")
-        unset = [m for m in members if not re.search(rf"^\s*{m} = \{{", config, re.M)]
+        unset = [m for m in members if not re.search(rf"^\s*{m}\s+= \{{", config, re.M)]
         assert not unset, unset
         # The header the template documents: X-XSS-Protection: 0.
         xss = _braced(config, "xss_protection = {")
-        assert sorted(ln.strip() for ln in xss[1:-1].strip().splitlines()) == [
+        lines = xss[1:-1].strip().splitlines()
+        assert sorted(re.sub(r"\s+=", " =", ln.strip()) for ln in lines) == [
             "override = true",
             "protection = false",
         ], xss

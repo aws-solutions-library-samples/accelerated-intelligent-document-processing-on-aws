@@ -864,7 +864,7 @@ a 150-page document with high-resolution images during OCR conversion
 Symptoms (don't focus on these):
 - Lambda timeout after 15 minutes
 - No results written to S3
-- Document stuck in PROCESSING status
+- Document stuck in OCR status
 ```
 
 **Action**: Address the root cause (memory limit) rather than symptoms (timeout).
