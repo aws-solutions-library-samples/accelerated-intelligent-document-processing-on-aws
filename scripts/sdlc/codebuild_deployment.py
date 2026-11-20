@@ -5446,7 +5446,7 @@ def _changed_paths(before, after, unknown, path=()):
     if isinstance(before, dict) and isinstance(after, dict):
         unknown = unknown if isinstance(unknown, dict) else {}
         found = []
-        for key in sorted(set(before) | set(after)):
+        for key in sorted(set(before) | set(after) | set(unknown)):
             found += _changed_paths(
                 before.get(key), after.get(key), unknown.get(key), (*path, key)
             )
@@ -5556,7 +5556,7 @@ def judge_terraform_replan(returncode, plan_json, log_tail=""):
         if issue is None:
             verdict["changes"].append(line)
         else:
-            verdict["known"].append(f"{line} [known defect #{issue}]")
+            verdict["known"].append(f"known defect #{issue}: {line}")
     for name, output in sorted((plan.get("output_changes") or {}).items()):
         actions = (output or {}).get("actions") or ["?"]
         if actions != ["no-op"]:
@@ -5592,7 +5592,9 @@ def check_terraform_convergence(terraform):
     """Re-plan the deployment straight after its apply; the plan must be empty.
 
     `plan -detailed-exitcode` exits 0 for an empty plan, 2 for a non-empty one
-    and 1 on error. The plan's text goes to TERRAFORM_REPLAN_LOG rather than the
+    and 1 on error. `-lock=false` because the plan writes no state and its saved
+    plan is never applied, while a plan killed by the timeout would leave the S3
+    lock file behind and block the run's own destroy. The plan's text goes to TERRAFORM_REPLAN_LOG rather than the
     build log, which gets the bounded list judge_terraform_replan makes from the
     saved plan's JSON. That JSON carries sensitive values in clear, so it is read
     here without being echoed, and the saved plan is deleted afterwards.
@@ -5603,7 +5605,8 @@ def check_terraform_convergence(terraform):
     plan_path = os.path.join(terraform.directory, TERRAFORM_REPLAN_PLAN_FILE)
     replan = run_command(
         f"TF_IN_AUTOMATION=1 {binary} -chdir={directory} plan -input=false "
-        f"-no-color -detailed-exitcode -out={TERRAFORM_REPLAN_PLAN_FILE} "
+        "-lock=false -no-color -detailed-exitcode "
+        f"-out={TERRAFORM_REPLAN_PLAN_FILE} "
         f"> {shlex.quote(log_path)} 2>&1",
         check=False,
         timeout=TERRAFORM_REPLAN_TIMEOUT_SECONDS,
@@ -5644,6 +5647,28 @@ def check_terraform_convergence(terraform):
     for line in verdict["known"]:
         print(f"   ⚠️ not failing the run, registered known defect: {line}")
     return verdict
+
+
+def terraform_convergence_rows(convergence):
+    """The step_results row for a re-plan verdict: ``{}`` for a run that made
+    none (CloudFormation), otherwise one row, failed on drift or error, and
+    passed with the registered known defects named when there are any."""
+    if not convergence:
+        return {}
+    if convergence["status"] != "converged":
+        return {
+            TERRAFORM_CONVERGENCE_STEP: {
+                "status": "failed",
+                "error": convergence["detail"],
+            }
+        }
+    known = convergence.get("known") or []
+    return {
+        TERRAFORM_CONVERGENCE_STEP: {
+            "status": "passed",
+            "error": "; ".join(known),
+        }
+    }
 
 
 def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
@@ -6347,6 +6372,15 @@ def deploy_and_test_stack(
 
         print("✅ Stack is healthy")
 
+        # The re-plan's verdict leads the step table, because it describes the
+        # deployment the steps then use, and it is carried on every return from
+        # here on so no early exit drops it.
+        convergence = deploy_result.get("convergence")
+        convergence_rows = terraform_convergence_rows(convergence)
+        convergence_failed = bool(convergence) and (
+            convergence["status"] != "converged"
+        )
+
         if terraform is not None:
             shortfall = terraform_suite_time_shortfall(
                 time.monotonic() if run_started is None else run_started
@@ -6359,6 +6393,8 @@ def deploy_and_test_stack(
                     "failure_type": "deploy",
                     "iac": IAC_TERRAFORM,
                     "error": f"Terraform run refused before the steps: {shortfall}",
+                    "convergence_failed": convergence_failed,
+                    **({"step_results": convergence_rows} if convergence_rows else {}),
                 }
 
         # Run tests 3-10 in parallel (Step 4 BDA now uses config-sync-bda + --config-version, no activation race)
@@ -6372,15 +6408,7 @@ def deploy_and_test_stack(
 
         # Per-step status for the consolidated end-of-run summary table. Steps
         # not reached (fail-fast cancels the rest) stay "cancelled".
-        step_results = {}
-        convergence = deploy_result.get("convergence")
-        if convergence is not None:
-            # First, because it describes the deployment the steps then use.
-            converged = convergence["status"] == "converged"
-            step_results[TERRAFORM_CONVERGENCE_STEP] = {
-                "status": "passed" if converged else "failed",
-                "error": "" if converged else convergence["detail"],
-            }
+        step_results = dict(convergence_rows)
         step_results.update(
             {
                 f"{step}: {name}": {"status": "cancelled", "error": ""}
@@ -6468,7 +6496,7 @@ def deploy_and_test_stack(
                 }
             _emit(step_results)
 
-        if convergence is not None and convergence["status"] != "converged":
+        if convergence_failed:
             # Every step passed and the run still fails: the module did not
             # converge. "drift" and "error" are told apart in the message.
             label = (
@@ -6483,6 +6511,7 @@ def deploy_and_test_stack(
                 "failure_type": "deploy",
                 "iac": IAC_TERRAFORM,
                 "error": f"{TERRAFORM_CONVERGENCE_STEP} failed: {convergence['detail']}",
+                "convergence_failed": True,
                 "step_results": step_results,
             }
 
@@ -7473,16 +7502,26 @@ def terraform_failure_prompt(result, stack_name):
     events carry for CloudFormation.
     """
     log_tail = result.get("terraform_log_tail") or "(no Terraform log captured)"
+    convergence = ""
+    if result.get("convergence_failed"):
+        convergence = (
+            "\n    The apply itself succeeded. The run failed because the re-plan "
+            "straight after\n    it (`terraform plan -detailed-exitcode`, "
+            f"{TERRAFORM_REPLAN_LOG} below) was not\n    empty or could not run: "
+            "the deployment does not converge. The changed\n    addresses and "
+            "attribute paths are in the deployment error; for drift the root\n    "
+            "cause is those changes, not an `Error:` block, so name them.\n"
+        )
     return dedent(f"""
     A Terraform deployment of the IDP accelerator (`idp-cli deploy --terraform`)
     failed. Analyze the Terraform output to determine the root cause.
-
+    {convergence}
     Deployment name: {stack_name}
 
     Deployment error:
     {result.get("error", "")}
 
-    Tail of the Terraform log (init and apply output):
+    Tail of the Terraform log (init and apply output, then the re-plan's):
     {log_tail}
 
     GROUNDING RULES — follow strictly:

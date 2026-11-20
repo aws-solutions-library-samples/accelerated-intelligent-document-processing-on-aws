@@ -175,7 +175,7 @@ def test_the_2006_shape_is_reported_without_failing(cbd):
     assert verdict["status"] == "converged"
     assert verdict["changes"] == []
     assert verdict["known"] == [
-        f"{STAGE} (update): access_log_setting.destination_arn [known defect #2006]"
+        f"known defect #2006: {STAGE} (update): access_log_setting.destination_arn"
     ]
     assert "known defect" in verdict["detail"]
 
@@ -448,3 +448,96 @@ def test_a_failed_show_is_an_error_even_with_output(cbd, fake_terraform, monkeyp
     verdict = cbd.check_terraform_convergence(run)
     assert verdict["status"] == "error"
     assert "could not be read" in verdict["detail"]
+
+
+def test_the_replan_takes_no_state_lock(cbd, fake_terraform):
+    """A plan killed by its timeout cannot remove an S3 lock file, which would
+    then block the run's own destroy; the re-plan writes no state, so it takes
+    no lock."""
+    run, configure, calls = fake_terraform
+    configure(0)
+    cbd.check_terraform_convergence(run)
+    assert "-lock=false" in calls.read_text().splitlines()[0].split()
+
+
+def test_a_deferred_read_beside_the_2006_shape_is_drift(cbd):
+    read = {
+        "address": "module.idp.data.aws_region.current",
+        "change": {"actions": ["read"], "before": None, "after": {}},
+    }
+    verdict = cbd.judge_terraform_replan(2, _plan(_stage_change(), read))
+    assert verdict["status"] == "drift"
+    assert verdict["changes"] == ["module.idp.data.aws_region.current (read)"]
+
+
+def test_an_appended_list_item_is_a_changed_path(cbd):
+    change = _update(
+        "module.idp.awscc_iam_role.r",
+        {"managed_policy_arns": ["a"]},
+        {"managed_policy_arns": ["a", "b"]},
+    )
+    verdict = cbd.judge_terraform_replan(2, _plan(change))
+    assert verdict["changes"] == [
+        "module.idp.awscc_iam_role.r (update): managed_policy_arns"
+    ]
+
+
+def test_a_key_only_in_after_unknown_is_named(cbd):
+    change = _update(
+        "module.idp.awscc_iam_role.r", {"a": 1}, {"a": 1}, after_unknown={"arn": True}
+    )
+    verdict = cbd.judge_terraform_replan(2, _plan(change))
+    assert verdict["changes"] == ["module.idp.awscc_iam_role.r (update): arn"]
+
+
+def test_the_2006_shape_with_an_unknown_attribute_is_drift(cbd):
+    change = _stage_change()
+    change["change"]["after_unknown"] = {"deployment_id": True}
+    verdict = cbd.judge_terraform_replan(2, _plan(change))
+    assert verdict["status"] == "drift" and verdict["known"] == []
+
+
+def test_a_shortfall_keeps_the_replan_row(cbd, suite, monkeypatch):
+    deploy, ran = suite
+    monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda s: "no time")
+    verdict = {
+        "status": "drift",
+        "detail": "the drift detail",
+        "changes": ["x"],
+        "known": [],
+    }
+    result = deploy(verdict)
+    assert ran == []
+    assert result["success"] is False and result["convergence_failed"] is True
+    row = result["step_results"][cbd.TERRAFORM_CONVERGENCE_STEP]
+    assert row == {"status": "failed", "error": "the drift detail"}
+    summary = cbd.build_consolidated_summary("stk", result, [], True, {})
+    assert "the drift detail" in summary and "OVERALL: FAIL" in summary
+
+
+def test_a_shortfall_without_a_replan_carries_no_row(cbd, suite, monkeypatch):
+    deploy, _ = suite
+    monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda s: "no time")
+    result = deploy(None)
+    assert "step_results" not in result and result["convergence_failed"] is False
+
+
+def test_a_pass_on_a_known_defect_names_it_in_the_row(cbd, suite):
+    deploy, _ = suite
+    result = deploy(cbd.judge_terraform_replan(2, _plan(_stage_change())))
+    assert result["success"] is True
+    row = result["step_results"][cbd.TERRAFORM_CONVERGENCE_STEP]
+    assert row["status"] == "passed"
+    assert "known defect #2006" in row["error"]
+    summary = cbd.build_consolidated_summary("stk", result, [], True, {})
+    assert "known defect #2006" in summary
+
+
+@pytest.mark.parametrize("failed", [True, False])
+def test_the_failure_prompt_says_when_the_apply_succeeded(cbd, failed):
+    prompt = cbd.terraform_failure_prompt(
+        {"error": "e", "terraform_log_tail": "t", "convergence_failed": failed}, "stk"
+    )
+    assert ("does not converge" in prompt) is failed
+    assert ("The apply itself succeeded" in prompt) is failed
+    assert "Deployment name: stk" in prompt

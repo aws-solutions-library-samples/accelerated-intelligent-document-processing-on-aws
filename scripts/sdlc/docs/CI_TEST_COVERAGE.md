@@ -334,21 +334,28 @@ plans the deployment again with `terraform plan -detailed-exitcode`
 empty: a module whose plan never empties would otherwise pass every gate. The result
 is the first row of the primary suite's table, `Step 2b: Terraform re-plan after
 apply is empty`, and the suite still runs after it, so a night that does not
-converge also reports what the steps found.
+converge also reports what the steps found. The row is kept when the run is refused
+before the steps for lack of time, and a failure names the re-plan to the failure
+analysis, so it is not read as a failed apply. The plan runs with `-lock=false`: it
+writes no state and its saved plan is never applied, and a plan killed by the
+timeout would otherwise leave the S3 lock file behind and block the run's destroy.
 
 | `plan` exit | Meaning | Run |
 |---|---|---|
 | 0 | the plan is empty | passes the row |
-| 2 | the plan has changes | fails, naming each changed address with its actions and the attribute paths an update touches (at most `TERRAFORM_REPLAN_LISTED_CHANGES`, then a count). Values are never printed: the saved plan holds them in clear, so it is read without being echoed and then deleted |
+| 2 | the plan has changes | fails, naming each changed address with its actions and the attribute paths an update touches (at most `TERRAFORM_REPLAN_LISTED_CHANGES`, then a count). The build log never shows a planned value: the saved plan holds every value in clear, so its JSON is read without being echoed and the file is then deleted |
 | 1, or a timeout | the plan did not run | fails as an error, saying that whether the module converges is unknown, with the end of the plan's output |
 
-The plan's own text is kept in `terraform-replan.log` beside the deploy log, and is
-part of the Terraform log tail the failure analysis reads.
+The plan's own text is kept in `terraform-replan.log` beside the deploy log. It shows
+non-sensitive values as Terraform prints them, and on a failed run it reaches the
+failure analysis and the evidence bundle in the Terraform log tail, the same route
+the apply's output takes.
 `TERRAFORM_REPLAN_EXEMPT_CHANGES` lists the re-plan changes that are known defects
 and are reported without failing the run, one address each, registered in
 `scripts/tests/gate_exemptions.json`. It holds the API Gateway stage's
 access-log destination (#2006), accepted only as a plain update that adds `:*` to the
-stored ARN and touches nothing else on that resource.
+stored ARN and touches nothing else on that resource; a pass that relied on it names
+the defect in the row.
 `scripts/sdlc/tests/test_terraform_replan_convergence.py` translates the template
 offline and fails once the generated module stops producing the shape an entry
 describes, so the entry goes when #2006 is fixed.
