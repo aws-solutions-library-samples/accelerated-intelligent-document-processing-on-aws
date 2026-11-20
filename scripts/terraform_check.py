@@ -529,7 +529,7 @@ def write_cli_samples(manifest_path: Path, out: Path) -> None:
                 url,
                 values,
                 specs,
-                "arn:aws:iam::111122223333:role/idp-deployer",
+                "arn:aws:iam::111122223333:role/idp-deployer",  # arn-partition-ok: sample value, only formatted by fmt -check, never deployed
                 tags=tags,
             ),
             "terraform.tfvars": deploy.render_tfvars(
