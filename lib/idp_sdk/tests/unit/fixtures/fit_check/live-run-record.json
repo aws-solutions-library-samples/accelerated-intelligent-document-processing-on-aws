@@ -1,0 +1,3630 @@
+{
+ "record_version": 1,
+ "solution_version": "0.6.16.dev1",
+ "stack": {
+  "name": "IDP1",
+  "region": "us-west-2"
+ },
+ "configuration": {
+  "profile": "fit-check-20261120T031629Z",
+  "generated_by": "discovery",
+  "settings": {
+   "use_bda": false,
+   "ocr_backend": "textract",
+   "ocr_features": [
+    "TABLES",
+    "LAYOUT",
+    "SIGNATURES"
+   ],
+   "extraction_mode": "simple",
+   "classification_granularity": "page",
+   "confidence_threshold": null,
+   "classes": {
+    "DriverLicense": [
+     "IssuingState",
+     "LicenseNumber",
+     "ExpirationYear",
+     "IssueDate",
+     "IssuingOffice",
+     "DriverName",
+     "Address",
+     "OtherAddress",
+     "PhysicalDescription",
+     "DateOfBirth",
+     "Age",
+     "PreviousLicense",
+     "MustWearCorrectiveLenses",
+     "OtherConditions",
+     "LicenseClass",
+     "DriverSignature",
+     "AdministratorSignature",
+     "IssuingAuthority"
+    ],
+    "W2": [
+     "FormYear",
+     "CopyType",
+     "ReissuedStatement",
+     "OMBNumber",
+     "Box_a_EmployeeSSN",
+     "Box_b_EmployerEIN",
+     "Box_c_EmployerInfo",
+     "Box_d_ControlNumber",
+     "Box_e_EmployeeName",
+     "Box_f_EmployeeAddress",
+     "Box1_WagesTipsOtherCompensation",
+     "Box2_FederalIncomeTaxWithheld",
+     "Box3_SocialSecurityWages",
+     "Box4_SocialSecurityTaxWithheld",
+     "Box5_MedicareWagesAndTips",
+     "Box6_MedicareTaxWithheld",
+     "Box7_SocialSecurityTips",
+     "Box8_AllocatedTips",
+     "Box9_AdvanceEICPayment",
+     "Box10_DependentCareBenefits",
+     "Box11_NonqualifiedPlans",
+     "Box12",
+     "Box13_Checkboxes",
+     "Box14_Other",
+     "StateAndLocalTax"
+    ]
+   }
+  },
+  "pricing": [
+   {
+    "name": "textract/analyze_document-Tables",
+    "units": [
+     {
+      "name": "pages",
+      "price": "0.015"
+     }
+    ]
+   },
+   {
+    "name": "bedrock/us.amazon.nova-lite-v1:0",
+    "units": [
+     {
+      "name": "inputTokens",
+      "price": "6.0E-8"
+     },
+     {
+      "name": "outputTokens",
+      "price": "2.4E-7"
+     },
+     {
+      "name": "cacheReadInputTokens",
+      "price": "1.5E-8"
+     },
+     {
+      "name": "cacheWriteInputTokens",
+      "price": "0.0"
+     }
+    ]
+   },
+   {
+    "name": "bedrock/us.amazon.nova-2-lite-v1:0",
+    "units": [
+     {
+      "name": "inputTokens",
+      "price": "3.0E-7"
+     },
+     {
+      "name": "outputTokens",
+      "price": "2.5E-6"
+     },
+     {
+      "name": "cacheReadInputTokens",
+      "price": "7.5E-8"
+     },
+     {
+      "name": "cacheWriteInputTokens",
+      "price": "0.0"
+     }
+    ]
+   },
+   {
+    "name": "bedrock/us.anthropic.claude-sonnet-5",
+    "units": [
+     {
+      "name": "inputTokens",
+      "price": "2.2E-6"
+     },
+     {
+      "name": "outputTokens",
+      "price": "1.1E-5"
+     },
+     {
+      "name": "cacheReadInputTokens",
+      "price": "2.2E-7"
+     },
+     {
+      "name": "cacheWriteInputTokens",
+      "price": "2.75E-6"
+     }
+    ]
+   },
+   {
+    "name": "lambda/requests",
+    "units": [
+     {
+      "name": "requests",
+      "price": "2.0E-7"
+     }
+    ]
+   },
+   {
+    "name": "lambda/duration",
+    "units": [
+     {
+      "name": "gb_seconds",
+      "price": "1.66667E-5"
+     }
+    ]
+   }
+  ]
+ },
+ "samples": [
+  {
+   "path": "samples/W2_XL_input_clean_1000.pdf",
+   "file": "W2_XL_input_clean_1000.pdf",
+   "format": "pdf",
+   "size_bytes": 143030,
+   "pages": 1,
+   "refused": null,
+   "refused_ref": null,
+   "text_layer_scripts": {
+    "Latin": 2048
+   }
+  },
+  {
+   "path": "samples/W2_XL_input_clean_1001.pdf",
+   "file": "W2_XL_input_clean_1001.pdf",
+   "format": "pdf",
+   "size_bytes": 140170,
+   "pages": 1,
+   "refused": null,
+   "refused_ref": null,
+   "text_layer_scripts": {
+    "Latin": 2022
+   }
+  },
+  {
+   "path": "samples/W2_XL_input_clean_1002.pdf",
+   "file": "W2_XL_input_clean_1002.pdf",
+   "format": "pdf",
+   "size_bytes": 139685,
+   "pages": 1,
+   "refused": null,
+   "refused_ref": null,
+   "text_layer_scripts": {
+    "Latin": 2030
+   }
+  },
+  {
+   "path": "samples/bank-statement-multipage.pdf",
+   "file": "bank-statement-multipage.pdf",
+   "format": "pdf",
+   "size_bytes": 247659,
+   "pages": 5,
+   "refused": null,
+   "refused_ref": null,
+   "text_layer_scripts": {
+    "Latin": 4853
+   }
+  },
+  {
+   "path": "samples/legacy-workbook.doc",
+   "file": "legacy-workbook.doc",
+   "format": "doc",
+   "size_bytes": 5632,
+   "pages": null,
+   "refused": "a legacy binary Word document (OLE2 container); the OCR step refuses it with UnsupportedLegacyFormatError. Re-save it as .docx",
+   "refused_ref": "limitation:legacy-office-formats",
+   "text_layer_scripts": {}
+  },
+  {
+   "path": "samples/lending_package.docx",
+   "file": "lending_package.docx",
+   "format": "docx",
+   "size_bytes": 7941910,
+   "pages": null,
+   "refused": null,
+   "refused_ref": null,
+   "text_layer_scripts": {}
+  },
+  {
+   "path": "samples/old_cal_license.png",
+   "file": "old_cal_license.png",
+   "format": "png",
+   "size_bytes": 2367568,
+   "pages": 1,
+   "refused": null,
+   "refused_ref": null,
+   "text_layer_scripts": {}
+  },
+  {
+   "path": "samples/paystub_multi_instance.truth.json",
+   "file": "paystub_multi_instance.truth.json",
+   "format": "json",
+   "size_bytes": 1191,
+   "pages": null,
+   "refused": ".json is not a file type the OCR step routes by its extension; it would be guessed from the content, so it is not uploaded",
+   "refused_ref": "limitation:unsupported-file-format",
+   "text_layer_scripts": {}
+  }
+ ],
+ "documents": [
+  {
+   "file": "W2_XL_input_clean_1000.pdf",
+   "format": "pdf",
+   "pages": 1,
+   "object_key": "fit-check-20261120T031629Z/W2_XL_input_clean_1000.pdf",
+   "status": "COMPLETED",
+   "error": null,
+   "errors": [],
+   "duration_seconds": 61.072,
+   "metering": {
+    "OCR/textract/analyze_document-Tables": {
+     "pages": 1
+    },
+    "OCR/lambda/requests": {
+     "requests": 1
+    },
+    "OCR/lambda/duration": {
+     "gb_seconds": 12.7
+    },
+    "Classification/bedrock/us.amazon.nova-2-lite-v1:0": {
+     "inputTokens": 1766,
+     "outputTokens": 237,
+     "totalTokens": 3478,
+     "cacheReadInputTokens": 1475,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Classification/lambda/requests": {
+     "requests": 1
+    },
+    "Classification/lambda/duration": {
+     "gb_seconds": 13.7
+    },
+    "Extraction/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 7356,
+     "outputTokens": 1096,
+     "totalTokens": 12231,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 3779,
+     "requests": 1
+    },
+    "Extraction/lambda/requests": {
+     "requests": 1
+    },
+    "Extraction/lambda/duration": {
+     "gb_seconds": 42.3
+    },
+    "Assessment/bedrock/us.amazon.nova-lite-v1:0": {
+     "inputTokens": 2839,
+     "outputTokens": 970,
+     "totalTokens": 8442,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 4633,
+     "requests": 1
+    },
+    "Assessment/lambda/requests": {
+     "requests": 1
+    },
+    "Assessment/lambda/duration": {
+     "gb_seconds": 29.4
+    },
+    "Summarization/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 4467,
+     "outputTokens": 3300,
+     "totalTokens": 7767,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Summarization/lambda/requests": {
+     "requests": 1
+    },
+    "Summarization/lambda/duration": {
+     "gb_seconds": 104.8
+    },
+    "Evaluation/lambda/requests": {
+     "requests": 1
+    },
+    "Evaluation/lambda/duration": {
+     "gb_seconds": 1.2
+    }
+   },
+   "issues": [],
+   "notes": [],
+   "text_layer_scripts": {
+    "Latin": 2048
+   },
+   "page_text": {
+    "1": "REISSUED\na Employee's social security number\nSafe, Accurate,\nVisit the IRS Website\n STATEMENT\n077-49-4905\nOMB No. 1545-0008\nFAST! Use\newfile\nat www.irs.gov/efile.\n b Employer identification number\n 37-2766773\n\nc Employer's name, address, and ZIP code\n Richardson-Brown PLC\n\n2936 Howard Radial\n\nWest Raymond NV\n44735-6958\n\nd Control number\n\n4741345\n\ne Employee's first name and initial\nLast name\n\nApril Hensley\n\n31403 David Circles Suite 863\n\nWest Erinfort WY\n45881-3334\n\nf Employee's address and ZIP code\n\n\n\n\n|                                            |                 |                      |                                 |      |\n|--------------------------------------------|-----------------|----------------------|---------------------------------|------|\n| 1 Wages, tips, other compensation          |                 |                      | 2 Federal income tax withheld   |      |\n| 55151.93                                   |                 |                      | 16606.17                        |      |\n| 3 Social security wages                    |                 |                      | 4 Social security tax withheld  |      |\n| 67588.01                                   |                 |                      | 5170.48                         |      |\n| 5 Medicare wages and tips                  |                 |                      | 6 Medicare tax withheld         |      |\n| 50518.06                                   |                 |                      | "
+   },
+   "sections": [
+    {
+     "section_id": "1",
+     "class": "W2",
+     "page_ids": [
+      "1"
+     ],
+     "issues": [],
+     "inference_result": {
+      "FormYear": "2010",
+      "CopyType": "Copy B",
+      "ReissuedStatement": true,
+      "OMBNumber": "1545-0008",
+      "Box_a_EmployeeSSN": "077-49-4905",
+      "Box_b_EmployerEIN": "37-2766773",
+      "Box_c_EmployerInfo": {
+       "Name": "Richardson-Brown PLC",
+       "Street": "2936 Howard Radial",
+       "City": "West Raymond",
+       "State": "NV",
+       "ZipCode": "44735-6958"
+      },
+      "Box_d_ControlNumber": "4741345",
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": "April",
+       "LastName": "Hensley"
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": "31403 David Circles Suite 863",
+       "City": "West Erinfort",
+       "State": "WY",
+       "ZipCode": "45881-3334"
+      },
+      "Box1_WagesTipsOtherCompensation": 55151.93,
+      "Box2_FederalIncomeTaxWithheld": 16606.17,
+      "Box3_SocialSecurityWages": 67588.01,
+      "Box4_SocialSecurityTaxWithheld": 5170.48,
+      "Box5_MedicareWagesAndTips": 50518.06,
+      "Box6_MedicareTaxWithheld": 1465.02,
+      "Box7_SocialSecurityTips": 67588.01,
+      "Box8_AllocatedTips": 50518.06,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": 238,
+      "Box11_NonqualifiedPlans": 210,
+      "Box12": [
+       {
+        "Code": "G",
+        "Amount": 8500
+       },
+       {
+        "Code": null,
+        "Amount": 489
+       },
+       {
+        "Code": "D",
+        "Amount": 999
+       },
+       {
+        "Code": "G",
+        "Amount": 381
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": false,
+       "RetirementPlan": true,
+       "ThirdPartySickPay": true
+      },
+      "Box14_Other": null,
+      "StateAndLocalTax": [
+       {
+        "Box15_State": "DC",
+        "Box15_EmployerStateID": "786-41-049",
+        "Box16_StateWagesTips": 28287.19,
+        "Box17_StateIncomeTax": 1608.75,
+        "Box18_LocalWagesTips": 44590.58,
+        "Box19_LocalIncomeTax": 6842.08,
+        "Box20_LocalityName": "Rocha Wells"
+       },
+       {
+        "Box15_State": "CO",
+        "Box15_EmployerStateID": "239-95-269",
+        "Box16_StateWagesTips": 29750.61,
+        "Box17_StateIncomeTax": 2279.5,
+        "Box18_LocalWagesTips": 57464.5,
+        "Box19_LocalIncomeTax": 9061.93,
+        "Box20_LocalityName": "Rodriguez Trail"
+       }
+      ]
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.9,
+       "confidence_reason": "Value is null",
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box12": [
+       {
+        "Code": "G",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": {
+         "confidence": 0.9,
+         "confidence_reason": "Code is missing",
+         "confidence_threshold": 0.8
+        },
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "D",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "G",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "RetirementPlan": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ThirdPartySickPay": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box14_Other": {
+       "confidence": 0.9,
+       "confidence_reason": "Value is null",
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": [
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "evaluation": null
+  },
+  {
+   "file": "W2_XL_input_clean_1001.pdf",
+   "format": "pdf",
+   "pages": 1,
+   "object_key": "fit-check-20261120T031629Z/W2_XL_input_clean_1001.pdf",
+   "status": "COMPLETED",
+   "error": null,
+   "errors": [],
+   "duration_seconds": 85.336,
+   "metering": {
+    "OCR/textract/analyze_document-Tables": {
+     "pages": 1
+    },
+    "OCR/lambda/requests": {
+     "requests": 1
+    },
+    "OCR/lambda/duration": {
+     "gb_seconds": 13.6
+    },
+    "Classification/bedrock/us.amazon.nova-2-lite-v1:0": {
+     "inputTokens": 1752,
+     "outputTokens": 186,
+     "totalTokens": 3421,
+     "cacheReadInputTokens": 1483,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Classification/lambda/requests": {
+     "requests": 1
+    },
+    "Classification/lambda/duration": {
+     "gb_seconds": 13.9
+    },
+    "Extraction/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 7357,
+     "outputTokens": 1095,
+     "totalTokens": 12231,
+     "cacheReadInputTokens": 3779,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Extraction/lambda/requests": {
+     "requests": 1
+    },
+    "Extraction/lambda/duration": {
+     "gb_seconds": 41.8
+    },
+    "Assessment/bedrock/us.amazon.nova-lite-v1:0": {
+     "inputTokens": 2853,
+     "outputTokens": 970,
+     "totalTokens": 8418,
+     "cacheReadInputTokens": 928,
+     "cacheWriteInputTokens": 3667,
+     "requests": 1
+    },
+    "Assessment/lambda/requests": {
+     "requests": 1
+    },
+    "Assessment/lambda/duration": {
+     "gb_seconds": 30.0
+    },
+    "Summarization/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 4467,
+     "outputTokens": 4226,
+     "totalTokens": 8693,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Summarization/lambda/requests": {
+     "requests": 1
+    },
+    "Summarization/lambda/duration": {
+     "gb_seconds": 128.3
+    },
+    "Evaluation/lambda/requests": {
+     "requests": 1
+    },
+    "Evaluation/lambda/duration": {
+     "gb_seconds": 1.0
+    }
+   },
+   "issues": [],
+   "notes": [],
+   "text_layer_scripts": {
+    "Latin": 2022
+   },
+   "page_text": {
+    "1": "REISSUED\na Employee's social security number\nSafe, Accurate,\nVisit the IRS Website\n STATEMENT\n779-70-5706\nOMB No. 1545-0008\nFAST! Use\newfile\nat www.irs.gov/efile.\n b Employer identification number\n 39-3114215\n\nc Employer's name, address, and ZIP code\n Carlson Group Group\n 56319 Underwood Views\n\nLake Debramouth NE 33667-9751\n\nd Control number\n\n9744017\n\ne Employee's first name and initial\nLast name\n\nTaylor Cox\n 613 Roger Crest Apt. 802\n Leeton IA\n26442-8249\n\nf Employee's address and ZIP code\n\n\n\n\n| 15 State    | Employer's state ID number    |   16 State wages, tips, etc.  |   17 State income tax  |   18 Local wages, tips, etc.  |   19 Local income tax  | 20 Locality name    |\n|-------------|-------------------------------|-------------------------------|------------------------|-------------------------------|------------------------|---------------------|\n| MA          | 678-77-709                    |                       66553.7 |                8190.59 |                        131975 |                13955.5 | Melissa Pines       |\n| MN          | 940-46-434                    |                       66754.5 |                6506.63 |                        104567 |                19328.8 | Duane Flat          |\n\n\n\n\n\n|                                            |                 |                      |                                 |      |\n|--------------------------------------------|-----------------|----------------------|---------------------------------|------|\n| "
+   },
+   "sections": [
+    {
+     "section_id": "1",
+     "class": "W2",
+     "page_ids": [
+      "1"
+     ],
+     "issues": [],
+     "inference_result": {
+      "FormYear": "2010",
+      "CopyType": "Copy B",
+      "ReissuedStatement": true,
+      "OMBNumber": "1545-0008",
+      "Box_a_EmployeeSSN": "779-70-5706",
+      "Box_b_EmployerEIN": "39-3114215",
+      "Box_c_EmployerInfo": {
+       "Name": "Carlson Group Group",
+       "Street": "56319 Underwood Views",
+       "City": "Lake Debramouth",
+       "State": "NE",
+       "ZipCode": "33667-9751"
+      },
+      "Box_d_ControlNumber": "9744017",
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": "Taylor",
+       "LastName": "Cox"
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": "613 Roger Crest Apt. 802",
+       "City": "Leeton",
+       "State": "IA",
+       "ZipCode": "26442-8249"
+      },
+      "Box1_WagesTipsOtherCompensation": 126204.09,
+      "Box2_FederalIncomeTaxWithheld": 40043.57,
+      "Box3_SocialSecurityWages": 123655.86,
+      "Box4_SocialSecurityTaxWithheld": 9459.67,
+      "Box5_MedicareWagesAndTips": 152406.79,
+      "Box6_MedicareTaxWithheld": 4419.8,
+      "Box7_SocialSecurityTips": 123655.86,
+      "Box8_AllocatedTips": 152406.79,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": 219,
+      "Box11_NonqualifiedPlans": 233,
+      "Box12": [
+       {
+        "Code": "P",
+        "Amount": 9966
+       },
+       {
+        "Code": null,
+        "Amount": 284
+       },
+       {
+        "Code": "P",
+        "Amount": 307
+       },
+       {
+        "Code": "H",
+        "Amount": 242
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": false,
+       "RetirementPlan": true,
+       "ThirdPartySickPay": false
+      },
+      "Box14_Other": null,
+      "StateAndLocalTax": [
+       {
+        "Box15_State": "MA",
+        "Box15_EmployerStateID": "678-77-709",
+        "Box16_StateWagesTips": 66553.66,
+        "Box17_StateIncomeTax": 8190.59,
+        "Box18_LocalWagesTips": 131974.67,
+        "Box19_LocalIncomeTax": 13955.55,
+        "Box20_LocalityName": "Melissa Pines"
+       },
+       {
+        "Box15_State": "MN",
+        "Box15_EmployerStateID": "940-46-434",
+        "Box16_StateWagesTips": 66754.52,
+        "Box17_StateIncomeTax": 6506.63,
+        "Box18_LocalWagesTips": 104567.25,
+        "Box19_LocalIncomeTax": 19328.85,
+        "Box20_LocalityName": "Duane Flat"
+       }
+      ]
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.9,
+       "confidence_reason": "Value is null",
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box12": [
+       {
+        "Code": "P",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": {
+         "confidence": 0.9,
+         "confidence_reason": "Code is missing",
+         "confidence_threshold": 0.8
+        },
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "P",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "H",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "RetirementPlan": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ThirdPartySickPay": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box14_Other": {
+       "confidence": 0.9,
+       "confidence_reason": "Value is null",
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": [
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "evaluation": null
+  },
+  {
+   "file": "W2_XL_input_clean_1002.pdf",
+   "format": "pdf",
+   "pages": 1,
+   "object_key": "fit-check-20261120T031629Z/W2_XL_input_clean_1002.pdf",
+   "status": "COMPLETED",
+   "error": null,
+   "errors": [],
+   "duration_seconds": 60.178,
+   "metering": {
+    "OCR/textract/analyze_document-Tables": {
+     "pages": 1
+    },
+    "OCR/lambda/requests": {
+     "requests": 1
+    },
+    "OCR/lambda/duration": {
+     "gb_seconds": 14.7
+    },
+    "Classification/bedrock/us.amazon.nova-2-lite-v1:0": {
+     "inputTokens": 1706,
+     "outputTokens": 215,
+     "totalTokens": 3405,
+     "cacheReadInputTokens": 1484,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Classification/lambda/requests": {
+     "requests": 1
+    },
+    "Classification/lambda/duration": {
+     "gb_seconds": 14.1
+    },
+    "Extraction/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 7330,
+     "outputTokens": 1122,
+     "totalTokens": 12231,
+     "cacheReadInputTokens": 3779,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Extraction/lambda/requests": {
+     "requests": 1
+    },
+    "Extraction/lambda/duration": {
+     "gb_seconds": 42.0
+    },
+    "Assessment/bedrock/us.amazon.nova-lite-v1:0": {
+     "inputTokens": 2835,
+     "outputTokens": 1048,
+     "totalTokens": 8482,
+     "cacheReadInputTokens": 923,
+     "cacheWriteInputTokens": 3676,
+     "requests": 1
+    },
+    "Assessment/lambda/requests": {
+     "requests": 1
+    },
+    "Assessment/lambda/duration": {
+     "gb_seconds": 32.9
+    },
+    "Summarization/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 4443,
+     "outputTokens": 2989,
+     "totalTokens": 7432,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Summarization/lambda/requests": {
+     "requests": 1
+    },
+    "Summarization/lambda/duration": {
+     "gb_seconds": 99.8
+    },
+    "Evaluation/lambda/requests": {
+     "requests": 1
+    },
+    "Evaluation/lambda/duration": {
+     "gb_seconds": 1.0
+    }
+   },
+   "issues": [],
+   "notes": [],
+   "text_layer_scripts": {
+    "Latin": 2030
+   },
+   "page_text": {
+    "1": "REISSUED\na Employee's social security number\nSafe, Accurate,\nVisit the IRS Website\n STATEMENT\n675-52-6498\nOMB No. 1545-0008\nFAST! Use\newfile\nat www.irs.gov/efile.\n b Employer identification number\n 73-1267148\n\nc Employer's name, address, and ZIP code\n Marshall PLC PLC\n\n6822 Henry Neck Suite 843\n Port Angelastad\nIA 13833-3941\n\nd Control number\n\n9176733\n\ne Employee's first name and initial\nLast name\n\nLaura Russo\n\n2199 Little Falls\n\nSnyderton\nTX\n28420-7250\n\nf Employee's address and ZIP code\n\n\n\n\n| 15 State    | Employer's state ID number    |   16 State wages, tips, etc.  |   17 State income tax  |   18 Local wages, tips, etc.  |   19 Local income tax  | 20 Locality name    |\n|-------------|-------------------------------|-------------------------------|------------------------|-------------------------------|------------------------|---------------------|\n| MI          | 352-10-416                    |                       42877   |                5032.62 |                       82626.3 |                8993.53 | Elizabeth Garden    |\n| MT          | 408-57-949                    |                       40122.6 |                5354.06 |                       85363.2 |               16517.4  | Morgan Bypass       |\n\n\n\n\n\n|                                            |                 |                      |                                 |      |\n|--------------------------------------------|-----------------|----------------------|---------------------------------|------|\n| 1 "
+   },
+   "sections": [
+    {
+     "section_id": "1",
+     "class": "W2",
+     "page_ids": [
+      "1"
+     ],
+     "issues": [],
+     "inference_result": {
+      "FormYear": "2010",
+      "CopyType": "Copy B",
+      "ReissuedStatement": true,
+      "OMBNumber": "1545-0008",
+      "Box_a_EmployeeSSN": "675-52-6498",
+      "Box_b_EmployerEIN": "73-1267148",
+      "Box_c_EmployerInfo": {
+       "Name": "Marshall PLC PLC",
+       "Street": "6822 Henry Neck Suite 843",
+       "City": "Port Angelastad",
+       "State": "IA",
+       "ZipCode": "13833-3941"
+      },
+      "Box_d_ControlNumber": "9176733",
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": "Laura",
+       "LastName": "Russo"
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": "2199 Little Falls",
+       "City": "Snyderton",
+       "State": "TX",
+       "ZipCode": "28420-7250"
+      },
+      "Box1_WagesTipsOtherCompensation": 86286.94,
+      "Box2_FederalIncomeTaxWithheld": 23792.16,
+      "Box3_SocialSecurityWages": 90335.6,
+      "Box4_SocialSecurityTaxWithheld": 6910.67,
+      "Box5_MedicareWagesAndTips": 67631.41,
+      "Box6_MedicareTaxWithheld": 1961.31,
+      "Box7_SocialSecurityTips": 90335.6,
+      "Box8_AllocatedTips": 67631.41,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": 267,
+      "Box11_NonqualifiedPlans": 259,
+      "Box12": [
+       {
+        "Code": null,
+        "Amount": 7236
+       },
+       {
+        "Code": "H",
+        "Amount": 138
+       },
+       {
+        "Code": null,
+        "Amount": 323
+       },
+       {
+        "Code": "D",
+        "Amount": 177
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": false,
+       "RetirementPlan": true,
+       "ThirdPartySickPay": false
+      },
+      "Box14_Other": null,
+      "StateAndLocalTax": [
+       {
+        "Box15_State": "MI",
+        "Box15_EmployerStateID": "352-10-416",
+        "Box16_StateWagesTips": 42876.97,
+        "Box17_StateIncomeTax": 5032.62,
+        "Box18_LocalWagesTips": 82626.27,
+        "Box19_LocalIncomeTax": 8993.53,
+        "Box20_LocalityName": "Elizabeth Garden"
+       },
+       {
+        "Box15_State": "MT",
+        "Box15_EmployerStateID": "408-57-949",
+        "Box16_StateWagesTips": 40122.56,
+        "Box17_StateIncomeTax": 5354.06,
+        "Box18_LocalWagesTips": 85363.24,
+        "Box19_LocalIncomeTax": 16517.4,
+        "Box20_LocalityName": "Morgan Bypass"
+       }
+      ]
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 0.99,
+       "confidence_reason": "Copy B not explicitly stated",
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.95,
+        "confidence_reason": "ZIP code format unusual",
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.99,
+       "confidence_reason": "Value is null, check if applicable",
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 0.99,
+       "confidence_threshold": 0.8
+      },
+      "Box12": [
+       {
+        "Code": {
+         "confidence": 0.99,
+         "confidence_reason": "Code missing",
+         "confidence_threshold": 0.8
+        },
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": {
+        "confidence": 0.99,
+        "confidence_threshold": 0.8
+       },
+       "RetirementPlan": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ThirdPartySickPay": {
+        "confidence": 0.99,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box14_Other": {
+       "confidence": 0.99,
+       "confidence_reason": "Value is null, check if applicable",
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": [
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 0.99,
+         "confidence_threshold": 0.8
+        }
+       }
+      ]
+     }
+    }
+   ],
+   "evaluation": null
+  },
+  {
+   "file": "bank-statement-multipage.pdf",
+   "format": "pdf",
+   "pages": 5,
+   "object_key": "fit-check-20261120T031629Z/bank-statement-multipage.pdf",
+   "status": "COMPLETED",
+   "error": null,
+   "errors": [],
+   "duration_seconds": 64.416,
+   "metering": {
+    "OCR/textract/analyze_document-Tables": {
+     "pages": 5
+    },
+    "OCR/lambda/requests": {
+     "requests": 1
+    },
+    "OCR/lambda/duration": {
+     "gb_seconds": 13.1
+    },
+    "Classification/bedrock/us.amazon.nova-2-lite-v1:0": {
+     "inputTokens": 5123,
+     "outputTokens": 946,
+     "totalTokens": 13704,
+     "cacheReadInputTokens": 4563,
+     "cacheWriteInputTokens": 3072,
+     "requests": 5
+    },
+    "Classification/lambda/requests": {
+     "requests": 1
+    },
+    "Classification/lambda/duration": {
+     "gb_seconds": 17.1
+    },
+    "Extraction/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 30464,
+     "outputTokens": 629,
+     "totalTokens": 34872,
+     "cacheReadInputTokens": 3779,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Extraction/lambda/requests": {
+     "requests": 1
+    },
+    "Extraction/lambda/duration": {
+     "gb_seconds": 41.5
+    },
+    "Assessment/bedrock/us.amazon.nova-lite-v1:0": {
+     "inputTokens": 3414,
+     "outputTokens": 579,
+     "totalTokens": 20010,
+     "cacheReadInputTokens": 1391,
+     "cacheWriteInputTokens": 14626,
+     "requests": 1
+    },
+    "Assessment/lambda/requests": {
+     "requests": 1
+    },
+    "Assessment/lambda/duration": {
+     "gb_seconds": 32.5
+    },
+    "Summarization/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 8072,
+     "outputTokens": 3113,
+     "totalTokens": 11185,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Summarization/lambda/requests": {
+     "requests": 1
+    },
+    "Summarization/lambda/duration": {
+     "gb_seconds": 105.2
+    },
+    "Evaluation/lambda/requests": {
+     "requests": 1
+    },
+    "Evaluation/lambda/duration": {
+     "gb_seconds": 1.0
+    }
+   },
+   "issues": [],
+   "notes": [],
+   "text_layer_scripts": {
+    "Latin": 4853
+   },
+   "page_text": {
+    "1": "\n\n\n \n\nDC 1090001004290 \n\n\n\nExample Inc. Credit Union \n\n999-99-99-99 16769 3 C 001 11 S 66 002 ALEJANDRO ROSALEZ 400 KOZEY LIGHT, WEBERBURGH, H1 29922 \n\n# Your consolidated statement \n\nFor 04/04/2022 \n\nContact us \n\n\n\nexample.com \n\n\n\n(858) LLL-0101 or (858) 555-0101 \n\n## Do more with digital banking \n\nBank without having to leave home. Check your account balances, make transfers, pay bills and deposit checks with your mobile device. If you are not enrolled in digital banking, it only lakes a minute Gel started today at example.com/U. \n\nExample Bank, Member FDIC. To learn more, visit example.com/ABCXYZ \u00a92020 Example Inc. Credit Union. \n\nIf you are traveling outside of the USA and have concerns about accessing your account while you are traveling, please contact your Branch Banker or call us at 858-LLL-0101. \n\n## Summary of your accounts \n\n\n\n| ACCOUNT NAME                                     | ACCOUNT NUMBER    | BALANCE ($)    | DETAILS ON    |\n|--------------------------------------------------|-------------------|----------------|---------------|\n| CHECKING                                         | 003525801543      | 5,657.47       | page 1        |\n| Total checking and money market savings accounts |                   | $5,657.47      |               |\n| SAVINGS                                          | 352580154336      | 53,578.24      | page 3        |\n| Total savings accounts                           |                   | $53,578.24     |               |\n\n\n\n\n\nChecking ",
+    "2": "\n\n\n \n\nDC 1090001004290 \n\n\n\n| Date       | Description                                          |   Withdrawals / Deposits  |\n|------------|------------------------------------------------------|---------------------------|\n| 2/6/2020   | Food Purchase - AnyCompany Restaurant - 1194089245   |                     -171  |\n| 8/22/2020  | Online Retail - AnyCompanyRetail.com - 1232495036    |                      -44  |\n| 11/1/2020  | Food Purchase - AnyCompany Coffee Shop - 1509173654  |                     -224  |\n| 5/26/2020  | Retail Purchase - AnyCompany Conv-Store - 1896933493 |                     -244  |\n| 8/8/2020   | Food Purchase - AnyCompany Coffee Shop - 1966610947  |                     -116  |\n| 7/6/2020   | Transport - AnyCompany Ridesharing - 2039726014      |                     -249  |\n| 2/13/2020  | Food Purchase - AnyCompany Restaurant - 2130609679   |                     -127  |\n| 8/1/2020   | Transport - AnyCompany Ridesharing - 2135962828      |                      -65  |\n| 5/31/2020  | Online Retail - AnyCompanyRetail.com - 2257980180    |                     -156  |\n| 11/10/2020 | Service Charge - Bank - 2270088418                   |                       -2  |\n| 8/11/2020  | Food Purchase - AnyCompany Restaurant - 2350678683   |                     -219  |\n| 9/19/2020  | Food Purchase - AnyCompany Coffee Shop - 2558819681  |                     -229  |\n| 8/17/2020  | Food Purchase - AnyCompany Restaurant - 2591297145   |                     -127  |\n| 1",
+    "3": "\n\n\n \n\nDC 1090001004290 \n\n\n\n| Date       | Description                                          |   Withdrawals / Deposits  |\n|------------|------------------------------------------------------|---------------------------|\n| 7/28/2020  | Transport - AnyCompany Ridesharing - 5004776995      |                     -150  |\n| 6/7/2020   | Retail Purchase - AnyCompany Retail - 5476998456     |                     -294  |\n| 7/23/2020  | Retail Purchase - AnyCompany Conv-Store - 5505969927 |                     -269  |\n| 3/21/2020  | Transport - AnyCompany Ridesharing - 5688740948      |                      -52  |\n| 8/27/2020  | Food Purchase - AnyCompany Restaurant - 5798336406   |                     -222  |\n| 11/25/2020 | Food Purchase - AnyCompany Coffee Shop - 5822058649  |                     -169  |\n| 9/19/2020  | Retail Purchase - AnyCompany Conv-Store - 5948096947 |                     -250  |\n| 2/25/2020  | Retail Purchase - AnyCompany Conv-Store - 6030150884 |                     -269  |\n| 7/15/2020  | Food Purchase - AnyCompany Restaurant - 6031636977   |                     -287  |\n| 9/2/2020   | Food Purchase - AnyCompany Coffee Shop - 6052214096  |                     -268  |\n| 11/10/2020 | Retail Purchase - AnyCompany Retail - 6308084189     |                     -127  |\n| 11/27/2020 | Food Purchase - AnyCompany Coffee Shop - 6335155520  |                     -104  |\n| 11/17/2020 | Retail Purchase - AnyCompany Retail - 6407949623     |                      -67  |\n| 7",
+    "4": "\n\n| Date       | Description                                          |   Withdrawals / Deposits  |\n|------------|------------------------------------------------------|---------------------------|\n| 2/13/2020  | Food Purchase - AnyCompany Restaurant - 2130609679   |                     -127  |\n| 8/1/2020   | Transport - AnyCompany Ridesharing - 2135962828      |                      -65  |\n| 5/31/2020  | Online Retail - AnyCompanyRetail.com - 2257980180    |                     -156  |\n| 11/10/2020 | Service Charge - Bank - 2270088418                   |                       -2  |\n| 8/11/2020  | Food Purchase - AnyCompany Restaurant - 2350678683   |                     -219  |\n| 9/19/2020  | Food Purchase - AnyCompany Coffee Shop - 2558819681  |                     -229  |\n| 8/17/2020  | Food Purchase - AnyCompany Restaurant - 2591297145   |                     -127  |\n| 11/21/2020 | Retail Purchase - AnyCompany Conv-Store - 2687789993 |                      -84  |\n| 7/3/2020   | Transport - AnyCompany Ridesharing - 2705182570      |                     -157  |\n| 4/1/2020   | Transport - AnyCompany Ridesharing - 3020941883      |                     -238  |\n| 12/15/2020 | Online Retail - AnyCompanyRetail.com - 3250892832    |                      -72  |\n| 11/27/2020 | Food Purchase - AnyCompany Restaurant - 3288443530   |                     -124  |\n| 6/25/2020  | Food Purchase - AnyCompany Coffee Shop - 3454648653  |                     -199  |\n| 9/14/2020  | Retail Purcha",
+    "5": "\n\n| Date       | Description                                          |   Withdrawals / Deposits  |\n|------------|------------------------------------------------------|---------------------------|\n| 7/23/2020  | Food Purchase - AnyCompany Coffee Shop - 6528599341  |                      -21  |\n| 8/1/2020   | Service Charge - Bank - 6556484014                   |                       -5  |\n| 3/5/2020   | Online Retail - AnyCompanyRetail.com - 6597837385    |                     -215  |\n| 2/2/2020   | Food Purchase - AnyCompany Coffee Shop - 6694508417  |                      -82  |\n| 12/30/2020 | Online Retail - AnyCompanyRetail.com - 7544350060    |                     -112  |\n| 9/27/2020  | Online Retail - AnyCompanyRetail.com - 7673426647    |                       -4  |\n| 8/22/2020  | Transport - AnyCompany Ridesharing - 7686595684      |                      -57  |\n| 10/9/2020  | Food Purchase - AnyCompany Restaurant - 7779261930   |                      -64  |\n| 8/31/2020  | Retail Purchase - AnyCompany Retail - 8158060902     |                      -95  |\n| 4/6/2020   | Retail Purchase - AnyCompany Conv-Store - 8403287221 |                     -242  |\n| 6/6/2020   | Retail Purchase - AnyCompany Retail - 8408401968     |                     -234  |\n\n\n\n\n\n0000667\n\n\nPage 5 of 5\n"
+   },
+   "sections": [
+    {
+     "section_id": "1",
+     "class": "W2",
+     "page_ids": [
+      "1",
+      "2",
+      "3",
+      "4",
+      "5"
+     ],
+     "issues": [
+      {
+       "stage": "extraction",
+       "severity": "warning",
+       "code": "extraction_incomplete",
+       "message": "Extraction returned no rows for list field(s): Box12, StateAndLocalTax. If the document contains this data, it was not captured. Note that scalar fields can still score perfectly while a whole list is missing, so no other signal will flag this. This document has large/tabular fields; Advanced (agentic) extraction with table parsing is recommended for it.",
+       "root_cause": "traditional extraction with model us.anthropic.claude-sonnet-5; empty array field(s): Box12, StateAndLocalTax",
+       "section_id": "1",
+       "details": {
+        "empty_list_fields": [
+         "Box12",
+         "StateAndLocalTax"
+        ],
+        "agentic": false
+       }
+      },
+      {
+       "stage": "extraction",
+       "severity": "info",
+       "code": "extraction_sparse",
+       "message": "Only 0/42 schema fields were populated \u2014 possible silent extraction loss.",
+       "root_cause": "population ratio 0.0 below threshold 0.5",
+       "section_id": "1",
+       "details": {
+        "empty_fields": [
+         "FormYear",
+         "CopyType",
+         "ReissuedStatement",
+         "OMBNumber",
+         "Box_a_EmployeeSSN",
+         "Box_b_EmployerEIN",
+         "Box_c_EmployerInfo.Name",
+         "Box_c_EmployerInfo.Street",
+         "Box_c_EmployerInfo.City",
+         "Box_c_EmployerInfo.State",
+         "Box_c_EmployerInfo.ZipCode",
+         "Box_d_ControlNumber",
+         "Box_e_EmployeeName.FirstNameAndInitial",
+         "Box_e_EmployeeName.LastName",
+         "Box_f_EmployeeAddress.Street",
+         "Box_f_EmployeeAddress.City",
+         "Box_f_EmployeeAddress.State",
+         "Box_f_EmployeeAddress.ZipCode",
+         "Box1_WagesTipsOtherCompensation",
+         "Box2_FederalIncomeTaxWithheld"
+        ]
+       }
+      }
+     ],
+     "inference_result": {
+      "FormYear": null,
+      "CopyType": null,
+      "ReissuedStatement": null,
+      "OMBNumber": null,
+      "Box_a_EmployeeSSN": null,
+      "Box_b_EmployerEIN": null,
+      "Box_c_EmployerInfo": {
+       "Name": null,
+       "Street": null,
+       "City": null,
+       "State": null,
+       "ZipCode": null
+      },
+      "Box_d_ControlNumber": null,
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": null,
+       "LastName": null
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": null,
+       "City": null,
+       "State": null,
+       "ZipCode": null
+      },
+      "Box1_WagesTipsOtherCompensation": null,
+      "Box2_FederalIncomeTaxWithheld": null,
+      "Box3_SocialSecurityWages": null,
+      "Box4_SocialSecurityTaxWithheld": null,
+      "Box5_MedicareWagesAndTips": null,
+      "Box6_MedicareTaxWithheld": null,
+      "Box7_SocialSecurityTips": null,
+      "Box8_AllocatedTips": null,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": null,
+      "Box11_NonqualifiedPlans": null,
+      "Box12": [],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": null,
+       "RetirementPlan": null,
+       "ThirdPartySickPay": null
+      },
+      "Box14_Other": null,
+      "StateAndLocalTax": []
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box12": [],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "RetirementPlan": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ThirdPartySickPay": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box14_Other": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": []
+     }
+    }
+   ],
+   "evaluation": null
+  },
+  {
+   "file": "lending_package.docx",
+   "format": "docx",
+   "pages": 6,
+   "object_key": "fit-check-20261120T031629Z/lending_package.docx",
+   "status": "COMPLETED",
+   "error": null,
+   "errors": [],
+   "duration_seconds": 70.737,
+   "metering": {
+    "OCR/converted/document_conversion": {
+     "pages": 6
+    },
+    "OCR/lambda/requests": {
+     "requests": 1
+    },
+    "OCR/lambda/duration": {
+     "gb_seconds": 35.4
+    },
+    "Classification/bedrock/us.amazon.nova-2-lite-v1:0": {
+     "inputTokens": 3039,
+     "outputTokens": 1407,
+     "totalTokens": 13717,
+     "cacheReadInputTokens": 9271,
+     "cacheWriteInputTokens": 0,
+     "requests": 6
+    },
+    "Classification/lambda/requests": {
+     "requests": 1
+    },
+    "Classification/lambda/duration": {
+     "gb_seconds": 15.5
+    },
+    "Extraction/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 33520,
+     "outputTokens": 3097,
+     "totalTokens": 55886,
+     "cacheReadInputTokens": 11337,
+     "cacheWriteInputTokens": 7932,
+     "requests": 6
+    },
+    "Extraction/lambda/requests": {
+     "requests": 6
+    },
+    "Extraction/lambda/duration": {
+     "gb_seconds": 142.0
+    },
+    "Assessment/bedrock/us.amazon.nova-lite-v1:0": {
+     "inputTokens": 13311,
+     "outputTokens": 3763,
+     "totalTokens": 31697,
+     "cacheReadInputTokens": 4046,
+     "cacheWriteInputTokens": 10577,
+     "requests": 6
+    },
+    "Assessment/lambda/requests": {
+     "requests": 6
+    },
+    "Assessment/lambda/duration": {
+     "gb_seconds": 125.80000000000001
+    },
+    "Summarization/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 13022,
+     "outputTokens": 18171,
+     "totalTokens": 31193,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 0,
+     "requests": 6
+    },
+    "Summarization/lambda/requests": {
+     "requests": 1
+    },
+    "Summarization/lambda/duration": {
+     "gb_seconds": 126.1
+    },
+    "Evaluation/lambda/requests": {
+     "requests": 1
+    },
+    "Evaluation/lambda/duration": {
+     "gb_seconds": 1.2
+    }
+   },
+   "issues": [],
+   "notes": [],
+   "text_layer_scripts": {},
+   "page_text": {
+    "1": "CO.\nFILE\nDEPT.\nCLOCK\nNUMBER\nABC 126543 123456 12345 00000000\n1\nEarnings Statement\nANY COMPANY CORP.\nPeriod ending:\n7/18/2008\n475 ANY AVENUE\nPay date:\n7/25/2008\nANYTOWN, USA 10101\nSocial Security Number: 987-65-4321\nTaxable Marital Status: Married\nJOHN STILES\nExemptions/Allowances:\n101 MAIN STREET\nFederal: 3, $25 Additional Tax\nANYTOWN, USA 12345\nState:\n2\nLocal:\n2\nEarnings\nrate\nhours\nthis period\nyear to date\nOther Benefits and\nRegular\n10.00\n32.00\n320.00\n16,640.00\nInformation\nthis period\ntotal to date\nOvertime\n15.00\n1.00\n15.00\n780.00\nGroup Term Life\n0.51\n27.00\nHoliday\n10.00\n8.00\n80.00\n4,160.00\nLoan Amt Paid\n840.00\nTuition\n37.43*\n1,946.80\nGross Pay\n$ 452.43\n23,526.80\nVac Hrs\n40.00\nSick Hrs\n16.00\nDeductions\nStatutory\nTitle\nOperator\nFederal Income Tax\n- 40.60\n2,111.20\nSocial Security Tax\n- 28.05\n1,458.60\nMedicare Tax\n-6.56\n341.12\nImportant Notes\nNY State Income Tax\n-8.43\n438.36\nEFFECTIVE THIS PAY PERIOD YOUR REGULAR\nNYC Income Tax\n-5.94\n308.88\nHOURLY RATE HAS BEEN CHANGED FROM $8.00\nNY SUI/SDI Tax\n-0.60\n31.20\nTO $10.00 PER HOUR.\nOther\nBond\n-5.00\n100.00\nWE WILL BE STARTING OUR UNITED WAY FUND\n401(k)\n- 28.85*\n1,500.20\nDRIVE SOON AND LOOK FORWARD TO YOUR\nStock Plan\n-15.00\n150.00\nPARTICIPATION.\nLife Insurance\n-5.00\n50.00\nLoan\n- 30.00\n150.00\n\u00a92008 2001. 2000. 1999 ADP. Inc.\nAdjustment\nLife Insurance\n+ 13.50\nNet Pay\n$291.90\n.\nExcluded from federal taxable wages\nTEAR HERE\nYour federal wages this period are $386.15",
+    "2": "UNITED STATES\nDRIVER LICENSE\nEXPIRES 09/21/2034\nDL 6383736743891101\nCLASS C\nLN DOE\nEND NONE\nFN JOHN\n123 ANY STREET\nANY CITY, CA 92127\nDOB 09/21/1970\nSSN ON FILE\nDONOR\nSEX M HAIR BLK EYES BLU\nHGT 5'11\" WGT 185LB\nUS 11/05/2001266737RP/AMER/19",
+    "3": "THIFF DOCUMENT AUTHENTICITY M COLORE DARLA \u30ab\u30ea\u30b8\u30ca CHANGE INSONE GRADUALLY, AND 2/3/15/ DARK AT SOPH DIACHTER ALBOSTORI\nE01385253\nANY COMPANY CORP.\nPayroll check number: 0000000000\n475 ANY AVENUE\nPay date:\n7/25/2008\nANYTOWN, USA 10101\nSocial Security No.\n987-65-4321\nPay to the\norder of:\nJOHN STILES\nThis amount: TWO HUNDRED NINETY-ONE AND 90/100 DOLLARS\n$291.90\nSAMPLE\nNON-NEGOTIABLE\nBANK NAME\nVOID VOID VOID\nVOID AUTHORIZED Outhorized AFTER 90 SIGNATURE DAYS Signature\nSTREET ADDRESS\nCITY STATE ZIP\n001379 \u2446122000496\u24464040110157\u2448\nTHE ORIGINAL DOCUMENT HAS A REFL ECTIVE WATERMARK ON THE BACK\nHOLD AT AN ANGLE TO VIEW WHEN CHECKING THE ENDORSEMENT",
+    "4": "ACCOUNT STATEMENT\nYOUR DETAILS\nJane Doe\nStatement Period\n1 MAY 2021 to 31 MAY 2021\n100 Main Street, Anytown, USA\nAccount Number\n333 008755555\n555-0100\nAccount Name\nJane Doe\nEmail Address\nNot Recorded\nYour Account Balance\nYour opening account balance as at 1 MAY 2021\n$50,000.00\nYour closing account balance as at 31 MAY 2021\n$123,084.85\nYour account valuation\nInvestment option name\nOption code\nUnits\nUnit Price $\nValue $\n%\nBT Active Balanced\n210\n1,3297.9090\n1,300\n17,287.28\n40\nFirst choice moderate\n080\n2,3000.5678\n100\n23,005.68\n30\nFirst choice Lifestaged\n010\n7,100.9876\n900\n63,908.89\n20\n2001-09\nPerpetual Balanced growth\n021\n8,210.0021\n230\n18,883.00\n10\nAccount value\n123,084.85\n100.00\nYour insurance details\nBenefit Type\nInsurance cover amount $\nBenefit amount $\nAmount paid on Death of Terminal illness\n10,000.00\n17,000.00\nAmount paid upon Total and Permanent\n10,000.00\n17,000.00\nDisablement",
+    "5": "a Employee's social security number\n22222\n75395184613\nOMB No. 1545-0008\nb Employer identification number (EIN)\n1 Wages, tips, other compensation\n2 Federal income tax withheld\n4963147952\n$100.00\n$500.00\nc Employer's name, address, and ZIP code\n3 Social security wages\n4 Social security tax withheld\nJohn Stiles\n$1000.00\n$100.00\n100 Main Street, Anytown, USA\n5 Medicare wages and tips\n6 Medicare tax withheld\n$500.00\n$5000.00\n7 Social security tips\n8 Allocated tips\n$500.00\n$150.00\nd Control number\n9\n10 Dependent care benefits\n753951852\n$5000.00\ne Employee's first name and initial\nLast name\nSuff.\n11 Nonqualified plans\n12a\nC\nArnav\nDesai\nM\n$500.00\nd\nA\n$500.00\ne\n13\nStatutory\nRetirement\nThird-party\n12b\nemployee\nplan\nsick pay\nC\n\u05e1\u05dd\nC\n$1500.00\ne\n14 Other\n12c\nC\n0\nd\nA\n$500.00\n8\n123 Any Street, Any Town, USA\n12d\nNA\nC\n0\nB\n$1000.00\nd\n0\nf Employee's address and ZIP code\n15 State Employer's state ID number\n16 State wages, tips, etc.\n17 State income tax\n18 Local wages, tips, etc.\n19 Local income tax\n20 Locality name\nAny Town\n7414568313\n$50.00\n$500.00\n$100.00\n$550.00\nAny Town\nW-2\nWage and Tax Statement\nForm\n2022\nDepartment of XYZ Organaization\nCopy 1 - For State, City, or Local Tax Department",
+    "6": "Homeowners Insurance Application\nNamed Insured(s) and Mailing Address\nInsurance Company\nZiggy Starpixel,\nFake Insurance Co\n42 Rainbow Sparkle Boulevard\nUnicornville,\n650 Davis Street\nNV 12345\nSan Francisco, CA 94111\nPrimary Email: rainbow.unicorn.987654@fakeemail.nowhere\nInsured Property\nPrimary Phone #: 555 1212\n42 Rainbow Sparkle Boulevard\nAlternate Phone #: 555 555 1213\nUnicornville, NV 12345\nNOTICE OF INSURANCE INFORMATION PRACTICES\nIn some insurance transactions, we may not be able to get all the information we need directly from you. In that case, we may obtain\ninformation from outside sources at our own expense. We would also like to inform you that without prior authorization, we may as\npermitted by law, provide information about you contained in our records and files to certain persons or organizations.\nNOTICE: As part of Esurance's underwriting/qualification procedure and subject to applicable laws and regulations, we may obtain\ninformation regarding you and other individuals who may be covered by the insurance you are applying for, including: (i) driving\nrecord, based on state motor vehicle reports and loss information reports; (ii) your prior insurance record, if any, which will be obtained\nfrom your current or prior carrier(s); (iii) credit reports; and (iv) claim history, based on loss information reports.\nPolicy Number\nPurchase Date and Time\nEffective Date\nExpiration Date\n123456\n10/6/2009 at 1pm\n10/10/2009\n10/9/2010\nPrimary Applicant Information\nName\nZiggy Star"
+   },
+   "sections": [
+    {
+     "section_id": "1",
+     "class": "W2",
+     "page_ids": [
+      "1"
+     ],
+     "issues": [
+      {
+       "stage": "extraction",
+       "severity": "warning",
+       "code": "extraction_incomplete",
+       "message": "Extraction returned no rows for list field(s): Box12, StateAndLocalTax. If the document contains this data, it was not captured. Note that scalar fields can still score perfectly while a whole list is missing, so no other signal will flag this. This document has large/tabular fields; Advanced (agentic) extraction with table parsing is recommended for it.",
+       "root_cause": "traditional extraction with model us.anthropic.claude-sonnet-5; empty array field(s): Box12, StateAndLocalTax",
+       "section_id": "1",
+       "details": {
+        "empty_list_fields": [
+         "Box12",
+         "StateAndLocalTax"
+        ],
+        "agentic": false
+       }
+      },
+      {
+       "stage": "extraction",
+       "severity": "info",
+       "code": "extraction_sparse",
+       "message": "Only 0/42 schema fields were populated \u2014 possible silent extraction loss.",
+       "root_cause": "population ratio 0.0 below threshold 0.5",
+       "section_id": "1",
+       "details": {
+        "empty_fields": [
+         "FormYear",
+         "CopyType",
+         "ReissuedStatement",
+         "OMBNumber",
+         "Box_a_EmployeeSSN",
+         "Box_b_EmployerEIN",
+         "Box_c_EmployerInfo.Name",
+         "Box_c_EmployerInfo.Street",
+         "Box_c_EmployerInfo.City",
+         "Box_c_EmployerInfo.State",
+         "Box_c_EmployerInfo.ZipCode",
+         "Box_d_ControlNumber",
+         "Box_e_EmployeeName.FirstNameAndInitial",
+         "Box_e_EmployeeName.LastName",
+         "Box_f_EmployeeAddress.Street",
+         "Box_f_EmployeeAddress.City",
+         "Box_f_EmployeeAddress.State",
+         "Box_f_EmployeeAddress.ZipCode",
+         "Box1_WagesTipsOtherCompensation",
+         "Box2_FederalIncomeTaxWithheld"
+        ]
+       }
+      }
+     ],
+     "inference_result": {
+      "FormYear": null,
+      "CopyType": null,
+      "ReissuedStatement": null,
+      "OMBNumber": null,
+      "Box_a_EmployeeSSN": null,
+      "Box_b_EmployerEIN": null,
+      "Box_c_EmployerInfo": null,
+      "Box_d_ControlNumber": null,
+      "Box_e_EmployeeName": null,
+      "Box_f_EmployeeAddress": null,
+      "Box1_WagesTipsOtherCompensation": null,
+      "Box2_FederalIncomeTaxWithheld": null,
+      "Box3_SocialSecurityWages": null,
+      "Box4_SocialSecurityTaxWithheld": null,
+      "Box5_MedicareWagesAndTips": null,
+      "Box6_MedicareTaxWithheld": null,
+      "Box7_SocialSecurityTips": null,
+      "Box8_AllocatedTips": null,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": null,
+      "Box11_NonqualifiedPlans": null,
+      "Box12": null,
+      "Box13_Checkboxes": null,
+      "Box14_Other": null,
+      "StateAndLocalTax": null
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box12": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box13_Checkboxes": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box14_Other": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": {
+       "Box15_State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Box15_EmployerStateID": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Box16_StateWagesTips": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Box17_StateIncomeTax": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Box18_LocalWagesTips": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Box19_LocalIncomeTax": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Box20_LocalityName": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      }
+     }
+    },
+    {
+     "section_id": "2",
+     "class": "DriverLicense",
+     "page_ids": [
+      "2"
+     ],
+     "issues": [],
+     "inference_result": {
+      "IssuingState": "United States",
+      "LicenseNumber": "6383736743891101",
+      "ExpirationYear": "2034",
+      "IssueDate": null,
+      "IssuingOffice": null,
+      "DriverName": "JOHN DOE",
+      "Address": {
+       "Street": "123 ANY STREET",
+       "City": "ANY CITY",
+       "State": "CA",
+       "ZipCode": "92127"
+      },
+      "OtherAddress": null,
+      "PhysicalDescription": {
+       "Sex": "M",
+       "HairColor": "BLK",
+       "EyeColor": "BLU",
+       "Height": "5'11\"",
+       "Weight": "185LB",
+       "MaritalStatus": null
+      },
+      "DateOfBirth": "09/21/1970",
+      "Age": null,
+      "PreviousLicense": null,
+      "MustWearCorrectiveLenses": null,
+      "OtherConditions": null,
+      "LicenseClass": "C",
+      "DriverSignature": null,
+      "AdministratorSignature": null,
+      "IssuingAuthority": null
+     },
+     "explainability_info": {
+      "IssuingState": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "LicenseNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "ExpirationYear": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "IssueDate": {
+       "confidence": 0.0,
+       "confidence_reason": "No date found",
+       "confidence_threshold": 0.8
+      },
+      "IssuingOffice": {
+       "confidence": 0.0,
+       "confidence_reason": "No issuing office found",
+       "confidence_threshold": 0.8
+      },
+      "DriverName": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Address": {
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "OtherAddress": {
+       "confidence": 0.0,
+       "confidence_reason": "No other address found",
+       "confidence_threshold": 0.8
+      },
+      "PhysicalDescription": {
+       "Sex": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "HairColor": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "EyeColor": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "Height": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "Weight": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "MaritalStatus": {
+        "confidence": 0.0,
+        "confidence_reason": "No marital status found",
+        "confidence_threshold": 0.8
+       }
+      },
+      "DateOfBirth": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Age": {
+       "confidence": 0.0,
+       "confidence_reason": "No age found",
+       "confidence_threshold": 0.8
+      },
+      "PreviousLicense": {
+       "confidence": 0.0,
+       "confidence_reason": "No previous license found",
+       "confidence_threshold": 0.8
+      },
+      "MustWearCorrectiveLenses": {
+       "confidence": 0.0,
+       "confidence_reason": "No corrective lenses info found",
+       "confidence_threshold": 0.8
+      },
+      "OtherConditions": {
+       "confidence": 0.0,
+       "confidence_reason": "No other conditions found",
+       "confidence_threshold": 0.8
+      },
+      "LicenseClass": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "DriverSignature": {
+       "confidence": 0.0,
+       "confidence_reason": "No driver signature found",
+       "confidence_threshold": 0.8
+      },
+      "AdministratorSignature": {
+       "confidence": 0.0,
+       "confidence_reason": "No administrator signature found",
+       "confidence_threshold": 0.8
+      },
+      "IssuingAuthority": {
+       "confidence": 0.0,
+       "confidence_reason": "No issuing authority found",
+       "confidence_threshold": 0.8
+      }
+     }
+    },
+    {
+     "section_id": "3",
+     "class": "W2",
+     "page_ids": [
+      "3"
+     ],
+     "issues": [
+      {
+       "stage": "extraction",
+       "severity": "warning",
+       "code": "extraction_incomplete",
+       "message": "Extraction returned no rows for list field(s): Box12, StateAndLocalTax. If the document contains this data, it was not captured. Note that scalar fields can still score perfectly while a whole list is missing, so no other signal will flag this. This document has large/tabular fields; Advanced (agentic) extraction with table parsing is recommended for it.",
+       "root_cause": "traditional extraction with model us.anthropic.claude-sonnet-5; empty array field(s): Box12, StateAndLocalTax",
+       "section_id": "3",
+       "details": {
+        "empty_list_fields": [
+         "Box12",
+         "StateAndLocalTax"
+        ],
+        "agentic": false
+       }
+      },
+      {
+       "stage": "extraction",
+       "severity": "info",
+       "code": "extraction_sparse",
+       "message": "Only 0/42 schema fields were populated \u2014 possible silent extraction loss.",
+       "root_cause": "population ratio 0.0 below threshold 0.5",
+       "section_id": "3",
+       "details": {
+        "empty_fields": [
+         "FormYear",
+         "CopyType",
+         "ReissuedStatement",
+         "OMBNumber",
+         "Box_a_EmployeeSSN",
+         "Box_b_EmployerEIN",
+         "Box_c_EmployerInfo.Name",
+         "Box_c_EmployerInfo.Street",
+         "Box_c_EmployerInfo.City",
+         "Box_c_EmployerInfo.State",
+         "Box_c_EmployerInfo.ZipCode",
+         "Box_d_ControlNumber",
+         "Box_e_EmployeeName.FirstNameAndInitial",
+         "Box_e_EmployeeName.LastName",
+         "Box_f_EmployeeAddress.Street",
+         "Box_f_EmployeeAddress.City",
+         "Box_f_EmployeeAddress.State",
+         "Box_f_EmployeeAddress.ZipCode",
+         "Box1_WagesTipsOtherCompensation",
+         "Box2_FederalIncomeTaxWithheld"
+        ]
+       }
+      }
+     ],
+     "inference_result": {
+      "FormYear": null,
+      "CopyType": null,
+      "ReissuedStatement": null,
+      "OMBNumber": null,
+      "Box_a_EmployeeSSN": null,
+      "Box_b_EmployerEIN": null,
+      "Box_c_EmployerInfo": {
+       "Name": null,
+       "Street": null,
+       "City": null,
+       "State": null,
+       "ZipCode": null
+      },
+      "Box_d_ControlNumber": null,
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": null,
+       "LastName": null
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": null,
+       "City": null,
+       "State": null,
+       "ZipCode": null
+      },
+      "Box1_WagesTipsOtherCompensation": null,
+      "Box2_FederalIncomeTaxWithheld": null,
+      "Box3_SocialSecurityWages": null,
+      "Box4_SocialSecurityTaxWithheld": null,
+      "Box5_MedicareWagesAndTips": null,
+      "Box6_MedicareTaxWithheld": null,
+      "Box7_SocialSecurityTips": null,
+      "Box8_AllocatedTips": null,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": null,
+      "Box11_NonqualifiedPlans": null,
+      "Box12": null,
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": null,
+       "RetirementPlan": null,
+       "ThirdPartySickPay": null
+      },
+      "Box14_Other": null,
+      "StateAndLocalTax": null
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box12": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "RetirementPlan": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ThirdPartySickPay": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box14_Other": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      }
+     }
+    },
+    {
+     "section_id": "4",
+     "class": "DriverLicense",
+     "page_ids": [
+      "4"
+     ],
+     "issues": [
+      {
+       "stage": "extraction",
+       "severity": "info",
+       "code": "extraction_sparse",
+       "message": "Only 0/26 schema fields were populated \u2014 possible silent extraction loss.",
+       "root_cause": "population ratio 0.0 below threshold 0.5",
+       "section_id": "4",
+       "details": {
+        "empty_fields": [
+         "IssuingState",
+         "LicenseNumber",
+         "ExpirationYear",
+         "IssueDate",
+         "IssuingOffice",
+         "DriverName",
+         "Address.Street",
+         "Address.City",
+         "Address.State",
+         "Address.ZipCode",
+         "OtherAddress",
+         "PhysicalDescription.Sex",
+         "PhysicalDescription.HairColor",
+         "PhysicalDescription.EyeColor",
+         "PhysicalDescription.Height",
+         "PhysicalDescription.Weight",
+         "PhysicalDescription.MaritalStatus",
+         "DateOfBirth",
+         "Age",
+         "PreviousLicense"
+        ]
+       }
+      }
+     ],
+     "inference_result": {
+      "IssuingState": null,
+      "LicenseNumber": null,
+      "ExpirationYear": null,
+      "IssueDate": null,
+      "IssuingOffice": null,
+      "DriverName": null,
+      "Address": {
+       "Street": null,
+       "City": null,
+       "State": null,
+       "ZipCode": null
+      },
+      "OtherAddress": null,
+      "PhysicalDescription": {
+       "Sex": null,
+       "HairColor": null,
+       "EyeColor": null,
+       "Height": null,
+       "Weight": null,
+       "MaritalStatus": null
+      },
+      "DateOfBirth": null,
+      "Age": null,
+      "PreviousLicense": null,
+      "MustWearCorrectiveLenses": null,
+      "OtherConditions": null,
+      "LicenseClass": null,
+      "DriverSignature": null,
+      "AdministratorSignature": null,
+      "IssuingAuthority": null
+     },
+     "explainability_info": {
+      "IssuingState": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "LicenseNumber": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "ExpirationYear": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "IssueDate": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "IssuingOffice": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "DriverName": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "Address": {
+       "Street": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       }
+      },
+      "OtherAddress": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "PhysicalDescription": {
+       "Sex": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "HairColor": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "EyeColor": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "Height": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "Weight": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       },
+       "MaritalStatus": {
+        "confidence": 0.0,
+        "confidence_reason": "No data present",
+        "confidence_threshold": 0.8
+       }
+      },
+      "DateOfBirth": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "Age": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "PreviousLicense": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "MustWearCorrectiveLenses": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "OtherConditions": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "LicenseClass": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "DriverSignature": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "AdministratorSignature": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      },
+      "IssuingAuthority": {
+       "confidence": 0.0,
+       "confidence_reason": "No data present",
+       "confidence_threshold": 0.8
+      }
+     }
+    },
+    {
+     "section_id": "5",
+     "class": "W2",
+     "page_ids": [
+      "5"
+     ],
+     "issues": [],
+     "inference_result": {
+      "FormYear": "2022",
+      "CopyType": "Copy 1 - For State, City, or Local Tax Department",
+      "ReissuedStatement": false,
+      "OMBNumber": "1545-0008",
+      "Box_a_EmployeeSSN": "753-95-1846",
+      "Box_b_EmployerEIN": "49-6314795",
+      "Box_c_EmployerInfo": {
+       "Name": "John Stiles",
+       "Street": "100 Main Street",
+       "City": "Anytown",
+       "State": "USA",
+       "ZipCode": null
+      },
+      "Box_d_ControlNumber": "753951852",
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": "Arnav M",
+       "LastName": "Desai"
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": "123 Any Street",
+       "City": "Any Town",
+       "State": "USA",
+       "ZipCode": null
+      },
+      "Box1_WagesTipsOtherCompensation": 100.0,
+      "Box2_FederalIncomeTaxWithheld": 500.0,
+      "Box3_SocialSecurityWages": 1000.0,
+      "Box4_SocialSecurityTaxWithheld": 100.0,
+      "Box5_MedicareWagesAndTips": 500.0,
+      "Box6_MedicareTaxWithheld": 5000.0,
+      "Box7_SocialSecurityTips": 500.0,
+      "Box8_AllocatedTips": 150.0,
+      "Box9_AdvanceEICPayment": null,
+      "Box10_DependentCareBenefits": 5000.0,
+      "Box11_NonqualifiedPlans": null,
+      "Box12": [
+       {
+        "Code": "C",
+        "Amount": 500.0
+       },
+       {
+        "Code": "A",
+        "Amount": 500.0
+       },
+       {
+        "Code": "C",
+        "Amount": 1500.0
+       },
+       {
+        "Code": "C",
+        "Amount": 0
+       },
+       {
+        "Code": "A",
+        "Amount": 500.0
+       },
+       {
+        "Code": "C",
+        "Amount": 0
+       },
+       {
+        "Code": "B",
+        "Amount": 1000.0
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": false,
+       "RetirementPlan": false,
+       "ThirdPartySickPay": false
+      },
+      "Box14_Other": null,
+      "StateAndLocalTax": [
+       {
+        "Box15_State": "Any Town",
+        "Box15_EmployerStateID": "7414568313",
+        "Box16_StateWagesTips": 50.0,
+        "Box17_StateIncomeTax": 500.0,
+        "Box18_LocalWagesTips": 100.0,
+        "Box19_LocalIncomeTax": 550.0,
+        "Box20_LocalityName": "Any Town"
+       }
+      ]
+     },
+     "explainability_info": {
+      "FormYear": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "CopyType": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "ReissuedStatement": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "OMBNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_a_EmployeeSSN": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_b_EmployerEIN": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_c_EmployerInfo": {
+       "Name": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_reason": "Missing ZIP code in OCR results",
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_d_ControlNumber": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box_e_EmployeeName": {
+       "FirstNameAndInitial": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "LastName": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box_f_EmployeeAddress": {
+       "Street": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_reason": "Missing ZIP code in OCR results",
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box1_WagesTipsOtherCompensation": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box2_FederalIncomeTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box3_SocialSecurityWages": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box4_SocialSecurityTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box5_MedicareWagesAndTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box6_MedicareTaxWithheld": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box7_SocialSecurityTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box8_AllocatedTips": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box9_AdvanceEICPayment": {
+       "confidence": 0.0,
+       "confidence_reason": "No value present in OCR results",
+       "confidence_threshold": 0.8
+      },
+      "Box10_DependentCareBenefits": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Box11_NonqualifiedPlans": {
+       "confidence": 0.0,
+       "confidence_reason": "No value present in OCR results",
+       "confidence_threshold": 0.8
+      },
+      "Box12": [
+       {
+        "Code": "C",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "A",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "C",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "C",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "A",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "C",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       },
+       {
+        "Code": "B",
+        "Amount": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ],
+      "Box13_Checkboxes": {
+       "StatutoryEmployee": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "RetirementPlan": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ThirdPartySickPay": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "Box14_Other": {
+       "confidence": 0.0,
+       "confidence_reason": "No value present in OCR results",
+       "confidence_threshold": 0.8
+      },
+      "StateAndLocalTax": [
+       {
+        "Box15_State": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box15_EmployerStateID": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box16_StateWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box17_StateIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box18_LocalWagesTips": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box19_LocalIncomeTax": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        },
+        "Box20_LocalityName": {
+         "confidence": 1.0,
+         "confidence_threshold": 0.8
+        }
+       }
+      ]
+     }
+    },
+    {
+     "section_id": "6",
+     "class": "DriverLicense",
+     "page_ids": [
+      "6"
+     ],
+     "issues": [
+      {
+       "stage": "extraction",
+       "severity": "info",
+       "code": "extraction_sparse",
+       "message": "Only 0/26 schema fields were populated \u2014 possible silent extraction loss.",
+       "root_cause": "population ratio 0.0 below threshold 0.5",
+       "section_id": "6",
+       "details": {
+        "empty_fields": [
+         "IssuingState",
+         "LicenseNumber",
+         "ExpirationYear",
+         "IssueDate",
+         "IssuingOffice",
+         "DriverName",
+         "Address.Street",
+         "Address.City",
+         "Address.State",
+         "Address.ZipCode",
+         "OtherAddress",
+         "PhysicalDescription.Sex",
+         "PhysicalDescription.HairColor",
+         "PhysicalDescription.EyeColor",
+         "PhysicalDescription.Height",
+         "PhysicalDescription.Weight",
+         "PhysicalDescription.MaritalStatus",
+         "DateOfBirth",
+         "Age",
+         "PreviousLicense"
+        ]
+       }
+      }
+     ],
+     "inference_result": {
+      "IssuingState": null,
+      "LicenseNumber": null,
+      "ExpirationYear": null,
+      "IssueDate": null,
+      "IssuingOffice": null,
+      "DriverName": null,
+      "Address": {
+       "Street": null,
+       "City": null,
+       "State": null,
+       "ZipCode": null
+      },
+      "OtherAddress": null,
+      "PhysicalDescription": {
+       "Sex": null,
+       "HairColor": null,
+       "EyeColor": null,
+       "Height": null,
+       "Weight": null,
+       "MaritalStatus": null
+      },
+      "DateOfBirth": null,
+      "Age": null,
+      "PreviousLicense": null,
+      "MustWearCorrectiveLenses": null,
+      "OtherConditions": null,
+      "LicenseClass": null,
+      "DriverSignature": null,
+      "AdministratorSignature": null,
+      "IssuingAuthority": null
+     },
+     "explainability_info": {
+      "IssuingState": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "LicenseNumber": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "ExpirationYear": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "IssueDate": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "IssuingOffice": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "DriverName": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Address": {
+       "Street": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "OtherAddress": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "PhysicalDescription": {
+       "Sex": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "HairColor": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "EyeColor": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Height": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "Weight": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       },
+       "MaritalStatus": {
+        "confidence": 0.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "DateOfBirth": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "Age": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "PreviousLicense": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "MustWearCorrectiveLenses": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "OtherConditions": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "LicenseClass": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "DriverSignature": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "AdministratorSignature": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      },
+      "IssuingAuthority": {
+       "confidence": 0.0,
+       "confidence_threshold": 0.8
+      }
+     }
+    }
+   ],
+   "evaluation": null
+  },
+  {
+   "file": "old_cal_license.png",
+   "format": "png",
+   "pages": 1,
+   "object_key": "fit-check-20261120T031629Z/old_cal_license.png",
+   "status": "COMPLETED",
+   "error": null,
+   "errors": [],
+   "duration_seconds": 64.051,
+   "metering": {
+    "OCR/textract/analyze_document-Tables": {
+     "pages": 1
+    },
+    "OCR/lambda/requests": {
+     "requests": 1
+    },
+    "OCR/lambda/duration": {
+     "gb_seconds": 9.8
+    },
+    "Classification/bedrock/us.amazon.nova-2-lite-v1:0": {
+     "inputTokens": 585,
+     "outputTokens": 222,
+     "totalTokens": 2364,
+     "cacheReadInputTokens": 1557,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Classification/lambda/requests": {
+     "requests": 1
+    },
+    "Classification/lambda/duration": {
+     "gb_seconds": 14.8
+    },
+    "Extraction/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 3439,
+     "outputTokens": 483,
+     "totalTokens": 6566,
+     "cacheReadInputTokens": 2644,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Extraction/lambda/requests": {
+     "requests": 1
+    },
+    "Extraction/lambda/duration": {
+     "gb_seconds": 26.1
+    },
+    "Assessment/bedrock/us.amazon.nova-lite-v1:0": {
+     "inputTokens": 2314,
+     "outputTokens": 414,
+     "totalTokens": 5424,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 2696,
+     "requests": 1
+    },
+    "Assessment/lambda/requests": {
+     "requests": 1
+    },
+    "Assessment/lambda/duration": {
+     "gb_seconds": 16.8
+    },
+    "Summarization/bedrock/us.anthropic.claude-sonnet-5": {
+     "inputTokens": 2427,
+     "outputTokens": 2491,
+     "totalTokens": 4918,
+     "cacheReadInputTokens": 0,
+     "cacheWriteInputTokens": 0,
+     "requests": 1
+    },
+    "Summarization/lambda/requests": {
+     "requests": 1
+    },
+    "Summarization/lambda/duration": {
+     "gb_seconds": 77.4
+    },
+    "Evaluation/lambda/requests": {
+     "requests": 1
+    },
+    "Evaluation/lambda/duration": {
+     "gb_seconds": 1.0
+    }
+   },
+   "issues": [],
+   "notes": [],
+   "text_layer_scripts": {},
+   "page_text": {
+    "1": "EXPIRES ON BIRTHDAY \n\nCALIFORNIA LICENSE \n\n1 \n\n970 \n\nISSUED IN ACCORDANCE WITH THE CALIFORNIA VEHICLE CODE [SIGNATURE] Ronald J. Themm DRIVERS LICENSE ADMINISTRATOR \n\n\n\nDRIVER W106438 David Franklin Thomas 5798 Olive St Paradise, Calif 95969 \n\nCORRECTIVE LENSES\nMUST WEAR\nX\nd\nOTHER CONDITIONS\nSEE OVER FOR ANY\n OTHER\n ADDRESS\n X DF. Thomas\n[SIGNATURE]\n CLASS 3. MAY DRIVE 2 AXLE VEHICLE, EXCEPT BUS DE-\n TOW SIGNED FOR MORE THAN 15 PASSENGERS. MAY\n Office Paradise\nVEHICLE LESS THAN 6,000, LBS GROSS.\nDate 8-4-65\n\n\n\n\n| SEX    | COLOR HAIR    | COLOR EYES    | HEIGHT    |   WEIGHT  | MARRIED    |\n|--------|---------------|---------------|-----------|-----------|------------|\n| M      | Gry           | Blu           | 6-0       |      205  | Yes        |\n\n\n\n\n\n| DATE OF BIRTH    |   AGE  | PREVIOUS LICENSE    |\n|------------------|--------|---------------------|\n| Aug 20, 1892     |    72  | Calif               |\n\n\n\nMUST BE CARRIED WHEN OPERATING A MOTOR VEHICLE AND WHEN APPLYING FOR RENEWAL \n\n--- OCR signature detections ---\nThe OCR engine flagged 2 regions on this page as containing a signature, listed below with its page position. No signature was detected anywhere else on the page. Confidence is the engine's signature-DETECTION confidence (0-100): a low value means a faint or ambiguous mark, which may be a stray pen mark or scan artifact rather than a signature. NOTE: the inline [SIGNATURE] token in the text above is placed by reading order, NOT at the detected location \u2014 use the "
+   },
+   "sections": [
+    {
+     "section_id": "1",
+     "class": "DriverLicense",
+     "page_ids": [
+      "1"
+     ],
+     "issues": [],
+     "inference_result": {
+      "IssuingState": "California",
+      "LicenseNumber": "W106438",
+      "ExpirationYear": "1970",
+      "IssueDate": "8-4-65",
+      "IssuingOffice": "Paradise",
+      "DriverName": "David Franklin Thomas",
+      "Address": {
+       "Street": "5798 Olive St",
+       "City": "Paradise",
+       "State": "Calif",
+       "ZipCode": "95969"
+      },
+      "OtherAddress": null,
+      "PhysicalDescription": {
+       "Sex": "M",
+       "HairColor": "Gry",
+       "EyeColor": "Blu",
+       "Height": "6-0",
+       "Weight": "205",
+       "MaritalStatus": "Yes"
+      },
+      "DateOfBirth": "Aug 20, 1892",
+      "Age": 72,
+      "PreviousLicense": "Calif",
+      "MustWearCorrectiveLenses": true,
+      "OtherConditions": false,
+      "LicenseClass": "Class 3. May drive 2 axle vehicle, except bus designed for more than 15 passengers. May tow vehicle less than 6,000 lbs gross.",
+      "DriverSignature": "D.F. Thomas",
+      "AdministratorSignature": "Ronald J. Themm",
+      "IssuingAuthority": "Issued in accordance with the California Vehicle Code"
+     },
+     "explainability_info": {
+      "IssuingState": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "LicenseNumber": {
+       "confidence": 0.903,
+       "confidence_threshold": 0.8
+      },
+      "ExpirationYear": {
+       "confidence": 0.982,
+       "confidence_threshold": 0.8
+      },
+      "IssueDate": {
+       "confidence": 0.997,
+       "confidence_threshold": 0.8
+      },
+      "IssuingOffice": {
+       "confidence": 0.998,
+       "confidence_threshold": 0.8
+      },
+      "DriverName": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "Address": {
+       "Street": {
+        "confidence": 0.989,
+        "confidence_threshold": 0.8
+       },
+       "City": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "State": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "ZipCode": {
+        "confidence": 0.885,
+        "confidence_threshold": 0.8
+       }
+      },
+      "OtherAddress": {
+       "confidence": 0.5,
+       "confidence_reason": "The confidence pass returned unexpected type <class 'NoneType'> for attribute 'OtherAddress'. Using default confidence (0.5) and threshold (0.8).",
+       "confidence_threshold": 0.8
+      },
+      "PhysicalDescription": {
+       "Sex": {
+        "confidence": 0.998,
+        "confidence_threshold": 0.8
+       },
+       "HairColor": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "EyeColor": {
+        "confidence": 0.998,
+        "confidence_threshold": 0.8
+       },
+       "Height": {
+        "confidence": 0.996,
+        "confidence_threshold": 0.8
+       },
+       "Weight": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       },
+       "MaritalStatus": {
+        "confidence": 1.0,
+        "confidence_threshold": 0.8
+       }
+      },
+      "DateOfBirth": {
+       "confidence": 0.996,
+       "confidence_threshold": 0.8
+      },
+      "Age": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "PreviousLicense": {
+       "confidence": 0.996,
+       "confidence_threshold": 0.8
+      },
+      "MustWearCorrectiveLenses": {
+       "confidence": 0.774,
+       "confidence_threshold": 0.8
+      },
+      "OtherConditions": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      },
+      "LicenseClass": {
+       "confidence": 0.949,
+       "confidence_threshold": 0.8
+      },
+      "DriverSignature": {
+       "confidence": 0.778,
+       "confidence_reason": "Signature is faint and unclear.",
+       "confidence_threshold": 0.8
+      },
+      "AdministratorSignature": {
+       "confidence": 0.784,
+       "confidence_reason": "Signature is faint and unclear.",
+       "confidence_threshold": 0.8
+      },
+      "IssuingAuthority": {
+       "confidence": 1.0,
+       "confidence_threshold": 0.8
+      }
+     }
+    }
+   ],
+   "evaluation": null
+  }
+ ],
+ "ground_truth": false,
+ "guard": {
+  "before": {
+   "active_profile": "default",
+   "active_sha256": "045d75eab3695d85e0c71bc72d5a493ef12c78ba4efbaabc93521fa9077acfbd",
+   "default_sha256": "045d75eab3695d85e0c71bc72d5a493ef12c78ba4efbaabc93521fa9077acfbd"
+  },
+  "after": {
+   "active_profile": "default",
+   "active_sha256": "045d75eab3695d85e0c71bc72d5a493ef12c78ba4efbaabc93521fa9077acfbd",
+   "default_sha256": "045d75eab3695d85e0c71bc72d5a493ef12c78ba4efbaabc93521fa9077acfbd"
+  },
+  "unchanged": true
+ },
+ "cleanup": {
+  "batch_id": "fit-check-20261120T031629Z",
+  "profile": "fit-check-20261120T031629Z",
+  "documents_deleted": 6,
+  "profile_deleted": true,
+  "objects_remaining": {
+   "InputBucket": 0,
+   "OutputBucket": 0,
+   "InputBucket versions": 0,
+   "OutputBucket batch record": 0
+  },
+  "profile_remaining": false,
+  "summary": "Deleted 6 of 6 document(s) of batch fit-check-20261120T031629Z: input objects, every output version, tracking and list records, run records and review items. Deleted configuration profile fit-check-20261120T031629Z. Deleted 12 remaining input object version(s) and delete marker(s) of the uploaded samples. Deleted the batch record under cli-batches/fit-check-20261120T031629Z/ (1 object version(s)). Read back: InputBucket objects under the batch prefix: 0, OutputBucket objects under the batch prefix: 0, InputBucket versions objects under the batch prefix: 0, OutputBucket batch record objects under the batch prefix: 0; profile fit-check-20261120T031629Z still listed: False. Reporting-database rows, logs and Step Functions history are kept under the stack's retention settings."
+ },
+ "_fixture_note": "Recorded from a live idp-cli fit-check run on a development stack over repository samples, with local paths shortened and each page's OCR text cut to its first 1500 characters to keep the file small; the report rebuilt from it therefore differs from the live one only in the table-row warnings. Geometry and reasons are removed from the confidence data, which the report does not read. The pricing table keeps only the entries this run's metering uses."
+}

@@ -125,7 +125,7 @@ questions:
     answer_type: list
     priority: must
     phase: pre-contract
-    tests: [capability:input-file-formats, limitation:legacy-office-formats]
+    tests: [capability:input-file-formats, limitation:legacy-office-formats, limitation:unsupported-file-format]
     implications:
       - when: legacy .doc files
         then: >-

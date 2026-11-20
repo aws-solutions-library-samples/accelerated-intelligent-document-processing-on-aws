@@ -40,17 +40,12 @@ class UnsupportedLegacyFormatError(ValueError):
     """
 
 
-# Pre-OOXML Office files are OLE2/CFB containers ("D0 CF 11 E0 A1 B1 1A E1"),
-# while .docx/.xlsx are zip containers ("PK"). Sniffing the container rather
-# than trusting the extension also catches a .doc that was renamed .docx —
-# which is how these files usually arrive, since Word will happily save either.
-_OLE2_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
-
-
-def is_legacy_ole2_office_file(content: bytes) -> bool:
-    """True if ``content`` is a pre-OOXML (OLE2/CFB) Office document."""
-    return content[: len(_OLE2_MAGIC)] == _OLE2_MAGIC
-
+# The OLE2 sniff lives in file_types (no Pillow needed there) and is re-exported
+# here, where the converter and its callers have always found it.
+from idp_common.ocr.file_types import (  # noqa: E402,F401
+    _OLE2_MAGIC,
+    is_legacy_ole2_office_file,
+)
 
 #: A 1x1 white JPEG, used as the last resort when image creation itself fails — so it
 #: is what every failure handler in this module can end up shipping as a page image.
