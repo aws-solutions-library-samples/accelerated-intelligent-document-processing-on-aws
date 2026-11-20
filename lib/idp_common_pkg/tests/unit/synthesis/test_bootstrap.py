@@ -162,6 +162,103 @@ class TestProtectedProfiles:
         cm.save_raw_configuration.assert_called_once()
 
 
+class TestSetProcessingOptions:
+    @staticmethod
+    def _profile(**config):
+        cm = _FakeConfigManager()
+        cm.saved["invoices"] = {"classes": [VALID_SCHEMA], **config}
+        return cm
+
+    @pytest.mark.parametrize(
+        ("documents_per_file", "splitting"),
+        [("one", "disabled"), ("several", "llm_determined"), ("one_per_page", "page")],
+    )
+    def test_documents_per_file_sets_section_splitting(
+        self, documents_per_file, splitting
+    ):
+        cm = self._profile()
+        applied = bootstrap.set_processing_options(
+            "invoices", config_manager=cm, documents_per_file=documents_per_file
+        )
+        saved = cm.saved["invoices"]
+        assert (
+            saved["classification"]["document_shape"]["sectionSplitting"] == splitting
+        )
+        assert applied == {"classification.document_shape.sectionSplitting": splitting}
+        assert "summarization" not in saved
+        assert saved["classes"] == [VALID_SCHEMA]
+
+    def test_summaries_set_only_summarization(self):
+        cm = self._profile()
+        bootstrap.set_processing_options("invoices", config_manager=cm, summaries=False)
+        saved = cm.saved["invoices"]
+        assert saved["summarization"] == {"enabled": False}
+        assert "classification" not in saved
+
+    def test_other_classification_settings_are_kept(self):
+        cm = self._profile(
+            classification={"model": "m", "document_shape": {"pageOrder": "scan"}}
+        )
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, documents_per_file="one"
+        )
+        classification = cm.saved["invoices"]["classification"]
+        assert classification["model"] == "m"
+        assert classification["document_shape"] == {
+            "pageOrder": "scan",
+            "sectionSplitting": "disabled",
+        }
+
+    def test_a_flat_section_splitting_key_is_given_the_same_value(self):
+        """The flat key wins when the profile is read, so leaving it would undo this."""
+        cm = self._profile(classification={"sectionSplitting": "llm_determined"})
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, documents_per_file="one"
+        )
+        classification = cm.saved["invoices"]["classification"]
+        assert classification["sectionSplitting"] == "disabled"
+        assert classification["document_shape"]["sectionSplitting"] == "disabled"
+
+    @pytest.mark.parametrize(
+        ("version", "listed", "match"),
+        [
+            ("default", [], "'default'"),
+            (
+                "docsplit",
+                [{"versionName": "docsplit", "managed": True}],
+                "stack-managed",
+            ),
+        ],
+    )
+    def test_a_protected_profile_is_refused(self, version, listed, match):
+        cm = Mock()
+        cm.list_config_versions.return_value = listed
+        with pytest.raises(bootstrap.ProtectedProfileError, match=match):
+            bootstrap.set_processing_options(
+                version, config_manager=cm, documents_per_file="one"
+            )
+        cm.save_raw_configuration.assert_not_called()
+
+    def test_a_profile_that_does_not_exist_is_not_created(self):
+        cm = _FakeConfigManager()
+        with pytest.raises(ValueError, match="does not exist"):
+            bootstrap.set_processing_options(
+                "missing", config_manager=cm, documents_per_file="one"
+            )
+        assert cm.saved == {}
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [({"documents_per_file": "two"}, "must be one of"), ({}, "Nothing to set")],
+    )
+    def test_an_invalid_request_writes_nothing(self, kwargs, match):
+        cm = self._profile()
+        before = json.dumps(cm.saved, sort_keys=True)
+        with pytest.raises(ValueError, match=match):
+            bootstrap.set_processing_options("invoices", config_manager=cm, **kwargs)
+        assert json.dumps(cm.saved, sort_keys=True) == before
+
+
 class TestRunBootstrap:
     def test_config_only_when_generator_unavailable(self, monkeypatch):
         from idp_common.synthesis import engine

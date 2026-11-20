@@ -463,3 +463,45 @@ class TestCreateConfigVersionErrors:
         out = self._create(RuntimeError("throttled"))
         assert out["refused"] is False
         assert "try again" in out["error"]
+
+
+class TestSetProcessingOptionsTool:
+    @staticmethod
+    def _call(*args, error=None, applied=None):
+        from idp_common.agents.quick_start.tools import bootstrap_tools as bt
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        with (
+            patch("idp_common.config.configuration_manager.ConfigurationManager"),
+            patch.object(
+                bootstrap_mod,
+                "set_processing_options",
+                side_effect=error,
+                return_value=applied,
+            ) as setter,
+        ):
+            return json.loads(bt.set_processing_options_impl(*args)), setter
+
+    def test_it_reports_what_it_applied(self):
+        applied = {"summarization.enabled": False}
+        out, setter = self._call("v1", "", False, applied=applied)
+        assert out == {"config_version": "v1", "applied": applied}
+        assert setter.call_args.kwargs["summaries"] is False
+
+    def test_a_protected_profile_is_reported_as_refused(self):
+        from idp_common.synthesis import bootstrap as bootstrap_mod
+
+        out, _ = self._call(
+            "docsplit", "one", None, error=bootstrap_mod.ProtectedProfileError("x")
+        )
+        assert out["refused"] is True
+
+    def test_a_bad_request_is_not_a_refusal(self):
+        out, _ = self._call("v1", "two", None, error=ValueError("must be one of"))
+        assert out["refused"] is False
+        assert "must be one of" in out["error"]
+
+    def test_a_failed_save_says_to_try_again(self):
+        out, _ = self._call("v1", "one", None, error=RuntimeError("throttled"))
+        assert out["refused"] is False
+        assert "try again" in out["error"]

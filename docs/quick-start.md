@@ -27,6 +27,8 @@ A conversational agent:
    review; you refine it in chat until it's right.
 4. **Creates and activates a configuration profile**, so you can upload a document
    and start processing immediately — no trip to the Configuration page required.
+   It also chooses how files are split into documents and whether each document
+   is summarized, from what you've told it.
 
 For the **highest-fidelity** result, you can attach your own example documents in
 the chat; they run through [Discovery](discovery.md), which infers schemas from
@@ -105,13 +107,29 @@ ends the conversation.
    profile is `default`, it becomes active straight away. Otherwise the agent asks
    before making it the active profile, because the active profile is what every
    new document on the stack is processed with.
-5. **Activate.** When you approve, the agent creates a configuration profile and
+5. **Processing options.** For the profile it saves, the agent decides two
+   things from your description and any examples, and tells you in one sentence
+   what it chose:
+
+   | What the agent decides | Its choices | The setting it writes |
+   |---|---|---|
+   | How many documents a file holds | one (an invoice, a W-2, a statement) · several (a loan packet, a bundle of forms) · one per page (a stack of scanned receipts) | **Section splitting** under Classification › *Advanced — known document shape*: `disabled`, `llm_determined` or `page` |
+   | Whether to summarize each document | off unless you ask for summaries | **Summarization (Optional)**: `enabled` |
+
+   It asks one plain question only when it can't tell, such as *"Does each file
+   hold one invoice, or can one file hold several documents?"* If processed
+   documents come out split wrongly, or you change your mind about summaries,
+   tell Quick Start and it changes the setting; then process the documents again.
+   Extraction settings, such as those for long tables, are not something Quick
+   Start changes: they're under **Extraction** on the Configuration page.
+6. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
    Documents** in the side navigation and it's processed with your new
    configuration.
 
 Quick Start never writes into `default` or into a stack-managed profile (a preset
-the stack deployed, which a stack update replaces). It adds a class to another
+the stack deployed, which a stack update replaces), and that includes its processing
+options. It adds a class to another
 existing profile only when you name that profile and ask it to.
 
 You can review or switch configurations at any time from

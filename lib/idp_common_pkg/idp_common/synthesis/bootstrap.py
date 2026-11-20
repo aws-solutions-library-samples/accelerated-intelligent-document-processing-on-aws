@@ -155,6 +155,61 @@ def merge_class_into_version(
     config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
 
 
+DOCUMENTS_PER_FILE: Dict[str, str] = {
+    "one": "disabled",
+    "several": "llm_determined",
+    "one_per_page": "page",
+}
+
+
+def set_processing_options(
+    version: str,
+    *,
+    config_manager: Any,
+    documents_per_file: str = "",
+    summaries: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Write the processing options Quick Start chooses in plain words into ``version``.
+
+    ``documents_per_file`` is one of :data:`DOCUMENTS_PER_FILE`: "one" (each file is
+    one document, so section splitting is off), "several" (a file can hold several
+    documents, whose boundaries are detected) or "one_per_page" (every page is its
+    own document). ``summaries`` turns document summaries on or off. Only those keys
+    are written; every other setting still resolves from 'default'. A pre-0.9 flat
+    ``classification.sectionSplitting`` wins over the nested key when the profile is
+    read, so one that is present is given the same value.
+
+    The profile must already exist, and 'default' and stack-managed profiles are
+    refused exactly as a class write is. Returns the keys written and their values.
+    """
+    if documents_per_file and documents_per_file not in DOCUMENTS_PER_FILE:
+        raise ValueError(
+            f"documents_per_file must be one of {sorted(DOCUMENTS_PER_FILE)}, "
+            f"not {documents_per_file!r}"
+        )
+    if not documents_per_file and summaries is None:
+        raise ValueError("Nothing to set: pass documents_per_file, summaries or both.")
+    refuse_protected_profile(version, config_manager=config_manager)
+    existing = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
+    if not existing:
+        raise ValueError(
+            f"'{version}' does not exist yet: save its document class into it first."
+        )
+    applied: Dict[str, Any] = {}
+    if documents_per_file:
+        splitting = DOCUMENTS_PER_FILE[documents_per_file]
+        classification = existing.setdefault("classification", {})
+        classification.setdefault("document_shape", {})["sectionSplitting"] = splitting
+        if "sectionSplitting" in classification:
+            classification["sectionSplitting"] = splitting
+        applied["classification.document_shape.sectionSplitting"] = splitting
+    if summaries is not None:
+        existing.setdefault("summarization", {})["enabled"] = bool(summaries)
+        applied["summarization.enabled"] = bool(summaries)
+    config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
+    return applied
+
+
 def run_bootstrap(
     request: BootstrapRequest,
     *,

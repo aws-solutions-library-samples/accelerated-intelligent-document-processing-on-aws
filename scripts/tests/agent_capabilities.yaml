@@ -437,6 +437,7 @@ entries:
       - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::refine_schema
       - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::request_document_generation
       - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::search_catalog
+      - tool:lib/idp_common_pkg/idp_common/agents/quick_start/tools/bootstrap_tools.py::set_processing_options
     note: >-
       Pinned as the single conversational agent of its mode, with the caller's own
       memory. Its reads are configuration profiles and the schema catalog, so the
@@ -459,6 +460,7 @@ entries:
       - *markdown_surfaces_test
       - lib/idp_common_pkg/tests/unit/config/test_managed_flag_survives_saves.py::test_bootstrap_leaves_a_managed_profile_as_it_was
       - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestProtectedProfiles::test_a_stack_managed_profile_is_refused
+      - lib/idp_common_pkg/tests/unit/synthesis/test_bootstrap.py::TestSetProcessingOptions::test_a_protected_profile_is_refused
 
   sample-calculator-agent:
     surfaces:

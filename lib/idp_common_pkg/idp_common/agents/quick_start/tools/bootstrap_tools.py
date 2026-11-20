@@ -347,6 +347,41 @@ def activate_config_version_impl(version_name: str) -> str:
         return json.dumps({"activated": False, "error": str(e)})
 
 
+def set_processing_options_impl(
+    version_name: str, documents_per_file: str = "", summaries: Optional[bool] = None
+) -> str:
+    from idp_common.config.configuration_manager import ConfigurationManager
+    from idp_common.synthesis import bootstrap as bootstrap_mod
+
+    if not version_name:
+        return json.dumps({"error": "version_name is required"})
+    try:
+        applied = bootstrap_mod.set_processing_options(
+            version_name,
+            config_manager=ConfigurationManager(),
+            documents_per_file=documents_per_file,
+            summaries=summaries,
+        )
+    except bootstrap_mod.ProtectedProfileError as e:
+        return json.dumps(
+            {"config_version": version_name, "refused": True, "error": str(e)}
+        )
+    except ValueError as e:
+        return json.dumps(
+            {"config_version": version_name, "refused": False, "error": str(e)}
+        )
+    except Exception as e:
+        logger.error(f"Error setting processing options on '{version_name}': {e}")
+        return json.dumps(
+            {
+                "config_version": version_name,
+                "refused": False,
+                "error": f"The options could not be saved, try again: {e}",
+            }
+        )
+    return json.dumps({"config_version": version_name, "applied": applied})
+
+
 def request_document_generation_impl(
     schema_text: str,
     config_version: str,
@@ -646,6 +681,30 @@ def activate_config_version(version_name: str) -> str:
             create_config_version).
     """
     return activate_config_version_impl(version_name)
+
+
+@strands.tool
+def set_processing_options(
+    version_name: str, documents_per_file: str = "", summaries: Optional[bool] = None
+) -> str:
+    """Set how a configuration profile splits files into documents, and whether it summarizes them.
+
+    Call it on the profile you just saved (create_config_version, or the profile
+    Discovery saved attached documents into). Only the options you pass are
+    changed; everything else keeps the stack's defaults. 'default' and
+    stack-managed profiles are refused: the result then has "refused": true.
+
+    Args:
+        version_name: The configuration profile to change.
+        documents_per_file: "one" when each file is one document (an invoice, a
+            W-2, a statement), "several" when one file can hold several documents
+            (a loan packet, a bundle of forms), "one_per_page" when every page is
+            a separate document (a stack of scanned receipts). Empty leaves it as
+            it is.
+        summaries: True to summarize each document, False not to. Omit to leave
+            it as it is.
+    """
+    return set_processing_options_impl(version_name, documents_per_file, summaries)
 
 
 @strands.tool
