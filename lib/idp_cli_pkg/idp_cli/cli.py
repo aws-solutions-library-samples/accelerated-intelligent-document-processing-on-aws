@@ -3384,10 +3384,16 @@ def status(
 
         # Handle timing statistics display (only for batch-id searches)
         if get_time and batch_id:
-            console.print()
             timing_stats = searcher.calculate_timing_statistics(
                 search_results, include_metering=include_metering
             )
+            if output_format == "json" and not wait:
+                # The statistics dict is the payload. This branch used to render
+                # the Rich tables whatever `--format` said, so `--get-time
+                # --format json` never produced JSON at all.
+                emit_json(timing_stats)
+                sys.exit(0)
+            console.print()
             searcher.display_timing_statistics(timing_stats)
 
             # If not waiting, we're done
