@@ -3450,6 +3450,13 @@
           "name": "saveMode",
           "non_null": false,
           "type": "String"
+        },
+        {
+          "elem_non_null": false,
+          "is_list": false,
+          "name": "policyGroup",
+          "non_null": false,
+          "type": "String"
         }
       ]
     },

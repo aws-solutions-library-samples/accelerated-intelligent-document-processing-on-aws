@@ -60,6 +60,7 @@ def handler(event, context):
             version = message_body.get('version')
             page_range = message_body.get('pageRange')
             class_name_hint = message_body.get('classNameHint')
+            policy_group = message_body.get('policyGroup')
 
             logger.info(f"Processing discovery job: {job_id} with version: {version}, page_range: {page_range}, class_name_hint: {class_name_hint}")
 
@@ -72,7 +73,7 @@ def handler(event, context):
 
             # Route to the appropriate discovery handler
             if discovery_type == 'rules':
-                result = process_rules_discovery_job(job_id, document_key, bucket, version)
+                result = process_rules_discovery_job(job_id, document_key, bucket, version, policy_group)
             else:
                 result = process_discovery_job(job_id, document_key, ground_truth_key, bucket, version, page_range, class_name_hint)
             results.append(result)
@@ -340,7 +341,7 @@ def process_discovery_job(job_id, document_key, ground_truth_key, bucket, versio
         raise
 
 
-def process_rules_discovery_job(job_id, document_key, bucket, version=None):
+def process_rules_discovery_job(job_id, document_key, bucket, version=None, policy_group=None):
     """
     Process a rules discovery job using RulesDiscovery.
 
@@ -352,6 +353,9 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None):
         job_id (str): Unique job identifier
         document_key (str): S3 key for the policy document
         bucket (str): S3 bucket name
+        version (str): Configuration profile to save the rules into
+        policy_group (str, optional): User-named policy group. Uploads naming
+            the same group append their rules to one policy class.
 
     Returns:
         dict: Processing result
@@ -359,7 +363,7 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None):
     try:
         logger.info(
             f"Processing rules discovery job {job_id}: "
-            f"document={document_key}, bucket={bucket}"
+            f"document={document_key}, bucket={bucket}, policy_group={policy_group!r}"
         )
 
         region = os.environ.get("AWS_REGION")
@@ -394,6 +398,7 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None):
         result = rules_discovery.discovery_rules_from_document(
             input_bucket=bucket,
             input_prefix=document_key,
+            policy_group=policy_group,
         )
 
         rule_classes = result.get("rules", [])
@@ -415,10 +420,17 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None):
         # UI stops displaying "Starting discovery processing..." and users can
         # jump to Configuration → Policy Schema to see the appended rules.
         saved_version = getattr(rules_discovery, "version", None) or "active version"
-        success_message = (
-            f"Extracted {num_rules} rules — appended to policy_classes in "
-            f"version '{saved_version}'. View in Configuration → Policy Schema."
-        )
+        if policy_group:
+            success_message = (
+                f"Extracted {num_rules} rules — appended to policy group "
+                f"'{policy_group}' (policy class '{saved_type}') in version "
+                f"'{saved_version}'. View in Configuration → Policy Schema."
+            )
+        else:
+            success_message = (
+                f"Extracted {num_rules} rules — appended to policy_classes in "
+                f"version '{saved_version}'. View in Configuration → Policy Schema."
+            )
 
         # Append any advisories the save raised (no document-matching regex on
         # any class, duplicated rule names). These describe states in which the

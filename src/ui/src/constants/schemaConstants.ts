@@ -199,6 +199,9 @@ export const X_AWS_IDP_DOCUMENT_TYPE = 'x-aws-idp-document-type';
 /** Marks a schema as a policy type (for rule validation) */
 export const X_AWS_IDP_POLICY_TYPE = 'x-aws-idp-policy-type';
 
+/** The Policy Discovery group a policy class accumulates (#608); later uploads naming it find the class by this key */
+export const X_AWS_IDP_POLICY_GROUP = 'x-aws-idp-policy-group';
+
 /** Classification metadata for document type */
 export const X_AWS_IDP_CLASSIFICATION = 'x-aws-idp-classification';
 
