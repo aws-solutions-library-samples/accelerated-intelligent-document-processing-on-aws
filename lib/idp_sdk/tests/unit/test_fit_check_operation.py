@@ -224,7 +224,12 @@ def test_cleanup_deletes_each_uploaded_key_and_reads_back(tmp_path, monkeypatch)
         stack_name="S", config_profile="fit-check-x"
     )
     assert summary["documents_deleted"] == 2
-    assert summary["objects_remaining"] == {"InputBucket": 0, "OutputBucket": 0}
+    assert summary["objects_remaining"] == {
+        "InputBucket": 0,
+        "OutputBucket": 0,
+        "OutputBucket batch record": 0,
+    }
+    s3.get_paginator.assert_called_with("list_object_versions")
     assert summary["profile_remaining"] is False and "error" not in summary
     # Anything left behind is an error, not a silent success.
     s3.list_objects_v2.return_value = {"KeyCount": 3}

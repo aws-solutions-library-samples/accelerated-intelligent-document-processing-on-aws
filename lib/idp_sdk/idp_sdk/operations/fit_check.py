@@ -459,8 +459,23 @@ class FitCheckOperation:
                 lines.append(f"Deleted configuration profile {profile}.")
             else:
                 errors.append(f"profile {profile}: {removed.error}")
-        # Read back what was meant to go.
         s3 = boto3.client("s3", region_name=self._client._region)
+        output_bucket = resources.get("OutputBucket")
+        metadata_prefix = f"cli-batches/{batch_id}/" if batch_id else None
+        if metadata_prefix and output_bucket:
+            # The batch record `batch.process` writes for `list-batches`; it names
+            # the local paths the samples were uploaded from.
+            try:
+                removed_versions = _delete_all_versions(
+                    s3, output_bucket, metadata_prefix
+                )
+                lines.append(
+                    f"Deleted the batch record under {metadata_prefix} "
+                    f"({removed_versions} object version(s))."
+                )
+            except Exception as e:
+                errors.append(f"batch record {metadata_prefix}: {e}")
+        # Read back what was meant to go.
         remaining: Dict[str, int] = {}
         if batch_id:
             for bucket_key in ("InputBucket", "OutputBucket"):
@@ -468,6 +483,11 @@ class FitCheckOperation:
                 if bucket:
                     listed = s3.list_objects_v2(Bucket=bucket, Prefix=f"{batch_id}/")
                     remaining[bucket_key] = listed.get("KeyCount", 0)
+            if metadata_prefix and output_bucket:
+                listed = s3.list_objects_v2(
+                    Bucket=output_bucket, Prefix=metadata_prefix
+                )
+                remaining["OutputBucket batch record"] = listed.get("KeyCount", 0)
         summary["objects_remaining"] = remaining
         if profile:
             summary["profile_remaining"] = profile in self._profile_names(name)
@@ -525,6 +545,21 @@ class FitCheckOperation:
             guard=guard,
             cleanup=record.get("cleanup"),
         )
+
+
+def _delete_all_versions(s3, bucket: str, prefix: str) -> int:
+    """Delete every object version and delete marker under ``prefix``."""
+    count = 0
+    paginator = s3.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        targets = [
+            {"Key": v["Key"], "VersionId": v["VersionId"]}
+            for v in (page.get("Versions") or []) + (page.get("DeleteMarkers") or [])
+        ]
+        if targets:
+            s3.delete_objects(Bucket=bucket, Delete={"Objects": targets, "Quiet": True})
+            count += len(targets)
+    return count
 
 
 def _guard_line(when: str, snap: Dict[str, Optional[str]]) -> str:

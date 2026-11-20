@@ -163,6 +163,7 @@ overall and per class, with any document that has no evaluation result listed.
 |---|---|---|---|
 | The accepted samples | Input bucket, under `fit-check-<timestamp>/` | Under the stack's `DataRetentionInDays` (default 365 days) | Yes |
 | Processing results, every object version | Output bucket, under the same prefix | As above | Yes |
+| The batch record `list-batches` reads, which names the local paths the samples came from | Output bucket, `cli-batches/fit-check-<timestamp>/` | As above | Yes, every version |
 | Tracking, list and run records, review-queue items | The stack's DynamoDB tables | As above | Yes |
 | Baselines, with `--ground-truth` | Evaluation-baseline bucket | As above | Yes |
 | The generated profile | Configuration table | Until deleted | Yes; a profile passed with `--config-profile` is never deleted |
@@ -171,9 +172,11 @@ overall and per class, with any document that has no evaluation result listed.
 | Logs and Step Functions execution history | CloudWatch Logs, Step Functions | Under `LogRetentionDays` and the service's own retention | No |
 
 Discovery reads the sample files on your workstation and sends their content to
-Amazon Bedrock directly; it uploads nothing to the stack. After cleanup the
-command reads back the input and output prefixes and the profile list and reports
-what is left.
+Amazon Bedrock directly; it uploads nothing to the stack. Cleanup deletes the
+documents one key at a time, the keys the run uploaded, rather than selecting them
+by batch. After cleanup the command reads back the input and output prefixes, the
+batch record and the profile list, and fails if anything it created is still
+there.
 
 ## Rebuild a report offline
 
