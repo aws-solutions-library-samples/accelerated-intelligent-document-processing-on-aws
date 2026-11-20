@@ -205,6 +205,24 @@ PASS_THROUGH_ATTRS: dict[tuple[str, str], str] = {
     ("AWS::SSM::Parameter", "Value"): "Value",
 }
 
+#: awscc types that Cloud Control cannot update in place as the templates use
+#: them, so the module replaces them instead: type -> why. Cloud Control applies
+#: an update's patch to the model its read handler returns and validates the
+#: result against the registry schema, so a read model holding an object without
+#: that object's required keys makes every in-place update fail, whatever the
+#: patch says (#2183). Each such resource's settable properties, other than the
+#: create-only ones (which replace it anyway), are emitted with
+#: ``ignore_changes`` and copied into a ``terraform_data`` the resource is
+#: ``replace_triggered_by``, so a change to any of them deletes and recreates the
+#: resource, which the create handler accepts.
+UPDATED_BY_REPLACEMENT: dict[str, str] = {
+    "AWS::Lambda::EventInvokeConfig": (
+        "Lambda returns an unset OnSuccess or OnFailure destination as an empty "
+        "object, which Cloud Control's update validation refuses (Destination is "
+        "required), so an in-place update fails unless both destinations are set"
+    ),
+}
+
 #: awscc types whose name the translator generates when the template leaves it
 #: unset: (CloudFormation name property, IAM's length limit). IAM names are unique
 #: per account, so the region joins the hash.
@@ -893,6 +911,7 @@ class Translator:
             raise TranslationError(f"{plan.logical_id}: {exc}") from exc
         tags_merged = False
         lines = []
+        rendered_props: dict[str, tuple[str, str]] = {}
         for k, x in plan.props.items():
             found = hint.attr(k)
             if found is None:
@@ -915,6 +934,7 @@ class Translator:
                 rendered = self._merge_tags(plan, x, rendered, tag_attr[1])
                 tags_merged = True
             lines.append(f"{tf_name} = {rendered}")
+            rendered_props[k] = (tf_name, rendered)
         if tag_attr and not tags_merged:
             lines.append(f"{tag_attr[0]} = {_module_tags(tag_attr[1])}")
         head, tail = self.meta_lines(plan, res)
@@ -973,6 +993,29 @@ class Translator:
             idx = "[count.index]" if plan.condition else ""
             triggers.append(f"terraform_data.{key_name}{idx}")
             comments.append(f"# {tf_name}: {reason}")
+        reason = UPDATED_BY_REPLACEMENT.get(plan.cfn_type)
+        if reason is not None:
+            fixed = {p[0] for p in create_only.paths(plan.cfn_type)}
+            settings = [
+                (tf_name, rendered)
+                for k, (tf_name, rendered) in rendered_props.items()
+                if k not in fixed and tf_name not in state_owned
+            ]
+            if settings:
+                key_name = f"{plan.name}_settings_key"
+                keys.append(
+                    hcl.block(
+                        f'resource "terraform_data" "{key_name}"',
+                        head + [f"input = {hcl.obj(settings)}"],
+                    )
+                )
+                state_owned.extend(tf_name for tf_name, _ in settings)
+                idx = "[count.index]" if plan.condition else ""
+                triggers.append(f"terraform_data.{key_name}{idx}")
+                comments.append(
+                    f"# {', '.join(t for t, _ in settings)}: changed by replacement, "
+                    f"not in place: {reason}"
+                )
         if state_owned:
             body = [f"ignore_changes = [{', '.join(state_owned)}]"]
             if triggers:
