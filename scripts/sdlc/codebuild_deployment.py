@@ -11692,7 +11692,8 @@ def send_failure_notification(subject, summary_text):
 # Weekly Terraform-migration run (IDP_RUN_TERRAFORM_MIGRATION=true)
 #
 # Instead of the primary suite, the build runs scripts/sdlc/terraform_migration_test.py:
-# it deploys a pinned awslabs/genai-idp-terraform release, migrates it in place onto
+# it deploys a pinned awslabs/genai-idp-terraform release (a different one each week,
+# TERRAFORM_MIGRATION_UPSTREAM_TAG), migrates it in place onto
 # the module this build published, verifies, and destroys both. Every AWS call the
 # driver and its subprocesses make (upstream's Terraform and the `aws` commands its
 # provisioners run, `idp-cli`, boto3) goes through one AWS profile that assumes this
@@ -11709,6 +11710,12 @@ def send_failure_notification(subject, summary_text):
 # ---------------------------------------------------------------------------
 
 TERRAFORM_MIGRATION_VARIABLE = "IDP_RUN_TERRAFORM_MIGRATION"
+#: The driver's ``--upstream-tag`` on every migration run: the release for the
+#: run's week, rotating through the releases the driver pins (UPSTREAM_RELEASES
+#: and rotated_upstream_tag in terraform_migration_test.py), so weekly runs cover
+#: each in turn and the summary names the one this run took. A reap passes it too,
+#: and the driver keeps the release the dead run's context recorded.
+TERRAFORM_MIGRATION_UPSTREAM_TAG = "rotate"
 #: The line the GitLab job's after_script reads the build's summary from (its
 #: `sed -n '/<marker>/,$p'` over the CodeBuild log, in .gitlab-ci.yml). Every
 #: path that ends a build with a summary prints it first.
@@ -11855,7 +11862,8 @@ def terraform_migration_driver_command(
     process it starts already run as the run's TFDeployRole through the AWS
     profile (render_migration_aws_config), and that role's trust admits only the
     build's principal, so asking it to assume itself is refused — by the SDK's
-    own lookups in ``migrate plan`` and by the new root's providers alike."""
+    own lookups in ``migrate plan`` and by the new root's providers alike. The
+    upstream release rotates (TERRAFORM_MIGRATION_UPSTREAM_TAG)."""
     mirror = ["--state-mirror", state_mirror] if state_mirror else []
     return [
         sys.executable,
@@ -11878,6 +11886,8 @@ def terraform_migration_driver_command(
         terraform_migration_upstream_iam_path(new_name),
         "--upstream-permissions-boundary-arn",
         boundary_arn,
+        "--upstream-tag",
+        TERRAFORM_MIGRATION_UPSTREAM_TAG,
         *mirror,
     ]
 

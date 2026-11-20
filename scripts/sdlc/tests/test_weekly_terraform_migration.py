@@ -961,3 +961,44 @@ def test_both_slack_posts_name_the_cloudformation_nightly_the_same_way(config):
     assert "os.environ.get('CI_PIPELINE_SOURCE', '') == 'schedule'" in assignment
     for other in ("probe_run", "region_run", "terraform_run", "migration_run"):
         assert other in assignment
+
+
+def test_the_driver_is_asked_to_rotate_the_upstream_release():
+    """Every migration run, and every reap of one, passes a value the driver's
+    own CLI resolves by rotating (#2009); the driver keeps a recorded release."""
+    cmd = cbd.terraform_migration_driver_command(
+        "idpo1", "idp-m1", "https://x/m.zip", "terraform", "/w", "us-east-1", "1", "b"
+    )
+    assert cmd[cmd.index("--upstream-tag") + 1] == tmt.ROTATE_UPSTREAM_TAG
+    assert cbd.TERRAFORM_MIGRATION_UPSTREAM_TAG == tmt.ROTATE_UPSTREAM_TAG
+    settings = tmt.parse_args(
+        [*cmd[2:], "--terraform-bin", "/bin/true"]  # argv after the script path
+    )
+    assert settings.upstream_tag == tmt.ROTATE_UPSTREAM_TAG
+
+
+@pytest.mark.parametrize(
+    ("action", "resource"),
+    [
+        # The driver's reads of the Region's API Gateway CloudWatch role: the
+        # account settings, and a role named outside the run's prefix.
+        ("apigateway:GET", "arn:aws:apigateway:us-east-1::/account"),
+        ("iam:GetRole", "arn:aws:iam::123456789012:role/some-other-logging-role"),
+    ],
+)
+def test_the_deploy_role_can_read_the_api_gateway_cloudwatch_role(action, resource):
+    import fnmatch
+
+    allowed = denied = False
+    for statement, patterns in _deploy_role_statements().values():
+        actions = statement.get("Action", [])
+        actions = actions if isinstance(actions, list) else [actions]
+        if not any(fnmatch.fnmatchcase(action, a) for a in actions):
+            continue
+        if not any(fnmatch.fnmatchcase(resource, p) for p in patterns):
+            continue
+        if statement["Effect"] == "Deny":
+            denied = True
+        elif not statement.get("Condition"):
+            allowed = True
+    assert allowed and not denied
