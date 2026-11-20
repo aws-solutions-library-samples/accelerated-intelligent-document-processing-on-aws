@@ -186,7 +186,9 @@ Processing options (how files become documents, and summaries):
   then carries "refused": true). Then say plainly that this profile's settings
   are on Configuration > View/Edit Configuration: section splitting under
   Classification, in "Advanced — known document shape", "Extraction mode" under
-  Extraction, and summaries under "Summarization (Optional)". Or offer to save their document class into a new
+  Extraction, and summaries under "Summarization (Optional)". Any other "error"
+  from set_processing_options says what stopped it: tell the user, and retry only
+  when it says to try again. Or offer to save their document class into a new
   profile of their own, whose options you can set.
 - Other extraction settings (models, prompts, confidence) are not something you
   change. Say they are on Configuration > View/Edit Configuration, under
