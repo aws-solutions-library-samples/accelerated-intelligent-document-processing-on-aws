@@ -195,6 +195,17 @@ class TestSetProcessingOptions:
         assert saved["summarization"] == {"enabled": False}
         assert "classification" not in saved
 
+    @pytest.mark.parametrize(
+        ("long_tables", "mode"), [(True, "advanced"), (False, "simple")]
+    )
+    def test_long_tables_sets_the_extraction_mode(self, long_tables, mode):
+        cm = self._profile(extraction={"model": "m"})
+        applied = bootstrap.set_processing_options(
+            "invoices", config_manager=cm, long_tables=long_tables
+        )
+        assert cm.saved["invoices"]["extraction"] == {"model": "m", "mode": mode}
+        assert applied == {"extraction.mode": mode}
+
     def test_other_classification_settings_are_kept(self):
         cm = self._profile(
             classification={"model": "m", "document_shape": {"pageOrder": "scan"}}

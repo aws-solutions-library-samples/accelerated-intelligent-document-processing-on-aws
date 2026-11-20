@@ -348,7 +348,10 @@ def activate_config_version_impl(version_name: str) -> str:
 
 
 def set_processing_options_impl(
-    version_name: str, documents_per_file: str = "", summaries: Optional[bool] = None
+    version_name: str,
+    documents_per_file: str = "",
+    summaries: Optional[bool] = None,
+    long_tables: Optional[bool] = None,
 ) -> str:
     from idp_common.config.configuration_manager import ConfigurationManager
     from idp_common.synthesis import bootstrap as bootstrap_mod
@@ -361,6 +364,7 @@ def set_processing_options_impl(
             config_manager=ConfigurationManager(),
             documents_per_file=documents_per_file,
             summaries=summaries,
+            long_tables=long_tables,
         )
     except bootstrap_mod.ProtectedProfileError as e:
         return json.dumps(
@@ -687,9 +691,12 @@ def activate_config_version(version_name: str) -> str:
 
 @strands.tool
 def set_processing_options(
-    version_name: str, documents_per_file: str = "", summaries: Optional[bool] = None
+    version_name: str,
+    documents_per_file: str = "",
+    summaries: Optional[bool] = None,
+    long_tables: Optional[bool] = None,
 ) -> str:
-    """Set how a configuration profile splits files into documents, and whether it summarizes them.
+    """Set how a profile splits files into documents, summarizes them, and extracts long tables.
 
     Call it on the profile you just saved (create_config_version, or the profile
     Discovery saved attached documents into). Only the options you pass are
@@ -705,8 +712,14 @@ def set_processing_options(
             it is.
         summaries: True to summarize each document, False not to. Omit to leave
             it as it is.
+        long_tables: True when a document can hold a long list of rows (more than
+            about a page of line items, transactions or log entries): extraction
+            then uses the advanced engine, which keeps every row but is slower and
+            costs more per document. False for short documents. Omit to leave it.
     """
-    return set_processing_options_impl(version_name, documents_per_file, summaries)
+    return set_processing_options_impl(
+        version_name, documents_per_file, summaries, long_tables
+    )
 
 
 @strands.tool

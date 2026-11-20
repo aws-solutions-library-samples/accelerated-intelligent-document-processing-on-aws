@@ -168,14 +168,17 @@ def set_processing_options(
     config_manager: Any,
     documents_per_file: str = "",
     summaries: Optional[bool] = None,
+    long_tables: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Write the processing options Quick Start chooses in plain words into ``version``.
 
     ``documents_per_file`` is one of :data:`DOCUMENTS_PER_FILE`: "one" (each file is
     one document, so section splitting is off), "several" (a file can hold several
     documents, whose boundaries are detected) or "one_per_page" (every page is its
-    own document). ``summaries`` turns document summaries on or off. Only those keys
-    are written; every other setting still resolves from 'default'. A pre-0.9 flat
+    own document). ``summaries`` turns document summaries on or off. ``long_tables``
+    selects ``extraction.mode``: "advanced" when a document can hold a long list of
+    rows, because single-pass ("simple") extraction can end such a list early, and
+    "simple" otherwise. Only those keys are written; every other setting still resolves from 'default'. A pre-0.9 flat
     ``classification.sectionSplitting`` wins over the nested key when the profile is
     read, so one that is present is given the same value.
 
@@ -187,8 +190,10 @@ def set_processing_options(
             f"documents_per_file must be one of {sorted(DOCUMENTS_PER_FILE)}, "
             f"not {documents_per_file!r}"
         )
-    if not documents_per_file and summaries is None:
-        raise ValueError("Nothing to set: pass documents_per_file, summaries or both.")
+    if not documents_per_file and summaries is None and long_tables is None:
+        raise ValueError(
+            "Nothing to set: pass documents_per_file, summaries, long_tables or several."
+        )
     refuse_protected_profile(version, config_manager=config_manager)
     existing = config_manager.get_raw_configuration(CONFIG_TYPE_CONFIG, version)
     if not existing:
@@ -206,6 +211,10 @@ def set_processing_options(
     if summaries is not None:
         existing.setdefault("summarization", {})["enabled"] = bool(summaries)
         applied["summarization.enabled"] = bool(summaries)
+    if long_tables is not None:
+        mode = "advanced" if long_tables else "simple"
+        existing.setdefault("extraction", {})["mode"] = mode
+        applied["extraction.mode"] = mode
     config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
     return applied
 

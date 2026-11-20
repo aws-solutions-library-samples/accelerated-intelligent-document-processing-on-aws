@@ -29,8 +29,9 @@ A conversational agent:
    document and start processing immediately — no trip to the Configuration page
    required. When the stack already has a profile in use, it asks before making
    its own one active.
-   It also chooses how files are split into documents and whether each document
-   is summarized, from what you've told it.
+   It also chooses how files are split into documents, whether long tables need
+   the advanced extraction engine, and whether each document is summarized, from
+   what you've told it.
 
 For the **highest-fidelity** result, you can attach your own example documents in
 the chat; they run through [Discovery](discovery.md), which infers schemas from
@@ -111,21 +112,26 @@ ends the conversation.
    deployed with — it becomes active straight away. Otherwise the agent asks
    before making it the active profile, because the active profile is what every
    new document on the stack is processed with.
-5. **Processing options.** For the profile it saves, the agent decides two
+5. **Processing options.** For the profile it saves, the agent decides three
    things from your description and any examples, and tells you in one sentence
    what it chose:
 
    | What the agent decides | Its choices | The setting it writes |
    |---|---|---|
    | How many documents a file holds | one (an invoice, a W-2, a statement) · several (a loan packet, a bundle of forms) · one per page (a stack of scanned receipts) | **Section splitting** under Classification › *Advanced — known document shape*: `disabled`, `llm_determined` or `page` |
+   | Whether a document can hold a long table | yes (a bank statement, a transaction log, an invoice with pages of line items) · no | **Extraction mode** under Extraction: `advanced` or `simple` |
    | Whether to summarize each document | off unless you ask for summaries | **Summarization (Optional)**: `enabled` |
 
    It asks one plain question only when it can't tell, such as *"Does each file
-   hold one invoice, or can one file hold several documents?"* If processed
-   documents come out split wrongly, or you change your mind about summaries,
-   tell Quick Start and it changes the setting; then process the documents again.
-   Extraction settings, such as those for long tables, are not something Quick
-   Start changes: they're under **Extraction** on the Configuration page.
+   hold one invoice, or can one file hold several documents?"* Simple extraction
+   reads a document in one pass and can stop partway through a long list of rows;
+   the advanced engine keeps every row, and takes longer and costs more per
+   document, which is why it's used only where tables run long. If processed
+   documents come out split wrongly or with rows missing, or you change your mind
+   about summaries, tell Quick Start and it changes the setting; then process the
+   documents again. Other extraction settings, such as models and prompts, are not
+   something Quick Start changes: they're under **Extraction** on the Configuration
+   page.
 6. **Activate.** When you approve, the agent creates a configuration profile and
    **activates** it, then confirms it's ready. Upload a document from **Upload
    Documents** in the side navigation and it's processed with your new

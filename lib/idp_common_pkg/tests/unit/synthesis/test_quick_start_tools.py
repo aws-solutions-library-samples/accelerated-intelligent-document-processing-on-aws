@@ -484,10 +484,11 @@ class TestSetProcessingOptionsTool:
             return json.loads(bt.set_processing_options_impl(*args)), setter
 
     def test_it_reports_what_it_applied(self):
-        applied = {"summarization.enabled": False}
-        out, setter = self._call("v1", "", False, applied=applied)
+        applied = {"summarization.enabled": False, "extraction.mode": "advanced"}
+        out, setter = self._call("v1", "", False, True, applied=applied)
         assert out == {"config_version": "v1", "applied": applied}
         assert setter.call_args.kwargs["summaries"] is False
+        assert setter.call_args.kwargs["long_tables"] is True
 
     def test_a_protected_profile_is_reported_as_refused(self):
         from idp_common.synthesis import bootstrap as bootstrap_mod
