@@ -149,14 +149,10 @@ const AgentChatLayout = ({
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [completedJobId, setCompletedJobId] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const { versions, loaded: versionsLoaded, error: versionsError, setActiveVersion, fetchVersions } = useConfigurationVersions();
+  const { setActiveVersion, fetchVersions } = useConfigurationVersions();
   const navigate = useNavigate();
 
   const discoveryTargetRef = useRef<string | null>(null);
-  const latestVersionsRef = useRef({ versions, loaded: versionsLoaded, error: versionsError });
-  useEffect(() => {
-    latestVersionsRef.current = { versions, loaded: versionsLoaded, error: versionsError };
-  }, [versions, versionsLoaded, versionsError]);
 
   const handleUploadComplete = useCallback(
     (result: QuickStartUploadResult) => {
@@ -179,19 +175,20 @@ const AgentChatLayout = ({
       setAttachedFiles([]);
       setUploadError(null);
       setCompletedJobId(result.jobId);
-      const latest = latestVersionsRef.current;
-      if (!(latest.loaded && !latest.error && activatesWithoutAsking(latest.versions, result.configVersion))) {
-        send(false);
-        return;
-      }
-      setActiveVersion(result.configVersion)
-        .then(() => send(true))
-        .catch((e) => {
-          logger.error('Failed to activate the Quick Start profile:', e);
+      void fetchVersions().then((current) => {
+        if (!current || !activatesWithoutAsking(current, result.configVersion)) {
           send(false);
-        });
+          return;
+        }
+        setActiveVersion(result.configVersion)
+          .then(() => send(true))
+          .catch((e) => {
+            logger.error('Failed to activate the Quick Start profile:', e);
+            send(false);
+          });
+      });
     },
-    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion],
+    [sendMessage, enableCodeIntelligence, enableExternalMcpAgents, setActiveVersion, fetchVersions],
   );
 
   const handleUploadError = useCallback((message: string) => {
@@ -268,7 +265,6 @@ const AgentChatLayout = ({
       const filesToProcess = attachedFiles;
       if (!discoveryTargetRef.current) discoveryTargetRef.current = newQuickStartProfileName(new Date());
       const version = discoveryTargetRef.current;
-      void fetchVersions();
       setCompletedJobId(null);
       setUploadError(null);
       setAttachedFiles([]);

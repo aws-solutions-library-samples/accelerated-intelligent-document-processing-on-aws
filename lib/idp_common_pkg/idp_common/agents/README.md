@@ -546,8 +546,8 @@ resolver, which does not call that guard: the Discovery page saves into a profil
 user picks, stack-managed ones included. For Quick Start the target is chosen in the
 browser, in `AgentChatLayout.tsx`: a new `quickstart-<date>-<time>-<code>` profile,
 one per conversation. The panel decides activation when Discovery finishes, from the
-profile list it refreshed when the files were attached, and only if that list loaded
-without error. It activates without asking only when that profile is already active
+unfiltered profile list `fetchVersions` reads at that moment, and a failed read means
+it asks. It activates without asking only when that profile is already active
 or the stack has no profile of its own yet: `default` active and every other profile
 stack-managed, as a stack is deployed. Otherwise it leaves the agent to ask. The agent
 is told the profile is active only after the activation has succeeded.
