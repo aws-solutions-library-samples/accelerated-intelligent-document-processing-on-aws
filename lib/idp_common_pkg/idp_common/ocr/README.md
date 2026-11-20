@@ -137,6 +137,20 @@ When `backend="bedrock"` and `model_id="LambdaHook"`, the hook receives a Conver
 - Comprehensive error handling
 - Rich markdown output for tables and forms when using enhanced features
 
+## File types the OCR step routes (`file_types.py`)
+
+`OcrService` decides a file's type by its extension first, and by its content only
+when the extension is not one it routes by name (a PDF header, an Office zip, UTF-8
+text, and otherwise PDF). The by-name decision is
+`idp_common.ocr.file_types.routed_file_type(filename)`, which returns the type or
+`None`, so a caller can ask before an upload whether a file will be routed. The same
+module holds `is_legacy_ole2_office_file`, the check that refuses a legacy binary
+Word document. It imports only the standard library, and `idp_common.ocr` imports
+`OcrService` on first use, so `file_types` can be imported without pypdfium2 or
+Pillow. `scripts/check_solution_profile.py` reads the routed extensions from
+`routed_file_type`, so a format added there must be described in the solution
+profile.
+
 ## Usage Example
 
 ### New Simplified Pattern (Recommended)

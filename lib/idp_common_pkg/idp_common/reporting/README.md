@@ -74,6 +74,28 @@ results = reporter.save(document, data_to_save=["evaluation_results", "metering"
 
 When `config` is provided with pricing information, the system automatically calculates unit costs and estimated costs for all metering data.
 
+### Pricing a document's metering (`pricing.py`)
+
+`idp_common.reporting.pricing` is the one implementation of "metering row to
+estimated dollars". `SaveReportingData` uses it for the metering Parquet rows and the
+`DocumentEstimatedCost` metric, and the SDK's fit check uses it for its per-document
+estimates, so the figures agree. It imports nothing heavier than the configuration
+models, so it does not need pyarrow.
+
+```python
+from idp_common.config.models import IDPConfig
+from idp_common.reporting.pricing import build_pricing_map, estimate_metering_cost
+
+pricing = build_pricing_map(IDPConfig.model_validate(config).pricing)
+cost = estimate_metering_cost(document.metering, pricing)
+cost.estimated_cost_usd   # None when no row had a price
+cost.unpriced_row_count   # rows left out of the figure
+```
+
+`unit_cost(pricing, service_api, unit, value)` documents the resolution rules: an
+exact pricing key with a longest-suffix walk, no substring matching, and `None`
+rather than $0.00 for a unit nothing declares non-chargeable.
+
 ## Features
 
 - **Modular Design**: Each data type has its own processing method, making it easy to add support for new data types
