@@ -25,6 +25,7 @@ What is pinned:
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import sys
@@ -32,7 +33,7 @@ import threading
 import time
 import types
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import boto3
 import pytest
@@ -67,8 +68,9 @@ def _chapter(rules: Dict[str, str], category: str = "billing_rules") -> List[Dic
     ]
 
 
-@pytest.fixture
-def aws(monkeypatch):
+@contextlib.contextmanager
+def moto_profile(monkeypatch) -> Iterator[Any]:
+    """moto with the configuration table, the buckets and an empty ``PROFILE``."""
     for k, v in {
         "AWS_DEFAULT_REGION": "us-east-1",
         "AWS_REGION": "us-east-1",
@@ -93,6 +95,12 @@ def aws(monkeypatch):
         ConfigurationManager().save_configuration(
             CONFIG_TYPE_CONFIG, IDPConfig(), version=PROFILE
         )
+        yield s3
+
+
+@pytest.fixture
+def aws(monkeypatch):
+    with moto_profile(monkeypatch) as s3:
         yield s3
 
 
