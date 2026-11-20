@@ -983,9 +983,11 @@ class Translator:
             return v
         out = {}
         for k, x in v.items():
-            if k == "DestinationArn" and isinstance(x, dict) and set(x) == {
-                "Fn::GetAtt"
-            }:
+            if (
+                k == "DestinationArn"
+                and isinstance(x, dict)
+                and set(x) == {"Fn::GetAtt"}
+            ):
                 arg = x["Fn::GetAtt"]
                 name, attr = arg.split(".", 1) if isinstance(arg, str) else arg
                 target = self.plans.get(name)

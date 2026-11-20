@@ -1107,3 +1107,61 @@ def test_a_list_parameter_is_never_given_the_emptiness_stand_in():
     )
     module = _block(tr.render()["main.tf"], 'module "pattern"')
     assert 'ids__cond = compact(split(",", var.ids))' in module
+
+
+def _stage_logging_template(destination: Any, conditional: bool = False) -> dict:
+    setting = {"DestinationArn": destination, "Format": "{}"}
+    return {
+        "Conditions": {"Logs": {"Fn::Equals": ["a", "a"]}},
+        "Resources": {
+            "Logs": {"Type": "AWS::Logs::LogGroup", "Properties": {}},
+            "Stage": {
+                "Type": "AWS::ApiGateway::Stage",
+                "Properties": {
+                    "RestApiId": "api",
+                    "StageName": "api",
+                    "AccessLogSetting": (
+                        {"Fn::If": ["Logs", setting, {"Ref": "AWS::NoValue"}]}
+                        if conditional
+                        else setting
+                    ),
+                },
+            },
+            # The same GetAtt where the consumer needs CloudFormation's form.
+            "Param": {
+                "Type": "AWS::SSM::Parameter",
+                "Properties": {"Type": "String", "Value": {"Fn::GetAtt": "Logs.Arn"}},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("conditional", [False, True], ids=["plain", "fn-if"])
+@pytest.mark.parametrize(
+    "getatt", [{"Fn::GetAtt": ["Logs", "Arn"]}, {"Fn::GetAtt": "Logs.Arn"}]
+)
+def test_a_stage_access_log_destination_is_the_bare_log_group_arn(
+    vendored, conditional, getatt
+):
+    """#2006: API Gateway stores the stage's access-log destination without the
+    ``:*`` CloudFormation's log-group Arn carries, so writing that form re-plans
+    after every apply. Only that property loses the suffix."""
+    main_tf = Translator(
+        _stage_logging_template(getatt, conditional), vendored
+    ).render()["main.tf"]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    (line,) = [ln.strip() for ln in stage.splitlines() if "destination_arn" in ln]
+    assert line == "destination_arn = aws_cloudwatch_log_group.logs.arn", line
+    param = _block(main_tf, 'resource "awscc_ssm_parameter" "param"')
+    assert 'value = "${aws_cloudwatch_log_group.logs.arn}:*"' in param, param
+
+
+def test_a_stage_destination_that_is_not_a_log_group_arn_is_left_alone(vendored):
+    firehose = (
+        "arn:aws:firehose:us-east-1:111122223333:deliverystream/amazon-apigateway-x"
+    )
+    main_tf = Translator(_stage_logging_template(firehose), vendored).render()[
+        "main.tf"
+    ]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    assert f'destination_arn = "{firehose}"' in stage, stage

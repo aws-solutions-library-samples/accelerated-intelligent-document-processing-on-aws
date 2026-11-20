@@ -5,12 +5,10 @@
 A Terraform nightly re-plans its deployment straight after the apply, with
 `terraform plan -detailed-exitcode`, and the plan must be empty: exit 0 passes,
 exit 2 fails the run naming the changed addresses (a bounded list), and exit 1 is
-an error reported as such rather than as drift. A change on an address in
-TERRAFORM_REPLAN_EXEMPT_CHANGES is reported without failing the run, but only in
-the exact shape the entry describes. Pinned here, offline, with a fake Terraform
-binary: the verdicts, the step row and the run's result, that the saved plan's
-values never reach the build log, and that every entry still describes what the
-generated module produces.
+an error reported as such rather than as drift. No change is accepted as a known
+defect. Pinned here, offline, with a fake Terraform binary: the verdicts, the step
+row and the run's result, and that the saved plan's values never reach the build
+log.
 """
 
 from __future__ import annotations
@@ -18,14 +16,12 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 STAGE = "module.idp.module.apiresolverstack.awscc_apigateway_stage.http_api_stage"
 LOG_GROUP_ARN = "arn:aws:logs:us-east-1:123456789012:log-group:stk-HttpApiAccessLogs"
 #: A value only the saved plan carries; it must never be printed.
@@ -70,7 +66,7 @@ def _plan(*changes, outputs=None):
 def test_exit_0_converges(cbd):
     verdict = cbd.judge_terraform_replan(0, None)
     assert verdict["status"] == "converged"
-    assert verdict["changes"] == [] and verdict["known"] == []
+    assert verdict["changes"] == []
 
 
 @pytest.mark.parametrize("returncode", [1, -1, 127])
@@ -167,125 +163,18 @@ def test_values_never_reach_the_detail(cbd):
     assert PLANNED_VALUE not in json.dumps(verdict)
 
 
-# --------------------------------------------- the registered known defect
+# ------------------------------------------------- no change is accepted
 
 
-def test_the_2006_shape_is_reported_without_failing(cbd):
+def test_the_stage_destination_gaining_a_suffix_is_drift(cbd):
+    """The shape #2006 produced, which the translator no longer writes, fails the
+    run like any other change rather than being accepted."""
     verdict = cbd.judge_terraform_replan(2, _plan(_stage_change()))
-    assert verdict["status"] == "converged"
-    assert verdict["changes"] == []
-    assert verdict["known"] == [
-        f"known defect #2006: {STAGE} (update): access_log_setting.destination_arn"
-    ]
-    assert "known defect" in verdict["detail"]
-
-
-def test_the_2006_shape_beside_another_change_still_fails(cbd):
-    other = _update("module.idp.aws_s3_bucket.b", {"k": 1}, {"k": 2})
-    verdict = cbd.judge_terraform_replan(2, _plan(_stage_change(), other))
     assert verdict["status"] == "drift"
-    assert verdict["changes"] == ["module.idp.aws_s3_bucket.b (update): k"]
-    assert len(verdict["known"]) == 1
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        # The same address, the same path, a different value.
-        _stage_change(after_arn=f"{LOG_GROUP_ARN}-other"),
-        # The suffix removed rather than added.
-        _stage_change(before_arn=f"{LOG_GROUP_ARN}:*", after_arn=LOG_GROUP_ARN),
-        # The shape on the listed address, plus a second changed attribute.
-        _stage_change(stage_name="beta"),
-        # An empty stored value.
-        _stage_change(before_arn="", after_arn=":*"),
-        # The listed address replaced rather than updated.
-        {
-            **_stage_change(),
-            "change": {**_stage_change()["change"], "actions": ["delete", "create"]},
-        },
-        # The same change on an address that is not listed.
-        {**_stage_change(), "address": STAGE.replace("http_api_stage", "other")},
-        # The same address under another module call.
-        {**_stage_change(), "address": STAGE.replace("module.idp.", "module.x.")},
-    ],
-    ids=[
-        "other-value",
-        "suffix-removed",
-        "second-attribute",
-        "empty-before",
-        "replaced",
-        "other-address",
-        "other-module",
-    ],
-)
-def test_only_the_exact_2006_shape_is_reported_without_failing(cbd, change):
-    verdict = cbd.judge_terraform_replan(2, _plan(change))
-    assert verdict["status"] == "drift", verdict
-    assert verdict["known"] == []
-
-
-def test_every_registered_entry_names_one_path_a_test_and_an_issue(cbd):
-    for address, entry in cbd.TERRAFORM_REPLAN_EXEMPT_CHANGES.items():
-        assert address.startswith("module.idp."), address
-        path, accepts, issue = entry
-        assert isinstance(path, tuple) and path, address
-        assert callable(accepts) and isinstance(issue, int), address
-
-
-#: Per issue an entry is registered under, how to see the defect in the module the
-#: translator generates. A new entry needs one; an entry whose probe finds the
-#: shape gone is stale and must be deleted.
-def _probe_2006(module_dir: Path) -> str:
-    main_tf = (module_dir / "modules" / "apiresolverstack" / "main.tf").read_text()
-    start = main_tf.index('resource "awscc_apigateway_stage" "http_api_stage" {')
-    block = main_tf[start : main_tf.index("\n}\n", start)]
-    (line,) = [ln for ln in block.splitlines() if "destination_arn" in ln]
-    return line
-
-
-DEFECT_PROBES = {2006: _probe_2006}
-
-
-@pytest.fixture(scope="module")
-def generated_module(tmp_path_factory):
-    sys.path.insert(0, str(REPO_ROOT / "scripts"))
-    import terraform_check
-
-    out = tmp_path_factory.mktemp("module")
-    try:
-        terraform_check.translate(out)
-    except terraform_check.GateError as e:
-        pytest.fail(f"the offline translation did not run: {e}")
-    return out
-
-
-def test_no_registered_entry_is_stale(cbd, generated_module):
-    """Each entry's address exists in the generated module and its defect is
-    still there. When the translator stops producing a shape (#2006 fixed), this
-    fails: delete the entry and its registry record, so the next change on that
-    attribute fails the run instead of being reported."""
-    manifest = json.loads((generated_module / "idp-terraform.json").read_text())
-    addresses = {
-        f"module.idp.{address}"
-        for resource in manifest["resources"]
-        for address in resource.get("addresses", [])
-    } | {
-        f"module.idp.{resource['address']}"
-        for resource in manifest["resources"]
-        if "address" in resource
-    }
-    for address, (path, _accepts, issue) in cbd.TERRAFORM_REPLAN_EXEMPT_CHANGES.items():
-        assert address in addresses, (
-            f"{address} is not in the generated module: the entry is stale"
-        )
-        assert issue in DEFECT_PROBES, f"entry for #{issue} has no defect probe"
-        line = DEFECT_PROBES[issue](generated_module)
-        assert path[-1] in line
-        assert line.rstrip().endswith(':*"'), (
-            f"#{issue} no longer reproduces in the generated module ({line.strip()}); "
-            "the entry is stale: delete it"
-        )
+    assert verdict["changes"] == [
+        f"{STAGE} (update): access_log_setting.destination_arn"
+    ]
+    assert not hasattr(cbd, "TERRAFORM_REPLAN_EXEMPT_CHANGES")
 
 
 # ------------------------------------- the real command, with a fake binary
@@ -409,7 +298,6 @@ def test_a_failed_replan_fails_the_run_after_the_suite(cbd, suite, status):
         "status": status,
         "detail": f"the {status} detail",
         "changes": [],
-        "known": [],
     }
     result = deploy(verdict)
     assert ran == ["stk"], "the suite still runs beside a failed re-plan"
@@ -461,12 +349,12 @@ def test_the_replan_takes_no_state_lock(cbd, fake_terraform):
     assert "-lock=false" in calls.read_text().splitlines()[0].split()
 
 
-def test_a_deferred_read_beside_the_2006_shape_is_drift(cbd):
+def test_a_deferred_read_is_drift(cbd):
     read = {
         "address": "module.idp.data.aws_region.current",
         "change": {"actions": ["read"], "before": None, "after": {}},
     }
-    verdict = cbd.judge_terraform_replan(2, _plan(_stage_change(), read))
+    verdict = cbd.judge_terraform_replan(2, _plan(read))
     assert verdict["status"] == "drift"
     assert verdict["changes"] == ["module.idp.data.aws_region.current (read)"]
 
@@ -491,13 +379,6 @@ def test_a_key_only_in_after_unknown_is_named(cbd):
     assert verdict["changes"] == ["module.idp.awscc_iam_role.r (update): arn"]
 
 
-def test_the_2006_shape_with_an_unknown_attribute_is_drift(cbd):
-    change = _stage_change()
-    change["change"]["after_unknown"] = {"deployment_id": True}
-    verdict = cbd.judge_terraform_replan(2, _plan(change))
-    assert verdict["status"] == "drift" and verdict["known"] == []
-
-
 def test_a_shortfall_keeps_the_replan_row(cbd, suite, monkeypatch):
     deploy, ran = suite
     monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda s: "no time")
@@ -505,7 +386,6 @@ def test_a_shortfall_keeps_the_replan_row(cbd, suite, monkeypatch):
         "status": "drift",
         "detail": "the drift detail",
         "changes": ["x"],
-        "known": [],
     }
     result = deploy(verdict)
     assert ran == []
@@ -526,17 +406,12 @@ def test_a_shortfall_without_a_replan_reports_only_the_refusal(cbd, suite, monke
     }
 
 
-@pytest.mark.parametrize("plan", [None, "known"], ids=["empty", "known-defect"])
 def test_a_converged_run_refused_for_time_still_fails_the_summary(
-    cbd, suite, monkeypatch, plan
+    cbd, suite, monkeypatch
 ):
     deploy, ran = suite
     monkeypatch.setattr(cbd, "terraform_suite_time_shortfall", lambda s: "no time")
-    verdict = (
-        cbd.judge_terraform_replan(0, None)
-        if plan is None
-        else cbd.judge_terraform_replan(2, _plan(_stage_change()))
-    )
+    verdict = cbd.judge_terraform_replan(0, None)
     result = deploy(verdict)
     assert ran == [] and result["success"] is False
     assert result["convergence_failed"] is False
@@ -548,17 +423,6 @@ def test_a_converged_run_refused_for_time_still_fails_the_summary(
     }
     summary = cbd.build_consolidated_summary("stk", result, [], True, {})
     assert "OVERALL: FAIL" in summary and "no time" in summary
-
-
-def test_a_pass_on_a_known_defect_names_it_in_the_row(cbd, suite):
-    deploy, _ = suite
-    result = deploy(cbd.judge_terraform_replan(2, _plan(_stage_change())))
-    assert result["success"] is True
-    row = result["step_results"][cbd.TERRAFORM_CONVERGENCE_STEP]
-    assert row["status"] == "passed"
-    assert "known defect #2006" in row["error"]
-    summary = cbd.build_consolidated_summary("stk", result, [], True, {})
-    assert "known defect #2006" in summary
 
 
 @pytest.mark.parametrize("failed", [True, False])
