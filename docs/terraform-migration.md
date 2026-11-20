@@ -34,7 +34,9 @@ That test deploys upstream, seeds it with two processed documents, two users wit
 passwords, a configuration edit, an evaluation baseline and a test set, runs every
 phase below with `--apply`, checks that nothing kept was lost, and destroys both
 deployments. It is still only that one upstream configuration, so rehearse the
-migration in a non-production account first.
+migration in a non-production account first. The weekly scheduled run of the same test
+takes a different upstream release each week, from the releases the test pins; the
+measurements below are from a `v0.6.9-tf.0` run.
 
 What the passing run measured:
 
