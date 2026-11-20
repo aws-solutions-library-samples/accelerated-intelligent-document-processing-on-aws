@@ -27,9 +27,10 @@ A conversational agent:
    review; you refine it in chat until it's right.
 4. **Creates a configuration profile and makes it active**, so you can upload a
    document and start processing immediately — no trip to the Configuration page
-   required. It also chooses how files are split into documents, whether long tables need
-   the advanced extraction engine, and whether each document is summarized, from
-   what you've told it.
+   required. When the stack already has a profile in use, it asks before
+   replacing it. It also chooses how files are split into documents, whether
+   long tables need the advanced extraction engine, and whether each document
+   is summarized, from what you've told it.
 
 For the **highest-fidelity** result, you can attach your own example documents in
 the chat; they run through [Discovery](discovery.md), which infers schemas from
@@ -61,7 +62,7 @@ https://github.com/user-attachments/assets/7096c812-08be-4716-ad37-7ae4f3797fa7
 
 ## Web UI
 
-Quick Start is for **Admins**: it creates and activates a configuration profile,
+Quick Start is for **Admins**: it creates, and can activate, a configuration profile,
 which only an Admin may create (see [Role-based access control](rbac.md#permission-matrix)).
 Other roles are not offered it, and the chat routes refuse a Quick Start message
 from them.

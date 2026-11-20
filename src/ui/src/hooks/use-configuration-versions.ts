@@ -29,7 +29,7 @@ interface UseConfigurationVersionsReturn {
   /** True once the first list request has settled, whether or not it succeeded. */
   loaded: boolean;
   error: string | null;
-  /** Re-reads every profile; resolves to the unfiltered list, or null when the read failed. */
+  /** Re-reads the profiles; resolves to the list the server returned, before this hook's scope filter, or null when the read failed. */
   fetchVersions: () => Promise<ConfigVersion[] | null>;
   fetchVersion: (versionName: string) => Promise<{ schema: unknown; default: unknown; custom: unknown }>;
   setActiveVersion: (versionName: string) => Promise<Record<string, unknown>>;
