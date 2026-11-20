@@ -107,8 +107,16 @@ def test_every_offered_status_is_one_the_writer_records(
 
 @pytest.mark.parametrize(("command_name", "option_name"), STATUS_OPTIONS)
 def test_every_recorded_status_is_offered(command_name, option_name):
-    """The other direction: no recordable status is missing from the choices."""
-    assert set(_choices(command_name, option_name)) == {s.value for s in Status}
+    """The other direction: no recordable status is missing from the choices.
+
+    `PENDING_UPLOAD` and `IN_PROGRESS` are Jobs API statuses for a job and for a file
+    inside a `job#` record; no writer stores either as a document's `ObjectStatus`,
+    so offering them would repeat the `PROCESSING` defect.
+    """
+    job_level = {"PENDING_UPLOAD", "IN_PROGRESS"}
+    assert set(_choices(command_name, option_name)) == (
+        {s.value for s in Status} - job_level
+    )
 
 
 @pytest.mark.parametrize(
@@ -118,13 +126,14 @@ def test_every_recorded_status_is_offered(command_name, option_name):
         ["status", "--stack-name", "s", "--batch-id", "b"],
     ],
 )
-def test_processing_is_refused_rather_than_matching_nothing(argv):
+@pytest.mark.parametrize("value", ["PROCESSING", "PENDING_UPLOAD", "IN_PROGRESS"])
+def test_a_status_no_document_carries_is_refused(argv, value):
     from click.testing import CliRunner
 
     flag = "--status-filter" if argv[0] == "delete-documents" else "--object-status"
-    result = CliRunner().invoke(cli, [*argv, flag, "PROCESSING"])
+    result = CliRunner().invoke(cli, [*argv, flag, value])
     assert result.exit_code == 2
-    assert "PROCESSING" in result.output
+    assert value in result.output
 
 
 def test_a_search_with_no_status_selects_a_document_in_every_status(table, monkeypatch):

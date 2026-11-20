@@ -97,11 +97,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+#: Jobs API statuses that share the enum but are never a document's
+#: ``ObjectStatus``: ``PENDING_UPLOAD`` is a job's status before its files arrive and
+#: ``IN_PROGRESS`` a file's status inside a ``job#`` record, which has no
+#: ``ObjectStatus`` at all.
+JOB_LEVEL_STATUSES = frozenset(
+    {DocumentStatus.PENDING_UPLOAD, DocumentStatus.IN_PROGRESS}
+)
+
 #: Every status a document tracking record can carry, in enum order. Each writer
 #: stores ``document.status.value`` in ``ObjectStatus``, so this is derived from the
 #: enum rather than listed: a hand-written list offered ``PROCESSING``, which no
 #: record ever carries, and none of the step statuses an in-progress document has.
-DOCUMENT_STATUS_VALUES = tuple(status.value for status in DocumentStatus)
+DOCUMENT_STATUS_VALUES = tuple(
+    status.value for status in DocumentStatus if status not in JOB_LEVEL_STATUSES
+)
 
 # Console is guaranteed importable — a missing rich exits above, not stubs to None.
 #
