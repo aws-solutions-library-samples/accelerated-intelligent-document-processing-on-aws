@@ -108,13 +108,16 @@ ends the conversation.
    before making it the active profile, because the active profile is what every
    new document on the stack is processed with.
 5. **Activate.** When you approve, the agent creates a configuration profile and
-   **activates** it, then confirms it's ready. Upload a document from **Upload
+   **activates** it, then confirms it's ready. As with attached documents, it
+   activates straight away only on a stack with no profile of its own yet;
+   otherwise it names the profile in use and asks first. Upload a document from **Upload
    Documents** in the side navigation and it's processed with your new
    configuration.
 
 Quick Start never writes into `default` or into a stack-managed profile (a preset
-the stack deployed, which a stack update replaces). It adds a class to another
-existing profile only when you name that profile and ask it to.
+the stack deployed, which a stack update replaces). The agent is instructed
+to add a class to another existing profile only when you name that profile and
+ask it to; the refusal of `default` and stack-managed profiles is enforced in code.
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see

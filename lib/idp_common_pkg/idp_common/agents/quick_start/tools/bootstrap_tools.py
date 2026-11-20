@@ -418,6 +418,7 @@ def list_config_versions_impl() -> str:
             {
                 "versionName": name,
                 "isActive": v.get("isActive"),
+                "managed": bool(v.get("managed")),
                 "description": v.get("description", ""),
                 "classes": classes,
             }
