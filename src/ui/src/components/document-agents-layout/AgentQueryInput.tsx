@@ -58,6 +58,7 @@ interface AgentQueryInputProps {
 const client = generateClient();
 
 // Custom styles for expandable textarea
+// ALL_CAPS on purpose: the string-debt counter skips ALL_CAPS declarations, and this CSS is not UI text.
 const TEXTAREA_STYLES = `
   .expandable-textarea {
     max-height: 250px;
