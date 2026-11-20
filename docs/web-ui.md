@@ -37,9 +37,9 @@ _The Document List, filtered to a folder of processed sample documents, with sta
 
 ## Welcome page and guided tour
 
-A new user lands on a **Welcome** page. It offers **Take the tour** and **Enter IDP Console**, and, for an Admin, **Quick Start** (see [Quick Start](quick-start.md#web-ui)). **Don't show this again** skips it on later sign-ins.
+A new user lands on a **Welcome** page. It offers **Take the tour** and **Enter IDP Console**, and, where Quick Start is enabled (the default), **Quick Start** for an Admin (see [Quick Start](quick-start.md#web-ui)). **Don't show this again** hides it in that browser. An Annotator, or a Reviewer with no other role, lands on Home › Tasks instead, and is not offered the tour.
 
-**Take the tour** opens the Document List and walks through the main pages of the side navigation, one step each, with a line on what each page is for. It covers only the pages your role's side navigation shows, so it is shorter for an Author or a Viewer than for an Admin, and it ends on the last of them. An Admin's tour ends on the **Quick Start** button, and **Finish** opens Quick Start. A user whose side navigation is only the review queues, an Annotator or a Reviewer with no other role, is not offered the tour.
+**Take the tour** opens the Document List and walks through the main pages of the side navigation, one step each, with a line on what each page is for. It has a step only for the pages your role's side navigation shows, so it is shorter for an Author or a Viewer than for an Admin, and it ends on the last step it has for your role. Where Quick Start is enabled, an Admin's tour ends on the **Quick Start** button, and **Finish** opens Quick Start.
 
 ## Document List
 
