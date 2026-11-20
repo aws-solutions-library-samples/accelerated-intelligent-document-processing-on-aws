@@ -129,6 +129,10 @@ type Document implements DynamoDbBase @aws_cognito_user_pools @aws_iam {
   # happens before any section exists, so there is nowhere else for it to live —
   # and without it the person refused sees a FAILED document and no reason.
   ConfigAssignmentError: String
+  # Issues recorded on the document itself rather than on one of its sections.
+  # Only ingest writes these today: a warning when the configuration prefix
+  # mappings could not be read, so no mapping was applied to the document.
+  ProcessingIssues: [ProcessingIssue]
   TraceId: String
   # Number of retained processing runs (versions) for this document. Maintained
   # as a counter on the doc item; intentionally NOT part of the TypeDateIndex
@@ -447,6 +451,32 @@ type ConfigPrefixMappingMutationResponse @aws_cognito_user_pools @aws_iam {
   success: Boolean!
   message: String
   mapping: ConfigPrefixMapping
+  error: ConfigurationError
+}
+
+# One change to one config prefix mapping, from the append-only change log. Every
+# create, edit and delete made through the API leaves one, written in the same
+# transaction as the change itself, so the log cannot record a change that did not
+# land or miss one that did. `before` is null for a create and `after` for a delete.
+type ConfigPrefixMappingHistoryEntry @aws_cognito_user_pools @aws_iam {
+  # Position in the log. Strictly increasing, and the cursor `before` pages on.
+  seq: Int!
+  timestamp: AWSDateTime
+  # The signed-in admin's email, from the verified token.
+  actor: String
+  prefix: String!
+  # "create", "update" or "delete".
+  action: String!
+  before: ConfigPrefixMapping
+  after: ConfigPrefixMapping
+}
+
+type ConfigPrefixMappingHistoryResponse @aws_cognito_user_pools @aws_iam {
+  success: Boolean!
+  # Newest first.
+  entries: [ConfigPrefixMappingHistoryEntry]
+  # Pass as `before` for the next page; null when the log is exhausted.
+  nextBefore: Int
   error: ConfigurationError
 }
 
@@ -2974,6 +3004,15 @@ type Query @aws_cognito_user_pools @aws_iam {
   # rule is actively misleading — you cannot tell which mapping wins when some are
   # hidden from you.
   listConfigPrefixMappings: ConfigPrefixMappingsResponse
+    @aws_cognito_user_pools(cognito_groups: ["Admin"])
+  # The mappings' append-only change log, newest first. Admin-only like the list:
+  # every entry carries a whole mapping before and after, including for mappings
+  # since deleted. `prefix` narrows it to one mapping; `limit` is at most 100.
+  listConfigPrefixMappingHistory(
+    prefix: String
+    limit: Int
+    before: Int
+  ): ConfigPrefixMappingHistoryResponse
     @aws_cognito_user_pools(cognito_groups: ["Admin"])
   # Tenant declarations, plus the stack's isolation mode. Admin-only, like the
   # mapping list it is read beside: it is a statement of the deployment's

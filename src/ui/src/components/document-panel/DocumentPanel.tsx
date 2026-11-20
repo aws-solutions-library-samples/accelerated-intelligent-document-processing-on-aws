@@ -52,6 +52,8 @@ interface MappedDocument {
   configMappingPrefix?: string;
   /** Why the document was refused at ingest, for a `reject` prefix mapping. */
   configAssignmentError?: string;
+  /** Issues recorded on the document rather than a section — today, ingest warnings only. */
+  documentProcessingIssues?: { severity?: string | null; message?: string | null; code?: string | null }[];
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -205,6 +207,20 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
             {item.configAssignmentError}
           </Box>
         )}
+        {/*
+          Document-level issues, shown beside the configuration because the only
+          one written today says how that configuration was chosen: the prefix
+          mappings could not be read, so none was applied.
+        */}
+        {(item.documentProcessingIssues ?? []).map((issue) => (
+          <Box
+            key={`${issue.code ?? ''}:${issue.message ?? ''}`}
+            fontSize="body-s"
+            color={issue.severity === 'error' ? 'text-status-error' : 'text-status-warning'}
+          >
+            {issue.message}
+          </Box>
+        ))}
       </Field>
       <Field label="Page Count">{item.pageCount || 0}</Field>
       <Field label="Evaluation">{evaluationCell ?? (item.evaluationStatus || 'N/A')}</Field>

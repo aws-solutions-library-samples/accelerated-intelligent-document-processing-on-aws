@@ -214,6 +214,20 @@ class Segment:
     model reported.
     """
 
+    unscored_reply_pages: Dict[str, str] = field(default_factory=dict)
+    """Pages a reply left unscored, each with the class that reply gave it (#2039).
+
+    Filled where a reply is parsed, for a call that was asked for a confidence
+    (``confidence.mode`` not ``off``) and gave none that could be read. Only
+    there is it known that the unscored answer is the model's: a forced class, a
+    fallback class or a decision-model label is unscored for reasons of its own
+    and is not entered. The class is kept so that a page later relabelled (under
+    ``sectionSplitting: disabled``, say) is not reported as the model's answer
+    for a class it never gave. Read by
+    :meth:`ClassificationService._record_missing_confidence_issue` once sections
+    exist. Not part of :meth:`to_dict`, like ``filled_page_ids``.
+    """
+
     @property
     def start_page(self) -> str:
         """First page ID in the segment."""

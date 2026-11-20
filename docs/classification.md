@@ -1204,7 +1204,9 @@ severity says how much attention the case deserves:
 > fallback class replaced an out-of-vocabulary answer. Packet granularity with the
 > combined strategy records none of those three. At packet granularity, under either
 > strategy, it records `classification_page_assigned_to_neighbour` instead when the
-> model's page ranges left a page out. When `maxPagesForClassification` limits
+> model's page ranges left a page out. `classification_confidence_missing` can be recorded
+> on any of these paths when the call that chose a class was asked for a confidence,
+> except for the sections the table lists as unscored by design. When `maxPagesForClassification` limits
 > classification to the first pages, the issues recorded on those pages are carried
 > onto the document's one section.
 
@@ -1215,9 +1217,11 @@ severity says how much attention the case deserves:
 | `classification_invalid_class_fallback` | warning | The model returned a class outside the configured vocabulary after every retry, so `fallback_class` was assigned. The stored class is not the model's answer, and extraction ran against the fallback's schema, except under `sectionSplitting: disabled` when the section's class is another one (see below the table) | Add the class the model kept choosing if it is legitimate, or sharpen the class descriptions it confused. See [Enforcing a Valid Class Vocabulary](#enforcing-a-valid-class-vocabulary-validation--retry) |
 | `classification_page_order_not_applied` | warning | `document_shape.pageOrder` is `printed_page_numbers`, and the printed page numbers could not be trusted for the whole document, so the pages were classified in scan order. Recorded on the first section; `details.reason_code` and `details.problem_page_ids` say why and which pages. See [Page Order](#page-order) | Nothing, if scan order is right for this document. Otherwise check the named pages' OCR text for their page numbers |
 | `classification_page_assigned_to_neighbour` | warning | Packet granularity only. The page ranges the model returned left these pages out of every document, so each was added to the document of the page before it in the same packet call (or, when nothing precedes it in that call, the document after it) and given that document's class. Under `sectionSplitting: disabled` this is not needed, because the one section already holds every page. The pages were extracted with that section; what is not the model's answer is which section they are in. A page whose packet call failed is not placed this way: no call decided anything about it, and the failure is already reported as a document error | Check that the pages belong to the section they were added to |
+| `classification_confidence_missing` | warning | The call that chose these sections' classes was asked for a confidence (`confidence.mode` is `topk` or `verbalized`), but its reply carried no usable `candidates` or `confidence` key for them, so they are stored with no score. The class is still the model's answer. This is **one issue per document**, attached to the first unscored section. Its message names up to 20 of the unscored sections and up to 20 of their pages. `details` lists up to 100 section ids and 100 page ids, with `section_count` and `page_count` giving the full totals. Sections unscored by design are not reported: a document-name-regex class, a fallback class, a decision-model label that did not escalate to the LLM, a reply with no class, a page relabelled with its section's class under `sectionSplitting: disabled`, and the one section a `maxPagesForClassification` sample is extrapolated to | Confidence-based review has nothing to act on for those sections. If you wrote your own `<output-format>`, add the key to its JSON example (see [The output-format example names the key](#the-output-format-example-names-the-key)). Otherwise try another classification model |
 
 One issue per section per cause, listing the page IDs, so a long run of
 unclassifiable pages produces one row rather than one per page.
+`classification_confidence_missing` is the exception: it is one issue per document.
 
 **Under `sectionSplitting: disabled` such a page usually takes its section's
 class.** The document's one section gets the configured class with the most pages
@@ -2464,6 +2468,31 @@ carries a `<class-confidence>` block. Both blocks are editable config
 prompt here. At combined packet granularity the per-segment variants,
 `task_prompt_topk_packet` / `task_prompt_verbalized_packet`, are spliced instead,
 because that call returns a segment list rather than one object per page.
+
+### The output-format example names the key
+
+When confidence is on, the JSON example in a shipped prompt's `<output-format>`
+also shows the key the mode asks for. In `topk` mode that is `candidates`, and in
+`verbalized` mode it is `confidence`. At packet granularity the key goes inside each
+`segments` item, and otherwise in the top-level object. With `off` the example is
+unchanged. The instruction block alone was not enough: the shipped prompts end by
+asking for "the exact JSON format specified in <output-format>", and some models
+follow the example literally. On a six-document packet at packet granularity in
+`topk` mode, Claude Sonnet 5.5 returned no `candidates` on any segment in three runs
+without the key in the example, and returned them on all six segments in three runs
+with it.
+
+An `<output-format>` block gets the key only when it is the system-default block
+for that call, unchanged apart from whitespace. That holds wherever the prompt
+comes from: the system default, a configuration preset, or your own custom prompt.
+A block that differs from the default in any other way is left as written, and so
+is the example in a prompt that carries its own `<class-confidence>` block. If you
+want confidence from such a prompt, put the key in its example, as in the prompt
+below.
+
+When the call asked for a confidence and the reply gave none for some sections,
+the document records one `classification_confidence_missing` warning that lists
+them (see the issue table under [Pages Classification Could Not Classify](#pages-classification-could-not-classify)).
 
 Writing it into your own prompt works too:
 

@@ -689,6 +689,8 @@ _RETRIED_REPLIES = {
     "bare 502": (bare_replies(502), "502", 0, 0, "server error (HTTP 502)"),
     "bare 503": (bare_replies(503), "503", 1, 0, "server error (HTTP 503)"),
     "bare 504": (bare_replies(504), "504", 0, 0, "server error (HTTP 504)"),
+    # A throttle that names no error type: retried, counted and logged as one (#2112).
+    "bare 429": (bare_replies(429), "429", 0, 1, "throttling"),
     "InternalFailure (500)": (
         (named_reply("InternalFailure", 500),),
         "InternalFailure",
@@ -756,6 +758,13 @@ _NOT_RETRIED_REPLIES = {
     ),
     "bare 400": (bare_replies(400), "400"),
     "bare 501": (bare_replies(501), "501"),
+    # A 429 is retried for its status only when the reply names no error (#2112);
+    # a named code at 429 is judged by its name, and the ladders list no
+    # ModelNotReadyException.
+    "ModelNotReadyException (429)": (
+        (named_reply("ModelNotReadyException"),),
+        "ModelNotReadyException",
+    ),
 }
 
 

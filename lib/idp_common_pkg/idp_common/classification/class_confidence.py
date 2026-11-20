@@ -97,6 +97,97 @@ def append_class_confidence_block(
     return core.rstrip() + "\n\n" + rendered + "\n"
 
 
+_OUTPUT_FORMAT_OPEN = "<output-format>"
+_OUTPUT_FORMAT_CLOSE = "</output-format>"
+
+# The key each mode asks for, written the way it is added to the JSON example in
+# a shipped ``<output-format>`` block. The ``topk`` line is the one measured
+# against Claude Sonnet 5.5 on a 6-segment packet (GitHub #2039): without it in
+# the example that model followed the example literally and returned no
+# ``candidates`` on any segment, although the ``<class-confidence>`` block
+# asked for them.
+CONFIDENCE_KEY_EXAMPLES = {
+    "topk": (
+        '"candidates": [{"class": "<most likely type>", "probability": <0.0-1.0>}, '
+        '{"class": "<next most likely type>", "probability": <0.0-1.0>}]'
+    ),
+    "verbalized": '"confidence": <0.0-1.0>',
+}
+
+
+def _output_format_span(prompt: str) -> Optional[Tuple[int, int]]:
+    """``(start, end)`` of the first ``<output-format>`` element's body, or None."""
+    start = prompt.find(_OUTPUT_FORMAT_OPEN)
+    if start == -1:
+        return None
+    start += len(_OUTPUT_FORMAT_OPEN)
+    end = prompt.find(_OUTPUT_FORMAT_CLOSE, start)
+    if end == -1:
+        return None
+    return start, end
+
+
+def _normalised(text: str) -> str:
+    return " ".join(text.split())
+
+
+def add_confidence_key_to_output_format(
+    prompt: str, shipped_prompt: str, mode: str, per_segment: bool
+) -> str:
+    """Add the confidence key to the JSON example of a SHIPPED output format.
+
+    The ``<class-confidence>`` block asks for the key in prose, but a shipped task
+    prompt also carries an ``<output-format>`` example and ends by telling the
+    model to answer "in the exact JSON format specified in <output-format>". A
+    model that follows the example literally then omits the key, and the section
+    is stored unscored (GitHub #2039). So the example has to show it too.
+
+    Only the shipped block is rewritten: ``prompt``'s ``<output-format>`` body
+    must equal ``shipped_prompt``'s, whitespace aside. That covers the shipped
+    prompt itself and a custom prompt that kept the shipped block, and leaves an
+    output format the operator wrote alone — their text is theirs, and a
+    reply that still omits the key is reported as a processing issue instead.
+
+    ``per_segment`` puts the key inside the ``segments`` item (packet prompts);
+    otherwise it goes in the top-level object. Returns ``prompt`` unchanged when
+    the mode asks for nothing, either prompt has no block, the blocks differ, or
+    the block already names the key.
+    """
+    key_line = CONFIDENCE_KEY_EXAMPLES.get(mode)
+    if not key_line or not prompt or not shipped_prompt:
+        return prompt
+    span = _output_format_span(prompt)
+    shipped_span = _output_format_span(shipped_prompt)
+    if span is None or shipped_span is None:
+        return prompt
+    body = prompt[span[0] : span[1]]
+    if _normalised(body) != _normalised(shipped_prompt[slice(*shipped_span)]):
+        return prompt
+    key = key_line.split(":", 1)[0]
+    if key in body:
+        return prompt
+
+    # The object the key belongs to closes at the last "}" — before the "]" of
+    # the segments array for a per-segment key. The key goes after that object's
+    # last value, on a line indented like the value's own.
+    limit = body.rfind("]") if per_segment else len(body)
+    if limit == -1:
+        return prompt
+    close = body.rfind("}", 0, limit)
+    if close == -1:
+        return prompt
+    last = close - 1
+    while last >= 0 and body[last].isspace():
+        last -= 1
+    if last < 0:
+        return prompt
+    line_start = body.rfind("\n", 0, last) + 1
+    line = body[line_start:last]
+    indent = line[: len(line) - len(line.lstrip())]
+    augmented = body[: last + 1] + ",\n" + indent + key_line + body[last + 1 :]
+    return prompt[: span[0]] + augmented + prompt[span[1] :]
+
+
 def parse_candidates(
     raw: Any, valid_classes: Optional[set] = None
 ) -> List[Dict[str, Any]]:

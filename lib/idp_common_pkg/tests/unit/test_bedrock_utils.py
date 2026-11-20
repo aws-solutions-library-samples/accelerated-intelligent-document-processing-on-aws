@@ -604,6 +604,8 @@ _RETRIED_SERVER_ERRORS = {
     "502": bare_replies(502),
     "503": bare_replies(503),
     "504": bare_replies(504),
+    # A front end's throttle, which names no error type either (#2112).
+    "429": bare_replies(429),
     "InternalFailure": (named_reply("InternalFailure", 500),),
 }
 
