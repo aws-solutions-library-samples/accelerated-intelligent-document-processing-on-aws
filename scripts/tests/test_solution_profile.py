@@ -528,7 +528,19 @@ def test_the_asset_layout(tmp_path):
 @pytest.mark.unit
 def test_the_unpacked_asset_passes_the_reference_validator(tmp_path):
     tarball = build.build(REPO_ROOT, tmp_path, tag="v9.9.9", commit=COMMIT)
-    assert build.validate_unpacked(REPO_ROOT, tarball, release=False) == 0
+    assert (
+        build.validate_unpacked(
+            REPO_ROOT, tarball, False, build.expected_version(REPO_ROOT)
+        )
+        == 0
+    )
+
+
+@pytest.mark.unit
+def test_the_unpacked_asset_fails_against_a_version_it_does_not_carry(tmp_path, capsys):
+    tarball = build.build(REPO_ROOT, tmp_path, tag="v9.9.9", commit=COMMIT)
+    assert build.validate_unpacked(REPO_ROOT, tarball, False, "0.0.1") == 1
+    assert "does not equal" in capsys.readouterr().out
 
 
 @pytest.mark.unit

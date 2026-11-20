@@ -176,8 +176,27 @@ def build(
     return target
 
 
-def validate_unpacked(repo_root: Path, tarball: Path, release: bool) -> int:
+def expected_version(repo_root: Path) -> str:
+    """The contract form of ``repo_root``'s ``VERSION``, by the check's own converter."""
+    path = repo_root / "scripts" / "check_solution_profile.py"
+    spec = importlib.util.spec_from_file_location("_check_solution_profile", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolve their module through it
+    spec.loader.exec_module(module)
+    pep440 = (repo_root / "VERSION").read_text(encoding="utf-8")
+    return module.contract_version(pep440)
+
+
+def validate_unpacked(
+    repo_root: Path, tarball: Path, release: bool, version: str
+) -> int:
     """Unpack ``tarball`` and run the reference validator over it.
+
+    ``version`` is what the caller expects the asset to describe (normally
+    :func:`expected_version`), and the validator compares the unpacked manifest
+    against it, so a tarball built from the wrong tree fails here.
 
     Evidence paths in a profile are relative to the repository at ``source.commit``,
     and the asset holds no repository files, so the validator is pointed at the
@@ -190,9 +209,6 @@ def validate_unpacked(repo_root: Path, tarball: Path, release: bool) -> int:
         with tarfile.open(tarball, "r:gz") as tar:  # nosemgrep
             tar.extractall(tmp, filter="data")
         unpacked = Path(tmp) / TOP
-        version = yaml.safe_load(
-            (unpacked / "solution-profile.yaml").read_text(encoding="utf-8")
-        )["version"]
         version_file = Path(tmp) / "VERSION"
         version_file.write_text(version + "\n", encoding="utf-8")
         argv = [
@@ -241,7 +257,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"wrote {target}")
     print((target.parent / f"{target.name}.sha256").read_text(encoding="utf-8").strip())
     if args.validate:
-        return validate_unpacked(repo_root, target, args.release)
+        return validate_unpacked(
+            repo_root, target, args.release, expected_version(repo_root)
+        )
     return 0
 
 
