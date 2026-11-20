@@ -130,9 +130,10 @@ Deploying this solution requires an IAM role/user with the following permissions
 > access. See also [Deployment → Administrator Access Requirements](./deployment.md#administrator-access-requirements).
 >
 > That role is a **deployment** role, not a least-privilege one. It still holds
-> `cloudformation:*` plus service wildcards on 25 services, because a
-> CloudFormation service role must be able to create, update, **and roll back**
-> every resource type in every optional feature of the templates. What contains
+> `cloudformation:*` plus a service wildcard for each service the templates
+> deploy, because a CloudFormation service role must be able to create, update,
+> **and roll back** every resource type in every optional feature of the
+> templates. What contains
 > it is not narrow actions but three constraints, which its own template now
 > requires: a mandatory `CreatedRolePermissionsBoundaryArn` (its `iam:CreateRole`
 > grant carries an `iam:PermissionsBoundary` condition, so it cannot mint a role

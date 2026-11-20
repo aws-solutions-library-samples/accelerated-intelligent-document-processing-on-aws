@@ -18,5 +18,5 @@
 bedrock-agentcore>=1.0.0
 uvicorn>=0.30.0
 aws-requests-auth>=0.4.3
-requests>=2.32.0
+requests>=2.33.0
 jsonschema>=4.0.0
