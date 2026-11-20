@@ -221,6 +221,11 @@ GATES_DELIBERATELY_OUT_OF_CI = {
         "this same target, so both CIs run it there. Named on its own only so the "
         "scan diff can be run without re-validating every Terraform binary."
     ),
+    "terraform-replay-releases": (
+        "The last step of `make terraform-check` (in SHARED_GATES), which runs this "
+        "same target, so both CIs run it there. Named on its own only so the release "
+        "replay can be run without re-validating every Terraform binary."
+    ),
     "cfn-lint-warnings": (
         "`cfn-lint` with CFN_LINT_SHOW_WARNINGS=1: identical checks, verbose "
         "output. `cfn-lint` runs from lint-cicd, so the checking is gated."
@@ -997,7 +1002,9 @@ def test_the_recipe_slice_stops_at_the_recipe() -> None:
         "`make <gate>` can be found in the slice without lint-cicd invoking it. "
         "Narrow _lint_cicd_recipe()."
     )
-    assert 10 < len(recipe.splitlines()) < 120, (
+    # A plausibility bound, not a budget: the stray-target check above is what
+    # catches a widened slice. Each gate step in lint-cicd is about six lines.
+    assert 10 < len(recipe.splitlines()) < 140, (
         f"the lint-cicd slice is {len(recipe.splitlines())} lines, which is not a "
         "plausible length for one recipe — check _lint_cicd_recipe()."
     )

@@ -148,8 +148,12 @@ with: their rows are not rewritten.
 **Failed runs are included.** An execution that ends `FAILED`, `TIMED_OUT` or
 `ABORTED` writes the usage its stages had recorded on the document's tracking record
 before it stopped, so a sum over the table is actual spend, failed attempts
-included. Usage the failing step itself incurred is not recorded there and is not
-included. Rows written before `execution_status` existed hold NULL in it and come
+included. Usage the failing step itself incurred is generally not recorded there and
+is not included; classification and summarization are the exception, because an
+attempt of either that fails transiently writes the usage of the calls it completed to
+the tracking record (as does a summarization that fails outright). Only the most recent
+failed attempt of a step is there, because each retry starts by replacing that record's
+usage; see [Cost calculator](cost-calculator.md). Rows written before `execution_status` existed hold NULL in it and come
 from executions that succeeded. To break failed attempts out:
 
 ```sql
@@ -368,7 +372,9 @@ When a document is processed and a new section type (classification) is detected
 1. Creates a new Glue table for that section type (e.g., `document_sections_invoice`, `document_sections_receipt`, `document_sections_w2`)
 2. Configures the table with appropriate schema based on the extracted data
 3. Sets up partition projection for efficient date-based queries
-4. Updates the table schema if new fields are detected in subsequent documents
+4. Adds a column to the table when a later document has a field the table does not have yet
+
+The table's columns accumulate across documents. A field that one document of a class has and the next does not stays a column, so queries written against it keep working; columns are never removed or renamed by processing. Glue stores column names in lowercase, and the comparison with a document's field names ignores case, so a document whose fields the table already has causes no table update. When a column's type in the table differs from the type the reporting step writes to the Parquet files (for example a `timestamp` column recorded as `string`), the next document of that class corrects the column's type in place.
 
 **Important:** Section type names are normalized to lowercase for consistency with case-sensitive S3 paths. For example, a section classified as "W2" will create a table named `document_sections_w2` with data stored in `document_sections/w2/`.
 
@@ -390,7 +396,7 @@ Document sections are stored in dynamically created tables based on the section 
 The remaining columns are dynamically inferred from the JSON extraction results and vary by section type. Common patterns include:
 - Nested JSON objects are flattened using dot notation (e.g., `customer.name`, `customer.address.street`)
 - Arrays are converted to JSON strings
-- Primitive values (strings, numbers, booleans) are preserved as their native types
+- Every other value is stored as a string, including numbers and booleans, so cast before aggregating; only `timestamp` and `evaluation_date` are written with a timestamp type
 
 **Partitioning:**
 Each section type table is partitioned by date (YYYY-MM-DD format) for efficient querying.

@@ -275,6 +275,8 @@ class StackOperation:
         assume_role_arn: Optional[str] = None,
         allow_replace_stateful: bool = False,
         allow_replace_retained: bool = False,
+        tags: Optional[Dict[str, str]] = None,
+        terraform_state: str = "local",
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
 
@@ -289,8 +291,8 @@ class StackOperation:
         retains or one that holds data (the module's ``retainedAddresses`` and
         ``statefulAddresses``, old and new module both) unless
         ``allow_replace_stateful`` is set. State is local in that
-        directory unless a backend is configured in another file there.
-        Always waits.
+        directory unless a backend is configured in another file there, or
+        ``terraform_state`` is ``"s3"``. Always waits.
 
         A parameter not in ``parameters`` keeps the value the deployment has,
         as on a CloudFormation update: the label stack records every
@@ -320,6 +322,27 @@ class StackOperation:
                 replaces a retained or stateful resource (its data is lost).
             allow_replace_retained: The earlier name of
                 ``allow_replace_stateful``; either one allows it.
+            tags: Tags for every taggable resource, as CloudFormation stack
+                tags are: the module merges them into each ``awscc`` resource
+                (that provider has no ``default_tags``), and ``main.tf`` gives
+                them to the ``aws`` provider's ``default_tags``. A tag a
+                template sets on a resource keeps its value. They replace the
+                deployment's tags; ``None`` keeps the tags of the previous
+                deploy from this directory. ``{}`` stops passing tags, which
+                removes them from the ``aws`` resources but may leave them on
+                ``awscc`` resources (see ``write_root_config``). At most 10, and
+                refused for a module published before the module accepted tags.
+            terraform_state: ``"local"`` (the default) keeps the state in
+                ``terraform.tfstate`` in ``terraform_dir``, as before this option
+                existed. ``"s3"`` keeps it in an S3 bucket named
+                ``idp-tf-<stack name>-<account>-<region>`` (created if missing,
+                with a public access block, versioning, SSE-S3 default
+                encryption and a policy denying non-TLS requests; reused if
+                present, never recreated or emptied), locked with the DynamoDB
+                table ``idp-tf-lock-<stack name>``, and writes ``backend.tf``
+                naming both. Neither is deleted with the deployment. A directory
+                that already holds a local state is refused: moving it into S3
+                is not supported yet.
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's
@@ -343,7 +366,9 @@ class StackOperation:
         if not region:
             raise IDPConfigurationError("a region is required for a Terraform deploy")
         directory = Path(terraform_dir or Path("idp-terraform") / name).resolve()
+        state_choice = tf.check_terraform_state(terraform_state)
         runner = tf.TerraformRunner(terraform_bin, directory)
+        tf.check_backend_switch(directory, state_choice)
 
         deployer = StackDeployer(region=region)
         stack = self._describe_stack(deployer, name)
@@ -370,6 +395,13 @@ class StackOperation:
         except IDPConfigurationError:
             previous_manifest = {}
         previous_defaults = tf.read_module_defaults_from_dir(directory)
+        # Before anything is written, so a refused bucket leaves the directory
+        # as it was.
+        backend = (
+            tf.ensure_state_backend(region, name)
+            if state_choice == tf.STATE_S3
+            else None
+        )
         # The label stack records every parameter's value in effect, so a
         # parameter not passed keeps it, as on a CloudFormation update, and a
         # second operator deploying from another directory reads the same values.
@@ -383,8 +415,15 @@ class StackOperation:
             manifest=manifest,
             assume_role_arn=assume_role_arn,
             recorded=tf.label_parameter_values(stack),
+            tags=tags,
         )
-        operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
+        if backend is not None:
+            tf.write_backend_tf(directory, backend)
+            operation = "UPDATE" if backend["state_exists"] else "CREATE"
+        else:
+            operation = (
+                "UPDATE" if (directory / tf.LOCAL_STATE_FILE).exists() else "CREATE"
+            )
         runner.init(upgrade=tf.needs_upgrade(directory, module_url))
         tf.record_module_source(directory, module_url)
         defaults = tf.read_module_defaults_from_dir(directory)
@@ -434,7 +473,9 @@ class StackOperation:
 
         In ``terraform_dir`` (default ``./idp-terraform/<stack_name>``): runs
         ``init``; empties the deployment's S3 buckets that will be destroyed,
-        with the helper the CloudFormation delete uses; removes every address in
+        with the helper the CloudFormation delete uses, except those with
+        ``force_destroy`` (the custom-resource bridge buckets), which destroy
+        empties only after the custom resources that read them; removes every address in
         the module's ``retainedAddresses`` (as ``module.idp.<address>``) from
         the state, skipping any not in it; then runs ``destroy -auto-approve``.
 
@@ -543,6 +584,26 @@ class StackOperation:
         name = self._client._require_stack(stack_name)
         deployer = StackDeployer(region=self._client._region)
         return deployer._stack_exists(name)
+
+    def get_parameters(
+        self,
+        stack_name: Optional[str] = None,
+        **kwargs,
+    ) -> Dict[str, str]:
+        """
+        Get the parameter values a CloudFormation stack was deployed with.
+
+        Args:
+            stack_name: Stack name (uses default if not provided)
+
+        Returns:
+            ``{parameter name: value}``; empty if the stack cannot be read
+        """
+        from idp_sdk._core.stack import StackDeployer
+
+        name = self._client._require_stack(stack_name)
+        deployer = StackDeployer(region=self._client._region)
+        return deployer._get_stack_parameters(name)
 
     def get_status(
         self,

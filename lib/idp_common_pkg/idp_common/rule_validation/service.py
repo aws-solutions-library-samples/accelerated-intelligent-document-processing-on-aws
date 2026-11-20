@@ -31,7 +31,7 @@ from idp_common.config.schema_constants import (
     X_AWS_IDP_VALIDATION_ENGINE,
 )
 from idp_common.models import Document, RuleValidationResult, Status
-from idp_common.rule_validation.concurrency import resolve_semaphore
+from idp_common.rule_validation.concurrency import resolve_semaphore, run_sync
 from idp_common.rule_validation.models import FactExtractionResponse
 from idp_common.utils.transient_errors import reraise_if_transient
 
@@ -1274,32 +1274,5 @@ class RuleValidationService:
         Returns:
             Document with updated rule_validation_result
         """
-        import concurrent.futures
-
-        try:
-            # Try to get the current event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an environment with a running event loop (like Jupyter)
-                # Use ThreadPoolExecutor to run the async function in a separate thread
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        self.validate_document_async(document, self.config.to_dict()),
-                    )
-                    return future.result()
-            else:
-                # Event loop exists but not running, we can use it
-                return loop.run_until_complete(
-                    self.validate_document_async(document, self.config.to_dict())
-                )
-        except RuntimeError:
-            # No event loop exists, create a new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(
-                    self.validate_document_async(document, self.config.to_dict())
-                )
-            finally:
-                loop.close()
+        config = self.config.to_dict()
+        return run_sync(lambda: self.validate_document_async(document, config))

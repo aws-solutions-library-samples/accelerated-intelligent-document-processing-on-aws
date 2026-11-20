@@ -125,9 +125,9 @@ skips the file you are fixing. Never hand-edit either array. `--write` **refuses
 grow** either list, naming the paths, unless given `--allow-new-debt "<reason>"`,
 which records the reason in the baseline; without that refusal `--write` would
 launder a brand-new finding into a permanent exclusion. `--summary` prints the
-current split. Two `extend-exclude` entries are scope decisions rather than debt —
-the vendored `pii-anonymizer` tree and `**/*.ipynb` — and each carries a premise
-the gate evaluates against the tree.
+current split. Some `extend-exclude` entries are scope decisions rather than debt —
+the vendored `pii-anonymizer` tree, `**/*.ipynb` and the vendored solution-profile
+contract validator — and each carries a premise the gate evaluates against the tree.
 
 The **formatting** debt is deliberately unpaid: `ruff format` over that whole list
 is a mechanical, conflict-generating sweep that belongs in its own change.
@@ -1268,13 +1268,39 @@ unrecognised so no check runs at all. In both cases `gh pr checks` then errors o
 answers about the wrong pull request, which reads as "cannot tell" and allows the
 merge with nothing printed.
 
+It also refuses `gh pr merge` into `develop` or `main` while the pull request's head
+is **not yet verified**: no check has concluded on it, or a check on it is still
+running. Both are read from `gh pr view`'s `statusCheckRollup` for the current head ([#2115](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/issues/2115)).
+A pull request that conflicts with its base gets no checks, and once the conflict is
+resolved and pushed nothing has verified the new head until the new run reports;
+merging in that window is how a change turned three gates red on `develop` for every
+open pull request. A single finished check is not enough, because the quick ones
+(the dependency audit, CodeQL, the docs build) finish within a minute of a push and
+the test suites and SRT scan several minutes later, so the merge waits for the whole
+run; skipped and cancelled checks are not verdicts. The refusal is scoped twice. A pull request
+into any **other** base is not judged, so merges into a batch branch such as
+`backlog/staging`, which gets no CI by design, need no override. A pull request from
+a **fork** with no check still running is allowed with a line on stderr saying
+nothing verified its head, because some fork pull requests get no GitHub CI here and
+refusing those would block the only route they have. A fork whose checks are running
+is held like any other.
+
+`make premerge` is the local substitute for a CI run that has not reported: it runs
+every gate in `SHARED_GATES` (`scripts/tests/test_ci_gate_parity.py`), read from that
+list by `scripts/premerge.py` rather than copied, carries on past a failure, and
+exits non-zero if any gate failed. It checks the working tree rather than the merge
+result CI checks, so merge the base in first. `PREMERGE_ARGS=--list` prints the plan.
+
 A commit on a branch that merely *tracks* `origin/develop` is allowed. `git
 checkout -b fix/x origin/develop` sets that upstream, so refusing it would refuse
 the ordinary way of starting work; the bare `git push` from such a branch is the
 thing that would reach `develop`, and that is refused.
 
 Overrides, one per decision: `ALLOW_SHARED_BRANCH=1` for a commit or push,
-`ALLOW_RED_MERGE=1` for a merge. Put the assignment in front of the command
+`ALLOW_RED_MERGE=1` for a merge with a failing check, and `ALLOW_UNCHECKED_MERGE=1`
+for a merge into a shared branch whose head is not yet verified. The last two
+are separate decisions, so waiving a known-unrelated red check does not waive an
+unverified head. Put the assignment in front of the command
 (`ALLOW_SHARED_BRANCH=1 git push origin develop`). The environment is read too, and
 that is the form to be careful with: a variable exported in one tool call is gone by
 the next, but one exported by a shell profile, an IDE or a CI runner persists and
@@ -1283,7 +1309,7 @@ invisible by construction, both halves print one line to stderr naming the check
 honoured override disabled. Only an affirmative value (`1`, `true`, `yes`, `y`, `on`)
 counts: `ALLOW_SHARED_BRANCH=0` leaves the guard on.
 
-Neither variable is registered in `scripts/tests/gate_exemptions.json`, and that is
+None of these variables is registered in `scripts/tests/gate_exemptions.json`, and that is
 a decision rather than an oversight — the reasoning is written out in the hook's
 header. That registry governs a **gate** turned off for a file, a line or a rule,
 because such a reason is written once and outlives what it described. These are
@@ -1296,7 +1322,10 @@ afterwards — is handled where it happens, by the stderr line above.
 around it:
 
 - A merge performed through GitHub's own Merge button, which runs no code here.
-- A pull request whose checks never ran (a fork PR gets no GitHub CI here).
+- A **fork** pull request whose checks never ran (some fork PRs get no GitHub CI
+  here). It is allowed with a note; a same-repository one into a shared branch is refused.
+- A gate whose workflow run was never created. It contributes no entry to the head's
+  check rollup, so a head whose other checks all finished reads as verified.
 - `git push --no-verify`, which skips the `pre-push` hook outright.
 - Anything that reaches `git` other than as the first word of a segment: a script
   file (`sh deploy.sh`), `bash -c`, `eval`, `xargs`, a wrapper that takes options of
@@ -1352,11 +1381,14 @@ Four properties worth knowing before relying on it:
   open is about what cannot be *read*, though, not about where the command runs: an
   explicit refspec names its destination on the command line, so `git push origin
   develop` is refused even in a directory that is not a repository.
-- **Only *concluded* failures block a merge.** `pending` is the steady state for the
-  two path-filtered workflows and the one conditional check, so refusing on pending
-  would refuse every merge. A pull request whose checks **never ran** — a fork PR
-  gets no GitHub CI here — is not refused either, since refusing it would block the
-  only route a fork contribution has.
+- **Only *concluded* failures make a merge red.** A pending check is not a failure.
+  It does hold a merge into a shared branch until it finishes, under
+  `ALLOW_UNCHECKED_MERGE`. A path-filtered workflow that does not trigger adds no
+  check to the head at all, so a settled pull request has nothing left pending;
+  check that on recent merged pull requests with `gh pr view <n> --json
+  statusCheckRollup` before assuming otherwise. A merge into any other branch is not held. A
+  fork pull request with an unverified head is allowed with a note, since refusing it
+  would block the only route a fork contribution has.
 - **`make install-git-hooks` writes to `$(git rev-parse --git-common-dir)/hooks`,
   not `git rev-parse --git-path hooks`.** The latter honours `core.hooksPath`, and a
   managed developer machine may set that system-wide (in `/etc/gitconfig`) to a
@@ -1446,7 +1478,7 @@ alone. `scripts/tests/test_check_loop_liveness.py` pins both directions and carr
 regression test keyed on the real file's shape.
 
 None of these hooks' overrides is registered in `scripts/tests/gate_exemptions.json`, for the
-same reason `ALLOW_SHARED_BRANCH` and `ALLOW_RED_MERGE` are not: that registry governs a
+same reason `ALLOW_SHARED_BRANCH`, `ALLOW_RED_MERGE` and `ALLOW_UNCHECKED_MERGE` are not: that registry governs a
 **gate** turned off for a file, a line or a rule, where the reason is written once and
 outlives what it described. These are per-invocation switches on a local convention,
 and the reasoning is in each hook's header.
@@ -1673,6 +1705,7 @@ that domain:
 | `.claude/skills/add-model.md` | Adding or changing a selectable Bedrock model (model IDs, regions, limits, pricing, template enums, client routing, UI, both doc tiers, tests) — the full expanded checklist |
 | `.claude/skills/prepare-changelog.md` | Preparing the `[Unreleased]` CHANGELOG section for release — three-section shape (Added/Changed/Fixed), net-since-release entries (drop intra-cycle churn), compact entries with doc/PR links |
 | `.claude/skills/cut-release-changelog.md` | Cutting the release section at tag time — relabel `[Unreleased]` to the `VERSION` number (no date) and append the version-pinned `## Templates` URLs for the four published regions |
+| `.claude/skills/update-solution-profile.md` | Reviewing the **solution profile** (`solution-profile/`, [docs/solution-profile.md](docs/solution-profile.md)) for a release, after the CHANGELOG is cut: check the curated files against the release's section, add its `changes.yaml` entry, set `reviewed_for_version`. With `VERSION` final, `make solution-profile-check` applies the contract's release rules and stays red until this is done; the release workflow then attaches the tarball and `.sha256` to the GitHub Release |
 
 > **Note:** `.claude/skills/` is canonical. The Cline assistant's
 > `.cline/skills/` files are **symlinks** to these (different filenames), so

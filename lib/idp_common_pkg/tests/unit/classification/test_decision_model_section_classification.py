@@ -245,8 +245,11 @@ def test_the_method_and_its_bounds_are_validated():
     assert section.method == "decision_model"
     with pytest.raises(Exception, match="endpoint is empty"):
         cfg({"method": "decision_model"})
-    with pytest.raises(Exception, match="1329"):
+    # Embeddings are implemented (#1657) and need the LLM fallback.
+    with pytest.raises(Exception, match="on_low_confidence 'llm'"):
         cfg({"method": "embeddings"})
+    with pytest.raises(Exception, match="must be one of"):
+        cfg({"method": "boundary_model"})
     with pytest.raises(Exception):
         cfg({"decision_model": {"max_pages": 5}})
     with pytest.raises(Exception, match="input must be"):
@@ -344,7 +347,7 @@ def test_a_section_request_with_no_text_or_text_that_fits_is_untouched(caplog):
     with caplog.at_level(logging.INFO):
         bedrock, _ = _split((1, 1))
         _run_with_texts(
-            _service(decision_model={"max_input_tokens": 256}),
+            _service(decision_model={"max_input_tokens": 512}),
             _document(1),
             images_only,
             bedrock,
@@ -441,3 +444,164 @@ def test_every_section_request_fits_the_window_at_the_most_pages():
                     f"{case}: the request was about {tokens:.0f} tokens, over the "
                     f"{WINDOW_INPUT_TOKENS} the window holds"
                 )
+
+
+# --- A cut never keeps only the "Page 1:" line (#2111) -------------------------
+
+
+@pytest.mark.parametrize("mode", ["text", "both"])
+@pytest.mark.parametrize("style", DENSE_STYLES)
+def test_a_first_page_with_no_line_breaks_is_cut_mid_line_not_to_its_header(
+    mode, style
+):
+    """Dense text on one line (CJK, figures, words): the cut used to back up to the
+    line break after "Page 1:" and classify the section from no page text."""
+    from idp_common.decision_model import (
+        DEFAULT_MAX_INPUT_TOKENS,
+        IMAGE_TOKENS,
+        estimate_tokens,
+    )
+    from idp_common.decision_model.budget import LINE_BREAK_BACKOFF_SHARE
+
+    page = dense_page(style, 1).replace("\n", " ")
+    decider = FakeDecider([{"invoice": 0.7, "receipt": 0.3}])
+    bedrock, _ = _split((1, 1))
+    _run_with_texts(
+        _service(decision_model={"input": mode}), _document(1), decider, bedrock, [page]
+    )
+
+    (request,) = decider.requests
+    state = request["state"]
+    assert state.startswith("Page 1:\n") and f"Page 1:\n{page}".startswith(state)
+    budget = (
+        DEFAULT_MAX_INPUT_TOKENS
+        - estimate_tokens(json.dumps(request["questions"]["doc_class"]))
+        - IMAGE_TOKENS * len(request["images"])
+    )
+    assert estimate_tokens(state) >= budget * (1 - LINE_BREAK_BACKOFF_SHARE) - 2
+
+
+@pytest.mark.parametrize(
+    "first_page, kept_head",
+    # The empty-first-page budget holds about five characters of page 2: under
+    # half the budget once both header lines are discounted, over half if the
+    # second one counted as evidence.
+    [(None, "Page 1:\nab"), ("", "Page 1:\n\n\nPage 2:\n" + "第" * 4)],
+    ids=["one-page", "empty-first-page"],
+)
+def test_a_section_whose_cut_would_keep_only_its_headers_is_failed(
+    first_page, kept_head
+):
+    """A limit that leaves room for the page header lines and a few characters:
+    the section is refused, not classified from its header lines."""
+    import math
+
+    from idp_common.classification.decision_model_labeler import (
+        DecisionModelSectionLabeler,
+    )
+    from idp_common.decision_model import estimate_tokens
+
+    classes = tuple(f"class{i:02d}" for i in range(12))
+    pages = 1 if first_page is None else 2
+
+    def labeler(limit=None):
+        extra = {} if limit is None else {"max_input_tokens": limit}
+        service = _service(
+            decision_model={"input": "text", "max_pages": pages, **extra},
+            classes=classes,
+        )
+        section_cfg = (
+            service.config.classification.split_then_classify.section_classification
+        )
+        return service, DecisionModelSectionLabeler(service, section_cfg)
+
+    # The question as the request builder counts it, from a request it built.
+    _, probe = labeler()
+    built = probe.build_request(None, {"p1": "x"}, ["p1"])
+    question = estimate_tokens(
+        json.dumps(built.questions["doc_class"].model_dump(mode="json"))
+    )
+    limit = math.ceil(question + estimate_tokens(kept_head))
+    assert limit >= 256  # the least max_input_tokens accepted
+
+    service, _ = labeler(limit)
+    decider = FakeDecider([])
+    bedrock, _ = _split((1, pages))
+    page = dense_page("cjk", 1).replace("\n", " ")
+    texts = [page] if first_page is None else [first_page, page]
+    result = _run_with_texts(service, _document(pages), decider, bedrock, texts)
+
+    assert decider.requests == []
+    assert result.sections[0].classification == UNCLASSIFIED_CLASS
+
+
+def test_an_images_request_over_the_limit_is_refused_locally_not_sent():
+    """Long class descriptions and four page images: the request is refused before
+    it is sent, with the reason, instead of going out to be refused."""
+    from idp_common.decision_model import DEFAULT_MAX_INPUT_TOKENS, IMAGE_TOKENS
+
+    schemas = _classes("invoice", "receipt")
+    for schema in schemas:
+        schema["description"] = f"A {schema['$id']} " + "with a long layout note " * 120
+    room = DEFAULT_MAX_INPUT_TOKENS - 4 * IMAGE_TOKENS
+    from idp_common.decision_model import estimate_tokens
+
+    assert sum(estimate_tokens(s["description"]) for s in schemas) > room
+
+    config = {
+        "classes": schemas,
+        "classification": {
+            "strategy": "split_then_classify",
+            "split_then_classify": {
+                "splitting": {"llm": {"granularity": "packet"}},
+                "section_classification": {
+                    "method": "decision_model",
+                    "pages": "all",
+                    "decision_model": {
+                        "endpoint": ARN,
+                        "input": "images",
+                        "max_pages": 4,
+                    },
+                },
+            },
+        },
+    }
+    service = ClassificationService(region="us-west-2", config=config)
+    decider = FakeDecider([])
+    bedrock, _ = _split((1, 4))
+    result = _run_with_texts(
+        service, _document(4), decider, bedrock, ["a", "b", "c", "d"]
+    )
+
+    assert decider.requests == []
+    assert result.sections[0].classification == UNCLASSIFIED_CLASS
+
+
+def test_max_input_tokens_above_the_window_less_the_reserve_is_capped(caplog):
+    from idp_common.config.models import IDPConfig
+    from idp_common.decision_model import DEFAULT_MAX_INPUT_TOKENS
+
+    def section(limit):
+        return IDPConfig.model_validate(
+            {
+                "classification": {
+                    "split_then_classify": {
+                        "section_classification": {
+                            "decision_model": {"max_input_tokens": limit}
+                        }
+                    }
+                }
+            }
+        )
+
+    def limit(cfg):
+        sc = cfg.classification.split_then_classify.section_classification
+        return sc.decision_model.max_input_tokens
+
+    with caplog.at_level(logging.WARNING):
+        assert limit(section(DEFAULT_MAX_INPUT_TOKENS)) == DEFAULT_MAX_INPUT_TOKENS
+        assert caplog.records == []
+        # Capped, not refused, so a configuration saved with a larger value loads.
+        assert limit(section(DEFAULT_MAX_INPUT_TOKENS + 1)) == DEFAULT_MAX_INPUT_TOKENS
+    (record,) = caplog.records
+    assert "max_input_tokens is 3585" in record.getMessage()

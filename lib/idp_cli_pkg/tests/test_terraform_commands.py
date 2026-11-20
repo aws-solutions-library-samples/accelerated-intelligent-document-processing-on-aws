@@ -92,6 +92,8 @@ class TestDeployTerraform:
             "terraform_bin": "terraform",
             "assume_role_arn": None,
             "allow_replace_retained": False,
+            "tags": None,
+            "terraform_state": "local",
         }
         client.stack.deploy.assert_not_called()
         # The deploy prints the application URL; compare it parsed, by host.
@@ -148,6 +150,72 @@ class TestDeployTerraform:
         kwargs = client.stack.deploy_terraform.call_args.kwargs
         assert kwargs["allow_replace_retained"] is True
 
+    @pytest.mark.parametrize(
+        "extra, expected",
+        [
+            ([], "local"),
+            (["--terraform-state", "s3"], "s3"),
+            (["--terraform-state", "S3"], "s3"),
+            (["--terraform-state", "local"], "local"),
+        ],
+    )
+    def test_the_state_backend_reaches_the_sdk(self, runner, extra, expected):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    *extra,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        kwargs = client.stack.deploy_terraform.call_args.kwargs
+        assert kwargs["terraform_state"] == expected
+
+    def test_an_unknown_state_backend_is_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-state",
+                    "gcs",
+                ],
+            )
+        assert result.exit_code != 0
+        client.stack.deploy_terraform.assert_not_called()
+
+    def test_the_state_backend_without_terraform_is_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--terraform-state",
+                    "s3",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "--terraform-state is used with --terraform" in result.output
+        client.stack.deploy.assert_not_called()
+
     def test_the_stateful_guard_flag_has_a_new_name_and_keeps_the_old(self, runner):
         client = _client()
         with patch.object(cli_module, "IDPClient", return_value=client):
@@ -190,7 +258,6 @@ class TestDeployTerraform:
         [
             (["--custom-config", "./c.yaml"], "--custom-config"),
             (["--template-url", "https://x/t.yaml"], "--template-url"),
-            (["--tags", "a=b"], "--tags"),
             (["--max-concurrent", "5"], "--max-concurrent"),
         ],
     )
@@ -211,6 +278,57 @@ class TestDeployTerraform:
             )
         assert result.exit_code == 1
         assert flag in result.output
+        client.stack.deploy_terraform.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "extra,tags",
+        [
+            (
+                ["--tags", "CostCenter=42,Owner=team a"],
+                {"CostCenter": "42", "Owner": "team a"},
+            ),
+            # Blank segments, or no option, keep the deployment's tags, as on
+            # the CloudFormation path.
+            (["--tags", ","], None),
+            ([], None),
+        ],
+    )
+    def test_tags_reach_the_sdk(self, runner, extra, tags):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                ]
+                + extra,
+            )
+        assert result.exit_code == 0, result.output
+        assert client.stack.deploy_terraform.call_args.kwargs["tags"] == tags
+
+    def test_malformed_tags_are_refused_before_the_sdk(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                [
+                    "deploy",
+                    "--terraform",
+                    "--stack-name",
+                    "tfidp",
+                    "--region",
+                    "us-west-2",
+                    "--tags",
+                    "novalue",
+                ],
+            )
+        assert result.exit_code != 0
+        assert "--tags" in result.output
         client.stack.deploy_terraform.assert_not_called()
 
     def test_an_sdk_error_exits_one(self, runner):

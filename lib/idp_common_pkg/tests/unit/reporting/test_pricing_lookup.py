@@ -797,6 +797,52 @@ def test_bda_skip_counter_is_priced_at_zero(shipped_reporter):
 
 
 @pytest.mark.unit
+def test_document_conversion_metering_is_priced_at_zero(
+    shipped_reporter, shipped_pricing_raw
+):
+    """A converted page must price as $0.00 in both cost paths, never as NULL.
+
+    The metering is taken from the real emitter, ``_process_converted_page``, so a
+    renamed key or unit is caught here rather than matching a string this test
+    wrote. Both consumers of the shipped table are checked: the reporting
+    database's ``_get_unit_cost`` and ``estimate_metering_cost``, which
+    ``idp-cli fit-check`` uses. Conversion is done locally and calls no AWS API, so
+    zero is the price; without the row the page was reported unpriced (#2167).
+    """
+    from unittest.mock import MagicMock, patch
+
+    import idp_common.ocr.service as ocr_service
+    from idp_common.reporting.pricing import (
+        build_pricing_map,
+        estimate_metering_cost,
+    )
+
+    with patch("boto3.client", side_effect=lambda *a, **k: MagicMock()):
+        service = ocr_service.OcrService(backend="none")
+    with patch.object(ocr_service, "s3", MagicMock()):
+        _result, metering = service._process_converted_page(
+            0, b"not-an-image", "alpha", "out", "doc"
+        )
+
+    # A metering map that is empty or names another key would make the checks
+    # below vacuous or about the wrong row.
+    assert list(metering) == ["OCR/converted/document_conversion"], metering
+
+    for metering_key, units in metering.items():
+        _context, service_api = metering_key.split("/", 1)
+        for unit_name in units:
+            assert shipped_reporter._get_unit_cost(service_api, unit_name) == 0.0, (
+                f"{metering_key!r} unit {unit_name!r} does not price at $0.00 "
+                "against config_library/pricing.yaml"
+            )
+
+    config = IDPConfig.model_validate(shipped_pricing_raw)
+    estimate = estimate_metering_cost(metering, build_pricing_map(config.pricing))
+    assert estimate.unpriced_row_count == 0, estimate.unpriced_rows
+    assert estimate.estimated_cost_usd == 0.0
+
+
+@pytest.mark.unit
 def test_lambda_metering_unit_name_matches_the_shipped_pricing_unit(shipped_reporter):
     """The unit ``lambda_metering`` emits must be the unit ``pricing.yaml`` prices.
 

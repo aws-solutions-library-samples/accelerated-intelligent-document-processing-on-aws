@@ -298,7 +298,9 @@ class TestWiring:
         d.version = "v1"
         d.config_manager = MagicMock()
         saved = []
-        monkeypatch.setattr(d, "_save_rules_to_config", lambda r: saved.append(r) or [])
+        monkeypatch.setattr(
+            d, "_save_rules_to_config", lambda r, **_k: saved.append(r) or []
+        )
         monkeypatch.setattr(
             "idp_common.discovery.rules_discovery.S3Util.get_bytes", lambda **k: b"%PDF"
         )

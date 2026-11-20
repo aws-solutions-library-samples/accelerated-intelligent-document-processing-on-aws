@@ -74,6 +74,28 @@ results = reporter.save(document, data_to_save=["evaluation_results", "metering"
 
 When `config` is provided with pricing information, the system automatically calculates unit costs and estimated costs for all metering data.
 
+### Pricing a document's metering (`pricing.py`)
+
+`idp_common.reporting.pricing` is the one implementation of "metering row to
+estimated dollars". `SaveReportingData` uses it for the metering Parquet rows and the
+`DocumentEstimatedCost` metric, and the SDK's fit check uses it for its per-document
+estimates, so the figures agree. It imports nothing heavier than the configuration
+models, so it does not need pyarrow.
+
+```python
+from idp_common.config.models import IDPConfig
+from idp_common.reporting.pricing import build_pricing_map, estimate_metering_cost
+
+pricing = build_pricing_map(IDPConfig.model_validate(config).pricing)
+cost = estimate_metering_cost(document.metering, pricing)
+cost.estimated_cost_usd   # None when no row had a price
+cost.unpriced_row_count   # rows left out of the figure
+```
+
+`unit_cost(pricing, service_api, unit, value)` documents the resolution rules: an
+exact pricing key with a longest-suffix walk, no substring matching, and `None`
+rather than $0.00 for a unit nothing declares non-chargeable.
+
 ## Features
 
 - **Modular Design**: Each data type has its own processing method, making it easy to add support for new data types
@@ -618,7 +640,7 @@ The reporting module provides two types of automatic table creation:
 #### Dynamic Section Tables (Runtime)
 When processing documents with new section types, the `SaveReportingData` class automatically:
 - **Creates New Tables**: Generates a Glue table for each unique section type (e.g., `document_sections_invoice`, `document_sections_w2`)
-- **Updates Schemas**: Adds new columns when new fields are detected in extraction results
+- **Updates Schemas**: Adds new columns when new fields are detected in extraction results. The update merges into the table's existing columns rather than replacing them, so a column an earlier document contributed is kept, as the document sections crawler's `MergeNewColumns` policy also keeps it. Unlike that policy, the update also corrects column types (below). Names are compared lowercased, because Glue stores column names in lowercase while the extraction schema's field names keep their casing, so a document whose fields the table already has makes no `UpdateTable` call. A column whose stored type differs from the type `_convert_schema_to_glue_columns` maps it to is corrected in place; an existing column with no type is left alone. `_create_or_update_rule_validation_glue_table` uses the same merge (`SaveReportingData._merge_glue_columns`)
 - **Configures Partitions**: Sets up partition projection for efficient date-based queries
 - **Normalizes Names**: Converts section types to lowercase for S3 path consistency (e.g., "W2" → "w2")
 

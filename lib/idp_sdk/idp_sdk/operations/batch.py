@@ -112,6 +112,7 @@ class BatchOperation:
         context: Optional[str] = None,
         *,
         config_profile: Optional[str] = None,
+        attributes: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> BatchProcessResult:
         """Process multiple documents through the IDP pipeline.
@@ -135,12 +136,29 @@ class BatchOperation:
             config_revision: Optional revision of that profile. Omit to process
                 under the profile's current configuration.
             context: Context for test set processing
+            attributes: Caller-supplied document attributes stored with every
+                document and returned with its results (see
+                ``docs/document-attributes.md``). A manifest row's own
+                ``attributes`` override these per key. Invalid attributes are
+                refused before anything is uploaded. Not accepted with
+                ``test_set``.
             **kwargs: Additional parameters
 
         Returns:
             BatchProcessResult with batch processing information
         """
         config_version = resolve_config_profile(config_profile, config_version)
+        if attributes:
+            from idp_sdk._core.document_attributes import validate
+
+            if test_set:
+                raise IDPConfigurationError(
+                    "attributes cannot be attached to a test set run"
+                )
+            try:
+                attributes = validate(attributes)
+            except ValueError as e:
+                raise IDPConfigurationError(str(e)) from e
         from idp_sdk._core.batch_processor import BatchProcessor
 
         name = self._client._require_stack(stack_name)
@@ -201,6 +219,8 @@ class BatchOperation:
                     and config_revision is not None
                 ):
                     manifest_kwargs["config_revision"] = config_revision
+                if attributes:
+                    manifest_kwargs["attributes"] = attributes
                 result = processor.process_batch(**manifest_kwargs)
             elif directory:
                 import inspect
@@ -221,6 +241,8 @@ class BatchOperation:
                     and config_revision is not None
                 ):
                     dir_kwargs["config_revision"] = config_revision
+                if attributes:
+                    dir_kwargs["attributes"] = attributes
                 result = processor.process_batch_from_directory(**dir_kwargs)
             else:
                 import inspect
@@ -239,6 +261,8 @@ class BatchOperation:
                     s3_kwargs["config_revision"] = config_revision
                 if "number_of_files" in sig.parameters and number_of_files:
                     s3_kwargs["number_of_files"] = number_of_files
+                if attributes:
+                    s3_kwargs["attributes"] = attributes
                 result = processor.process_batch_from_s3_uri(**s3_kwargs)
 
             return BatchProcessResult(
@@ -1182,6 +1206,15 @@ class BatchOperation:
                 ),
                 None,
             )
+            # Caller-supplied attributes snapshotted at intake (#1851).
+            attributes = next(
+                (
+                    d.get("attributes")
+                    for d in entries
+                    if isinstance(d, dict) and d.get("attributes")
+                ),
+                None,
+            )
 
             # Try to get results.json from S3
             document_class = None
@@ -1239,7 +1272,7 @@ class BatchOperation:
                 except Exception as e:
                     logger.warning(f"Could not read results.json for {doc_id}: {e}")
 
-            return {
+            result = {
                 "document_id": doc_id,
                 "document_class": document_class,
                 "fields": fields,
@@ -1253,6 +1286,11 @@ class BatchOperation:
                 # in_review / complete / rejected (review queues); None if never routed.
                 "review_status": (review or {}).get("status"),
             }
+            # Only when the document carries any, so a result for a document
+            # uploaded without attributes has exactly the keys it always had.
+            if attributes:
+                result["attributes"] = attributes
+            return result
         except Exception as e:
             logger.warning(f"Error retrieving metadata for {doc_id}: {e}")
             return {

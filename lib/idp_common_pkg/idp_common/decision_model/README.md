@@ -73,11 +73,14 @@ setting (#2032). `budget.py` holds the pieces:
 |---|---|
 | `estimate_tokens(text)` | An **estimate** from characters, since this package has no tokenizer: one token per digit or non-ASCII character, one per two other characters. It errs high. |
 | `PROMPT_RESERVE_TOKENS` | 512, left in the window for the decider's own prompt |
-| `DEFAULT_MAX_INPUT_TOKENS` | the window less that reserve, 3584: the setting's default |
+| `DEFAULT_MAX_INPUT_TOKENS` | the window less that reserve, 3584: the setting's default and the largest value it takes: `idp_common.config.models` caps a larger one, with a warning (#2111) |
 | `IMAGE_TOKENS` | 256 counted per image (196 for a square page at 448 px) |
 | `state_budget(max_input_tokens, question_tokens, images)` | the text a request can carry beside its question and images |
-| `truncate_to_tokens(text, budget)` | `(kept, characters dropped)`: the text cut from the end, at its last line break where it has one; unchanged when it fits |
-| `fit_text(text, budget, what)` | what both call sites send: the text cut by `truncate_to_tokens`, each cut logged at info naming `what`. Text with content that would be cut to nothing raises `DecisionModelRefused` (logged at warning) instead of being sent empty |
+| `LINE_BREAK_BACKOFF_SHARE` | 0.1: a cut ends at a line break only when the break is in the last tenth of the prefix that fits; otherwise it falls mid-line |
+| `MIN_EVIDENCE_SHARE` | 0.5: the least share of the budget a cut must keep besides its header lines |
+| `truncate_to_tokens(text, budget)` | `(kept, characters dropped)`: the text cut from the end, at a line break within `LINE_BREAK_BACKOFF_SHARE` of the cut and mid-line otherwise; unchanged when it fits |
+| `fit_text(text, budget, what, headers=())` | what both call sites send: the text cut by `truncate_to_tokens`, each cut logged at info naming `what`. `headers` are lines that are not evidence (section classification passes its `Page N:` lines). A cut whose kept text, less every header and any header it ends partway through, is blank or under `MIN_EVIDENCE_SHARE` of the budget raises `DecisionModelRefused` (logged at warning) instead of being sent. Text that fits is returned unchanged |
+| `require_room(max_input_tokens, question_tokens, images, what)` | raises `DecisionModelRefused` (logged at warning) when the question and images alone are over `max_input_tokens`. Both call sites run it before building a request, in every `input` mode, so an `images` request that would overflow is refused locally rather than sent |
 
 **Text beyond the limit is cut and never read by the decision model**, so a value
 or class cue that appears only in the cut part is not seen. Extraction confidence
@@ -85,7 +88,8 @@ cuts each page's text on its own
 ([assessment README](../assessment/README.md#confidence-by-a-decision-model-assessmentdecision_model_confidencepy));
 section classification cuts the section's joined text from the end, so its first
 page stays whole when it fits (`classification/decision_model_labeler.py`). Both
-go through `fit_text`.
+go through `fit_text`, and both check the question and images with `require_room`
+first.
 
 ## Backends
 
@@ -93,6 +97,12 @@ go through `fit_text`.
 the event and the response as the result. That is the direct-invocation contract of
 the Strands Decider's Lambda deployment. `sagemaker` and `bedrock_custom` are declared
 on `ExternalModelConfig` and refused until they are implemented.
+
+The `decision-model-decider` Feature Platform extension
+(`feature-platform/decision-model-decider/`) deploys a function that serves this
+contract, `GENAIIDP-decider`, and its stack's `DeciderEndpoint` output is the `live`
+alias ARN to configure. The client accepts an alias- or version-qualified ARN and
+meters on the bare function name.
 
 The function name must start with `GENAIIDP-`, the same convention `LambdaHook` uses.
 The pipeline's existing invoke permission is scoped to that prefix, so no new IAM is
@@ -104,7 +114,7 @@ model without one is refused when it is loaded.
 | Exception | Meaning | Retried |
 |---|---|---|
 | `DecisionModelRefused` | the model refused the request: over its context window or request limit, too many images, malformed | never: the same request gets the same answer |
-| `DecisionModelUnavailable` | the call did not complete: throttling past the retries, a timeout, a bad response | throttling and a crashed execution environment are retried, with bounded backoff that stays inside the calling Lambda's deadline; a read timeout is not, because the invocation may still be running and billing. When throttling, a capacity refusal or a connection that never opened outlasts the retries, the error carries `retry_later=True` and keeps that failure as its `__cause__`: the request never ran, so a caller may retry its whole step. A read timeout, a closed connection, a crashed environment and a malformed response are never `retry_later` |
+| `DecisionModelUnavailable` | the call did not complete: throttling past the retries, a timeout, a bad response | throttling and a crashed execution environment are retried, with bounded backoff that stays inside the calling Lambda's deadline; a read timeout is not, because the invocation may still be running and billing. When throttling, a capacity refusal or a connection that never opened outlasts the retries, the error carries `retry_later=True` and keeps that failure as its `__cause__`: the request never ran, so a caller may retry its whole step. A read timeout, a closed connection, a crashed environment, a malformed response and a Lambda error outside the retried codes (including a bare-status reply such as `"500"` or `"429"`) are never `retry_later`. `utils.transient_errors.is_transient_error` takes `retry_later` as final, so no caller second-guesses it from the cause (#2112) |
 
 Neither is ever converted into a call to another model. A configuration that selects
 a decision model uses only the decision model. What a caller does with the error is

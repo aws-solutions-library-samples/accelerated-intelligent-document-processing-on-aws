@@ -439,6 +439,138 @@
     "defaultMessage": "No matches",
     "description": "Heading a table shows when its filter matches no row."
   },
+  "configPrefixMappings.history.action.create": {
+    "defaultMessage": "Created",
+    "description": "Change history: the mapping was created."
+  },
+  "configPrefixMappings.history.action.delete": {
+    "defaultMessage": "Deleted",
+    "description": "Change history: the mapping was deleted."
+  },
+  "configPrefixMappings.history.action.update": {
+    "defaultMessage": "Edited",
+    "description": "Change history: the mapping was edited."
+  },
+  "configPrefixMappings.history.changed.description": {
+    "defaultMessage": "Description changed",
+    "description": "Change history detail: the mapping’s free-text description was edited."
+  },
+  "configPrefixMappings.history.changed.enabled": {
+    "defaultMessage": "Enabled: {from} → {to}",
+    "description": "Change history detail: the mapping was turned on or off. Each side is yes or no."
+  },
+  "configPrefixMappings.history.changed.precedence": {
+    "defaultMessage": "Conflict mode: {from} → {to}",
+    "description": "Change history detail: the mapping’s conflict mode changed (mapping, metadata or reject)."
+  },
+  "configPrefixMappings.history.changed.profile": {
+    "defaultMessage": "Profile: {from} → {to}",
+    "description": "Change history detail: the mapping’s Configuration Profile changed from one name to another."
+  },
+  "configPrefixMappings.history.changed.revision": {
+    "defaultMessage": "Revision: {from} → {to}",
+    "description": "Change history detail: the mapping’s revision changed. Each side is \"published revision\" or r7."
+  },
+  "configPrefixMappings.history.col.change": {
+    "defaultMessage": "Change",
+    "description": "Change history column header: whether the mapping was created, edited or deleted."
+  },
+  "configPrefixMappings.history.col.details": {
+    "defaultMessage": "Before and after",
+    "description": "Change history column header: what the change did to the mapping."
+  },
+  "configPrefixMappings.history.col.mapping": {
+    "defaultMessage": "Mapping",
+    "description": "Change history column header: the S3 prefix of the mapping that changed."
+  },
+  "configPrefixMappings.history.col.when": {
+    "defaultMessage": "When",
+    "description": "Change history column header: when the change was made."
+  },
+  "configPrefixMappings.history.col.who": {
+    "defaultMessage": "Changed by",
+    "description": "Change history column header: the signed-in administrator who made the change."
+  },
+  "configPrefixMappings.history.created": {
+    "defaultMessage": "Assigned {profile} ({revision}), conflict mode {precedence}",
+    "description": "Change history detail for a created mapping. {profile} is a Configuration Profile name, {revision} is either \"published revision\" or r7, {precedence} is the conflict mode, for example \"mapping wins\"."
+  },
+  "configPrefixMappings.history.deleted": {
+    "defaultMessage": "Was assigned {profile} ({revision})",
+    "description": "Change history detail for a deleted mapping: what it assigned before it was deleted."
+  },
+  "configPrefixMappings.history.description": {
+    "defaultMessage": "Every create, edit and delete made to a mapping, newest first, with who made it. Changes to deleted mappings are kept.",
+    "description": "Explanation under the Change history header on the Prefix Mappings page."
+  },
+  "configPrefixMappings.history.empty": {
+    "defaultMessage": "No changes recorded.",
+    "description": "Change history empty state."
+  },
+  "configPrefixMappings.history.enabled.no": {
+    "defaultMessage": "no",
+    "description": "Change history: the mapping was disabled."
+  },
+  "configPrefixMappings.history.enabled.yes": {
+    "defaultMessage": "yes",
+    "description": "Change history: the mapping was enabled."
+  },
+  "configPrefixMappings.history.filteredTo": {
+    "defaultMessage": "Showing changes to {prefix} only.",
+    "description": "Shown when the change history is narrowed to one mapping. {prefix} is the mapping prefix, for example acme/invoices/."
+  },
+  "configPrefixMappings.history.header": {
+    "defaultMessage": "Change history",
+    "description": "Header of the collapsible section on the Prefix Mappings page that lists every change made to a mapping."
+  },
+  "configPrefixMappings.history.link": {
+    "defaultMessage": "History",
+    "description": "Row action in the mappings table that opens the change history for that one mapping."
+  },
+  "configPrefixMappings.history.linkAria": {
+    "defaultMessage": "Change history of {prefix}",
+    "description": "Screen-reader name of the History row action. {prefix} is the mapping prefix."
+  },
+  "configPrefixMappings.history.loadFailed": {
+    "defaultMessage": "Failed to load the mapping history",
+    "description": "Error shown when the change history could not be read and the server gave no message."
+  },
+  "configPrefixMappings.history.loadOlder": {
+    "defaultMessage": "Load older changes",
+    "description": "Button under the change history that fetches the next page of older changes."
+  },
+  "configPrefixMappings.history.loading": {
+    "defaultMessage": "Loading change history...",
+    "description": "Change history loading state."
+  },
+  "configPrefixMappings.history.noFieldChange": {
+    "defaultMessage": "Saved with no change to its settings",
+    "description": "Change history detail: the mapping was saved again with the same profile, revision, conflict mode and description."
+  },
+  "configPrefixMappings.history.precedence.mapping": {
+    "defaultMessage": "mapping wins",
+    "description": "Change history: the conflict mode in which the mapping overrides a profile named by the upload."
+  },
+  "configPrefixMappings.history.precedence.metadata": {
+    "defaultMessage": "upload metadata wins",
+    "description": "Change history: the conflict mode in which a profile named by the upload overrides the mapping."
+  },
+  "configPrefixMappings.history.precedence.reject": {
+    "defaultMessage": "refuse the conflict",
+    "description": "Change history: the conflict mode in which a conflicting upload is refused."
+  },
+  "configPrefixMappings.history.published": {
+    "defaultMessage": "published revision",
+    "description": "Change history: the mapping follows its profile’s published revision rather than pinning one."
+  },
+  "configPrefixMappings.history.revision": {
+    "defaultMessage": "r{revision}",
+    "description": "Change history: a pinned revision number of a Configuration Profile, for example r7."
+  },
+  "configPrefixMappings.history.showAll": {
+    "defaultMessage": "Show all mappings",
+    "description": "Button that removes the one-mapping filter from the change history."
+  },
   "configuration.layout.previewPrompts": {
     "defaultMessage": "Preview prompts",
     "description": "Configuration page: label of the button that opens a dialog showing what each processing step's prompt includes, and the header of that dialog."
@@ -454,6 +586,98 @@
   "configuration.toolsPanel.editingTabsAndPreview": {
     "defaultMessage": "The <strong>Processing Settings</strong> tab holds the processing steps' settings (OCR, classification, extraction, assessment, summarization, HITL and the rest). Use the <strong>Document Schema</strong> and <strong>Policy Schema</strong> tabs to edit document classes and validation rules, and the <strong>Preview prompts</strong> button to see what each step's prompt includes, with your configuration values filled in. The preview shows which placeholders a step carries and which it leaves empty; it is not the exact bytes of the request.",
     "description": "Configuration info panel, \"Editing\" list item. Each <strong> phrase is the label of a tab or button on the Configuration page, shown in bold."
+  },
+  "discovery.policyGroup.constraint": {
+    "defaultMessage": "Up to {maxLength} characters: letters, digits, spaces, underscores, hyphens and dots. Rules are added to the group, never replaced.",
+    "description": "Constraint text under the policy group field. {maxLength} is the maximum length (64)."
+  },
+  "discovery.policyGroup.description": {
+    "defaultMessage": "Uploads with the same policy group add their rules to one policy class, so one regex matches them all. Use it for chapters of one manual. Leave empty to save this upload as its own policy class.",
+    "description": "Help text of the policy group field on the Policy Discovery upload form."
+  },
+  "discovery.policyGroup.invalidCharacters": {
+    "defaultMessage": "Policy group must start with a letter or digit and contain only letters, digits, spaces, underscores, hyphens and dots.",
+    "description": "Validation error of a policy group name with characters that are not allowed."
+  },
+  "discovery.policyGroup.label": {
+    "defaultMessage": "Policy group (optional)",
+    "description": "Label of the optional policy group name field on the Policy Discovery upload form."
+  },
+  "discovery.policyGroup.placeholder": {
+    "defaultMessage": "e.g. NCCI Policy Manual",
+    "description": "Placeholder of the policy group field on the Policy Discovery upload form. Keep the example name untranslated."
+  },
+  "discovery.policyGroup.replaceWithGroup": {
+    "defaultMessage": "A policy group cannot be used with Replace existing schema, because Replace removes every policy class in the profile, including the group, before discovery runs. Choose Add to existing schema, or clear the policy group.",
+    "description": "Error shown on the Policy Discovery form when a policy group is entered while the save mode is Replace."
+  },
+  "discovery.policyGroup.tooLong": {
+    "defaultMessage": "Policy group must be at most {maxLength} characters.",
+    "description": "Validation error of a policy group name that is too long. {maxLength} is the maximum length (64)."
+  },
+  "discovery.policyGroupChange.append": {
+    "defaultMessage": "Add to group",
+    "description": "Option: add the upload’s rules to the policy group, keeping every existing rule."
+  },
+  "discovery.policyGroupChange.appendDescription": {
+    "defaultMessage": "Keep every existing rule. A rule whose name the group already holds is added under a new name.",
+    "description": "Explanation of the Add to group option."
+  },
+  "discovery.policyGroupChange.groupAmbiguous": {
+    "defaultMessage": "More than one policy class carries this group ({classNames}). Merge them, or remove the group from all but one, in Configuration → Policy Schema.",
+    "description": "Error when several policy classes carry the typed group. {classNames} lists their names."
+  },
+  "discovery.policyGroupChange.loadError": {
+    "defaultMessage": "Could not read the profile's policy groups: {message}",
+    "description": "Error when the selected configuration profile could not be read. {message} is the reason."
+  },
+  "discovery.policyGroupChange.loading": {
+    "defaultMessage": "Reading the profile's policy groups…",
+    "description": "Shown while the selected configuration profile is being read."
+  },
+  "discovery.policyGroupChange.modeDescription": {
+    "defaultMessage": "Rules are matched only by the names you choose here, never guessed. Superseded rules are removed from the group; earlier revisions of the profile still hold them.",
+    "description": "Help text of the policy group change choice."
+  },
+  "discovery.policyGroupChange.modeLabel": {
+    "defaultMessage": "How this upload changes the group",
+    "description": "Label of the choice of how a Policy Discovery upload changes an existing policy group."
+  },
+  "discovery.policyGroupChange.newGroup": {
+    "defaultMessage": "The selected profile has no policy group with this name yet, so this upload creates it.",
+    "description": "Shown when the typed policy group does not exist in the selected profile."
+  },
+  "discovery.policyGroupChange.noRulesChosen": {
+    "defaultMessage": "Choose at least one rule to supersede, or choose Add to group.",
+    "description": "Validation error when Supersede is chosen with no rules selected."
+  },
+  "discovery.policyGroupChange.replace": {
+    "defaultMessage": "Replace this group's rules",
+    "description": "Option: the upload’s rules become the policy group’s whole ruleset (for an amended manual)."
+  },
+  "discovery.policyGroupChange.replaceDescription": {
+    "defaultMessage": "For an amended manual: this upload's rules replace all {count, plural, one {# rule} other {# rules}} in the group. The class keeps its name, description and regexes. Other policy classes are not touched.",
+    "description": "Explanation of the Replace this group’s rules option. {count} is the number of rules the group holds now."
+  },
+  "discovery.policyGroupChange.rulesDescription": {
+    "defaultMessage": "Choose from the rules the group holds now in the selected configuration profile.",
+    "description": "Help text of the superseded rules multiselect."
+  },
+  "discovery.policyGroupChange.rulesLabel": {
+    "defaultMessage": "Rules this upload supersedes",
+    "description": "Label of the multiselect of existing group rules a rider supersedes."
+  },
+  "discovery.policyGroupChange.rulesPlaceholder": {
+    "defaultMessage": "Choose rules",
+    "description": "Placeholder of the superseded rules multiselect."
+  },
+  "discovery.policyGroupChange.supersede": {
+    "defaultMessage": "Supersede chosen rules",
+    "description": "Option: remove the rules the user chooses and add the upload’s rules (for a rider or amendment page)."
+  },
+  "discovery.policyGroupChange.supersedeDescription": {
+    "defaultMessage": "For a rider: the rules you choose are removed and this upload's rules are added. A new rule with a superseded rule's name takes its place; the rest are added alongside.",
+    "description": "Explanation of the Supersede chosen rules option."
   },
   "documentActions.moreActions.sendToReview": {
     "defaultMessage": "Send to review",
@@ -474,6 +698,10 @@
   "documentActions.skipAllReviews.resubmitLabel": {
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
+  },
+  "documentPanel.callerAttributes.label": {
+    "defaultMessage": "Attributes",
+    "description": "Label of the document detail field listing the key-value attributes the caller attached at upload."
   },
   "documents.abortModal.abort": {
     "defaultMessage": "Abort",
@@ -3482,6 +3710,58 @@
   "navigation.testStudio.sets": {
     "defaultMessage": "Test Sets",
     "description": "Side navigation link, in the Test Studio section, to the Test Sets tab."
+  },
+  "policySchema.uploadHistory.change": {
+    "defaultMessage": "Change",
+    "description": "Column header: how the upload changed the group (added, replaced, superseded)."
+  },
+  "policySchema.uploadHistory.description": {
+    "defaultMessage": "Oldest first: the rules each upload supplied, and the earlier rules it superseded.",
+    "description": "Help text of the upload history in the Policy Schema class inspector."
+  },
+  "policySchema.uploadHistory.document": {
+    "defaultMessage": "Document",
+    "description": "Column header: the uploaded policy document."
+  },
+  "policySchema.uploadHistory.header": {
+    "defaultMessage": "Policy Discovery uploads",
+    "description": "Header of the read-only list of uploads that built a policy class, in the Policy Schema class inspector."
+  },
+  "policySchema.uploadHistory.modeAppend": {
+    "defaultMessage": "Added",
+    "description": "Change column value for an upload that added rules."
+  },
+  "policySchema.uploadHistory.modeReplace": {
+    "defaultMessage": "Replaced the group",
+    "description": "Change column value for an upload that replaced the group’s rules."
+  },
+  "policySchema.uploadHistory.modeSupersede": {
+    "defaultMessage": "Superseded chosen rules",
+    "description": "Change column value for an upload that superseded chosen rules."
+  },
+  "policySchema.uploadHistory.none": {
+    "defaultMessage": "–",
+    "description": "Shown in a cell with nothing to list."
+  },
+  "policySchema.uploadHistory.rules": {
+    "defaultMessage": "Rules supplied",
+    "description": "Column header: the rule names the upload added."
+  },
+  "policySchema.uploadHistory.savedAt": {
+    "defaultMessage": "Saved",
+    "description": "Column header: when the upload’s rules were saved."
+  },
+  "policySchema.uploadHistory.superseded": {
+    "defaultMessage": "Rules superseded",
+    "description": "Column header: the earlier rules the upload removed."
+  },
+  "policySchema.uploadHistory.supersededFrom": {
+    "defaultMessage": "{rule} (from {document})",
+    "description": "A superseded rule and the document that had supplied it."
+  },
+  "policySchema.uploadHistory.unknownDocument": {
+    "defaultMessage": "an unrecorded upload",
+    "description": "Stands in for the document name of a rule that no recorded upload supplied."
   },
   "pricing.layout.cannotSaveInvalidPrices": {
     "defaultMessage": "Cannot save: {count, plural, one {# price is} other {# prices are}} not valid. Correct the prices listed under Invalid prices and save again.",

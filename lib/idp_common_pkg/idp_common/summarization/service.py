@@ -197,7 +197,7 @@ class SummarizationService:
         Returns:
             Dictionary with response and metering data
         """
-        return bedrock.invoke_model(
+        response = bedrock.invoke_model(
             model_id=config["model_id"],
             system_prompt=config["system_prompt"],
             content=content,
@@ -209,6 +209,12 @@ class SummarizationService:
             model_lambda_hook_arn=self.config.summarization.model_lambda_hook_arn,
             reasoning_effort=config.get("reasoning_effort"),
         )
+        # A withheld reply is a 200 whose text is not a summary: raised as a block,
+        # so it gets the content-filter stub rather than being stored as one.
+        from idp_common.utils.bedrock_utils import raise_if_output_withheld
+
+        raise_if_output_withheld(response)
+        return response
 
     def _create_error_summary(self, error_message: str) -> DocumentSummary:
         """
@@ -468,21 +474,30 @@ class SummarizationService:
                     "completes with extraction intact.",
                     e,
                 )
+                from idp_common.utils.bedrock_utils import content_block_wording
+
+                blocker, remedy = content_block_wording(e, "summarization model")
                 return DocumentSummary(
                     content={
                         "summary": (
                             "## Summary Unavailable\n\n"
-                            "No summary was produced because Amazon Bedrock's "
-                            "content filter withheld the summarization model's "
-                            "reply. Extraction results are available and "
-                            "unaffected. To get a summary, use a different "
-                            "summarization model."
+                            f"No summary was produced because {blocker} "
+                            "the summarization model's reply. Extraction results "
+                            "are available and unaffected. To get a summary, "
+                            f"{remedy}."
                         )
                     },
                     metadata={
                         "summarization_skipped": True,
                         "skip_reason": "content_filtered",
                         "error": str(e),
+                        # A reply withheld by stop reason was billed; empty for
+                        # a blocked ValidationException, which returned nothing.
+                        **(
+                            {"metering": metering}
+                            if (metering := utils.failure_metering(e))
+                            else {}
+                        ),
                     },
                 )
             logger.error(f"Error summarizing text: {str(e)}")
@@ -875,6 +890,27 @@ class SummarizationService:
                 logger.error(
                     f"Summarization failed for {len(section_exceptions)} section(s). "
                     f"Re-raising exception from section {first_failed_section} to fail the workflow."
+                )
+                # The sections that finished, and any reply a failed one had
+                # received, were billed. A transient failure carries that usage
+                # to the handler, which records it before the step is retried
+                # (#2122); a hard one leaves it on the document it marks FAILED.
+                attempt_metering: Dict[str, Any] = {}
+                for section_metering in all_section_metering.values():
+                    attempt_metering = utils.merge_metering_data(
+                        attempt_metering, section_metering
+                    )
+                for section_exception in section_exceptions.values():
+                    attempt_metering = utils.merge_metering_data(
+                        attempt_metering, utils.failure_metering(section_exception)
+                    )
+                reraise_if_transient(
+                    first_exception,
+                    where="summarization",
+                    metering=attempt_metering,
+                )
+                document.metering = utils.merge_metering_data(
+                    document.metering, attempt_metering
                 )
                 raise first_exception
 

@@ -15,7 +15,8 @@ decision model never reads it.
 from __future__ import annotations
 
 import logging
-from typing import Tuple
+import math
+from typing import Sequence, Tuple
 
 from idp_common.decision_model.invoker import DecisionModelRefused
 from idp_common.decision_model.wire import CONTEXT_WINDOW_TOKENS
@@ -34,6 +35,17 @@ DEFAULT_MAX_INPUT_TOKENS = CONTEXT_WINDOW_TOKENS - PROMPT_RESERVE_TOKENS
 #: Counted for each image in a request. The decider reads a square page image at
 #: ``IMAGE_MAX_SIDE`` as 196 tokens; the margin covers other shapes.
 IMAGE_TOKENS = 256
+
+#: How far back a cut may move to end at a line break: within the last tenth of
+#: the prefix that fits. Further back, the cut falls mid-line, so text with no line
+#: break near the cut (dense CJK, one long OCR line) keeps most of its budget
+#: rather than backing up to a line break near its start (#2111).
+LINE_BREAK_BACKOFF_SHARE = 0.1
+
+#: The least share of a cut text's budget its kept evidence (the kept text less
+#: every header line the caller names) must take. A cut that keeps less is refused rather than
+#: sent, so a request is never answered from a header line alone (#2111).
+MIN_EVIDENCE_SHARE = 0.5
 
 
 def estimate_tokens(text: str) -> float:
@@ -59,8 +71,10 @@ def truncate_to_tokens(text: str, budget: float) -> Tuple[str, int]:
     """``(kept, characters dropped)``: ``text`` cut from the end to fit ``budget``.
 
     Unchanged when it already fits, including empty text. Otherwise the longest
-    prefix that fits is kept, ending at its last line break when it has one, so
-    no line is sent half-read. Nothing past the cut is ever sent.
+    prefix that fits is kept, ending at its last line break when that break lies
+    in the prefix's last ``LINE_BREAK_BACKOFF_SHARE``, so an ordinary line is not
+    sent half-read; with no line break there, the cut falls mid-line. Nothing
+    past the cut is ever sent.
     """
     if estimate_tokens(text) <= budget:
         return text, 0
@@ -72,30 +86,67 @@ def truncate_to_tokens(text: str, budget: float) -> Tuple[str, int]:
             break
     kept = text[:end]
     line_end = kept.rfind("\n")
-    if line_end > 0:
+    if (
+        line_end > 0
+        and len(kept) - (line_end + 1) <= len(kept) * LINE_BREAK_BACKOFF_SHARE
+    ):
         kept = kept[: line_end + 1]
     return kept, len(text) - len(kept)
 
 
-def fit_text(text: str, budget: float, what: str) -> str:
-    """``text`` cut to ``budget`` for a request about to be sent; ``what`` names it.
+def require_room(
+    max_input_tokens: int, question_tokens: float, images: int, what: str
+) -> None:
+    """Refuse locally a request whose question and images alone overflow the limit.
 
-    Each cut is logged at info. Text that has content but would be cut to nothing
-    is refused instead (:class:`DecisionModelRefused`, logged at warning): the
-    request's question and images already fill ``max_input_tokens``, and a request
-    with no text would be answered from no evidence, which for an empty field is a
-    confident "no value". Empty text is returned unchanged.
+    The decider would refuse it anyway; refusing it here names the cause. With
+    ``input: images`` no text is cut, so this is the only size check such a
+    request gets before it is sent (#2111).
     """
-    kept, dropped = truncate_to_tokens(text, budget)
-    if dropped and text.strip() and not kept.strip():
+    reserved = question_tokens + images * IMAGE_TOKENS
+    if reserved > max_input_tokens:
         message = (
-            f"Not sent: {what} would be cut to nothing, because the question and "
-            "images already fill the request's max_input_tokens. Raise "
-            "max_input_tokens, shorten the question (or the field or class "
-            "descriptions it carries), or set input to images."
+            f"Not sent: the request for {what} would be about {math.ceil(reserved)} "
+            f"tokens for its question and {images} image(s) alone, over its "
+            f"max_input_tokens of {max_input_tokens}. Shorten the question (or the "
+            "field or class descriptions it carries), or send fewer pages."
         )
         logger.warning(message)
         raise DecisionModelRefused(message)
+
+
+def fit_text(text: str, budget: float, what: str, headers: Sequence[str] = ()) -> str:
+    """``text`` cut to ``budget`` for a request about to be sent; ``what`` names it.
+
+    ``headers`` are lines in ``text`` that are not evidence, such as section
+    classification's ``Page 1:`` and ``Page 2:`` lines. Each cut is logged at
+    info. A cut is refused instead (:class:`DecisionModelRefused`, logged at
+    warning) when the evidence it keeps, the kept text less every header, is blank
+    or under ``MIN_EVIDENCE_SHARE`` of ``budget``, which includes text with content
+    cut to nothing: the request's question and images already fill
+    ``max_input_tokens``, and a request with little or no text would be answered
+    from no evidence, which for an empty field is a confident "no value". Text that
+    fits is returned unchanged, empty or not.
+    """
+    if isinstance(headers, str):
+        raise TypeError("headers is a sequence of header lines, not one string")
+    kept, dropped = truncate_to_tokens(text, budget)
+    if dropped and _less(text, headers).strip():
+        evidence = _less(kept, headers)
+        if (
+            not evidence.strip()
+            or estimate_tokens(evidence) < budget * MIN_EVIDENCE_SHARE
+        ):
+            message = (
+                f"Not sent: {what} would be cut to {len(evidence.strip())} "
+                "characters of text, because the question and images already fill "
+                "most of the request's max_input_tokens. Shorten the question (or "
+                "the field or class descriptions it carries), raise "
+                "max_input_tokens if it is below its default, or set input to "
+                "images."
+            )
+            logger.warning(message)
+            raise DecisionModelRefused(message)
     if dropped:
         logger.info(
             "Dropped %d of %d characters from the end of %s so the decision-model "
@@ -105,3 +156,19 @@ def fit_text(text: str, budget: float, what: str) -> str:
             what,
         )
     return kept
+
+
+def _less(text: str, headers: Sequence[str]) -> str:
+    """``text`` with every occurrence of each of ``headers`` removed.
+
+    So is a header the text ends partway through, as a cut can: ``Page 1:`` cut
+    before its line break is no more evidence than the whole line.
+    """
+    for header in headers:
+        if header:
+            text = text.replace(header, "")
+    for header in headers:
+        for length in range(len(header) - 1, 0, -1):
+            if text.endswith(header[:length]):
+                return text[: len(text) - length]
+    return text

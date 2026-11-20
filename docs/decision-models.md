@@ -43,7 +43,16 @@ each document starts, with the LLM, and the decision model names each section.
 
 ### 1. Deploy a decision model on Lambda
 
-Deploy the Strands Decider's Lambda recipe in the account and region of your stack.
+The quickest way is to install the
+[Decision Model: Strands Decider](./extensions/decision-model-decider.md)
+extension from the **Extensions** catalog. It builds the Strands Decider's Lambda
+image in your account from pinned source and model commits, deploys it as
+`GENAIIDP-decider` with images enabled, and adds an inactive configuration profile,
+`decision-model-decider`, that selects it for section classification. Its stack's
+`DeciderEndpoint` output is the ARN for step 2.
+
+To deploy it yourself instead, deploy the Strands Decider's Lambda recipe in the
+account and region of your stack.
 Follow its [Lambda guide](https://github.com/strands-labs/strands-decider/tree/main/deploy/lambda)
 and deploy it **with images** (`-c vision=true`), because section classification
 works best on page images.
@@ -165,11 +174,18 @@ text is cut to fit `decision_model.max_input_tokens` before it is sent:
 **Text beyond the limit is cut and never read by the decision model.** A value or a
 class cue that appears only in the cut part is not seen: such a value scores low and
 goes to review, an empty field is not checked against that part, and a class cue
-there does not count. The cut falls at a line break where it can, and each cut is
-logged with the page and the number of characters dropped.
+there does not count. The cut falls at a line break when there is one near the end
+of the text that fits (within its last tenth); otherwise it falls mid-line, so a page
+of dense text with few line breaks, such as CJK text or one long OCR line, still
+keeps most of the limit's worth. Each cut is logged with the page and the number of
+characters dropped.
 
-A request whose text would be cut to nothing, because its question and images
-already fill the limit, is **not sent**: it fails like a refused request, so
+A request whose text would be cut to nothing or almost nothing, because its question
+and images already fill most of the limit, is **not sent**. That includes a section
+whose cut would keep only its `Page N:` lines, or under half of the text the limit
+allows besides them. A request whose question and images alone are over the limit is not
+sent either, in every `input` mode including `images`, and the error says so. Such a
+request fails like a refused request, so
 extraction confidence degrades the section to no confidence scores and section
 classification labels the section `unclassified`. Answering it with no text would
 mean scoring an empty field, or picking a class, from no evidence. A limit that
@@ -180,8 +196,11 @@ saved.
 classification, every class description) together. The count is an estimate from
 characters, because the model's tokenizer is not available to the pipeline, and it
 errs high. The default, 3584, is the 4,096-token window less 512 for the model's own
-prompt. Lower it if requests are still refused; raise it only for a model with a
-larger window. `input: images` sends no text and is not affected.
+prompt, and it is also the largest value used: a larger one would let dense text
+overflow the window, so it is capped at 3584 with a warning in the logs. Lower it if
+requests are still refused.
+`input: images` sends no text, so nothing is cut, but the question and images are
+still checked against the limit.
 
 ## What you get
 
@@ -207,8 +226,11 @@ A configuration that selects a decision model uses only the decision model:
   never opened, fails the step with a transient error, which the state machine
   retries.
 - **Any other call that does not complete fails its section.** That includes a
-  read timeout and a dropped connection, because the invocation may still be
-  running and billing.
+  read timeout, a dropped connection and a Lambda reply that names no error type
+  (a bare HTTP 5xx or 429), because the invocation may still be running and
+  billing. For decision-model confidence the same failures leave the section
+  without confidence scores rather than retrying the assessment step, and only a
+  request that never ran retries it.
 - **Nothing falls back to the LLM on an error.** `low_confidence: llm` applies only
   to answers below `min_confidence`.
 

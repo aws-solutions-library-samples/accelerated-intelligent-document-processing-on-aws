@@ -17,6 +17,7 @@ from idp_common.decision_model.budget import (
     PROMPT_RESERVE_TOKENS,
     estimate_tokens,
     fit_text,
+    require_room,
     state_budget,
     truncate_to_tokens,
 )
@@ -132,6 +133,7 @@ __all__ = [
     "fit_text",
     "function_name",
     "merge_metering",
+    "require_room",
     "resolve_endpoint",
     "state_budget",
     "truncate_to_tokens",

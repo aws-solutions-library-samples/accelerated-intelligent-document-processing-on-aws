@@ -132,8 +132,15 @@ def _needles(tr: Translator, v: Any) -> Iterator[tuple[str, list[str]]]:
     if fn == "Ref":
         yield from _ref_needle(tr, arg)
     elif fn == "Fn::GetAtt":
-        name = arg.split(".", 1)[0] if isinstance(arg, str) else arg[0]
-        yield from _ref_needle(tr, name)
+        from .translate import echoed_property
+
+        name, attr = arg.split(".", 1) if isinstance(arg, str) else arg[:2]
+        echoed = echoed_property(tr.t.get("Resources", {}).get(name) or {}, attr)
+        if echoed is not None:
+            # Rendered as the echoed property (ECHOED_CUSTOM_ATTRS).
+            yield from _needles(tr, echoed)
+        else:
+            yield from _ref_needle(tr, name)
     elif fn == "Fn::Sub":
         text, variables = (arg if isinstance(arg, list) else [arg, {}])[:2]
         pos = 0

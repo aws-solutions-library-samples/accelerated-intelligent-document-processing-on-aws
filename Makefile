@@ -225,8 +225,8 @@ setup-node: ## Install src/ui and docs-site npm dependencies from their lockfile
 	@scripts/setup_node.sh required
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links solution-profile-check validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links solution-profile-check validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -368,6 +368,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@echo "Data-plane Lambda tag check"
 	@if ! make check-data-plane-tags; then \
 		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/reporting-sql-layer.md §10.3)$(NC)"; \
+		exit 1; \
+	fi
+
+	@echo "Solution profile check"
+	@if ! make solution-profile-check; then \
+		echo -e "$(RED)ERROR: the solution profile in solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -530,6 +536,17 @@ check-markdown-links: ## Resolve every relative Markdown link, anchor, and publi
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
+
+# The solution profile (solution-profile/, docs/solution-profile.md): the vendored
+# reference validator, then cross-checks that fail when the code gains a hook point,
+# preset, file format, selectable model or launch Region the profile does not cover.
+# The contract's release rules (reviewed_for_version == version, a changes.yaml entry
+# for it) apply automatically when VERSION is a final X.Y.Z, or with
+# SOLUTION_PROFILE_RELEASE=1. The asset is built by `solution-profile-build`
+# (under Version Management), which the release workflow runs.
+solution-profile-check: ## Validate solution-profile/ against its contract and cross-check it with the code
+	@$(PYTHON) scripts/check_solution_profile.py || \
+		(echo -e "$(RED)ERROR: solution profile check failed!$(NC)" && exit 1)
 
 # Discovered from `git ls-files` rather than listed. The previous
 # `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
@@ -810,6 +827,18 @@ terraform-check: ## Translate template.yaml to Terraform offline, then init + va
 		--binaries "$(TERRAFORM_CHECK_BINARIES)" \
 		--cache-dir "$(TERRAFORM_CHECK_CACHE)"
 	@$(MAKE) --no-print-directory terraform-scan-diff
+	@$(MAKE) --no-print-directory terraform-replay-releases
+
+# The current translator over the template tree of every release listed in
+# terraform/tools/replay_releases.json, each at the commit recorded there, offline:
+# a translator change that breaks the translation of a release a deployment may
+# still be on fails here rather than at that deployment's upgrade. It reads the
+# repository's own history (git archive of the recorded commits), so it needs a
+# clone holding them and no network; both CI jobs check out full history for it.
+# Add a release to the file when it is tagged.
+TERRAFORM_REPLAY_JOBS ?= 4
+terraform-replay-releases: ## Replay the current translator offline over the template tree of each release in terraform/tools/replay_releases.json; fail on any failure
+	@$(PYTHON) terraform/tools/replay_releases.py --check --jobs $(TERRAFORM_REPLAY_JOBS)
 
 # The static-scan diff: checkov over the CloudFormation templates and over the
 # Terraform generated from them, failing when the Terraform side has a finding the
@@ -829,6 +858,8 @@ terraform-scan-diff: ## Diff a pinned checkov scan of the CloudFormation templat
 # main and nested stacks, read through Cloud Control and diffed, with explained
 # differences in terraform/tools/parity_baseline.json. Read-only, but it needs AWS
 # credentials and both deployments, so it is a release-validation tier, not a CI gate.
+# A Terraform schedule carrying IDP_TERRAFORM_PARITY=true runs the same comparison
+# against a CloudFormation twin it deploys itself (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
 terraform-parity: ## Compare every resource of a Terraform deployment with its CloudFormation twin (CFN_STACK=<name> TF_STACK=<label stack>; needs AWS)
 	@test -n "$(CFN_STACK)" -a -n "$(TF_STACK)" || { echo "usage: make terraform-parity CFN_STACK=<name> TF_STACK=<name> [REGION=<region>]"; exit 2; }
 	@$(PYTHON) terraform/tools/parity.py --cfn-stack "$(CFN_STACK)" --tf-stack "$(TF_STACK)" $(if $(REGION),--region "$(REGION)")
@@ -1049,6 +1080,10 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	@# (#1731). The toolkit is stubbed in sys.modules; the logs client is a real
 	@# botocore client behind a Stubber with an explicit region.
 	cd src/lambda/agentcore_gateway_manager && $(PYTEST_HERMETIC) -q -p no:cacheprovider
+	@# CustomerManagedKmsKeyArn check (#2016): a change on update is refused in either
+	@# direction, a supplied key is checked on create. Real botocore clients behind
+	@# Stubbers with an explicit region.
+	cd src/lambda/customer_managed_kms_key_check && $(PYTEST_HERMETIC) -q -p no:cacheprovider
 	@# MCP caller interceptor (token -> role and scope, signed caller block, listing
 	@# filters) and the custom resource that attaches it to the gateway. moto for
 	@# Cognito, DynamoDB and Secrets Manager; the gateway is a model-validated fake.
@@ -1139,6 +1174,8 @@ test-packages-cicd: ## CI-safe: run the package/Lambda suites that neither idp_c
 	cd feature-platform/confbench-testset && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/idp-data-generator/docker_build_lambda && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/image-build && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
+	cd feature-platform/decision-model-decider/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/feature-template/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/feature-api && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
 	cd feature-platform/sample-feature/ui-deployer && $(PYTEST_HERMETIC) tests -q -p no:cacheprovider
@@ -1470,7 +1507,11 @@ stacktest-upgrade: ## Show how to run the in-place upgrade test (see test-upgrad
 # deployment NEW_NAME of TERRAFORM_MODULE_URL, verifies nothing was lost and the old
 # passwords still sign in, then destroys both and sweeps what they retained. Measured
 # at 166 minutes, 76 of them waiting on DynamoDB's TTL intervals. Tears down on failure too, unless KEEP=1 or STOP_AFTER=<phase>; RESUME=1
-# continues a stopped or failed run from WORK_DIR. See docs/testing.md and
+# continues a stopped or failed run from WORK_DIR. UPSTREAM_TAG=<tag> picks one of the
+# upstream releases the driver pins (default: the release a RESUME=1 run recorded,
+# else the newest; `rotate` takes this week's, as the weekly schedule does). VARIANT=mcp
+# also deploys upstream's MCP integration and runs the guide's manual procedure for it
+# before plan (VARIANT=mcp-datasets adds both test datasets). See docs/testing.md and
 # .claude/skills/release-validation.md (tier J).
 #   make stacktest-terraform-migration OLD_NAME=gitf2 NEW_NAME=gitfnew2 \
 #       TERRAFORM_MODULE_URL=https://.../idp-terraform-<version>.zip
@@ -1481,6 +1522,8 @@ _TFMIG_ARGS = --old-name $(OLD_NAME) --new-name $(NEW_NAME) \
 	$(if $(TERRAFORM_BIN),--terraform-bin $(TERRAFORM_BIN),) \
 	$(if $(EXPECTED_ACCOUNT),--expected-account $(EXPECTED_ACCOUNT),) \
 	$(if $(STOP_AFTER),--stop-after $(STOP_AFTER),) \
+	$(if $(UPSTREAM_TAG),--upstream-tag $(UPSTREAM_TAG),) \
+	$(if $(VARIANT),--variant $(VARIANT),) \
 	$(if $(KEEP),--keep,) $(if $(RESUME),--resume,)
 
 stacktest-terraform-migration: ## Migrate a live genai-idp-terraform deployment onto the built-in module in place, verify, tear both down (OLD_NAME= NEW_NAME= TERRAFORM_MODULE_URL=)
@@ -1800,6 +1843,17 @@ install-git-hooks: ## Install the shared-branch pre-push guard into this checkou
 		echo -e "$(GREEN)✅ Installed $$HOOK_DIR/pre-push (override a refusal with ALLOW_SHARED_BRANCH=1)$(NC)"; \
 	fi
 
+# `premerge` runs exactly the gates both CIs run -- the SHARED_GATES list in
+# scripts/tests/test_ci_gate_parity.py, read by scripts/premerge.py rather than
+# copied here -- and reports every failure rather than stopping at the first. A
+# hand-picked local run missed three of them once and the merge turned develop red
+# (#2115). It checks this working tree, not the merge result CI checks, so merge
+# the base in first. `PREMERGE_ARGS=--list` prints the plan without running it.
+PREMERGE_ARGS ?=
+.PHONY: premerge
+premerge: ## Run the full CI gate set (SHARED_GATES) locally, before merging
+	@python3 scripts/premerge.py $(PREMERGE_ARGS)
+
 commit: lint test ## Lint, test, auto-generate commit message, commit, and push
 	@echo "Generating commit message via Bedrock..."
 	@git add . && \
@@ -1829,6 +1883,10 @@ endif
 		 echo -e "$(YELLOW)Valid examples: 0.5.3, 1.0.0, 0.6.0.dev1, 1.0.0a1, 1.0.0rc1, 1.0.0.post1$(NC)" && \
 		 echo -e "$(YELLOW)Invalid examples: 0.5.3.wip5, 1.0-beta, v1.0.0$(NC)" && \
 		 exit 1)
+	@# Before anything is written: the solution profile needs a contract form of the
+	@# version (X.Y.Z with an optional suffix), and a refusal after the files below
+	@# were stamped would leave the tree half-bumped.
+	@$(PYTHON) scripts/check_solution_profile.py --check-version $(V)
 	@echo "Updating version to $(V)..."
 	@echo "$(V)" > VERSION
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_cli_pkg/pyproject.toml && rm -f lib/idp_cli_pkg/pyproject.toml.bak
@@ -1852,6 +1910,9 @@ endif
 	@# version line moves; nothing is re-resolved, so no dependency pin can change
 	@# as a side effect of a version bump (#1818).
 	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('lib/idp_common_pkg/uv.lock'); t=p.read_text(); n,c=re.subn(r'(\[\[package\]\]\nname = \"idp-common\"\nversion = \")[^\"]*(\")', r'\g<1>$(V)\g<2>', t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 idp-common version line in lib/idp_common_pkg/uv.lock, replaced {c}')"
+	@# The solution profile carries the version in its contract's form
+	@# (0.6.16.dev1 -> 0.6.16-dev1); see scripts/check_solution_profile.py.
+	@$(PYTHON) scripts/check_solution_profile.py --stamp-version $(V)
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"
 	@echo "  - VERSION"
 	@echo "  - lib/idp_cli_pkg/pyproject.toml"
@@ -1865,7 +1926,14 @@ endif
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"
 	@echo "  - lib/idp_feature_sdk/idp_feature_sdk/__init__.py"
 	@echo "  - feature-platform/seller-entitlement-service/template.yaml"
+	@echo "  - solution-profile/solution-profile.yaml"
 
+
+# The release asset for the solution profile (docs/solution-profile.md). Not a
+# gate: .github/workflows/solution-profile-release.yml builds it when a release is
+# published, and scripts/tests/test_solution_profile.py proves it byte-identical.
+solution-profile-build: ## Build the deterministic solution-profile release tarball and .sha256 into dist/ (TAG=v<x.y.z> optional)
+	@$(PYTHON) scripts/build_solution_profile.py --out-dir dist --validate $(if $(TAG),--tag $(TAG),)
 
 ##@ Documentation
 docs: docs-build ## Build and serve the documentation site locally

@@ -1,0 +1,15 @@
+{# Contract: decides only whether this page starts a new section. Must ask for a
+"document_boundary" of "start" or "continue"; no class.
+Placeholders: {BOUNDARY_HINTS}, {DOCUMENT_TEXT}, {DOCUMENT_IMAGE}. The class list and
+examples are deliberately absent: they are the prefix this stage exists to drop, and
+render empty here. #}
+<task-description> Decide whether the page below is the FIRST page of a document, or a later page of a document that began earlier. </task-description>
+{BOUNDARY_HINTS}
+<boundary-detection-rules> You are looking at ONE page. Any pages shown to you as context are there only to help you judge this page. Decide from this page's own evidence, in priority order: 1. PAGINATION: pagination such as "Page 2 of 2", "Page 3 of 5", "2/2", or "continued" with a number greater than 1 means this page is NOT a first page - output "continue". 2. If pagination indicates the first page (for example "Page 1 of 2"), output "start". 3. OPENING HEADER BLOCK: a first page carries the document's opening identity block - the document title or form name, the issuer or institution name, the addressee or account holder name AND address, the statement or document date or period, and account or reference numbers. Output "start" ONLY when this page carries that opening block. 4. TABLE CONTINUATION: a page whose content is a table or list of rows - even when the table's COLUMN HEADINGS (for example "Date | Description | Amount") are repeated at the top of the page - and that does NOT carry the opening block is a continuation page. Repeated column headings are printed on every page of a long table; they are NOT a document title. Output "continue". 5. OTHER CONTINUATION EVIDENCE: a later page may show a form number only in the footer, a running balance or subtotal carried forward, or a trailing signature/consent/certification section. Output "continue". CRITICAL - no preceding page shown: if you are not shown the preceding page, do NOT conclude that this page must be a first page. Pages are judged independently, so the absence of a preceding page tells you nothing. A page showing only table rows, or marked "Page 2 of 2", is a continuation page even when you cannot see page 1. CRITICAL - consecutive documents: output "start" whenever this page IS a first page, even when the preceding page belongs to a document of the same kind. Two copies of the same form filed back to back are two separate documents. If evidence is genuinely balanced, prefer "continue" for a page lacking the opening block and "start" for a page carrying a complete opening block. </boundary-detection-rules>
+<output-format> {
+  "boundary_reason": "Which opening-block elements (title, issuer, addressee and address, date or period, account or reference number) and pagination evidence this page does or does not carry",
+  "document_boundary": "start or continue"
+} </output-format>
+<<CACHEPOINT>>
+<document-ocr-data> {DOCUMENT_TEXT} </document-ocr-data>
+<document-image> {DOCUMENT_IMAGE} </document-image>

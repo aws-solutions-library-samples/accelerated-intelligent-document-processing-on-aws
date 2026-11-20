@@ -385,7 +385,10 @@ def test_both_modes_pass_the_same_parameters(cbd, faked_deploy, run):
 
 def test_the_terraform_command_parses_as_a_terraform_deploy(cbd, faked_deploy, run):
     result = cbd._deploy_primary_terraform_attempt("stk", "a@example.test", run)
+    convergence = result.pop("convergence")
     assert result == {"stack_name": "stk", "success": True, "iac": "terraform"}
+    # The faked run_command answers the re-plan with exit 0: an empty plan.
+    assert convergence["status"] == "converged"
     (command,) = _deploys(faked_deploy)
     assert_deploy_command_is_well_formed(command)
     _, deploy, _ = _cli_authorities()

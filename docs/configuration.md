@@ -170,7 +170,7 @@ yet. The authoritative enumeration is the `system_defaults/` directory itself:
 |---|---|
 | `base.yaml` | top-level keys shared by every pattern |
 | `base-ocr.yaml` | OCR backends and image handling |
-| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape` |
+| `base-classification.yaml` | classification: strategy, the combined and split-then-classify calls, `document_shape`; its default prompts are files under `prompts/classification/` ([Default prompts](./classification.md#default-prompts)) |
 | `base-extraction.yaml` | extraction, `agentic.*`, `forced_tool.*`, `multi_instance_detection.*` |
 | `base-confidence.yaml` | assessment / confidence |
 | `base-evaluation.yaml`, `base-summarization.yaml`, `base-discovery.yaml`, `base-agents.yaml`, `base-chat.yaml`, `base-geometry.yaml`, `base-rule-validation.yaml`, `base-rule-discovery.yaml`, `base-classes.yaml`, `base-notes.yaml` | the remaining stages |
@@ -826,7 +826,7 @@ The solution implements sophisticated concurrency control and throttling managem
 - **Circuit Breaker**: Temporary halt on repeated failures
 - **Rate Limiting**: Configurable request rate controls
 
-Calls through the `idp_common` Bedrock client (Converse and embeddings) and agentic extraction's model calls retry an HTTP 500, 502, 503 or 504 whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. The Z3 rule translator keeps its own retry list and does not. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
+Calls through the `idp_common` Bedrock client (Converse and embeddings) and agentic extraction's model calls retry an HTTP 500, 502, 503 or 504 whatever error code it carries, including a reply that names no error at all, which botocore reports with the bare status (`"500"`) as its code. A 429 reply that names no error type (code `"429"`) is retried too, as throttling. The Z3 rule translator keeps its own retry list and does not. See the [Bedrock module README](../lib/idp_common_pkg/idp_common/bedrock/README.md#resilience-features).
 
 The solution tracks metrics for throttling events and successful retries, viewable in the CloudWatch dashboard.
 
@@ -859,7 +859,8 @@ not list `TransientError`, because it makes no model call and never raises. Whet
 a failure is transient is decided in
 `idp_common.utils.transient_errors`. It judges an exception by its own error
 code first (a `ValidationException` is deterministic whatever its message says,
-and a bare HTTP 500, 502, 503 or 504 in place of a code is transient),
+and a bare HTTP 500, 502, 503, 504 or 429 in place of a code is transient),
+takes a decision-model failure's own `retry_later` verdict as final,
 and looks through only explicit `raise ... from` wrappers, so a wrapper cannot
 hide a transient root and a swallowed transient error cannot lend its transience
 to an unrelated failure raised after it.
@@ -1292,6 +1293,7 @@ classification:
   document_shape:                  # applies under both strategies
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
+    pageOrder: scan                # or printed_page_numbers; see classification.md#page-order
 ```
 
 Four notes on reading that:
@@ -1336,7 +1338,9 @@ and accuracy figures behind each — see
 [Classification](./classification.md#choosing-granularity-modality-and-strategy).
 The authoritative list of every key with its shipped default and an inline
 rationale is
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`;
+for the prompts it holds a reference to each prompt's own file, listed under
+[Default prompts](./classification.md#default-prompts).
 
 ## Section Splitting
 

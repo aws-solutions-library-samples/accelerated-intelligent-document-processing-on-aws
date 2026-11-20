@@ -916,5 +916,44 @@
     "firstDetectedAt": "2026-09-09T15:13:50.663Z",
     "assessmentCount": 1,
     "suppressionReason": "Accepted (test fixture, not product infrastructure): scripts/security/live_checks/oidc_provider/ is a throwaway OIDC identity provider that only exists to verify the Cognito pre-token IdP group-mapping trigger (see .claude/skills/live-auth-checks.md). It is deployed by a manual `make verify-idp-federation` run and deleted immediately after; it is not referenced by template.yaml or any nested stack, and never runs in a customer account. INHERENT to the protocol: same as ProxyMethod — the OIDC endpoints are unauthenticated by design."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "Lambda function may contain sensitive data in environment variables",
+    "fix": "Use AWS Secrets Manager or SSM Parameter Store for sensitive environment variables like 'DECIDER_MAX_REQUEST_TOKENS'. Replace direct values with references like '{{resolve:secretsmanager:MySecret:SecretString:password}}' or use dynamic references with Ref or GetAtt.",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-002",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "False positive on a variable name: DECIDER_MAX_REQUEST_TOKENS is the upstream decider's request-size limit (a token count, 24576), read by its handler to refuse a request too large to finish inside the function's timeout. It holds no secret; the function's environment holds only that limit, the image long side and the published-version string."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "No X-Ray tracing configured for Lambda function",
+    "fix": "Set TracingConfig.Mode to 'Active' to enable X-Ray tracing for the Lambda function",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-004",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "Scanner limitation: DeciderFunction sets TracingConfig.Mode to !If [EnableXRayTracingCondition, Active, PassThrough], and EnableXRayTracing defaults to 'true', so tracing is Active unless the installer turns it off; its role attaches AWSXrayWriteOnlyAccess. scripts/tests/test_xray_tracing.py asserts the conditional form for every function in this template."
+  },
+  {
+    "source": "security-matrix",
+    "path": "feature-platform/decision-model-decider/template.yaml",
+    "resourceType": "AWS::Lambda::Function",
+    "resourceName": "DeciderFunction",
+    "issue": "Lambda function container image may not be stored in a secure repository",
+    "fix": "Store the container image 'ECRRepository.RepositoryUri:DeciderImageBuild.ImageTag' in a secure repository like Amazon ECR with vulnerability scanning enabled.",
+    "priority": "HIGH",
+    "check_id": "LAMBDA-015",
+    "status": "suppressed",
+    "isCustomResource": false,
+    "suppressionReason": "Scanner limitation: the ImageUri is !Sub of this stack's own ECRRepository (KMS-encrypted with the host's customer-managed key, ScanOnPush true, a repository policy limited to this function), tagged by the image-build custom resource. The scanner cannot resolve the intrinsic to see that it is Amazon ECR."
   }
 ]

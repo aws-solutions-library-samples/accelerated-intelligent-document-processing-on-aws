@@ -25,6 +25,7 @@ system_defaults/
    base-rule-discovery.yaml    # Rule discovery from policy documents
    pattern-1.yaml              # BDA mode root (selective inheritance)
    pattern-2.yaml              # Pipeline mode root (full inheritance)
+   prompts/classification/     # One file per default classification prompt
    README.md
 ```
 
@@ -105,6 +106,48 @@ confidence, geometry and HITL defaults as pipeline mode.
 | `base-agents.yaml` | `agents` | Error analyzer, chat | Both modes |
 | `base-discovery.yaml` | `discovery` | Schema discovery | Both modes |
 | `base-rule-discovery.yaml` | `discovery.rules` | Rule discovery from policy documents | Pipeline mode |
+
+## Default prompts in their own files
+
+Each default classification prompt is a file under `prompts/classification/`,
+named by its key path under `classification` — for example
+`prompts/classification/combined.page.task_prompt.txt` holds
+`classification.combined.page.task_prompt`. In `base-classification.yaml` the key
+holds a reference instead of the text:
+
+```yaml
+task_prompt: {_file: prompts/classification/combined.page.task_prompt.txt}
+```
+
+`load_system_defaults()` replaces each `{_file: ...}` mapping with the file's text,
+less one trailing newline, as it reads each defaults file and before anything is
+inherited or merged. So the merged defaults, a preset merged over them, the stored
+Default configuration and anything exported or generated from them carry the prompt
+text, exactly as they did when the prompts were inline. To read one file on its own
+with its references resolved, use `merge_utils.load_system_defaults_file(name)`;
+reading the YAML directly returns the `{_file: ...}` mappings.
+
+The rules the loader enforces:
+
+- A reference is only resolved in the shipped defaults. A user or preset
+  configuration is never resolved, so no configuration can make the loader read a
+  file.
+- The path is relative to this directory, must stay inside `prompts/` (after
+  symlinks are followed) and must end in `.txt`. Those are the files the package
+  ships: `pyproject.toml` `package-data` and `MANIFEST.in` both include
+  `prompts/**/*.txt`, and the Lambda layer is built from that wheel.
+- A `{_file: ...}` mapping must hold no other key.
+
+The files are `.txt` rather than `.md` on purpose. GitHub renders a `.md` file as
+Markdown, which drops the prompts' `<tags>` and turns `<<CACHEPOINT>>` into `<>`,
+so a help-text link to the default prompt would show a different prompt from the
+one that is sent. The publisher's layer-rebuild checksum also skips `.md` files, so
+a `.md` prompt edit would not rebuild the layer.
+
+When you change a default prompt on purpose, update its SHA-256 in
+`tests/unit/config/test_default_prompt_files.py`, which pins every prompt's text.
+Only classification uses this layout so far; the other `base-*.yaml` files still
+hold their prompts inline.
 
 ## Merge Priority
 

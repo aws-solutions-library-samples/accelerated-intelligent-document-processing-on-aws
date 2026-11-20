@@ -138,6 +138,22 @@ Bulk evaluation surfaces the standard calibration metrics:
 
 These are computed in the aggregation Lambda via Stickler's `BulkStructuredModelEvaluator` (see `patterns/unified/src/test_execution_aggregation_function/index.py`).
 
+**The aggregation reads documents in document-key order.** `_load_comparison_results`
+loads the documents' `results.json` in parallel but hands their comparisons to Stickler,
+and sums their scores, sorted by document key, whatever order the tracking-table scan
+and the loader threads produce. Stickler's error capture at a review budget breaks ties
+between equal confidences by input order, so without a fixed order it moved by whole
+errors between two aggregations of the same results (#2133). Ties are still broken by
+position: within one field by document key, and in the `overall` figure by field first
+(Stickler builds that list field by field, in first-seen order) and then by document key.
+awslabs/stickler#601 tracks making the metric independent of order altogether.
+
+`EvaluationService.evaluate_document` likewise evaluates a document's sections in
+parallel but folds their results in section order, so the document's
+`weighted_overall_score` and its `excluded_sections` list do not depend on which section
+finished first. A transient failure in any section still cancels the sections not yet
+started and leaves as `TransientError`.
+
 **Empty predictions are reported separately.** `_remove_none_values` drops every `None`
 before the Stickler models are built, so Stickler's `prediction_confidences` has no entry
 for a field the extractor returned as null, and the `overall` and `fields` figures above

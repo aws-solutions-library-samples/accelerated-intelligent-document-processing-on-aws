@@ -38,6 +38,7 @@ import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
 import { useFormatters, type Formatters } from '../../i18n/format';
+import type { CallerAttributeEntry } from '../common/caller-attributes';
 // Uncomment the line below to enable debugging
 
 interface MappedDocument {
@@ -53,6 +54,10 @@ interface MappedDocument {
   configMappingPrefix?: string;
   /** Why the document was refused at ingest, for a `reject` prefix mapping. */
   configAssignmentError?: string;
+  /** Issues recorded on the document rather than a section — today, ingest warnings only. */
+  documentProcessingIssues?: { severity?: string | null; message?: string | null; code?: string | null }[];
+  /** Caller-supplied document attributes, as text rows (see caller-attributes.ts). */
+  callerAttributes?: CallerAttributeEntry[];
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -396,6 +401,21 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
             {item.configAssignmentError}
           </Box>
         )}
+        {/*
+          Document-level issues, all of them ingest warnings, shown beside the
+          configuration because most say how it was chosen (the prefix mappings
+          could not be read, so none was applied); the other says intake dropped
+          some of the document's attributes.
+        */}
+        {(item.documentProcessingIssues ?? []).map((issue) => (
+          <Box
+            key={`${issue.code ?? ''}:${issue.message ?? ''}`}
+            fontSize="body-s"
+            color={issue.severity === 'error' ? 'text-status-error' : 'text-status-warning'}
+          >
+            {issue.message}
+          </Box>
+        ))}
       </Field>
       <Field label={intl.formatMessage(fieldLabels.pageCount)}>{item.pageCount || 0}</Field>
       <Field label={intl.formatMessage(fieldLabels.evaluation)}>
@@ -424,8 +444,45 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
         <FormattedMessage {...(item.summaryReportUri ? messages.summaryAvailable : messages.notApplicable)} />
       </Field>
       <MalwareScanAttribute item={item} />
+      <CallerAttributesField entries={item.callerAttributes} />
     </ColumnLayout>
   );
+};
+
+const attributeMessages = defineMessages<{ label: NoMessageValues }>({
+  label: {
+    id: 'documentPanel.callerAttributes.label',
+    defaultMessage: 'Attributes',
+    description: 'Label of the document detail field listing the key-value attributes the caller attached at upload.',
+  },
+});
+
+/**
+ * The caller-supplied attributes as a detail field, one `key: value` line each.
+ *
+ * Rendered only when the document carries any, so a document uploaded without
+ * attributes shows the same grid as before. Values are untrusted caller input and
+ * are rendered as React text children, never as HTML.
+ */
+const CallerAttributesList = ({ entries }: { entries: CallerAttributeEntry[] }): React.JSX.Element => {
+  const intl = useIntl();
+  return (
+    <Field label={intl.formatMessage(attributeMessages.label)}>
+      {entries.map(({ key, value }) => (
+        <Box key={key} fontSize="body-s">
+          <Box variant="span" fontWeight="bold">
+            {key}
+          </Box>
+          {`: ${value}`}
+        </Box>
+      ))}
+    </Field>
+  );
+};
+
+export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEntry[] }): React.JSX.Element | null => {
+  if (!entries || entries.length === 0) return null;
+  return <CallerAttributesList entries={entries} />;
 };
 
 /**

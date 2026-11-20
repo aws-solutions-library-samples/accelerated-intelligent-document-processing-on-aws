@@ -24,6 +24,7 @@ Example:
 """
 
 from ._core import terraform_stack as _terraform_stack
+from ._core.ids import generate_timestamped_id
 from ._core.region import resolve_region
 from ._core.terraform_deploy import (
     default_pointer_url as default_terraform_pointer_url,
@@ -66,6 +67,7 @@ from .models import (
     ChatResponse,
     # Config models
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -103,6 +105,7 @@ from .models import (
     FailureAnalysis,
     FailureCause,
     FieldComparison,
+    FitCheckResult,
     # Manifest models
     LoadTestResult,
     ManifestDocument,
@@ -164,6 +167,7 @@ __all__ = [
     # Client
     "IDPClient",
     "resolve_region",
+    "generate_timestamped_id",
     # Exceptions
     "IDPError",
     "IDPConfigurationError",
@@ -230,6 +234,7 @@ __all__ = [
     "FieldComparison",
     "DeleteResult",
     "UseAsBaselineResult",
+    "FitCheckResult",
     # Assessment models
     "AssessmentConfidenceResult",
     "AssessmentFieldConfidence",
@@ -249,6 +254,7 @@ __all__ = [
     "ConfigActivateResult",
     "ConfigVersionInfo",
     "ConfigListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     "ConfigRevisionInfo",

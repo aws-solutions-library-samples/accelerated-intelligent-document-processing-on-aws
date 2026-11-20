@@ -147,12 +147,36 @@ class ManifestParser:
         # Get baseline_source (optional)
         baseline_source = row.get("baseline_source", "").strip() or None
 
-        return {
+        normalized = {
             "path": document_path,
             "type": doc_type,
             "filename": filename,
             "baseline_source": baseline_source,
         }
+
+        # Optional caller-supplied document attributes (#1851): a JSON object, or
+        # in a CSV a cell holding one. Validated here so a bad row refuses the
+        # manifest before anything is uploaded. The key is added only when the
+        # row carries attributes, so other rows normalise exactly as before.
+        attributes = self._row_attributes(row.get("attributes"))
+        if attributes:
+            normalized["attributes"] = attributes
+
+        return normalized
+
+    @staticmethod
+    def _row_attributes(raw) -> Optional[Dict]:
+        """A row's ``attributes`` value, validated, or None when it has none."""
+        from idp_sdk._core.document_attributes import validate
+
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return None
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except ValueError as e:
+                raise ValueError(f"'attributes' is not valid JSON: {e}") from e
+        return validate(raw) or None
 
 
 def parse_manifest(manifest_path: str) -> List[Dict]:

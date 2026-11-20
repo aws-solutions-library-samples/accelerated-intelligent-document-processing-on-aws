@@ -614,11 +614,24 @@ def check_assume_role_arn(role_arn: Optional[str]) -> Optional[str]:
     return role_arn
 
 
-def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -> str:
+#: The module variable ``--tags`` sets, and the root variable of the same name.
+TAGS_VARIABLE = "tags"
+#: ``default_tags`` reaches every ``aws`` resource, the module's S3 objects among
+#: them, and S3 allows an object at most 10 tags (a stack allows 50).
+MAX_DEPLOYMENT_TAGS = 10
+
+
+def render_provider_blocks(
+    region: str, assume_role_arn: Optional[str] = None, default_tags: bool = False
+) -> str:
     """The ``aws`` and ``awscc`` provider blocks, both in ``region``, and both
     assuming ``assume_role_arn`` when it is given. The two must agree: the module
     creates resources through both, and a role on one alone splits the
     deployment across two identities.
+
+    With ``default_tags`` the ``aws`` block tags every resource it creates with
+    ``var.tags``. ``awscc`` has no ``default_tags``; the module merges the same
+    variable into each of its ``awscc`` resources instead.
 
     The two providers spell it differently, and the wrong spelling fails
     ``validate`` with "Unsupported block type": in ``hashicorp/aws`` it is a
@@ -632,6 +645,10 @@ def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -
         if assume_role_arn:
             lines.append(opener)
             lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
+            lines.append("  }")
+        if default_tags and name == "aws":
+            lines.append("  default_tags {")
+            lines.append(f"    tags = var.{TAGS_VARIABLE}")
             lines.append("  }")
         lines.append("}")
         lines.append("")
@@ -677,7 +694,11 @@ def set_assume_role(
         )
     new = (
         text[: match.start()]
-        + render_provider_blocks(recorded_region, assume_role_arn)
+        + render_provider_blocks(
+            recorded_region,
+            assume_role_arn,
+            default_tags="  default_tags {" in match.group("aws"),
+        )
         + "\n"
         + text[match.end() :]
     )
@@ -690,6 +711,7 @@ def render_main_tf(
     values: Dict[str, Any],
     specs: Dict[str, Dict[str, Any]],
     assume_role_arn: Optional[str] = None,
+    tags: Optional[Dict[str, str]] = None,
 ) -> str:
     """Root configuration: providers in the region and ``module "idp"``.
 
@@ -698,6 +720,11 @@ def render_main_tf(
     in the directory unless the user adds a backend in another file. With
     ``assume_role_arn`` both providers assume that role, so Terraform creates the
     deployment's resources as the role rather than as the caller.
+
+    With ``tags`` (non-empty), a ``tags`` variable is declared and given to the
+    module, which merges it into its ``awscc`` resources, and to the ``aws``
+    provider's ``default_tags``, which covers the rest. Without, the file is
+    what it was before the module had a tags input.
     """
     source = terraform_module_source(module_url)
     blocks = [
@@ -712,9 +739,15 @@ def render_main_tf(
         "  }",
         "}",
         "",
-        render_provider_blocks(region, assume_role_arn),
+        render_provider_blocks(region, assume_role_arn, default_tags=bool(tags)),
     ]
     names = sorted(values)
+    if tags:
+        specs = {
+            **specs,
+            TAGS_VARIABLE: {"type": "map(string)", "sensitive": False},
+        }
+        names = sorted([*names, TAGS_VARIABLE])
     for name in names:
         spec = specs.get(name, {"type": "string", "sensitive": False})
         blocks.append(f'variable "{name}" {{')
@@ -752,9 +785,14 @@ class RootConfigValues(dict):
       ``None`` when no label stack was read;
     - ``upgrade``: whether an earlier deploy was found (a label stack or this
       directory's own record);
-    - ``local``: whether this directory held a record of an earlier deploy.
+    - ``local``: whether this directory held a record of an earlier deploy;
+    - ``tags``: the deployment's tags as written (empty for none), and
+      ``tags_kept``: whether they are the previous deploy's, kept because none
+      were passed.
     """
 
+    tags: Dict[str, str]
+    tags_kept: bool
     kept: Dict[str, Any]
     kept_from: Dict[str, str]
     recorded: Optional[frozenset]
@@ -780,6 +818,45 @@ def label_parameter_values(stack: Optional[Dict[str, Any]]) -> Optional[Dict[str
     }
 
 
+def _refuse_changed_creation_fixed(
+    parameters: Dict[str, str],
+    effective: Dict[str, Any],
+    known: Dict[str, Any],
+) -> None:
+    """Refuse a ``CustomerManagedKmsKeyArn`` whose passed value differs from
+    the value the deployment has (empty when it has none), as the
+    CloudFormation deploy does (``guard_creation_fixed_parameters``).
+
+    Terraform has no rollback, so this is what keeps a changed key from being
+    applied part-way before the template's check refuses it. It is the only
+    creation-fixed parameter checked here: ``ExternalIdPEmailMutable`` is
+    derived by ``terraform_migrate`` from the user pool a migration adopts, so
+    the value a deployment "was created with" is not the module default there.
+    """
+    from idp_sdk._core.stack import guard_creation_fixed_parameters
+
+    given: Dict[str, str] = {}
+    current: Dict[str, str] = {}
+    for name in ("CustomerManagedKmsKeyArn",):
+        spec = known.get(name)
+        if spec is None or name not in parameters:
+            continue
+        given[name] = str(parameters[name])
+        value = effective.get(spec["variable"])
+        if value is not None:
+            current[name] = (
+                ("true" if value else "false")
+                if isinstance(value, bool)
+                else str(value)
+            )
+    try:
+        guard_creation_fixed_parameters(
+            given, stack_exists=True, current_params=current
+        )
+    except ValueError as e:
+        raise IDPConfigurationError(str(e)) from e
+
+
 def write_root_config(
     directory: Path,
     *,
@@ -791,10 +868,21 @@ def write_root_config(
     manifest: Dict[str, Any],
     assume_role_arn: Optional[str] = None,
     recorded: Optional[Dict[str, str]] = None,
+    tags: Optional[Dict[str, str]] = None,
 ) -> RootConfigValues:
     """Write ``main.tf`` and ``terraform.tfvars`` into ``directory``.
 
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
+
+    ``tags`` replaces the deployment's tags, as a CloudFormation update given
+    tags replaces the stack's. An empty dict stops passing any: the ``aws``
+    resources lose them, but an ``awscc`` resource whose template sets no tags
+    is given ``null``, which the provider may read as "keep what is there", so
+    those may keep the tags they have. ``None`` keeps the tags this directory's
+    ``terraform.tfvars`` holds from the previous deploy, as a CloudFormation
+    update given none keeps the stack's. Refuses tags for a module that has no
+    tags input (its manifest has no ``tagsVariable``), and more than
+    :data:`MAX_DEPLOYMENT_TAGS`.
 
     Refuses a ``main.tf`` that idp-cli did not write. A parameter that is not
     passed keeps the value the deployment has, as a CloudFormation update keeps
@@ -833,6 +921,7 @@ def write_root_config(
     specs = variable_specs(manifest)
     known = manifest.get("parameters") or {}
     previous: Dict[str, Any] = {}
+    previous_tags: Dict[str, str] = {}
     local_source = SOURCE_TFVARS
     if tfvars.exists():
         text = tfvars.read_text()
@@ -842,6 +931,7 @@ def write_root_config(
                 "overwrite it."
             )
         previous_vars = parse_tfvars(text)
+        previous_tags = previous_vars.pop(TAGS_VARIABLE, None) or {}
         # Earlier values are remembered by CloudFormation parameter name, which
         # is stable; a Terraform variable name can change between module
         # versions, and keying on it would drop the value without a word.
@@ -900,6 +990,8 @@ def write_root_config(
     values = RootConfigValues(previous)
     values.update(from_label)
     passed = map_parameters(parameters, manifest)
+    if recorded is not None or tfvars.exists():
+        _refuse_changed_creation_fixed(parameters, values, known)
     values.update(passed)
     values["stack_name"] = stack_name
     passed_names = set(parameters)
@@ -931,13 +1023,46 @@ def write_root_config(
     values.recorded = frozenset(recorded) if recorded is not None else None
     values.local = tfvars.exists()
     values.upgrade = recorded is not None or values.local
+    values.tags_kept = tags is None and bool(previous_tags)
+    values.tags = dict(previous_tags if tags is None else tags)
+    if values.tags and manifest.get("tagsVariable") != TAGS_VARIABLE:
+        where = (
+            "this directory's previous deploy has tags"
+            if values.tags_kept
+            else "tags were passed"
+        )
+        raise IDPConfigurationError(
+            f"{where}, and this module has no tags input (it was published "
+            "before the Terraform module accepted tags). Use a newer module, or "
+            f"deploy without tags: remove the tags line from {tfvars}, or pass "
+            "tags={} to the SDK."
+        )
+    if len(values.tags) > MAX_DEPLOYMENT_TAGS:
+        raise IDPConfigurationError(
+            f"{len(values.tags)} tags given; a Terraform deployment takes at most "
+            f"{MAX_DEPLOYMENT_TAGS}, because the aws provider's default_tags also "
+            "tag the module's S3 objects, which S3 limits to 10 tags each"
+        )
+    if values.tags_kept:
+        logger.info(
+            "Keeping the previous deploy's tags (%s); pass tags to replace them",
+            ", ".join(sorted(values.tags)),
+        )
     main_tf.write_text(
         render_main_tf(
-            region, module_url, values, specs, check_assume_role_arn(assume_role_arn)
+            region,
+            module_url,
+            values,
+            specs,
+            check_assume_role_arn(assume_role_arn),
+            tags=values.tags,
         )
     )
     # The values can include NoEcho parameters.
-    write_private(tfvars, render_tfvars(values))
+    tfvars_values = dict(values)
+    if values.tags:
+        tfvars_values[TAGS_VARIABLE] = values.tags
+    write_private(tfvars, render_tfvars(tfvars_values))
     _write_parameters_file(directory, manifest, values)
     return values
 
@@ -1357,14 +1482,27 @@ _BUCKET_TYPES = {"aws_s3_bucket": "bucket", "awscc_s3_bucket": "bucket_name"}
 
 
 def state_buckets(state: Dict[str, Any], exclude: Iterable[str] = ()) -> List[Dict]:
-    """Buckets in ``terraform show -json`` output, as the ``bucket_info`` dicts
+    """Buckets to empty before ``terraform destroy``, from ``terraform show
+    -json`` output, as the ``bucket_info`` dicts
     :meth:`StackDeployer._empty_buckets` takes. Entries in ``exclude`` (state
-    addresses) are left out."""
+    addresses) are left out.
+
+    A bucket with ``force_destroy`` set in state is left out too: destroy
+    empties it itself, when it deletes it, which is after everything that
+    depends on it. That matters for the custom-resource bridge buckets
+    (``cfn_bridge``, one per module), the only buckets the translator creates
+    with ``force_destroy``: each holds the physical ID of every custom
+    resource in its module, and every custom resource's Delete depends on it,
+    so emptying one beforehand sends each of those Deletes without the ID of
+    the resource it is meant to delete.
+    """
     skip = set(exclude)
     out = []
     for res in _state_resources(state):
         attr = _BUCKET_TYPES.get(res.get("type", ""))
         if res.get("mode") != "managed" or not attr or res.get("address") in skip:
+            continue
+        if (res.get("values") or {}).get("force_destroy") is True:
             continue
         name = (res.get("values") or {}).get(attr)
         if name:
@@ -1584,6 +1722,349 @@ def service_log_groups(
 # ---------------------------------------------------------------------------
 # The binary
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Where the state is kept: local (the default) or an S3 backend
+# ---------------------------------------------------------------------------
+
+#: ``terraform_state`` values. ``local`` writes no backend, as before the option
+#: existed; ``s3`` writes :data:`BACKEND_FILE` naming a bucket idp-cli manages.
+STATE_LOCAL = "local"
+STATE_S3 = "s3"
+STATE_CHOICES = (STATE_LOCAL, STATE_S3)
+BACKEND_FILE = "backend.tf"
+#: The local state file Terraform writes with no backend configured.
+LOCAL_STATE_FILE = "terraform.tfstate"
+_BUCKET_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$")
+
+
+def check_terraform_state(value: Optional[str]) -> str:
+    """``value`` normalised; ``None`` is :data:`STATE_LOCAL`."""
+    choice = (value or STATE_LOCAL).strip().lower()
+    if choice not in STATE_CHOICES:
+        raise IDPConfigurationError(
+            f"terraform_state must be one of {', '.join(STATE_CHOICES)}, not {value!r}"
+        )
+    return choice
+
+
+def state_bucket_name(account: str, region: str, stack_name: str) -> str:
+    """The deployment's state bucket: one per account, Region and deployment.
+
+    The stack name goes in the middle because it may end in a hyphen, which a
+    bucket name may not; a Region always ends in a digit. Lowercased, as S3
+    requires: two deployments whose names differ only in case share a bucket,
+    and their state objects are still apart, because :func:`state_key` keeps
+    the name's case.
+    """
+    name = f"idp-tf-{stack_name.lower()}-{account}-{region}"
+    if not _BUCKET_NAME.match(name):
+        raise IDPConfigurationError(
+            f"cannot name a state bucket for {stack_name!r} in {region}: {name!r} "
+            "is not a valid S3 bucket name (at most 63 characters of lowercase "
+            "letters, digits and hyphens)"
+        )
+    return name
+
+
+def state_key(stack_name: str) -> str:
+    return f"{stack_name}/{LOCAL_STATE_FILE}"
+
+
+def state_lock_table_name(stack_name: str) -> str:
+    """The DynamoDB table the backend locks the state with.
+
+    Not S3-native locking (``use_lockfile``): that needs Terraform or OpenTofu
+    1.10, and the oldest releases ``make terraform-check`` validates the module
+    with are 1.7. Two operators whose binaries chose different mechanisms would
+    not exclude each other, so every deploy uses the table.
+    """
+    return f"idp-tf-lock-{stack_name}"
+
+
+class StateBackend(dict):
+    """The S3 backend a deploy writes: ``bucket``, ``key``, ``region``,
+    ``dynamodb_table``, plus what :func:`ensure_state_backend` found
+    (``created_bucket``, ``created_table``, ``state_exists``)."""
+
+    @property
+    def bucket(self) -> str:
+        return self["bucket"]
+
+
+def render_backend_tf(backend: Dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            ROOT_MARKER,
+            "# Rewritten on every deploy with --terraform-state s3. The bucket and",
+            "# the lock table are kept when the deployment is deleted.",
+            "",
+            "terraform {",
+            '  backend "s3" {',
+            f"    bucket         = {json.dumps(backend['bucket'])}",
+            f"    key            = {json.dumps(backend['key'])}",
+            f"    region         = {json.dumps(backend['region'])}",
+            "    encrypt        = true",
+            f"    dynamodb_table = {json.dumps(backend['dynamodb_table'])}",
+            "  }",
+            "}",
+            "",
+        ]
+    )
+
+
+def state_bucket_policy(bucket: str, partition: str) -> Dict[str, Any]:
+    """Deny every request that is not over TLS: the state holds secrets in clear."""
+    arn = f"arn:{partition}:s3:::{bucket}"
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "DenyInsecureTransport",
+                "Effect": "Deny",
+                "Principal": "*",
+                "Action": "s3:*",
+                "Resource": [arn, f"{arn}/*"],
+                "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+            }
+        ],
+    }
+
+
+_PUBLIC_ACCESS_BLOCK = {
+    "BlockPublicAcls": True,
+    "IgnorePublicAcls": True,
+    "BlockPublicPolicy": True,
+    "RestrictPublicBuckets": True,
+}
+_SSE_S3 = {
+    "Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]
+}
+
+
+def _error_code(e: Exception) -> str:
+    return str(getattr(e, "response", {}).get("Error", {}).get("Code", ""))
+
+
+def check_backend_switch(directory: Path, terraform_state: str) -> None:
+    """Refuse a change of backend this increment cannot carry out.
+
+    Moving a local state into S3 (or back) is ``terraform init
+    -migrate-state``, which idp-cli does not run yet: with ``-input=false``
+    init refuses, and a deploy that wrote a new backend over an existing local
+    state would plan every resource as new. Also refuses to overwrite a
+    ``backend.tf`` idp-cli did not write.
+    """
+    backend_tf = directory / BACKEND_FILE
+    managed = backend_tf.is_file() and ROOT_MARKER in backend_tf.read_text()
+    if terraform_state == STATE_LOCAL:
+        if managed:
+            raise IDPConfigurationError(
+                f"{directory} keeps its Terraform state in S3 (see {backend_tf}); "
+                "pass --terraform-state s3 (terraform_state='s3') to deploy it. "
+                "Moving the state back to a local file is not supported."
+            )
+        return
+    if backend_tf.exists() and not managed:
+        raise IDPConfigurationError(
+            f"{backend_tf} exists and was not written by idp-cli; refusing to "
+            "overwrite it. Remove it, or deploy without --terraform-state s3 to "
+            "keep the backend it configures."
+        )
+    if not managed and (directory / LOCAL_STATE_FILE).exists():
+        raise IDPConfigurationError(
+            f"{directory} already has a local state ({LOCAL_STATE_FILE}). Moving "
+            "an existing local state into S3 is not supported yet; deploy this "
+            "directory without --terraform-state s3, or run `terraform init "
+            "-migrate-state` yourself after writing a backend."
+        )
+
+
+def ensure_state_backend(
+    region: str,
+    stack_name: str,
+    *,
+    s3: Any = None,
+    sts: Any = None,
+    dynamodb: Any = None,
+) -> StateBackend:
+    """Create the state bucket and lock table if missing; reuse them if present.
+
+    A new bucket gets a public access block, versioning, SSE-S3 default
+    encryption and a policy denying non-TLS requests. An existing bucket must
+    belong to the caller's account (a bucket of that name in another account is
+    refused, never written to); it is never recreated or emptied, and of those
+    four settings only the ones it lacks entirely are applied, which finishes a
+    creation an earlier deploy was interrupted in. A setting someone changed
+    (versioning suspended, a different policy) is left alone with a warning.
+    """
+    import boto3
+
+    sts = sts or boto3.client("sts", region_name=region)
+    s3 = s3 or boto3.client("s3", region_name=region)
+    dynamodb = dynamodb or boto3.client("dynamodb", region_name=region)
+
+    identity = sts.get_caller_identity()
+    account = identity["Account"]
+    partition = identity["Arn"].split(":")[1]
+    bucket = state_bucket_name(account, region, stack_name)
+    key = state_key(stack_name)
+    table = state_lock_table_name(stack_name)
+
+    created_bucket = False
+    try:
+        s3.head_bucket(Bucket=bucket, ExpectedBucketOwner=account)
+    except Exception as e:  # botocore ClientError
+        code = _error_code(e)
+        if code not in ("404", "NoSuchBucket", "NotFound"):
+            raise IDPConfigurationError(
+                f"state bucket {bucket} exists but is not readable as a bucket of "
+                f"account {account} ({code or e}): it belongs to another account, "
+                "or these credentials lack s3:ListBucket on it. Nothing was "
+                "written to it."
+            ) from e
+        created_bucket = _create_state_bucket(s3, bucket, region)
+    _complete_state_bucket(s3, bucket, partition, account)
+    logger.info(
+        "%s Terraform state bucket %s",
+        "Created" if created_bucket else "Reusing",
+        bucket,
+    )
+
+    created_table = False
+    try:
+        dynamodb.describe_table(TableName=table)
+    except Exception as e:
+        if _error_code(e) != "ResourceNotFoundException":
+            raise
+        dynamodb.create_table(
+            TableName=table,
+            AttributeDefinitions=[{"AttributeName": "LockID", "AttributeType": "S"}],
+            KeySchema=[{"AttributeName": "LockID", "KeyType": "HASH"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        dynamodb.get_waiter("table_exists").wait(TableName=table)
+        created_table = True
+        logger.info("Created Terraform state lock table %s", table)
+
+    state_exists = True
+    if created_bucket:
+        state_exists = False
+    else:
+        try:
+            s3.head_object(Bucket=bucket, Key=key, ExpectedBucketOwner=account)
+        except Exception as e:
+            if _error_code(e) not in ("404", "NoSuchKey", "NotFound"):
+                raise
+            state_exists = False
+    return StateBackend(
+        bucket=bucket,
+        key=key,
+        region=region,
+        dynamodb_table=table,
+        created_bucket=created_bucket,
+        created_table=created_table,
+        state_exists=state_exists,
+    )
+
+
+def _create_state_bucket(s3: Any, bucket: str, region: str) -> bool:
+    """Create ``bucket``; ``False`` when it turned out to be the caller's already."""
+    kwargs: Dict[str, Any] = {"Bucket": bucket}
+    if region != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
+    try:
+        s3.create_bucket(**kwargs)
+    except Exception as e:
+        if _error_code(e) == "BucketAlreadyOwnedByYou":
+            return False
+        if _error_code(e) == "BucketAlreadyExists":
+            raise IDPConfigurationError(
+                f"state bucket name {bucket} is taken by another account; "
+                "nothing was written to it"
+            ) from e
+        raise
+    s3.get_waiter("bucket_exists").wait(Bucket=bucket)
+    return True
+
+
+def _complete_state_bucket(s3: Any, bucket: str, partition: str, account: str) -> None:
+    """Apply each protective setting the bucket lacks entirely; warn on a changed one.
+
+    Every call names the expected owner, so none can reach a bucket that changed
+    hands after :func:`ensure_state_backend` checked it.
+    """
+    own = {"Bucket": bucket, "ExpectedBucketOwner": account}
+    try:
+        pab = s3.get_public_access_block(**own)
+    except Exception as e:
+        if _error_code(e) != "NoSuchPublicAccessBlockConfiguration":
+            raise
+        s3.put_public_access_block(
+            **own, PublicAccessBlockConfiguration=_PUBLIC_ACCESS_BLOCK
+        )
+        pab = None
+
+    if pab is not None:
+        off = sorted(
+            k
+            for k in _PUBLIC_ACCESS_BLOCK
+            if not pab.get("PublicAccessBlockConfiguration", {}).get(k)
+        )
+        if off:
+            logger.warning(
+                "State bucket %s's public access block has %s off; it was left "
+                "as it is",
+                bucket,
+                ", ".join(off),
+            )
+
+    status = s3.get_bucket_versioning(**own).get("Status")
+    if status is None:
+        s3.put_bucket_versioning(**own, VersioningConfiguration={"Status": "Enabled"})
+    elif status != "Enabled":
+        logger.warning(
+            "Versioning on state bucket %s is %s; a lost or corrupted state "
+            "cannot be recovered from an earlier version",
+            bucket,
+            status,
+        )
+
+    try:
+        s3.get_bucket_encryption(**own)
+    except Exception as e:
+        if _error_code(e) != "ServerSideEncryptionConfigurationNotFoundError":
+            raise
+        s3.put_bucket_encryption(**own, ServerSideEncryptionConfiguration=_SSE_S3)
+
+    try:
+        policy = json.loads(s3.get_bucket_policy(**own)["Policy"])
+    except Exception as e:
+        if _error_code(e) != "NoSuchBucketPolicy":
+            raise
+        s3.put_bucket_policy(
+            **own, Policy=json.dumps(state_bucket_policy(bucket, partition))
+        )
+        return
+    if not any(
+        s.get("Effect") == "Deny"
+        and "false"
+        == str(
+            (s.get("Condition") or {}).get("Bool", {}).get("aws:SecureTransport", "")
+        ).lower()
+        for s in policy.get("Statement") or []
+    ):
+        logger.warning(
+            "State bucket %s has a bucket policy without a deny on non-TLS "
+            "requests; it was left as it is",
+            bucket,
+        )
+
+
+def write_backend_tf(directory: Path, backend: Dict[str, Any]) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / BACKEND_FILE).write_text(render_backend_tf(backend))
 
 
 #: What ``terraform state list`` (and OpenTofu's) prints when no state exists yet.

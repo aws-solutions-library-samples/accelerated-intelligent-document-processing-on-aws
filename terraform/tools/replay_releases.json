@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Releases `make terraform-check` replays with terraform/tools/replay_releases.py --check:",
+    "the current translator must translate each one's template tree offline with no failure.",
+    "Each release is held to the commit its public GitHub tag names (a tag can be moved; a commit cannot).",
+    "Add each new release here when it is tagged."
+  ],
+  "releases": {
+    "v0.6.0": "d3a5ada15c02e6ec67c4cf23403a99e24ebc1317",
+    "v0.6.1": "1795841fb50cd2623ecc02091e6067f165037a55",
+    "v0.6.2": "eafe6047386174f57fb5c053dd84866d5269ee92",
+    "v0.6.3": "1bf5c82b57b5eac9d62139db9fb36771796cb01a",
+    "v0.6.4": "9ce9d265be3402d33f7cb336d5918cf8eed88b49",
+    "v0.6.5": "1b5fd74454e593de233342a02ee911af8ee38359",
+    "v0.6.6": "7fb426b27b0395c6a283f189a46105a76a762c94",
+    "v0.6.7": "8d1c4606629c44e8c2a8187bb074fac3d0c33597",
+    "v0.6.8": "267de2868cf990212fe9b290e987eaf897c8d8db",
+    "v0.6.9": "325794a6ffe1c89bac41a0180c991e681eb70bc8",
+    "v0.6.10": "d9942790bab9fefdad08d947f17286439b5a8bf9",
+    "v0.6.11": "64e95c7d26ed7e2470d7f970e25e1c4e26b9ba09",
+    "v0.6.12": "205b8c3fb6b9ec7fd29c1ac88fa566053bffe65e",
+    "v0.6.13": "a0aa0bb76ddcd1bc88b3e6e1e7031a8026c149be",
+    "v0.6.14": "ada0a9bc5db94a96034b754ddfcc5d618437b3c2",
+    "v0.6.15": "d9fe93b488c06a60f6bebde23609cb159d703415"
+  }
+}
