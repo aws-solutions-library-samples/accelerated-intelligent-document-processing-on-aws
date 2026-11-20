@@ -201,6 +201,10 @@ export default defineConfig({
                   slug: "extensions/auto-optimizer",
                 },
                 {
+                  label: "Decision Model: Strands Decider",
+                  slug: "extensions/decision-model-decider",
+                },
+                {
                   label: "IDP Monitor",
                   slug: "extensions/idp-monitor",
                 },
