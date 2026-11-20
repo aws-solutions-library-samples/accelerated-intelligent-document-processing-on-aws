@@ -2490,7 +2490,7 @@ ai_ux_test_stories_nightly:
   # - reserve_minutes) / flow_minutes) is how many flows fit in one shard's time
   # gate. The CI-jobs test recomputes both from the catalogue and fails when a
   # p0 flow no longer fits.
-  parallel: 6
+  parallel: 7
   rules: &ux_story_nightly_rules
     - if: $UX_TEST_STORIES && $UX_TEST_STORIES != "nightly"
       when: never
