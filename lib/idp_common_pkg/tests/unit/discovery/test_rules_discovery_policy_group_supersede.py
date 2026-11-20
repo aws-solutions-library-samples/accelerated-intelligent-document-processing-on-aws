@@ -462,7 +462,10 @@ class TestGroupChangeArguments:
             {"x-aws-idp-policy-group": "G", "x-aws-idp-policy-type": "a"},
             {"x-aws-idp-policy-group": "g", "x-aws-idp-policy-type": "b"},
         ]
-        with pytest.raises(ValueError, match="carried by 2 policy classes"):
+        # Typed, so the discovery job treats it as final rather than retrying it.
+        with pytest.raises(
+            PolicyGroupChangeRefused, match="carried by 2 policy classes"
+        ):
             check_policy_group_change(classes, "G", "replace", [])
 
 
@@ -554,6 +557,58 @@ class TestTheDiscoveryJobCarriesTheGroupChange:
         assert "r9 and 2 more." in status
         assert "r10" not in status
 
+    def test_a_repeated_delivery_says_nothing_was_saved_again(self, monkeypatch):
+        """Not "replaced the N rules": this delivery changed nothing."""
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
+        module = _load_processor(monkeypatch)
+        statuses: List[Dict[str, Any]] = []
+
+        class FakeRulesDiscovery:
+            version = PROFILE
+
+            def __init__(self, **kwargs):
+                pass
+
+            def discovery_rules_from_document(self, **kwargs):
+                return {
+                    "status": "SUCCESS",
+                    "rules": [
+                        {
+                            "x-aws-idp-policy-type": "NCCI_Manual",
+                            "rule_properties": {"r": {}},
+                        }
+                    ],
+                    "warnings": ["already saved ..."],
+                    "groupChange": {
+                        "mode": "replace",
+                        "rules": ["r"],
+                        "superseded": [{"rule": "a"}],
+                    },
+                    "alreadySaved": True,
+                }
+
+        monkeypatch.setattr(module, "RulesDiscovery", FakeRulesDiscovery)
+        monkeypatch.setattr(module, "_wait_for_s3_object", lambda *a, **k: None)
+        monkeypatch.setattr(
+            module, "update_job_status", lambda *a, **k: statuses.append(k)
+        )
+        body = {
+            "jobId": "job-1",
+            "documentKey": "document/amended.pdf",
+            "bucket": DOCS,
+            "version": PROFILE,
+            "discoveryType": "rules",
+            "policyGroup": GROUP,
+            "policyGroupMode": "replace",
+        }
+        module.handler(
+            {"Records": [{"messageId": "m1", "body": json.dumps(body)}]}, None
+        )
+        final = statuses[-1]["status_message"]
+        assert "already saved to policy class 'NCCI_Manual'" in final
+        assert "nothing was saved again" in final
+        assert "replaced" not in final
+
     def test_an_append_message_reads_as_before(self, monkeypatch):
         run, status = self._handle(
             monkeypatch, {}, {"mode": "append", "rules": ["limit"], "superseded": []}
@@ -639,6 +694,53 @@ class TestARefusalIsFinalAndASavedJobIsNotSavedTwice:
         (pc,) = _policy_classes()
         assert list(pc["rule_properties"]) == ["a"]
         assert [e["uploadId"] for e in pc[UPLOADS_KEY]] == ["j1"]
+
+    def test_a_redelivered_ungrouped_job_does_not_duplicate_its_class(
+        self, aws, monkeypatch
+    ):
+        first = _run(
+            aws,
+            monkeypatch,
+            "document/solo.pdf",
+            _chapter({"r": "?"}),
+            upload_id="j5",
+            group=None,
+        )
+        second = _run(
+            aws,
+            monkeypatch,
+            "document/solo.pdf",
+            _chapter({"r": "?"}),
+            upload_id="j5",
+            group=None,
+        )
+        classes = _policy_classes()
+        assert len(classes) == 1
+        assert first["alreadySaved"] is False
+        assert second["alreadySaved"] is True
+        assert (
+            second["rules"][0]["x-aws-idp-policy-type"]
+            == classes[0]["x-aws-idp-policy-type"]
+        )
+
+    def test_a_duplicate_caught_under_the_lease_is_reported_as_already_saved(
+        self, aws, monkeypatch
+    ):
+        """The pre-model check missed it (a racing delivery): the result still says so."""
+        _base(aws, monkeypatch)
+        monkeypatch.setattr(
+            RulesDiscovery, "_current_policy_classes", lambda self, v: []
+        )
+        result = _run(
+            aws,
+            monkeypatch,
+            "document/ch1.pdf",
+            _chapter({"limit": "≤ 3?"}),
+            upload_id="u1",
+        )
+        assert result["alreadySaved"] is True
+        (pc,) = _policy_classes()
+        assert [e["uploadId"] for e in pc[UPLOADS_KEY]] == ["u1", "u2"]
 
     def test_saves_without_a_job_id_are_never_taken_for_repeats(self, aws):
         d = RulesDiscovery(input_bucket=DOCS, input_prefix="k", config=IDPConfig())

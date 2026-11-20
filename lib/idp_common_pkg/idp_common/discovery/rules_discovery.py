@@ -497,6 +497,9 @@ class RulesDiscovery:
         # added and the rules it superseded (with who supplied them). Surfaced in
         # the discovery job's statusMessage.
         self._group_change: Dict[str, Any] = {}
+        # True when the last save found this upload already recorded (a repeated
+        # delivery of the job) and wrote nothing.
+        self._already_saved = False
 
         if config is not None:
             self.config = config
@@ -616,6 +619,7 @@ class RulesDiscovery:
             # Save to configuration if config_manager is available
             self._save_warnings = []
             self._group_change = {}
+            self._already_saved = False
             if self.config_manager:
                 self._save_rules_to_config(
                     extracted_rules,
@@ -634,6 +638,7 @@ class RulesDiscovery:
                 "rules": extracted_rules,
                 "warnings": list(self._save_warnings),
                 "groupChange": dict(self._group_change),
+                "alreadySaved": self._already_saved,
             }
 
         except PolicyGroupChangeRefused as e:
@@ -648,11 +653,20 @@ class RulesDiscovery:
             raise Exception(f"Failed to extract rules from {input_prefix}: {str(e)}")
 
     def _current_policy_classes(self, version: str) -> List[Dict[str, Any]]:
-        item = cast(
-            Optional[IDPConfig],
-            self.config_manager.get_configuration("Config", version=version),
+        """The profile's policy classes, read raw (as the upload resolver reads them).
+
+        Raw, because this read is outside the save lease: the model-backed read
+        can migrate a legacy profile and write it back, which only the save may
+        do. Group classes and upload records are both newer than any legacy
+        format, so a raw read sees every one of them.
+        """
+        raw = self.config_manager.get_raw_configuration("Config", version=version)
+        classes = (raw or {}).get("policy_classes") if isinstance(raw, dict) else None
+        return (
+            [c for c in classes if isinstance(c, dict)]
+            if isinstance(classes, list)
+            else []
         )
-        return list(item.policy_classes) if item and item.policy_classes else []
 
     def _already_saved_result(
         self, policy_class: Dict[str, Any], entry: Dict[str, Any]
@@ -667,6 +681,7 @@ class RulesDiscovery:
         )
         logger.warning(message)
         self._save_warnings = [message]
+        self._already_saved = True
         self._group_change = {
             "mode": entry.get("mode") or POLICY_GROUP_MODE_APPEND,
             "rules": rules,

@@ -192,7 +192,8 @@ apply the change after the group changed. The resolver re-raises it as a plain
 `ValueError`, because the dispatcher maps an error to a 400 by its class name.
 A save whose `upload_id` the profile's record already holds (`find_recorded_upload`)
 writes nothing, both before the model runs and under the lease, so a redelivered job
-cannot add its rules twice; the result then carries `alreadySaved`. Superseded rules
+cannot add its rules twice; the result's `alreadySaved` is then true (false otherwise), and the
+discovery Lambda's status message says the earlier delivery saved them. Superseded rules
 are deleted from the active ruleset; the revision the save cuts keeps the previous
 ruleset, subject to revision retention.
 

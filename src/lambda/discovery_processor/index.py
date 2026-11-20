@@ -446,7 +446,16 @@ def process_rules_discovery_job(job_id, document_key, bucket, version=None, poli
         # UI stops displaying "Starting discovery processing..." and users can
         # jump to Configuration → Policy Schema to see the appended rules.
         saved_version = getattr(rules_discovery, "version", None) or "active version"
-        if policy_group:
+        if result.get("alreadySaved"):
+            # A repeated delivery of a job whose save already landed: say that,
+            # rather than describing a change this delivery did not make.
+            success_message = (
+                f"This job's rules were already saved to policy class '{saved_type}' in "
+                f"version '{saved_version}' by an earlier delivery of the same job; nothing "
+                f"was saved again. View in Configuration → Policy Schema."
+            )
+            result = {**result, "warnings": []}
+        elif policy_group:
             success_message = _group_change_message(
                 num_rules, policy_group, saved_type, saved_version, result.get("groupChange") or {}
             )
