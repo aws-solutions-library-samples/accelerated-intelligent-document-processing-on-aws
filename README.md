@@ -30,6 +30,7 @@ SPDX-License-Identifier: MIT-0
     - [Processing Modes](#processing-modes)
     - [Python Development](#python-development)
     - [Planning \& Operations](#planning--operations)
+    - [Solution Profile](#solution-profile)
   - [Security](#security)
   - [Contributing](#contributing)
   - [Project Governance](#project-governance)
@@ -244,6 +245,10 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 - [AWS Services & IAM Roles](./docs/aws-services-and-roles.md) - AWS services used and IAM role requirements
 - [Threat Model](./docs/threat-model.md) - STRIDE threat model: trust boundaries, controls in place, residual risks and open items
 - [Cost Calculator](./docs/cost-calculator.md) - Framework for estimating solution costs
+
+### Solution Profile
+
+Each GitHub Release carries a **solution profile**: a small, versioned set of YAML files describing what the accelerator does, where it can be extended, where it stops (with numbers), the questions that test whether it fits a need, and how a delivery usually starts. It is built from the release tag, every statement cites its evidence, and it is meant for anyone, including an AI assistant, judging fit before deploying. See [Solution Profile](./docs/solution-profile.md) for how to download, verify and read it.
 
 ## Security
 

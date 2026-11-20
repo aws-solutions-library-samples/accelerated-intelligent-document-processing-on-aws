@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import io
 import json
 import re
@@ -191,9 +192,7 @@ def validate_unpacked(repo_root: Path, tarball: Path, release: bool) -> int:
         )["version"]
         version_file = Path(tmp) / "VERSION"
         version_file.write_text(version + "\n", encoding="utf-8")
-        cmd = [
-            sys.executable,
-            str(repo_root / "solution-profile/schema/v1/validate_profile.py"),
+        argv = [
             str(unpacked),
             "--repo-root",
             str(repo_root),
@@ -201,8 +200,14 @@ def validate_unpacked(repo_root: Path, tarball: Path, release: bool) -> int:
             str(version_file),
         ]
         if release:
-            cmd.append("--release")
-        return subprocess.run(cmd, check=False).returncode  # noqa: S603 - fixed argv
+            argv.append("--release")
+        validator = repo_root / "solution-profile/schema/v1/validate_profile.py"
+        spec = importlib.util.spec_from_file_location("_validate_profile", validator)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load {validator}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.main(argv)
 
 
 def main(argv: list[str] | None = None) -> int:

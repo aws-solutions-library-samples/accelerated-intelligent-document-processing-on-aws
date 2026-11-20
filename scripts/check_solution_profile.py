@@ -50,10 +50,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import functools
 import importlib.util
 import os
 import re
-import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
@@ -214,7 +214,8 @@ def release_regions(repo_root: Path) -> set[str]:
     return regions
 
 
-def selectable_models(repo_root: Path) -> set[str]:
+@functools.lru_cache(maxsize=None)
+def selectable_models(repo_root: Path) -> frozenset[str]:
     """Every model a tracked template offers, as a base id without variant suffixes.
 
     Reuses the template walker the model-surface gate already maintains, rather than
@@ -225,18 +226,27 @@ def selectable_models(repo_root: Path) -> set[str]:
         sys.path.insert(0, tests_dir)
     import test_model_surface_consistency as surface  # type: ignore[import-not-found]
 
+    # The same CloudFormation-tag handling as the gate's own loader, on libyaml when
+    # it is available: parsing every tracked template in pure Python is most of this
+    # check's run time, and the walk over the parsed documents is unchanged.
+    loader: Any = surface._CfnLoader
+    if hasattr(yaml, "CSafeLoader"):
+
+        class _FastCfnLoader(yaml.CSafeLoader):  # type: ignore[name-defined,misc]
+            pass
+
+        _FastCfnLoader.add_multi_constructor("!", surface._tag_to_python)
+        loader = _FastCfnLoader
     offered: dict[str, set[str]] = {}
     for rel in surface._tracked_templates():
-        doc = yaml.load(  # noqa: S506 - _CfnLoader is a yaml.SafeLoader subclass
-            (surface.REPO_ROOT / rel).read_text(encoding="utf-8"),
-            Loader=surface._CfnLoader,  # nosec B506 - a yaml.SafeLoader subclass
-        )
+        text = (surface.REPO_ROOT / rel).read_text(encoding="utf-8")
+        doc = yaml.load(text, Loader=loader)  # noqa: S506  # nosec B506 - SafeLoader subclasses
         surface._walk_enums(doc, rel, offered)
-    return {
+    return frozenset(
         MODEL_VARIANT_SUFFIX.sub("", surface._base_model(model))
         for model in offered
         if model not in surface.NON_MODEL_CHOICES
-    }
+    )
 
 
 def changelog_releases(repo_root: Path) -> list[tuple[str, str]]:
@@ -463,12 +473,26 @@ def cross_check(repo_root: Path, profile_dir: Path) -> list[str]:
     return problems
 
 
+@functools.lru_cache(maxsize=None)
+def _validator(path: Path) -> Any:
+    """The vendored reference validator, loaded once per process from its file."""
+    spec = importlib.util.spec_from_file_location("_validate_profile", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def run_validator(
     repo_root: Path, profile_dir: Path, version_file: Path, release: bool
 ) -> int:
-    cmd = [
-        sys.executable,
-        str(repo_root / VALIDATOR),
+    """Run the reference validator's own ``main`` on the profile; return its status.
+
+    In process rather than as a subprocess: importing jsonschema costs most of a
+    second, and the check runs in every lint and in several tests.
+    """
+    argv = [
         str(profile_dir),
         "--repo-root",
         str(repo_root),
@@ -476,8 +500,10 @@ def run_validator(
         str(version_file),
     ]
     if release:
-        cmd.append("--release")
-    return subprocess.run(cmd, check=False).returncode  # noqa: S603 - fixed argv, no shell
+        argv.append("--release")
+    status = _validator(repo_root / VALIDATOR).main(argv)
+    sys.stdout.flush()
+    return status
 
 
 def main(argv: list[str] | None = None) -> int:

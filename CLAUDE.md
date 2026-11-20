@@ -1673,6 +1673,7 @@ that domain:
 | `.claude/skills/add-model.md` | Adding or changing a selectable Bedrock model (model IDs, regions, limits, pricing, template enums, client routing, UI, both doc tiers, tests) — the full expanded checklist |
 | `.claude/skills/prepare-changelog.md` | Preparing the `[Unreleased]` CHANGELOG section for release — three-section shape (Added/Changed/Fixed), net-since-release entries (drop intra-cycle churn), compact entries with doc/PR links |
 | `.claude/skills/cut-release-changelog.md` | Cutting the release section at tag time — relabel `[Unreleased]` to the `VERSION` number (no date) and append the version-pinned `## Templates` URLs for the four published regions |
+| `.claude/skills/update-solution-profile.md` | Reviewing the **solution profile** (`solution-profile/`, [docs/solution-profile.md](docs/solution-profile.md)) for a release, after the CHANGELOG is cut: check the curated files against the release's section, add its `changes.yaml` entry, set `reviewed_for_version`. With `VERSION` final, `make solution-profile-check` applies the contract's release rules and stays red until this is done; the release workflow then attaches the tarball and `.sha256` to the GitHub Release |
 
 > **Note:** `.claude/skills/` is canonical. The Cline assistant's
 > `.cline/skills/` files are **symlinks** to these (different filenames), so

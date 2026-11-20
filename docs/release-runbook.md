@@ -202,6 +202,18 @@ grep -n "idp-main_$(cat VERSION).yaml" CHANGELOG.md  # one hit per region you pu
 
 **Success:** one versioned template URL per region. They return 404 until Step 3.
 
+Then review the solution profile for the release, following
+`.claude/skills/update-solution-profile.md`: check the curated files in
+`solution-profile/` against the new CHANGELOG section, add the release to
+`solution-profile/changes.yaml`, and set `reviewed_for_version` to the version. Once
+`VERSION` is final, `make solution-profile-check` (and so `make lint`) applies the
+profile contract's release rules and stays red until this is done. See
+[Solution Profile](./solution-profile.md).
+
+```bash
+make solution-profile-check   # release rules ON, validator "valid", cross-checks passed
+```
+
 ### Step 3 — Publish the artifacts
 
 From the repository root, with a clean tree on the release commit, run your release
@@ -259,6 +271,15 @@ CHANGELOG section as the body:
 gh release create v<x.y.z> --title "v<x.y.z>" \
   --notes-file <file containing the CHANGELOG section>
 ```
+
+Publishing the release starts the **Solution profile release asset** workflow
+(`.github/workflows/solution-profile-release.yml`), which builds the solution profile
+from the tag and attaches `solution-profile-genai-idp-accelerator-<x.y.z>.tar.gz` and
+its `.sha256` to the release.
+
+**Success:** `gh release view v<x.y.z> --json assets` lists both files. If the run
+failed or did not start, run it for the tag with
+`gh workflow run solution-profile-release.yml -f tag=v<x.y.z>`.
 
 ### Step 7 — Publish the documentation site
 
