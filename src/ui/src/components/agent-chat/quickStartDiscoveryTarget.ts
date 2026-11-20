@@ -22,7 +22,9 @@ export const newQuickStartProfileName = (now: Date): string =>
  * already the active one, or when the stack has no profile of its own besides it, only
  * 'default'. Otherwise the user is asked first, because activating changes what every
  * new document on the stack is processed with, and another profile may be in use.
+ * An empty list is the latter case: every stack has 'default', so a caller who sees
+ * none sees a list narrowed by their profile scope.
  */
 export const activatesWithoutAsking = (versions: ReadonlyArray<ProfileSummary>, target: string): boolean =>
   versions.some((version) => version.isActive && version.versionName === target) ||
-  versions.every((version) => version.versionName === 'default' || version.versionName === target);
+  (versions.length > 0 && versions.every((version) => version.versionName === 'default' || version.versionName === target));

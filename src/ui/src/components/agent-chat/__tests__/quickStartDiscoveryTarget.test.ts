@@ -26,7 +26,7 @@ describe('the profile a Quick Start conversation saves into', () => {
   const target = 'quickstart-20261120-090507';
 
   it.each([
-    ['the stack has no profile at all', [], true],
+    ['the caller sees no profile at all, so their scope hides some', [], false],
     ['only default exists', [{ versionName: 'default', isActive: true }], true],
     [
       'it is already the active profile',

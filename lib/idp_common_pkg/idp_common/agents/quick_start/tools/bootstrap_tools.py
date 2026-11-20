@@ -312,11 +312,24 @@ def create_config_version_impl(schema_text: str, version_name: str = "") -> str:
         bootstrap_mod.merge_class_into_version(
             schema, version, config_manager=config_manager
         )
-    except Exception as e:
-        if not isinstance(e, bootstrap_mod.ProtectedProfileError):
-            logger.error(f"Error saving config version '{version}': {e}")
+    except bootstrap_mod.ProtectedProfileError as e:
         return json.dumps(
-            {"config_version": version, "activated": False, "error": str(e)}
+            {
+                "config_version": version,
+                "activated": False,
+                "refused": True,
+                "error": str(e),
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error saving config version '{version}': {e}")
+        return json.dumps(
+            {
+                "config_version": version,
+                "activated": False,
+                "refused": False,
+                "error": f"The profile could not be saved, try again: {e}",
+            }
         )
     return json.dumps({"config_version": version, "activated": False})
 
