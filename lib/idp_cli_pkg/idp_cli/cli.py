@@ -7850,8 +7850,19 @@ def multi_discover(
 
     if result.noise_documents > 0:
         console.print(
-            f"[yellow]⚠ {result.noise_documents} documents failed embedding[/yellow]"
+            f"[yellow]⚠ {result.noise_documents} documents were left in no class "
+            "(their cluster was too small and was dropped as noise)[/yellow]"
         )
+        for key in result.noise_document_keys:
+            console.print(f"[yellow]    {escape(key)}[/yellow]")
+
+    if result.failed_embeddings > 0:
+        console.print(
+            f"[yellow]⚠ {result.failed_embeddings} documents failed embedding "
+            "and were not clustered[/yellow]"
+        )
+        for key in result.failed_embedding_keys:
+            console.print(f"[yellow]    {escape(key)}[/yellow]")
 
     if result.config_version:
         console.print(

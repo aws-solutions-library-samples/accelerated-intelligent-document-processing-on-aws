@@ -17,7 +17,7 @@ Supports two document source modes:
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -61,6 +61,23 @@ class MultiDocDiscoveryResult:
     num_failed_schemas: int
     """Number of clusters where schema generation failed."""
 
+    noise_document_keys: List[str] = field(default_factory=list)
+    """Documents that were embedded but that clustering left in no class.
+
+    These are the documents labelled noise (``-1``): their cluster was smaller
+    than ``min_cluster_size`` and was dropped. A document whose embedding failed
+    never reaches clustering and is in ``failed_embedding_keys`` instead, so the
+    two lists are disjoint.
+    """
+
+    failed_embedding_keys: List[str] = field(default_factory=list)
+    """Documents whose embedding generation failed, so they were never clustered."""
+
+    @property
+    def num_noise_documents(self) -> int:
+        """Number of documents clustering assigned to noise."""
+        return len(self.noise_document_keys)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to JSON-serializable dict."""
         return {
@@ -71,7 +88,32 @@ class MultiDocDiscoveryResult:
             "num_failed_embeddings": self.num_failed_embeddings,
             "num_successful_schemas": self.num_successful_schemas,
             "num_failed_schemas": self.num_failed_schemas,
+            "num_noise_documents": self.num_noise_documents,
+            "noise_document_keys": list(self.noise_document_keys),
+            "failed_embedding_keys": list(self.failed_embedding_keys),
         }
+
+
+def noise_document_keys(
+    embedding_result: EmbeddingResult, cluster_result: ClusterResult
+) -> List[str]:
+    """Return the documents clustering labelled noise (``-1``), in input order.
+
+    ``cluster_labels`` is indexed like ``embedding_result.valid_keys``: only
+    documents that were embedded are clustered, so a failed embedding can never
+    appear here.
+    """
+    labels = [int(label) for label in cluster_result.cluster_labels]
+    if len(labels) != len(embedding_result.valid_keys):
+        raise ValueError(
+            f"{len(labels)} cluster labels for "
+            f"{len(embedding_result.valid_keys)} embedded documents"
+        )
+    return [
+        key
+        for key, label in zip(embedding_result.valid_keys, labels, strict=True)
+        if label == -1
+    ]
 
 
 class MultiDocumentDiscovery:
@@ -416,6 +458,9 @@ class MultiDocumentDiscovery:
         # Step 3: Cluster
         _update("clustering", {"num_documents": len(embedding_result.valid_keys)})
         cluster_result = self.cluster_documents(embedding_result)
+        # Derived before anything is saved, so a label/key mismatch stops the run
+        # before save_to_config writes schemas.
+        noise_keys = noise_document_keys(embedding_result, cluster_result)
         _update("clustering_complete", cluster_result.to_serializable())
 
         # Step 4: Prepare images for agent analysis
@@ -464,6 +509,8 @@ class MultiDocumentDiscovery:
             num_failed_embeddings=len(embedding_result.failed_keys),
             num_successful_schemas=num_successful,
             num_failed_schemas=num_failed,
+            noise_document_keys=noise_keys,
+            failed_embedding_keys=list(embedding_result.failed_keys),
         )
 
         _update("pipeline_complete", result.to_dict())
@@ -692,6 +739,9 @@ class MultiDocumentDiscovery:
         # Step 3: Cluster
         _update("clustering", {"num_documents": len(embedding_result.valid_keys)})
         cluster_result = self.cluster_documents(embedding_result)
+        # Derived before anything is saved, so a label/key mismatch stops the run
+        # before save_to_config writes schemas.
+        noise_keys = noise_document_keys(embedding_result, cluster_result)
         _update("clustering_complete", cluster_result.to_serializable())
 
         # Step 4: Prepare images for agent analysis
@@ -740,6 +790,8 @@ class MultiDocumentDiscovery:
             num_failed_embeddings=len(embedding_result.failed_keys),
             num_successful_schemas=num_successful,
             num_failed_schemas=num_failed,
+            noise_document_keys=noise_keys,
+            failed_embedding_keys=list(embedding_result.failed_keys),
         )
 
         _update("pipeline_complete", result.to_dict())
