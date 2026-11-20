@@ -6515,7 +6515,10 @@ class ClassificationService:
         issue = ProcessingIssue(
             stage="classification",
             severity="warning",
-            code=code,
+            # The constant by name rather than the local, so the benchmark harness's
+            # issue-code discovery reads it (it resolves module constants and
+            # literal-bound locals, not a local bound to a constant).
+            code=MISSING_CONFIDENCE_CODE,
             message=(
                 f"Classification confidence was requested, but the model's reply "
                 f"gave none for {len(listed)} section(s): {named}. Their class is "
