@@ -121,3 +121,27 @@ def test_cleanup_and_from_record_are_off_unless_given(runner, tmp_path):
     kwargs = client.fit_check.run.call_args.kwargs
     assert kwargs["cleanup"] is False
     assert kwargs["from_record"] is None
+
+
+@pytest.mark.unit
+def test_the_summary_reports_evaluation_when_there_was_ground_truth(runner, tmp_path):
+    record = json.loads(RECORD.read_text())
+    record["ground_truth"] = True
+    done = [d for d in record["documents"] if d["status"] == "COMPLETED"]
+    done[0]["evaluation"] = {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1_score": 1.0,
+        "accuracy": 1.0,
+    }
+    source = tmp_path / "fit-run-record.json"
+    source.write_text(json.dumps(record))
+    result = runner.invoke(
+        cli_module.cli,
+        ["fit-check", "--from-record", str(source), "--output", str(tmp_path / "o")],
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        "Evaluation: precision 1.0, recall 1.0, F1 1.0, accuracy 1.0" in result.stdout
+    )
+    assert "not accuracy" not in result.stdout
