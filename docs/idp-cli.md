@@ -900,6 +900,11 @@ Proceeding with stack deletion...
 
 #### The retained KMS key
 
+A stack deployed with a key of your own ([`CustomerManagedKmsKeyArn`](./customer-managed-kms-key.md))
+created no key, so nothing in this section applies to it: `delete` names the supplied
+key, says it is yours and that the retained data stays encrypted with it, and prints
+no deletion steps.
+
 The stack's customer-managed KMS key (`CustomerManagedEncryptionKey`) encrypts the
 data buckets, so it is retained too (`DeletionPolicy: Retain`): a deleted key would
 leave every object in the retained buckets unreadable once its deletion window ended.

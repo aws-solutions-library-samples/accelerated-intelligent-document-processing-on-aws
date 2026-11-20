@@ -30,7 +30,15 @@ GENERATED_NAME_LIFECYCLE = "lifecycle {{\n  ignore_changes = [{attrs}]\n}}"
 
 
 def _kms_arn(tr: Translator, v: Any) -> str:
-    """A key reference as an ARN: the provider takes only ARNs here."""
+    """A key reference as an ARN: the provider takes only ARNs here.
+
+    Each branch of an ``Fn::If`` is converted on its own, so a reference that
+    chooses between a supplied key ARN and the template's own key
+    (``CustomerManagedKmsKeyArn``) still renders the key's ARN, not its id.
+    """
+    if isinstance(v, dict) and set(v) == {"Fn::If"}:
+        cond, a, b = v["Fn::If"]
+        return f"({tr.cond_ref(cond)} ? {_kms_arn(tr, a)} : {_kms_arn(tr, b)})"
     if isinstance(v, dict) and set(v) == {"Ref"}:
         target = tr.plans.get(v["Ref"])
         if target is not None and target.cfn_type == "AWS::KMS::Key":
