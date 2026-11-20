@@ -443,7 +443,11 @@ def test_the_idp_cli_root_file_samples_are_rendered(tmp_path) -> None:
                         "type": "Number",
                     },
                     "Subnets": {"variable": "subnets", "type": "CommaDelimitedList"},
-                    "Secret": {"variable": "secret", "type": "String", "sensitive": True},
+                    "Secret": {
+                        "variable": "secret",
+                        "type": "String",
+                        "sensitive": True,
+                    },
                 }
             }
         )

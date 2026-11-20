@@ -477,7 +477,8 @@ class TestRootConfig:
     def test_list_values_render_as_hcl_lists(self, tmp_path):
         _write(tmp_path, parameters={"SubnetIds": "s-1,s-2"})
         assert (
-            'subnet_ids  = ["s-1", "s-2"]' in (tmp_path / "terraform.tfvars").read_text()
+            'subnet_ids  = ["s-1", "s-2"]'
+            in (tmp_path / "terraform.tfvars").read_text()
         )
         assert "type = list(string)" in (tmp_path / "main.tf").read_text()
 

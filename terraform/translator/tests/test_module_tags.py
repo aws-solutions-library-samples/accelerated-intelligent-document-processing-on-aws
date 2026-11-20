@@ -131,7 +131,7 @@ def test_every_taggable_awscc_resource_in_the_tree_takes_the_module_tags(
     assert not missing, missing
     # The root refuses AWS's reserved prefix at plan.
     assert re.search(
-        r'^\s*condition\s+= alltrue\(\[for k in keys\(var\.tags\) : '
+        r"^\s*condition\s+= alltrue\(\[for k in keys\(var\.tags\) : "
         r'!startswith\(lower\(k\), "aws:"\)\]\)$',
         (root / "variables.tf").read_text(),
         re.M,

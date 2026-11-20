@@ -493,8 +493,10 @@ def write_cli_samples(manifest_path: Path, out: Path) -> None:
     in a subprocess with this checkout's ``lib/*`` roots first on ``PYTHONPATH``
     (see :func:`cli_samples`), which is why the imports are local.
     """
-    from idp_sdk._core import terraform_deploy as deploy
-    from idp_sdk._core import terraform_migrate as migrate
+    # By module name: these are the private functions `idp-cli` itself calls,
+    # and the public client has no entry point that renders a root file alone.
+    deploy = importlib.import_module("idp_sdk._core.terraform_deploy")
+    migrate = importlib.import_module("idp_sdk._core.terraform_migrate")
 
     for module in (deploy, migrate):
         if REPO_ROOT not in Path(module.__file__).resolve().parents:
@@ -506,7 +508,9 @@ def write_cli_samples(manifest_path: Path, out: Path) -> None:
     for spec in manifest["parameters"].values():
         cfn_type = str(spec.get("type", "String"))
         values[spec["variable"]] = deploy._convert(
-            spec["variable"], cfn_type, sample.get(cfn_type, "a,b" if "List" in cfn_type else "x")
+            spec["variable"],
+            cfn_type,
+            sample.get(cfn_type, "a,b" if "List" in cfn_type else "x"),
         )
     url = "https://example.com/idp-terraform-0.0.0.zip"
     tags = {"team": "idp", "cost-center": "1234"}
@@ -591,7 +595,9 @@ def cli_samples(manifest_path: Path, out: Path) -> None:
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
         sys.stderr.write(result.stderr)
-        raise GateError(f"rendering the idp-cli root files failed (exit {result.returncode})")
+        raise GateError(
+            f"rendering the idp-cli root files failed (exit {result.returncode})"
+        )
     written = sorted(p.relative_to(out) for p in out.rglob("*") if p.is_file())
     print(f"  rendered idp-cli root files: {', '.join(map(str, written))}")
 
@@ -604,7 +610,12 @@ def fmt_check(binary: Binary, exe: Path, label: str, directory: Path) -> bool:
     """
     if not any(directory.rglob("*.tf")) and not any(directory.rglob("*.tfvars")):
         raise GateError(f"fmt -check: {label} holds no .tf or .tfvars file")
-    env ={**os.environ, "TF_IN_AUTOMATION": "1", "TF_INPUT": "0", "CHECKPOINT_DISABLE": "1"}
+    env = {
+        **os.environ,
+        "TF_IN_AUTOMATION": "1",
+        "TF_INPUT": "0",
+        "CHECKPOINT_DISABLE": "1",
+    }
     env.pop("TF_CLI_ARGS", None)
     env.pop("TF_CLI_ARGS_fmt", None)
     result = subprocess.run(  # nosec B603 - fixed argv, no shell

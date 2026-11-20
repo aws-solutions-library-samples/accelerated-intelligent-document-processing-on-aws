@@ -994,6 +994,12 @@ reading it, so three independent checks look at different things:
 | A static security scan of both, compared resource by resource | every pull request | no Terraform resource fails a security rule that its CloudFormation source passes, beyond a short list of explained exceptions (mostly on the custom-resource bridge the module adds); findings on rules only the Terraform scanner has are pinned per rule, so a new one fails too. The repository's SRT scan does not cover the generated module, which is never committed; this scan is what covers it |
 | A property comparison of a Terraform deployment with a CloudFormation deployment of the same release and parameters, every resource of both read back from AWS | release validation | the two deployments store the same configuration, beyond explained differences |
 
+The first check also runs `fmt -check -recursive` with every pinned binary over
+each template variant's module and over the root files `idp-cli deploy --terraform`
+writes, so the generated Terraform is already in `terraform fmt`'s layout and a
+repository that gates on `terraform fmt -check` accepts the module and those files
+as written.
+
 None of the three plans or applies on a pull request. The full stack has been
 applied, re-planned and destroyed in a development account (see the developer
 notes linked below); the property comparison has been run on one nested stack and
