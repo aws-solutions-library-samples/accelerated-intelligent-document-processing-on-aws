@@ -128,7 +128,12 @@ calls of the failed attempt are not counted; only the attempt that finishes is.
 spent.** The step is retried, so the document keeps its `CLASSIFYING` or `SUMMARIZING`
 status rather than being shown as failed, and the usage of the calls the attempt
 completed is written to the document's tracking record. If the execution then ends
-unsuccessfully, that usage is in what it reports. If a retry succeeds, the reported
+unsuccessfully, that usage is in what it reports, but only for the **most recent**
+failed attempt: each attempt starts by writing the document it was given, which
+replaces the record's usage, so a step that failed transiently several times reports
+the last failed attempt's calls and not the earlier ones'. At page-level
+classification the pages earlier attempts classified are restored from the page
+cache on every attempt, so they stay counted. If a retry succeeds, the reported
 usage is the succeeding attempt's: at page-level classification that includes the
 pages the failed attempt classified, because the retry reuses them from the page cache,
 but under summarization, split-then-classify or packet granularity the failed

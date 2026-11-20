@@ -260,6 +260,27 @@ def _earlier_steps_kept(row: Document) -> bool:
     return row.metering.get("OCR/textract/analyze_document") == {"pages": 2}
 
 
+@contextlib.contextmanager
+def _record_write_fails(module):
+    """The handler's own in-progress write succeeds; every later write raises."""
+    real = module.create_document_service
+
+    class Service:
+        writes = 0
+
+        def __init__(self):
+            self._inner = real()
+
+        def update_document(self, document):
+            Service.writes += 1
+            if Service.writes > 1:
+                raise RuntimeError("tracking table unavailable")
+            return self._inner.update_document(document)
+
+    with patch.object(module, "create_document_service", Service):
+        yield Service
+
+
 # ---------------------------------------------------------------------------
 # Summarization
 # ---------------------------------------------------------------------------
@@ -344,6 +365,41 @@ class TestSummarization:
         row = _recorded(tracking)
         assert row.status == Status.SUMMARIZING
         assert _bedrock_tokens(row) == 7
+        assert _earlier_steps_kept(row)
+
+    def test_a_failing_record_write_cannot_replace_the_transient_error(
+        self, summarization, config, tracking
+    ):
+        """Step Functions retries on the error's name, so a failure to record the
+        attempt's usage is logged and the TransientError still escapes."""
+        model = Model('{"summary": "ok"}', _throttle(), _about_page("2"))
+
+        with _record_write_fails(summarization) as service:
+            with pytest.raises(TransientError):
+                _summarize(summarization, config, model)
+
+        assert service.writes == 2
+
+    def test_a_second_failed_attempt_records_only_its_own_usage(
+        self, summarization, config, tracking
+    ):
+        """The limit this change leaves. Each attempt starts by writing the document
+        it was given, which replaces the record's metering, so after two failed
+        attempts the record holds the most recent attempt's usage only. Carrying
+        usage across attempts is a separate change; this test pins today's
+        behaviour so that change is visible when it lands."""
+        first = Model('{"summary": "ok"}', _throttle(), _about_page("2"))
+        with pytest.raises(TransientError):
+            _summarize(summarization, config, first)
+        assert _bedrock_tokens(_recorded(tracking)) == TOKENS
+
+        second = Model('{"summary": "ok"}', _throttle(), lambda kwargs: True)
+        with pytest.raises(TransientError):
+            _summarize(summarization, config, second)
+
+        row = _recorded(tracking)
+        assert row.status == Status.SUMMARIZING
+        assert _bedrock_tokens(row) == 0
         assert _earlier_steps_kept(row)
 
     def test_a_deterministic_failure_is_still_persisted_as_failed(
@@ -433,6 +489,40 @@ class TestPageClassification:
         assert row.status != Status.FAILED
         assert _bedrock_tokens(row) == TOKENS * (failing.answered + retry.answered)
         assert _earlier_steps_kept(row)
+
+    def test_a_failing_record_write_cannot_replace_the_transient_error(
+        self, classification, config, tracking
+    ):
+        model = Model('{"class": "Payslip"}', _throttle(), _about_page("2"))
+
+        with _one_worker(classification), _record_write_fails(classification):
+            with pytest.raises(TransientError):
+                _classify(classification, config, model)
+
+    def test_a_deterministic_error_from_the_service_writes_no_attempt_record(
+        self, classification, config, tracking
+    ):
+        """The control for the raised-error path: a hard failure that carries usage
+        is not recorded as a retried attempt (the failed execution reports it)."""
+        error = attach_failure_metering(
+            _deterministic(), {"Classification/bedrock/m": {"inputTokens": 7}}
+        )
+
+        with (
+            _one_worker(classification),
+            patch.object(
+                classification.classification.ClassificationService,
+                "classify_document",
+                side_effect=error,
+            ),
+            pytest.raises(ClientError) as caught,
+        ):
+            _classify(classification, config, Model('{"class": "Payslip"}'))
+
+        assert not isinstance(caught.value, TransientError)
+        row = _recorded(tracking)
+        assert _bedrock_tokens(row) == 0
+        assert row.metering == EARLIER_STEPS
 
     def test_a_deterministic_page_failure_still_writes_the_classified_document(
         self, classification, config, tracking
