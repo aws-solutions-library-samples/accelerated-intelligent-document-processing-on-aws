@@ -50,6 +50,10 @@ _IMPORT_ERROR: Optional[ImportError] = None
 # cannot be stubbed to None: the stub itself would blow up during import with
 # `AttributeError: 'NoneType' object has no attribute 'group'` long before any
 # handler could explain what went wrong. So report and exit here instead.
+#
+# `idp_common.models` is tier 1 for the same reason: the status choices of
+# `delete-documents --status-filter` and `status --object-status` are built from
+# its `Status` enum at module level. It imports only the standard library.
 try:
     import boto3
     import click
@@ -57,6 +61,8 @@ try:
     from rich.live import Live
     from rich.markup import escape
     from rich.table import Table
+
+    from idp_common.models import Status as DocumentStatus
 except ImportError as exc:
     print(_SETUP_HELP, file=sys.stderr)
     print(f"Underlying import error: {exc}", file=sys.stderr)
@@ -90,6 +96,22 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+#: Jobs API statuses that share the enum but are never a document's
+#: ``ObjectStatus``: ``PENDING_UPLOAD`` is a job's status before its files arrive and
+#: ``IN_PROGRESS`` a file's status inside a ``job#`` record, which has no
+#: ``ObjectStatus`` at all.
+JOB_LEVEL_STATUSES = frozenset(
+    {DocumentStatus.PENDING_UPLOAD, DocumentStatus.IN_PROGRESS}
+)
+
+#: Every status a document tracking record can carry, in enum order. Each writer
+#: stores ``document.status.value`` in ``ObjectStatus``, so this is derived from the
+#: enum rather than listed: a hand-written list offered ``PROCESSING``, which no
+#: record ever carries, and none of the step statuses an in-progress document has.
+DOCUMENT_STATUS_VALUES = tuple(
+    status.value for status in DocumentStatus if status not in JOB_LEVEL_STATUSES
+)
 
 # Console is guaranteed importable — a missing rich exits above, not stubs to None.
 #
@@ -2123,8 +2145,12 @@ def delete(
 )
 @click.option(
     "--status-filter",
-    type=click.Choice(["FAILED", "COMPLETED", "PROCESSING", "QUEUED"]),
-    help="Only delete documents with this status (use with --batch-id or --pattern)",
+    type=click.Choice(DOCUMENT_STATUS_VALUES),
+    help=(
+        "Only delete documents whose current status is exactly this value "
+        "(use with --batch-id or --pattern). A document still being processed "
+        "carries the name of its current step, such as OCR or EXTRACTING"
+    ),
 )
 @click.option(
     "--dry-run",
@@ -3193,7 +3219,11 @@ def _rerun_inference_impl(
 @click.option("--document-id", help="Single document ID (alternative to --batch-id)")
 @click.option(
     "--object-status",
-    help="Filter by object status (e.g., COMPLETED, FAILED, QUEUED, RUNNING)",
+    type=click.Choice(DOCUMENT_STATUS_VALUES),
+    help=(
+        "Filter by document status (e.g., COMPLETED, FAILED, QUEUED, RUNNING, "
+        "EXTRACTING). Default: every status"
+    ),
 )
 @click.option("--wait", is_flag=True, help="Wait for all documents to complete")
 @click.option(
@@ -3246,7 +3276,7 @@ def status(
       --document-id: Check status of a single document
 
     Optional filters and display options:
-      --object-status: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING)
+      --object-status: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING, ...)
       --show-details: Show detailed document information
       --get-time: Calculate timing statistics
       --include-metering: Include Lambda metering data (requires --get-time)
@@ -3301,45 +3331,21 @@ def status(
             # Use TrackingTableSearcher for PK substring search
             searcher = TrackingTableSearcher(stack_name=stack_name, region=region)
 
-            # Default to searching all statuses if not specified
-            if object_status:
-                # Search with specific status filter
-                search_results = searcher.search_by_pk_and_status(
-                    pk=batch_id, object_status=object_status
-                )
-            else:
-                # Search across all statuses by doing multiple searches
-                # This ensures we get all documents matching the PK substring
-                all_statuses = [
-                    "COMPLETED",
-                    "FAILED",
-                    "QUEUED",
-                    "RUNNING",
-                    "PROCESSING",
-                ]
-                all_items = []
-
+            # With no --object-status, one scan selects every record that carries a
+            # status. It used to run one scan per status in a hand-written list,
+            # which held `PROCESSING` (no record carries it) and none of the step
+            # statuses, so a document mid-pipeline was left out of the result and
+            # out of --wait.
+            if not object_status:
                 err_console.print(
                     f"[yellow]Searching for documents with PK containing '{batch_id}'...[/yellow]"
                 )
-
-                for status in all_statuses:
-                    results = searcher.search_by_pk_and_status(
-                        pk=batch_id, object_status=status
-                    )
-                    if results.get("success") and results.get("items"):
-                        all_items.extend(results["items"])
-
-                search_results = {
-                    "success": True,
-                    "count": len(all_items),
-                    "items": all_items,
-                    "pk": batch_id,
-                    "object_status": "ALL",
-                }
-
+            search_results = searcher.search_by_pk_and_status(
+                pk=batch_id, object_status=object_status or None
+            )
+            if not object_status and search_results.get("success"):
                 err_console.print(
-                    f"[green]✓ Found {len(all_items)} matching documents[/green]"
+                    f"[green]✓ Found {search_results.get('count', 0)} matching documents[/green]"
                 )
 
             if not search_results.get("success"):
