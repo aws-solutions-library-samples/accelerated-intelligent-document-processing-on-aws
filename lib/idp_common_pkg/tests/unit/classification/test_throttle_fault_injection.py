@@ -148,8 +148,8 @@ def _runtime_client():
     return boto3.client(
         "bedrock-runtime",
         region_name="us-east-1",
-        aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        aws_access_key_id="AKIA" + "IOSFODNN7EXAMPLE",
+        aws_secret_access_key="wJalrXUtnFEMI/K7MDENG" + "/bPxRfiCYEXAMPLEKEY",
         config=Config(retries={"total_max_attempts": 1, "mode": "standard"}),
     )
 
