@@ -529,9 +529,11 @@ splitting (`classification.document_shape.sectionSplitting`, from `documents_per
 (`long_tables` picks "advanced" or "simple") and `summarization.enabled`. `mode` is
 the setting to write rather than `extraction.agentic.enabled`, because the config
 model derives `agentic.enabled` from `mode` and `default` sets `mode: simple`.
-Only those keys are written, so everything else still resolves from `default`, and a
-pre-0.9 flat `classification.sectionSplitting`, which wins when the profile is read,
-is given the same value. The prompt has the agent choose them from the description
+Only those keys change; the profile is saved as a full copy of its configuration, as
+every profile save is, so a later change to `default` does not reach it. A pre-0.9
+flat `classification.sectionSplitting`, which wins when the profile is read, is given
+the same value, and `long_tables` is refused when the profile's extraction model is
+an OpenAI GPT-5.x Responses model, which the advanced engine cannot call. The prompt has the agent choose them from the description
 and examples rather than ask, ask one plain question only when it cannot tell, and
 fix a wrongly split document, or rows missing from a long table, itself instead of
 sending the user to Agent Chat. Other extraction settings are deliberately not

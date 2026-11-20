@@ -206,6 +206,37 @@ class TestSetProcessingOptions:
         assert cm.saved["invoices"]["extraction"] == {"model": "m", "mode": mode}
         assert applied == {"extraction.mode": mode}
 
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {"extraction": {"model": "openai.gpt-5.5"}},
+            {"extraction": {"model": "m"}, "class_model": "openai.gpt-5.5"},
+        ],
+        ids=["global model", "class override"],
+    )
+    def test_long_tables_is_refused_for_a_model_the_advanced_engine_cannot_call(
+        self, config
+    ):
+        class_model = config.pop("class_model", None)
+        cm = self._profile(**config)
+        if class_model:
+            cm.saved["invoices"]["classes"] = [
+                {**VALID_SCHEMA, "x-aws-idp-extraction-model": class_model}
+            ]
+        before = json.dumps(cm.saved, sort_keys=True)
+        with pytest.raises(ValueError, match="advanced extraction engine"):
+            bootstrap.set_processing_options(
+                "invoices", config_manager=cm, long_tables=True
+            )
+        assert json.dumps(cm.saved, sort_keys=True) == before
+
+    def test_simple_extraction_is_still_allowed_for_that_model(self):
+        cm = self._profile(extraction={"model": "openai.gpt-5.5"})
+        bootstrap.set_processing_options(
+            "invoices", config_manager=cm, long_tables=False
+        )
+        assert cm.saved["invoices"]["extraction"]["mode"] == "simple"
+
     def test_other_classification_settings_are_kept(self):
         cm = self._profile(
             classification={"model": "m", "document_shape": {"pageOrder": "scan"}}

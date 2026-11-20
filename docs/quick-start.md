@@ -27,8 +27,6 @@ A conversational agent:
    review; you refine it in chat until it's right.
 4. **Creates a configuration profile and makes it active**, so you can upload a
    document and start processing immediately — no trip to the Configuration page
-   required. When the stack already has a profile in use, it asks before making
-   its own one active.
    It also chooses how files are split into documents, whether long tables need
    the advanced extraction engine, and whether each document is summarized, from
    what you've told it.

@@ -700,8 +700,9 @@ def set_processing_options(
 
     Call it on the profile you just saved (create_config_version, or the profile
     Discovery saved attached documents into). Only the options you pass are
-    changed; everything else keeps the stack's defaults. 'default' and
-    stack-managed profiles are refused: the result then has "refused": true.
+    changed. 'default' and stack-managed profiles are refused: the result then has
+    "refused": true. long_tables=True is also turned down, with an "error" saying
+    why, when the profile's extraction model cannot run the advanced engine.
 
     Args:
         version_name: The configuration profile to change.

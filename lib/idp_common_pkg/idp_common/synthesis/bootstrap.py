@@ -155,6 +155,33 @@ def merge_class_into_version(
     config_manager.save_raw_configuration(CONFIG_TYPE_CONFIG, existing, version=version)
 
 
+def _models_advanced_extraction_cannot_use(config: Dict[str, Any]) -> List[str]:
+    """The extraction models in ``config`` that the advanced engine refuses.
+
+    OpenAI GPT-5.x models are called through the Responses API, which the agentic
+    engine behind ``extraction.mode: advanced`` does not use, so ``validate_config``
+    refuses that pairing and the extraction step raises on it. The global model and
+    every per-class override are checked; the escalation model only when escalation
+    can run.
+    """
+    from idp_common.bedrock.openai_responses import is_openai_responses_model
+
+    extraction = config.get("extraction") or {}
+    validation = extraction.get("validation") or {}
+    escalates = (
+        validation.get("enabled", True) is not False
+        and validation.get("fail_action") == "escalate"
+    )
+    models = [extraction.get("model")]
+    if escalates:
+        models.append(validation.get("escalation_model"))
+    for cls in config.get("classes") or []:
+        models.append(cls.get(sc.X_AWS_IDP_EXTRACTION_MODEL))
+        if escalates:
+            models.append(cls.get(sc.X_AWS_IDP_EXTRACTION_ESCALATION_MODEL))
+    return sorted({m for m in models if m and is_openai_responses_model(m)})
+
+
 DOCUMENTS_PER_FILE: Dict[str, str] = {
     "one": "disabled",
     "several": "llm_determined",
@@ -178,7 +205,10 @@ def set_processing_options(
     own document). ``summaries`` turns document summaries on or off. ``long_tables``
     selects ``extraction.mode``: "advanced" when a document can hold a long list of
     rows, because single-pass ("simple") extraction can end such a list early, and
-    "simple" otherwise. Only those keys are written; every other setting still resolves from 'default'. A pre-0.9 flat
+    "simple" otherwise; "advanced" is refused for a profile whose extraction model
+    the advanced engine cannot call. Only those keys change: the profile is saved
+    as a full copy of its configuration, as every profile save is, so a later
+    change to 'default' does not reach it. A pre-0.9 flat
     ``classification.sectionSplitting`` wins over the nested key when the profile is
     read, so one that is present is given the same value.
 
@@ -200,6 +230,15 @@ def set_processing_options(
         raise ValueError(
             f"'{version}' does not exist yet: save its document class into it first."
         )
+    if long_tables:
+        refused_models = _models_advanced_extraction_cannot_use(existing)
+        if refused_models:
+            raise ValueError(
+                "Long tables need the advanced extraction engine, which cannot use "
+                f"{', '.join(refused_models)}: OpenAI GPT-5.x models are called "
+                "through the Responses API. Choose another extraction model on the "
+                "Configuration page first, or leave long_tables off."
+            )
     applied: Dict[str, Any] = {}
     if documents_per_file:
         splitting = DOCUMENTS_PER_FILE[documents_per_file]
