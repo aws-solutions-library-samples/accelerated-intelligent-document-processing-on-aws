@@ -357,6 +357,55 @@ class TestIdpCommonResolution:
             "resources could not be listed"
         )
 
+    def test_an_idp_common_that_cannot_be_imported_is_reported_as_that(
+        self, processor, aws, stored_document, monkeypatch
+    ):
+        """A broken install is an error, never an absent document.
+
+        ``sys.modules`` holding ``None`` for a name makes importing it raise
+        ``ImportError``, which is what a missing or half-installed dependency
+        looks like. Turning that into ``None`` — by any ``except`` around the
+        import — is the shape of the defect that disabled reprocessing, where an
+        environment failure was reported as "Document not found".
+        """
+        monkeypatch.setitem(sys.modules, "idp_common.docs_service", None)
+
+        with pytest.raises(ImportError):
+            processor._get_document(stored_document)
+
+        result = processor.rerun_documents([stored_document], step="extraction")
+        (failure,) = result["failed_documents"]
+        assert failure["error"] != "Document not found"
+        assert "idp_common.docs_service" in failure["error"]
+        assert _queued_messages(aws) == []
+
+    def test_the_module_never_touches_sys_path(self):
+        """Statically: the module source contains no reference to ``sys.path``.
+
+        The runtime check below cannot see an insertion guarded by "not already
+        present", because the test environment already has ``idp_common`` on the
+        path; reading the source can.
+        """
+        import ast
+
+        tree = ast.parse(pathlib.Path(rerun_processor.__file__).read_text())
+        offenders = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "path"
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"sys", "_sys"}
+        ]
+        imports_sys = [
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            and any(alias.name == "sys" for alias in node.names)
+            or (isinstance(node, ast.ImportFrom) and node.module == "sys")
+        ]
+        assert offenders == [] and imports_sys == []
+
     def test_the_module_does_not_edit_sys_path(self, processor, aws, stored_document):
         """Reading a document leaves ``sys.path`` exactly as it found it.
 
@@ -384,7 +433,8 @@ class TestConstruction:
         ``tracking_table_name`` reads, so the processor makes no lookup of its
         own. The GraphQL URL is scraped out of the ``WebUITestEnvFile`` output — a
         multi-line ``.env`` blob. A failure here leaves the processor unable to
-        read any document, which it reports as "Document not found".
+        read any document, and each document is then reported failed with the
+        missing table named in its error.
         """
         assert processor.resources["DocumentsTable"] == TRACKING_TABLE
         assert processor.resources["AppSyncApiUrl"] == APPSYNC_URL
@@ -399,8 +449,7 @@ class TestConstruction:
         against a partially deployed stack; instead the table name is empty, a
         warning logged during construction names the missing table and the stack,
         and the failure surfaces later, per document. The warning comes from
-        ``StackInfo``, which resolves the table for every processor. Pinned
-        because the swallowing is also what makes the path defect above so quiet.
+        ``StackInfo``, which resolves the table for every processor.
         """
         aws["cfn"].create_stack(
             StackName="idp-rerun-no-table", TemplateBody=_template(with_table=False)
