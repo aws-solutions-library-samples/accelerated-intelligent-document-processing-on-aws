@@ -52,7 +52,7 @@ def test_attributes_reach_the_sdk_with_pairs_over_the_file(command, tmp_path):
 @pytest.mark.unit
 def test_without_the_flags_no_attributes_are_sent():
     _result, client = _invoke("process")
-    assert client.batch.process.call_args.kwargs.get("attributes") is None
+    assert "attributes" not in client.batch.process.call_args.kwargs
 
 
 @pytest.mark.unit

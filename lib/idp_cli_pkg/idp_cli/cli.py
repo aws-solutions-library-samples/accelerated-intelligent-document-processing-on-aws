@@ -2380,6 +2380,9 @@ def _process_impl(
             except (OSError, ValueError) as e:
                 console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
                 sys.exit(1)
+        # Passed only when given, so a submission without attributes makes exactly
+        # the SDK call it always did.
+        attribute_kwargs = {"attributes": attributes} if attributes is not None else {}
 
         # Validate mutually exclusive options
         if not manifest and not directory and not s3_uri and not test_set:
@@ -2474,7 +2477,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
-                    attributes=attributes,
+                    **attribute_kwargs,
                 )
             elif directory:
                 result = client.batch.process(
@@ -2486,7 +2489,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
-                    attributes=attributes,
+                    **attribute_kwargs,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -2498,7 +2501,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
-                    attributes=attributes,
+                    **attribute_kwargs,
                 )
             else:
                 raise ValueError("No input source specified")
