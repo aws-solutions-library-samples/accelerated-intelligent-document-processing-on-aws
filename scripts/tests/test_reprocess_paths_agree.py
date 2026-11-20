@@ -21,8 +21,8 @@ unattended, so a quarantined file rides along with its clean siblings and nobody
 is watching a tooltip.
 
 ⚠️ The two cannot share a constant. The resolver imports ``idp_common.models``
-directly; the SDK reaches ``idp_common`` through a lazy path shim and must not
-fail at import on a machine without it. So the sets are written twice and
+directly; the SDK imports ``idp_common`` lazily, inside the methods that use
+it, so that importing the module does not load it. So the sets are written twice and
 reconciled here — which is the only reason this file exists.
 """
 
