@@ -13,7 +13,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -485,6 +485,38 @@ class ProcessingIssue:
         )
 
 
+def attributes_dropped_issue(dropped: List[Tuple[str, str]]) -> ProcessingIssue:
+    """The document-level warning for caller-supplied attributes intake dropped.
+
+    ``dropped`` is ``idp_common.document_attributes.AttributeIntake.dropped``:
+    ``(key, reason)`` pairs. Names keys and reasons only, never values (a value
+    can be personal data). ``details["dropped"]`` lists the first
+    ``MAX_DROPPED_NAMED``; ``details["dropped_count"]`` is the total. The code is
+    ``document_attributes.ISSUE_ATTRIBUTES_DROPPED``, spelled out here so the
+    construction site states it.
+    """
+    from idp_common.document_attributes import MAX_DROPPED_NAMED
+
+    count = len(dropped)
+    return ProcessingIssue(
+        stage="ingest",
+        severity="warning",
+        code="ingest_attributes_dropped",
+        message=(
+            f"{count} document attribute(s) supplied with this upload were not "
+            "accepted and were dropped. The document was processed with the "
+            "attributes that were valid."
+        ),
+        details={
+            "dropped_count": count,
+            "dropped": [
+                {"key": key, "reason": reason}
+                for key, reason in dropped[:MAX_DROPPED_NAMED]
+            ],
+        },
+    )
+
+
 def serialize_issue_list(issues: List[ProcessingIssue]) -> List[Dict[str, Any]]:
     """A list of issues in the tracking table's camelCase item shape.
 
@@ -899,6 +931,13 @@ class Document:
     # pages and class, and the corrected section gets the new one. Takes
     # precedence over forced_document_class (apply_forced_document_class).
     forced_sections: Optional[str] = None
+    # Caller-supplied key-value attributes (account id, claim number, ...), read
+    # once at intake and carried unchanged to the results. Untrusted caller input,
+    # validated by idp_common.document_attributes; separate from `metadata`, which
+    # holds internal processing data. Empty for a document uploaded without any,
+    # and then omitted from to_dict() and the tracking item, so such a document
+    # serialises exactly as it did before the field existed.
+    attributes: Dict[str, Any] = field(default_factory=dict)
     evaluation_status: Optional[str] = None
     evaluation_report_uri: Optional[str] = None
     evaluation_results_uri: Optional[str] = None
@@ -1065,6 +1104,11 @@ class Document:
             "confidence_alert_count": self.confidence_alert_count,
             # We don't include evaluation_result or summarization_result in the dict since they're objects
         }
+
+        # Caller-supplied attributes. Omitted when empty so a document uploaded
+        # without any serialises exactly as before.
+        if self.attributes:
+            result["attributes"] = dict(self.attributes)
 
         # Earlier runs' usage. Omitted when empty so payloads of documents that
         # were never reprocessed are unchanged.
@@ -1253,6 +1297,7 @@ class Document:
             test_set_id=data.get("test_set_id"),
             forced_document_class=data.get("forced_document_class"),
             forced_sections=data.get("forced_sections"),
+            attributes=dict(data.get("attributes") or {}),
             errors=data.get("errors", []),
         )
 
@@ -1378,9 +1423,25 @@ class Document:
         return document
 
     @classmethod
-    def from_s3_event(cls, event: Dict[str, Any], output_bucket: str) -> "Document":
-        """Create a Document from an S3 event."""
+    def from_s3_event(
+        cls,
+        event: Dict[str, Any],
+        output_bucket: str,
+        *,
+        read_attributes: bool = True,
+    ) -> "Document":
+        """Create a Document from an S3 event.
+
+        Reads the object's user metadata, including caller-supplied attributes
+        (``idp-attr-*`` and the ``idp-attributes-uri`` sidecar; see
+        :mod:`idp_common.document_attributes`). An attribute that breaks a rule is
+        dropped and a ``ingest_attributes_dropped`` warning is recorded on the
+        document. ``read_attributes=False`` skips them, for a caller that already
+        holds the snapshot taken at the original intake.
+        """
         import logging
+
+        from idp_common import document_attributes
 
         logger = logging.getLogger(__name__)
 
@@ -1395,13 +1456,19 @@ class Document:
         test_set_id = None
         forced_document_class = None
         forced_sections = None
+        attribute_intake = None
         try:
             import boto3
 
             s3_client = boto3.client("s3")
             response = s3_client.head_object(Bucket=input_bucket, Key=input_key)
             metadata = response.get("Metadata", {})
-            logger.info(f"S3 metadata for {input_key}: {metadata}")
+            # Attribute VALUES are never logged: an account or claim number can be
+            # personal data. Their names stay visible so a missing one is debuggable.
+            logger.info(
+                f"S3 metadata for {input_key}: "
+                f"{document_attributes.loggable_metadata(metadata)}"
+            )
             config_version = metadata.get("config-version")
             config_revision = coerce_revision(metadata.get("config-revision"))
             if config_version:
@@ -1432,10 +1499,17 @@ class Document:
                     f"Document {input_key} submitted by {submission_source}"
                     + (f" for test set {test_set_id}" if test_set_id else "")
                 )
+            # Last, after every control key has been read, so nothing a caller put
+            # in its attributes can cost the document its configuration pin.
+            # read_object_attributes does not raise for bad input.
+            if read_attributes:
+                attribute_intake = document_attributes.read_object_attributes(
+                    metadata, input_bucket, s3_client
+                )
         except Exception as e:
             logger.warning(f"Could not read S3 metadata for {input_key}: {e}")
 
-        return cls(
+        document = cls(
             id=input_key,
             input_bucket=input_bucket,
             input_key=input_key,
@@ -1449,6 +1523,18 @@ class Document:
             forced_document_class=forced_document_class,
             forced_sections=forced_sections,
         )
+        if attribute_intake is not None:
+            document.attributes = attribute_intake.attributes
+            if attribute_intake.dropped:
+                logger.warning(
+                    f"Dropped {len(attribute_intake.dropped)} invalid document "
+                    f"attribute(s) for {input_key}: "
+                    + "; ".join(f"{k}: {why}" for k, why in attribute_intake.dropped)
+                )
+                document.processing_issues.append(
+                    attributes_dropped_issue(attribute_intake.dropped)
+                )
+        return document
 
     def to_json(self) -> str:
         """Convert document to JSON string."""

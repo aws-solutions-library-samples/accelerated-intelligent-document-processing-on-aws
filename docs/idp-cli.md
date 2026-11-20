@@ -1105,6 +1105,7 @@ idp-cli run-inference [OPTIONS]
 - `--config`: **Refused.** A configuration file is not applied to a batch submission, so passing one exits non-zero rather than running under the stack's existing configuration. Upload the file as a profile with [`config-upload`](#config-upload), then pass `--config-profile`.
 - `--config-profile` (alias: `--config-version`): Configuration profile to use for processing (e.g., `default`, `lending`)
 - `--context`: Context description for test run (used with --test-set, e.g., "Model v2.1", "Production validation")
+- `--attribute KEY=VALUE` (repeatable) and `--attributes-file <json>`: [Document attributes](./document-attributes.md) stored with every document and returned with its results. Values given with `--attribute` are strings and override the file's value for the same key; a manifest's `attributes` column overrides both per row. An invalid set is refused before anything is uploaded. Not accepted with `--test-set`
 - `--monitor`: Monitor progress until completion
 - `--refresh-interval`: Seconds between status checks (default: 5)
 - `--region`: AWS region (optional)

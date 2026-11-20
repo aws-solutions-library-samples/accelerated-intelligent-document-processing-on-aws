@@ -227,6 +227,10 @@ export default defineConfig({
               ],
             },
             {
+              label: "Document Attributes",
+              slug: "document-attributes",
+            },
+            {
               label: "Document Versions",
               slug: "document-versions",
             },

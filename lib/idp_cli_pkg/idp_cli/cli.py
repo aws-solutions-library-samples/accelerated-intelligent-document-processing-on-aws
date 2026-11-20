@@ -15,7 +15,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 # Stdlib-only and in this package, so it belongs to neither import tier below: it
 # cannot fail to import and nothing has to be stubbed for it.
@@ -2312,6 +2312,34 @@ def delete_documents_cmd(
         sys.exit(1)
 
 
+def _read_attribute_options(
+    attribute_pairs: Tuple[str, ...], attributes_file: Optional[str]
+) -> Dict[str, Any]:
+    """The `--attributes-file` object overlaid by each `--attribute key=value`.
+
+    Values given as pairs are strings. A key given twice as a pair is refused
+    rather than silently resolved. Raises ValueError (or OSError for the file).
+    """
+    attributes: Dict[str, Any] = {}
+    if attributes_file:
+        with open(attributes_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError(f"{attributes_file}: must hold a JSON object")
+        attributes.update(data)
+    seen = set()
+    for pair in attribute_pairs:
+        key, sep, value = pair.partition("=")
+        if not sep:
+            raise ValueError(f"--attribute {pair!r} is not in key=value form")
+        key = key.strip()
+        if key in seen:
+            raise ValueError(f"--attribute {key!r} is given more than once")
+        seen.add(key)
+        attributes[key] = value
+    return attributes
+
+
 def _process_impl(
     stack_name: str,
     manifest: Optional[str],
@@ -2330,9 +2358,32 @@ def _process_impl(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int] = None,
+    attribute_pairs: Tuple[str, ...] = (),
+    attributes_file: Optional[str] = None,
 ):
     """Implementation for process and run_inference commands"""
     try:
+        # Caller-supplied document attributes (#1851): `--attributes-file`, then
+        # each `--attribute key=value` on top. Only the input syntax is checked
+        # here; the SDK validates the set against the attribute rules and refuses
+        # an invalid one before anything is uploaded.
+        attributes = None
+        if attribute_pairs or attributes_file:
+            if test_set:
+                console.print(
+                    "[red]✗ Error: --attribute/--attributes-file cannot be used "
+                    "with --test-set[/red]"
+                )
+                sys.exit(1)
+            try:
+                attributes = _read_attribute_options(attribute_pairs, attributes_file)
+            except (OSError, ValueError) as e:
+                console.print(f"[red]✗ Error: {escape(str(e))}[/red]")
+                sys.exit(1)
+        # Passed only when given, so a submission without attributes makes exactly
+        # the SDK call it always did.
+        attribute_kwargs = {"attributes": attributes} if attributes is not None else {}
+
         # Validate mutually exclusive options
         if not manifest and not directory and not s3_uri and not test_set:
             console.print(
@@ -2426,6 +2477,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif directory:
                 result = client.batch.process(
@@ -2437,6 +2489,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             elif s3_uri:
                 result = client.batch.process(
@@ -2448,6 +2501,7 @@ def _process_impl(
                     number_of_files=number_of_files,
                     config_version=config_version,
                     config_revision=config_revision,
+                    **attribute_kwargs,
                 )
             else:
                 raise ValueError("No input source specified")
@@ -2566,6 +2620,23 @@ def _process_impl(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def process(
     stack_name: str,
     manifest: Optional[str],
@@ -2584,6 +2655,8 @@ def process(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Process documents
@@ -2652,6 +2725,8 @@ def process(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
@@ -2809,6 +2884,23 @@ def reprocess(
         "revision recorded."
     ),
 )
+@click.option(
+    "--attribute",
+    "attribute_pairs",
+    multiple=True,
+    metavar="KEY=VALUE",
+    help=(
+        "Document attribute stored with every document and returned with its "
+        "results (repeatable), e.g. --attribute account_id=ACME-0042. Values are "
+        "strings; use --attributes-file for numbers, booleans or lists. A "
+        "manifest's 'attributes' column overrides these per key."
+    ),
+)
+@click.option(
+    "--attributes-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="JSON object of document attributes for every document (see --attribute).",
+)
 def run_inference(
     stack_name: str,
     manifest: Optional[str],
@@ -2827,6 +2919,8 @@ def run_inference(
     number_of_files: Optional[int],
     config_version: Optional[str],
     config_revision: Optional[int],
+    attribute_pairs: Tuple[str, ...],
+    attributes_file: Optional[str],
 ):
     """
     Run inference on a batch of documents
@@ -2855,6 +2949,8 @@ def run_inference(
         number_of_files,
         config_version,
         config_revision,
+        attribute_pairs,
+        attributes_file,
     )
 
 
