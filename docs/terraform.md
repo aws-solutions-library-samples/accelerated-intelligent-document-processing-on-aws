@@ -951,6 +951,20 @@ the policy in place, including on a deployment that an earlier failure left part
 way, and so do later changes to it. CloudFormation deployments were never
 affected.
 
+The two Lambda asynchronous-invocation settings (`awscc_lambda_event_invoke_config`,
+for the queue sender and the reporting rollup function) failed the same way on any
+upgrade that changed their retry count, event age or destination: Lambda reports an
+unset success or failure destination as an empty object, and Cloud Control refuses
+an in-place update while one is present. No value avoids that, since any destination
+changes where results go, so the module now replaces these two resources instead of
+updating them: a change to any of their settings deletes the configuration and
+creates it again in the same apply, and the plan shows it as replaced "due to
+changes in replace_triggered_by". Between the delete and the create, asynchronous
+invocations of that function use Lambda's defaults. Whether the first upgrade to a
+module with this change replaces them depends on the binary: measured with the
+releases `make terraform-check` pins, OpenTofu 1.13 replaces them once, and
+Terraform 1.7 and 1.17 and OpenTofu 1.7 do not.
+
 Read the release's `CHANGELOG.md` entries and any migration guide for the release
 before upgrading, as for a CloudFormation stack: configuration changes and upgrade
 actions apply to both.
