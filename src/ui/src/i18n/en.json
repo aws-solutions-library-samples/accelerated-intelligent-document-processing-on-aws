@@ -297,7 +297,7 @@
   },
   "configPrefixMappings.history.created": {
     "defaultMessage": "Assigned {profile} ({revision}), conflict mode {precedence}",
-    "description": "Change history detail for a created mapping. {profile} is a Configuration Profile name, {revision} is either \"published revision\" or r7, {precedence} is the conflict mode (mapping, metadata or reject)."
+    "description": "Change history detail for a created mapping. {profile} is a Configuration Profile name, {revision} is either \"published revision\" or r7, {precedence} is the conflict mode, for example \"mapping wins\"."
   },
   "configPrefixMappings.history.deleted": {
     "defaultMessage": "Was assigned {profile} ({revision})",
@@ -350,6 +350,18 @@
   "configPrefixMappings.history.noFieldChange": {
     "defaultMessage": "Saved with no change to its settings",
     "description": "Change history detail: the mapping was saved again with the same profile, revision, conflict mode and description."
+  },
+  "configPrefixMappings.history.precedence.mapping": {
+    "defaultMessage": "mapping wins",
+    "description": "Change history: the conflict mode in which the mapping overrides a profile named by the upload."
+  },
+  "configPrefixMappings.history.precedence.metadata": {
+    "defaultMessage": "upload metadata wins",
+    "description": "Change history: the conflict mode in which a profile named by the upload overrides the mapping."
+  },
+  "configPrefixMappings.history.precedence.reject": {
+    "defaultMessage": "refuse the conflict",
+    "description": "Change history: the conflict mode in which a conflicting upload is refused."
   },
   "configPrefixMappings.history.published": {
     "defaultMessage": "published revision",

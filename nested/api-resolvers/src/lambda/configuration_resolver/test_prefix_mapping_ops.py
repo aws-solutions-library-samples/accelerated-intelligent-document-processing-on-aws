@@ -858,3 +858,22 @@ def test_a_history_read_failure_is_reported_without_the_store_error(manager, sto
     result = index.handler(_event("listConfigPrefixMappingHistory"), None)
     assert result["success"] is False
     assert "123456789012" not in result["error"]["message"]
+
+
+@pytest.mark.unit
+def test_the_dry_run_reports_a_mapping_whose_profile_does_not_exist(manager, store):
+    """#597: the real resolver, with the existence probe answering "absent"."""
+    store.list.return_value = [{"prefix": "acme/", "configProfile": "deleted"}]
+    manager.table.get_item.side_effect = lambda **kw: (
+        {}
+        if kw["Key"]["Configuration"] == "Config#deleted"
+        else {"Item": {"Configuration": kw["Key"]["Configuration"]}}
+    )
+    result = index.handler(
+        _event("resolveConfigPrefixMapping", {"objectKey": "acme/x.pdf"}), None
+    )
+    assignment = result["assignment"]
+    assert assignment["rejected"] is True
+    assert assignment["source"] == "rejected"
+    assert assignment["configProfile"] is None
+    assert "does not exist" in assignment["reason"]

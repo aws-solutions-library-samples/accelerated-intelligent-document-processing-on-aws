@@ -35,6 +35,7 @@ from idp_common.config.prefix_mappings import (
     SOURCE_REJECTED,
     ConfigAssignment,
     PrefixMappingConflict,
+    PrefixMappingHistoryCorrupt,
     PrefixMappingStore,
     canonical_key,
     description_rejection_reason,
@@ -1770,7 +1771,9 @@ def test_a_record_is_never_overwritten_and_the_change_does_not_land_without_one(
     table.put_item(Item=planted)
     store = PrefixMappingStore(table)
 
-    with pytest.raises(PrefixMappingConflict):
+    # Named as what it is -- the head is behind the log -- rather than as a
+    # concurrent edit, which retrying could never resolve.
+    with pytest.raises(PrefixMappingHistoryCorrupt, match="head item"):
         store.put("a/", "lending")
 
     assert store.list() == []
@@ -1802,3 +1805,35 @@ def test_a_forged_source_cannot_hide_a_deferring_mapping_from_the_scope_check():
         allowed_profiles=["tenant-a"],
     )
     assert assignment.scope_denied is True
+
+
+@pytest.mark.unit
+@mock_aws
+def test_an_overlapping_transaction_is_retried_like_a_lost_condition():
+    """DynamoDB cancels one of two overlapping transactions with
+    TransactionConflict; that is the same race a lost condition is."""
+    table = _make_table()
+    store = PrefixMappingStore(table)
+    real = table.meta.client.transact_write_items
+    calls = {"n": 0}
+
+    def conflict_once(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClientError(
+                {
+                    "Error": {"Code": "TransactionCanceledException"},
+                    "CancellationReasons": [
+                        {"Code": "TransactionConflict"},
+                        {"Code": "None"},
+                        {"Code": "None"},
+                    ],
+                },
+                "TransactWriteItems",
+            )
+        return real(**kwargs)
+
+    table.meta.client.transact_write_items = conflict_once
+    store.put("acme/", "lending")
+    assert calls["n"] == 2
+    assert [e["prefix"] for e in store.list()] == ["acme/"]

@@ -69,7 +69,7 @@ export interface ConfigPrefixMappingHistoryPage {
  * One page of the change log, newest first. A standalone function rather than
  * hook state because the history panel owns its own paging and filter, and its
  * failures must not paint over the mapping table's error banner. Throws with the
- * server's message on a refusal, so the panel can show it.
+ * server's message on a refusal (empty when it gave none), so the panel can show it.
  */
 export const fetchMappingHistory = async (prefix?: string | null, before?: number | null): Promise<ConfigPrefixMappingHistoryPage> => {
   const result = await client.graphql({
@@ -78,7 +78,9 @@ export const fetchMappingHistory = async (prefix?: string | null, before?: numbe
   });
   const response = result.data.listConfigPrefixMappingHistory;
   if (!response?.success) {
-    throw new Error(response?.error?.message || 'Failed to load the mapping history');
+    // The server's message when it gave one; otherwise an empty message, so the
+    // panel shows its own translated fallback rather than an English literal.
+    throw new Error(response?.error?.message ?? '');
   }
   return {
     entries: (response.entries ?? []).filter(Boolean) as ConfigPrefixMappingHistoryEntry[],

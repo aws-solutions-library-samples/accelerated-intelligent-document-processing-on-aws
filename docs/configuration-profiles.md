@@ -819,7 +819,8 @@ document again.
 If the mapping set cannot be read when a document arrives — a throttle, a KMS or
 table-policy denial, a misconfigured stack — the document is **not** held: it is
 processed under the profile its upload named, or the active profile, with no mapping
-applied, and `PrefixMappingLookupFailed` is published. Each such document also carries
+applied, and `PrefixMappingLookupFailed` is published. Each such document (other than
+the Test Studio and PII-anonymizer documents mappings never apply to) also carries
 a **warning processing issue** (`config_prefix_mapping_lookup_failed`), shown beside its
 configuration in the Document Details panel and counted in the document list's issue
 badge, so the documents affected by the window can be found and reprocessed once the

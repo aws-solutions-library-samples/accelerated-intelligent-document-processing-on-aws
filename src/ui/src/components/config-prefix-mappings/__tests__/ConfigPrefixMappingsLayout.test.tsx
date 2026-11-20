@@ -540,9 +540,9 @@ describe('ConfigPrefixMappingsLayout change history (#597)', () => {
     expect(screen.getByText('Showing changes to acme/invoices/ only.')).toBeTruthy();
     expect(screen.getByText('Profile: lending → invoices')).toBeTruthy();
     expect(screen.getByText('Revision: published revision → r3')).toBeTruthy();
-    expect(screen.getByText('Conflict mode: mapping → reject')).toBeTruthy();
+    expect(screen.getByText('Conflict mode: mapping wins → refuse the conflict')).toBeTruthy();
     expect(screen.getByText('Enabled: yes → no')).toBeTruthy();
-    expect(screen.getByText('Assigned lending (published revision), conflict mode mapping')).toBeTruthy();
+    expect(screen.getByText('Assigned lending (published revision), conflict mode mapping wins')).toBeTruthy();
     expect(screen.getByText('creator@example.com')).toBeTruthy();
   });
 
@@ -559,10 +559,17 @@ describe('ConfigPrefixMappingsLayout change history (#597)', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Load older changes' })).toBeNull());
   });
 
-  it("shows the server's refusal rather than an empty log", async () => {
-    historyResponse.current = { success: false, error: { type: 'Error', message: 'Failed to read the mapping history' } };
+  it('falls back to its own translated message when the server gives none', async () => {
+    historyResponse.current = { success: false, error: null };
     render(<ConfigPrefixMappingsLayout />);
     fireEvent.click(await screen.findByRole('button', { name: 'Change history of acme/invoices/' }));
-    expect(await screen.findByText('Failed to read the mapping history')).toBeTruthy();
+    expect(await screen.findByText('Failed to load the mapping history')).toBeTruthy();
+  });
+
+  it("shows the server's refusal rather than an empty log", async () => {
+    historyResponse.current = { success: false, error: { type: 'Error', message: 'The server said no' } };
+    render(<ConfigPrefixMappingsLayout />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Change history of acme/invoices/' }));
+    expect(await screen.findByText('The server said no')).toBeTruthy();
   });
 });

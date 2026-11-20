@@ -472,7 +472,12 @@ def _record_lookup_failure(document, root_cause):
     ``root_cause`` is the exception's *type* (and AWS error code), never its
     message: the issue is shown to anyone who can see the document, and an AWS
     error message can carry a role ARN and so an account id.
+
+    Not recorded for one of this deployment's own producers: mappings never apply
+    to those, so "no mapping was applied, reprocess to apply it" would be false.
     """
+    if is_internal_producer(document.submission_source):
+        return
     document.processing_issues.append(
         ProcessingIssue(
             stage="ingest",

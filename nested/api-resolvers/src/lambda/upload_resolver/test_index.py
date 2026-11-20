@@ -515,6 +515,20 @@ class TestTheDestinationsConfigurationScopeIsEnforced:
         table.put_item(Item={"Configuration": f"Config#{profile}"})
         PrefixMappingStore(table).put(prefix, profile, **kwargs)
 
+    def test_an_upload_under_a_mapping_to_a_missing_profile_is_refused(self, resolver):
+        """#597: refused before a URL is minted, through the real resolver and
+        the real existence probe -- the mapping's profile head is absent."""
+        from idp_common.config.prefix_mappings import PrefixMappingStore
+
+        index, _ = resolver
+        table = boto3.resource("dynamodb", region_name="us-east-1").Table(CONFIG_TABLE)
+        PrefixMappingStore(table).put("acme/", "deleted-profile")
+
+        with pytest.raises(ValueError, match="does not exist"):
+            index.handler(
+                _event("uploadDocument", {"fileName": "x.pdf", "prefix": "acme"})
+            )
+
     def test_the_metadata_route_is_refused_out_of_scope(self, resolver):
         index, _ = resolver
         self._scope(index, "teamA")

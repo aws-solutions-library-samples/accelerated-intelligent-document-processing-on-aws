@@ -2558,6 +2558,15 @@ class TestPrefixMappingLookupFailureIsRecordedOnTheDocument:
         [issue] = document.processing_issues
         assert issue.code == "config_prefix_mapping_lookup_failed"
 
+    def test_an_internal_producers_document_is_not_flagged(self):
+        """Mappings never apply to it, so the issue's advice would be false."""
+        document = _issue_document()
+        document.submission_source = "test-studio"
+        metrics, mock_sqs, _ = self._run(document, list_error=RuntimeError("x"))
+        assert "PrefixMappingLookupFailed" in metrics
+        assert mock_sqs.send_message.called is True
+        assert document.processing_issues == []
+
     def test_a_successful_read_records_nothing(self):
         document = _issue_document()
         metrics, _, _ = self._run(document)

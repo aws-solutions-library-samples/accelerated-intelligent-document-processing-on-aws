@@ -46,6 +46,9 @@ const messages = defineMessages<{
   changedPrecedence: { from: string; to: string };
   changedEnabled: { from: string; to: string };
   changedDescription: NoMessageValues;
+  precedenceMapping: NoMessageValues;
+  precedenceMetadata: NoMessageValues;
+  precedenceReject: NoMessageValues;
   enabledYes: NoMessageValues;
   enabledNo: NoMessageValues;
   noFieldChange: NoMessageValues;
@@ -131,7 +134,7 @@ const messages = defineMessages<{
     id: 'configPrefixMappings.history.created',
     defaultMessage: 'Assigned {profile} ({revision}), conflict mode {precedence}',
     description:
-      'Change history detail for a created mapping. {profile} is a Configuration Profile name, {revision} is either "published revision" or r7, {precedence} is the conflict mode (mapping, metadata or reject).',
+      'Change history detail for a created mapping. {profile} is a Configuration Profile name, {revision} is either "published revision" or r7, {precedence} is the conflict mode, for example "mapping wins".',
   },
   deleted: {
     id: 'configPrefixMappings.history.deleted',
@@ -162,6 +165,21 @@ const messages = defineMessages<{
     id: 'configPrefixMappings.history.changed.description',
     defaultMessage: 'Description changed',
     description: 'Change history detail: the mapping’s free-text description was edited.',
+  },
+  precedenceMapping: {
+    id: 'configPrefixMappings.history.precedence.mapping',
+    defaultMessage: 'mapping wins',
+    description: 'Change history: the conflict mode in which the mapping overrides a profile named by the upload.',
+  },
+  precedenceMetadata: {
+    id: 'configPrefixMappings.history.precedence.metadata',
+    defaultMessage: 'upload metadata wins',
+    description: 'Change history: the conflict mode in which a profile named by the upload overrides the mapping.',
+  },
+  precedenceReject: {
+    id: 'configPrefixMappings.history.precedence.reject',
+    defaultMessage: 'refuse the conflict',
+    description: 'Change history: the conflict mode in which a conflicting upload is refused.',
   },
   enabledYes: {
     id: 'configPrefixMappings.history.enabled.yes',
@@ -211,6 +229,12 @@ const messages = defineMessages<{
 });
 
 type Side = Partial<ConfigPrefixMapping> | null | undefined;
+
+const PRECEDENCE_MESSAGES = {
+  mapping: messages.precedenceMapping,
+  metadata: messages.precedenceMetadata,
+  reject: messages.precedenceReject,
+} as const;
 
 const ACTION_MESSAGES = {
   create: messages.actionCreate,
@@ -285,6 +309,13 @@ const MappingHistory = ({ prefixFilter, onClearFilter, expanded, onExpandedChang
       ? intl.formatMessage(messages.published)
       : intl.formatMessage(messages.revision, { revision: side.configRevision });
 
+  // An unrecognised value is shown as stored rather than hidden: it is data the
+  // server returned, and dropping it would misreport the change.
+  const precedenceText = (value: string | null | undefined): string => {
+    const message = PRECEDENCE_MESSAGES[(value ?? 'mapping') as keyof typeof PRECEDENCE_MESSAGES];
+    return message ? intl.formatMessage(message) : (value ?? '');
+  };
+
   const details = (entry: ConfigPrefixMappingHistoryEntry): string[] => {
     const { before, after } = entry;
     if (!before && after) {
@@ -292,7 +323,7 @@ const MappingHistory = ({ prefixFilter, onClearFilter, expanded, onExpandedChang
         intl.formatMessage(messages.created, {
           profile: after.configProfile ?? '',
           revision: revisionText(after),
-          precedence: after.metadataPrecedence ?? 'mapping',
+          precedence: precedenceText(after.metadataPrecedence),
         }),
       ];
     }
@@ -309,8 +340,8 @@ const MappingHistory = ({ prefixFilter, onClearFilter, expanded, onExpandedChang
     if (before?.metadataPrecedence !== after?.metadataPrecedence) {
       lines.push(
         intl.formatMessage(messages.changedPrecedence, {
-          from: before?.metadataPrecedence ?? '',
-          to: after?.metadataPrecedence ?? '',
+          from: precedenceText(before?.metadataPrecedence),
+          to: precedenceText(after?.metadataPrecedence),
         }),
       );
     }

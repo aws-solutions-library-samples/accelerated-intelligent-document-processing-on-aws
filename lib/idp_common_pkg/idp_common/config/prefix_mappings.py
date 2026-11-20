@@ -171,8 +171,9 @@ including another team's under ``reject``.
 What keeps a *user* upload from carrying one of those values is not this module. The
 web upload is a presigned POST whose policy names every form field it accepts, and S3
 refuses a POST carrying a field its policy does not list, so a browser cannot add the
-key at all; the sample-upload path is a server-side copy that writes only
-``config-version``/``config-revision``. A principal holding ``s3:PutObject`` on the
+key at all; the sample-upload path is a server-side copy whose metadata is either
+replaced with ``config-version``/``config-revision`` or, with no profile chosen,
+copied from the bundled sample in the deployment's own configuration bucket. A principal holding ``s3:PutObject`` on the
 Input bucket directly can still set it, and is trusted by construction: it already
 chooses the key, and so the mapping, it writes under.
 
@@ -394,6 +395,14 @@ def normalize_history_record(item: Mapping[str, Any]) -> Dict[str, Any]:
             for c in item.get("Changes") or []
         ],
     }
+
+
+# Cancellation reasons that mean another writer got there first.
+_RACE_CANCELLATION_CODES = ("ConditionalCheckFailed", "TransactionConflict")
+
+
+class PrefixMappingHistoryCorrupt(RuntimeError):
+    """The change log's head item is behind its records, so no change can be saved."""
 
 
 class PrefixMappingConflict(RuntimeError):
@@ -1255,14 +1264,34 @@ class PrefixMappingStore:
                     (r or {}).get("Code")
                     for r in e.response.get("CancellationReasons") or []
                 ]
-                # Only a lost condition is a race worth retrying. Anything else --
-                # a validation failure, a throttle inside the transaction -- is
-                # raised as it is rather than reported as a concurrent edit.
+                # Only a race is worth retrying: a lost condition, or DynamoDB's
+                # own TransactionConflict when two transactions overlap on the
+                # same item. Anything else -- a validation failure, a throttle --
+                # is raised as it is rather than reported as a concurrent edit.
                 if reasons and any(
-                    code not in (None, "None", "ConditionalCheckFailed")
+                    code not in (None, "None", *_RACE_CANCELLATION_CODES)
                     for code in reasons
                 ):
                     raise
+                # The aggregate and the head both held and only the record's
+                # append-only condition failed: a record already exists at the
+                # sequence the head says is next, so the head is behind the log
+                # (it was deleted or rewound by hand). Retrying cannot fix that,
+                # and calling it a concurrent edit would send the admin the wrong
+                # way.
+                if (
+                    len(reasons) == 3
+                    and reasons[2] == "ConditionalCheckFailed"
+                    and all(code in (None, "None") for code in reasons[:2])
+                ):
+                    raise PrefixMappingHistoryCorrupt(
+                        f"The configuration prefix mapping change log already holds "
+                        f"record {last + 1}, which its head item says is the next "
+                        f"one to write, so the head item "
+                        f"({HISTORY_HEAD_KEY}) has been altered outside this "
+                        f"solution. No change was saved. Restore the head's "
+                        f"{HISTORY_SEQ_ATTRIBUTE} to the highest record number."
+                    ) from e
                 logger.info(
                     "The configuration prefix mapping index changed underneath us "
                     f"(attempt {attempt}); retrying"
