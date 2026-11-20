@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from . import hcl
 from .awscc_schema import ANY, Hint
-from .translate import NO_VALUE, STACK_NAME_VAR, TranslationError, is_intrinsic
+from .translate import (
+    BARE_ARN_ATTR,
+    NO_VALUE,
+    STACK_NAME_VAR,
+    TranslationError,
+    is_intrinsic,
+)
 
 if TYPE_CHECKING:
     from .translate import Plan, Translator
@@ -532,12 +538,6 @@ LAMBDA = LambdaMapper(
         ),
     },
 )
-
-#: Not a CloudFormation attribute: the translator rewrites a log group's
-#: ``GetAtt Arn`` to it where the consuming service stores the ARN without
-#: CloudFormation's ``:*`` suffix. The space keeps it from ever matching an
-#: attribute a template could name.
-BARE_ARN_ATTR = "Arn without suffix"
 
 LOG_GROUP = SpecMapper(
     tf_type="aws_cloudwatch_log_group",

@@ -1165,3 +1165,25 @@ def test_a_stage_destination_that_is_not_a_log_group_arn_is_left_alone(vendored)
     ]
     stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
     assert f'destination_arn = "{firehose}"' in stage, stage
+
+
+def test_under_awscc_mode_the_stage_destination_trims_cloud_controls_suffix(vendored):
+    """``--mode awscc`` makes the log group awscc_logs_log_group, whose arn is
+    Cloud Control's and so already CloudFormation's ``:*`` form."""
+    template = _stage_logging_template({"Fn::GetAtt": ["Logs", "Arn"]})
+    main_tf = Translator(template, vendored, mode="awscc").render()["main.tf"]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    (line,) = [ln.strip() for ln in stage.splitlines() if "destination_arn" in ln]
+    assert line == 'destination_arn = trimsuffix(awscc_logs_log_group.logs.arn, ":*")'
+    param = _block(main_tf, 'resource "awscc_ssm_parameter" "param"')
+    assert "value = awscc_logs_log_group.logs.arn" in param, param
+
+
+def test_a_stage_destination_naming_another_type_keeps_its_arn(vendored):
+    """Only a log group's Arn carries the suffix; any other resource's GetAtt Arn
+    (a Firehose stream in a real template) is written as it is."""
+    template = _stage_logging_template({"Fn::GetAtt": ["Queue", "Arn"]})
+    template["Resources"]["Queue"] = {"Type": "AWS::SQS::Queue", "Properties": {}}
+    main_tf = Translator(template, vendored).render()["main.tf"]
+    stage = _block(main_tf, 'resource "awscc_apigateway_stage" "stage"')
+    assert "destination_arn = awscc_sqs_queue.queue.arn" in stage, stage

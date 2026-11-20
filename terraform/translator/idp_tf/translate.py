@@ -118,6 +118,12 @@ AWSCC_PROPERTY_FIXUPS: dict[tuple[str, str], str] = {
     ("AWS::ApiGateway::Stage", "AccessLogSetting"): "bare_log_group_arn",
 }
 
+#: Not a CloudFormation attribute: the translator rewrites a log group's
+#: ``GetAtt Arn`` to it where the consuming service stores the ARN without
+#: CloudFormation's ``:*`` suffix. The space keeps it from ever matching an
+#: attribute a template could name.
+BARE_ARN_ATTR = "Arn without suffix"
+
 # Functions that walk the stack tree at run time. Under Terraform they get the
 # resource directory's location (IDP_TF_RESOURCE_DIRECTORY) and read access to
 # it, so idp_common's hook answers their CloudFormation lookups. Logical id ->
@@ -603,6 +609,11 @@ class Translator:
                     f"{self._current}: nested stack {name} has no output {out}"
                 )
             return self._wrap(plan, out)
+        if plan.kind == "awscc" and attr == BARE_ARN_ATTR:
+            # Under --mode awscc a log group is awscc_logs_log_group, whose arn
+            # is Cloud Control's, CloudFormation's form; the bare ARN is that
+            # value without its ":*".
+            return f'trimsuffix({self.getatt(name, "Arn")}, ":*")'
         passed = PASS_THROUGH_ATTRS.get((plan.cfn_type, attr))
         if self._stable and passed is not None and passed in plan.props:
             return self.expr(plan.props[passed])
@@ -975,8 +986,6 @@ class Translator:
         depth (an ``Fn::If`` branch included), naming the log group's ARN without
         CloudFormation's ``:*``. Any other destination, a Firehose stream's or a
         literal, is left as written."""
-        from .aws_mappers import BARE_ARN_ATTR
-
         if isinstance(v, list):
             return [self._bare_log_group_arn(x) for x in v]
         if not isinstance(v, dict):
