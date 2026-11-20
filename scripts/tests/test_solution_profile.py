@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tarfile
 from pathlib import Path
@@ -292,6 +293,61 @@ def test_a_new_model_fails_until_a_capability_names_it(profile):
     universe = check.selectable_models(REPO_ROOT) | {"anthropic.claude-test-9"}
     problems = check.check_models(profile, universe)
     assert len(problems) == 1 and "model:anthropic.claude-test-9" in problems[0]
+
+
+@pytest.mark.unit
+def test_the_model_universe_agrees_with_the_model_surface_gate():
+    """The check carries its own small template walker so the lint gate imports no
+    test module; this pins it to the walker the model-surface gate maintains."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts" / "tests"))
+    import test_model_surface_consistency as surface
+
+    offered: dict[str, set[str]] = {}
+    for rel in surface._tracked_templates():
+        # The parse is shared (both loaders map CloudFormation tags the same way);
+        # what this compares is the two walks and the two template discoveries.
+        doc = yaml.load(  # noqa: S506 - a yaml.SafeLoader subclass
+            (REPO_ROOT / rel).read_text(encoding="utf-8"),
+            Loader=check._CfnLoader,  # nosec B506 - a yaml.SafeLoader subclass
+        )
+        surface._walk_enums(doc, rel, offered)
+    theirs = {
+        check.MODEL_VARIANT_SUFFIX.sub("", surface._base_model(m))
+        for m in offered
+        if m not in surface.NON_MODEL_CHOICES
+    }
+    assert check.selectable_models(REPO_ROOT) == theirs
+
+
+SCRATCH_TEMPLATE = """AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  ExtractionModel:
+    Type: String
+    Default: us.anthropic.claude-scratch-1
+    AllowedValues: [us.anthropic.claude-scratch-1, eu.amazon.nova-scratch-v1:0:flex]
+Resources:
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-x"
+"""
+
+
+@pytest.mark.unit
+def test_repo_root_decides_which_templates_offer_models(tmp_path, capsys):
+    """``--repo-root`` names the tree whose templates are read, not this checkout."""
+    root = _tree_with(tmp_path, {"scratch-template.yaml": SCRATCH_TEMPLATE})
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)  # noqa: S607
+    subprocess.run(["git", "add", "scratch-template.yaml"], cwd=root, check=True)  # noqa: S607
+    assert check.selectable_models(root) == {
+        "anthropic.claude-scratch-1",
+        "amazon.nova-scratch-v1:0",
+    }
+    assert check.main(["--repo-root", str(root)]) == 1
+    out = capsys.readouterr().out
+    assert "no capability is tagged 'model:anthropic.claude-scratch-1'" in out
+    assert "'model:amazon.nova-scratch-v1:0'" in out
+    assert "which no tracked template offers any more" in out
 
 
 @pytest.mark.unit

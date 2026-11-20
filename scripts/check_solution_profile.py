@@ -39,11 +39,10 @@ the manifest through :func:`stamp_manifest_version`, so the two cannot disagree.
 (``X.Y.Z``), when ``--release`` is given, or when ``SOLUTION_PROFILE_RELEASE`` is set
 to an affirmative value. The release workflow sets it explicitly.
 
-``--contract-only`` runs the first half alone. It needs only PyYAML and jsonschema,
-which is what the release workflow installs; the cross-checks need the repository's
-development environment (they reuse the template walker in
-``scripts/tests/test_model_surface_consistency.py``) and have already run on every
-pull request by then.
+``--contract-only`` runs the first half alone, which is what the release workflow
+does: the cross-checks have already run on every pull request by then. Both halves
+need only PyYAML, jsonschema and ``git``, and every universe is read from the
+``--repo-root`` given, never from the checkout this script happens to live in.
 """
 
 from __future__ import annotations
@@ -54,6 +53,7 @@ import functools
 import importlib.util
 import os
 import re
+import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable
@@ -214,38 +214,103 @@ def release_regions(repo_root: Path) -> set[str]:
     return regions
 
 
+# A Bedrock model or inference-profile id as the templates write them: an optional
+# Region/geo prefix, then ``provider.model``, where the provider starts with a letter
+# and the model contains one (so ``0.7`` is not an id). The same shape the
+# model-surface gate (scripts/tests/test_model_surface_consistency.py) uses;
+# test_solution_profile.py asserts the two walks agree on this tree.
+MODEL_ID = re.compile(
+    r"^(?:(?:us|eu|apac|ca|global|us-gov)\.)?"
+    r"[a-z][a-z0-9-]+\."
+    r"(?=[a-z0-9.:_-]*[a-z])[a-z0-9][a-z0-9.:_-]*$"
+)
+RETIRED_MODELS_MODULE = "lib/idp_common_pkg/idp_common/config/retired_models.py"
+
+
+def _cfn_tag(loader: Any, tag_suffix: str, node: Any) -> dict[str, Any]:
+    """Read a CloudFormation short-form tag (``!Ref``, ``!Sub`` ...) as plain data."""
+    if isinstance(node, yaml.ScalarNode):
+        return {f"Fn::{tag_suffix}": loader.construct_scalar(node)}
+    if isinstance(node, yaml.SequenceNode):
+        return {f"Fn::{tag_suffix}": loader.construct_sequence(node, deep=True)}
+    return {f"Fn::{tag_suffix}": loader.construct_mapping(node, deep=True)}
+
+
+# libyaml when available: parsing every template in pure Python is most of this
+# check's run time.
+_CfnBase: Any = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+
+
+class _CfnLoader(_CfnBase):  # type: ignore[misc,valid-type]
+    """A safe loader that tolerates CloudFormation short-form tags."""
+
+
+_CfnLoader.add_multi_constructor("!", _cfn_tag)
+
+
+def tracked_templates(repo_root: Path) -> list[str]:
+    """CloudFormation templates tracked in ``repo_root``, discovered by content."""
+    out = subprocess.run(  # noqa: S603 - fixed git argv
+        ["git", "ls-files", "*.yaml", "*.yml"],  # noqa: S607 - git from PATH
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    found = []
+    for rel in out.splitlines():
+        path = repo_root / rel
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "AWSTemplateFormatVersion" in text:
+            found.append(rel)
+    return found
+
+
+def _offered(node: Any, in_parameters: bool, acc: set[str]) -> None:
+    """Collect model ids a template offers: enum/AllowedValues entries, and the
+    ``Default`` of a CloudFormation Parameter (a model received without choosing)."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in ("enum", "AllowedValues") and isinstance(value, list):
+                acc.update(v for v in value if isinstance(v, str) and MODEL_ID.match(v))
+            if (
+                key == "Default"
+                and in_parameters
+                and isinstance(value, str)
+                and MODEL_ID.match(value)
+            ):
+                acc.add(value)
+            _offered(value, in_parameters or key == "Parameters", acc)
+    elif isinstance(node, list):
+        for item in node:
+            _offered(item, in_parameters, acc)
+
+
 @functools.lru_cache(maxsize=None)
 def selectable_models(repo_root: Path) -> frozenset[str]:
-    """Every model a tracked template offers, as a base id without variant suffixes.
+    """Every model a template tracked in ``repo_root`` offers, as a base id.
 
-    Reuses the template walker the model-surface gate already maintains, rather than
-    a second parser that could disagree with it.
+    The Region/geo prefix is stripped with ``base_model_id`` from ``repo_root``'s own
+    ``idp_common/config/retired_models.py`` (loaded by path, so the answer is about
+    that checkout), and service-tier and context-window suffixes are dropped.
     """
-    tests_dir = str(repo_root / "scripts" / "tests")
-    if tests_dir not in sys.path:
-        sys.path.insert(0, tests_dir)
-    import test_model_surface_consistency as surface  # type: ignore[import-not-found]
-
-    # The same CloudFormation-tag handling as the gate's own loader, on libyaml when
-    # it is available: parsing every tracked template in pure Python is most of this
-    # check's run time, and the walk over the parsed documents is unchanged.
-    loader: Any = surface._CfnLoader
-    if hasattr(yaml, "CSafeLoader"):
-
-        class _FastCfnLoader(yaml.CSafeLoader):  # type: ignore[name-defined,misc]
-            pass
-
-        _FastCfnLoader.add_multi_constructor("!", surface._tag_to_python)
-        loader = _FastCfnLoader
-    offered: dict[str, set[str]] = {}
-    for rel in surface._tracked_templates():
-        text = (surface.REPO_ROOT / rel).read_text(encoding="utf-8")
-        doc = yaml.load(text, Loader=loader)  # noqa: S506  # nosec B506 - SafeLoader subclasses
-        surface._walk_enums(doc, rel, offered)
+    spec = importlib.util.spec_from_file_location(
+        "_retired_models", repo_root / RETIRED_MODELS_MODULE
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {RETIRED_MODELS_MODULE}")
+    retired = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(retired)
+    offered: set[str] = set()
+    for rel in tracked_templates(repo_root):
+        text = (repo_root / rel).read_text(encoding="utf-8")
+        doc = yaml.load(text, Loader=_CfnLoader)  # noqa: S506  # nosec B506 - a SafeLoader
+        _offered(doc, False, offered)
     return frozenset(
-        MODEL_VARIANT_SUFFIX.sub("", surface._base_model(model))
-        for model in offered
-        if model not in surface.NON_MODEL_CHOICES
+        MODEL_VARIANT_SUFFIX.sub("", retired.base_model_id(m)) for m in offered
     )
 
 
