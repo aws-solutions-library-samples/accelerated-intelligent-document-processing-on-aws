@@ -123,7 +123,9 @@ def stamp_manifest_version(manifest: Path, pep440: str) -> bool:
         flags=re.MULTILINE,
     )
     if count != 1:
-        raise ValueError(f"{manifest}: expected one top-level 'version:' line, found {count}")
+        raise ValueError(
+            f"{manifest}: expected one top-level 'version:' line, found {count}"
+        )
     manifest.write_text(new, encoding="utf-8")
     return new != text
 
@@ -155,7 +157,9 @@ def hook_point_modes(repo_root: Path) -> dict[str, set[str]]:
 def preset_names(repo_root: Path) -> set[str]:
     """Every configuration preset: a directory under ``config_library/unified/``."""
     root = repo_root / PRESETS_DIR
-    return {p.name for p in root.iterdir() if p.is_dir() and (p / "config.yaml").is_file()}
+    return {
+        p.name for p in root.iterdir() if p.is_dir() and (p / "config.yaml").is_file()
+    }
 
 
 def routed_file_extensions(repo_root: Path) -> set[str]:
@@ -183,12 +187,18 @@ def routed_file_extensions(repo_root: Path) -> set[str]:
         if node.left.id != "ext":
             continue
         for comparator in node.comparators:
-            items = comparator.elts if isinstance(comparator, (ast.List, ast.Tuple, ast.Set)) else [comparator]
+            items = (
+                comparator.elts
+                if isinstance(comparator, (ast.List, ast.Tuple, ast.Set))
+                else [comparator]
+            )
             for item in items:
                 if isinstance(item, ast.Constant) and isinstance(item.value, str):
                     found.add(item.value)
     if not found:
-        raise RuntimeError(f"{OCR_SERVICE}: _detect_file_type compares no extension constants")
+        raise RuntimeError(
+            f"{OCR_SERVICE}: _detect_file_type compares no extension constants"
+        )
     return found
 
 
@@ -251,7 +261,9 @@ def has_action_item(section: str) -> bool:
     """
     for marker in ACTION_MARKER.finditer(section):
         inline = marker.group(0).strip("*").split(":", 1)
-        after = (inline[1] if len(inline) > 1 else "") + section[marker.end() : marker.end() + 400]
+        after = (inline[1] if len(inline) > 1 else "") + section[
+            marker.end() : marker.end() + 400
+        ]
         after = after.lstrip(" *:").lower()
         sentence = re.split(r"(?<=[.;])\s", after, maxsplit=1)[0]
         if not (after.startswith("none") and "except" not in sentence):
@@ -317,7 +329,9 @@ def check_hook_points(profile: Profile, universe: dict[str, set[str]]) -> list[s
             )
             continue
         if len(ids) > 1:
-            problems.append(f"extension-points.yaml: 'hook-point:{point}' is tagged on more than one item: {ids}")
+            problems.append(
+                f"extension-points.yaml: 'hook-point:{point}' is tagged on more than one item: {ids}"
+            )
         for item_id in ids:
             item = by_id[item_id]
             modes = set(item.get("modes") or [])
@@ -327,7 +341,9 @@ def check_hook_points(profile: Profile, universe: dict[str, set[str]]) -> list[s
                     f"reach hook point '{point}' in {HOOK_REACHABILITY}: {sorted(universe[point])}"
                 )
             if item.get("category") != "hook":
-                problems.append(f"extension-points.yaml: {item_id}: a hook point's category must be 'hook'")
+                problems.append(
+                    f"extension-points.yaml: {item_id}: a hook point's category must be 'hook'"
+                )
     for point in sorted(set(tagged) - set(universe)):
         problems.append(
             f"extension-points.yaml: {tagged[point]} tagged 'hook-point:{point}', which "
@@ -387,7 +403,9 @@ def check_models(profile: Profile, universe: set[str]) -> list[str]:
 
 
 def check_regions(profile: Profile, universe: set[str]) -> list[str]:
-    option = next((o for o in profile.deployment_options if o.get("id") == "cloudformation"), None)
+    option = next(
+        (o for o in profile.deployment_options if o.get("id") == "cloudformation"), None
+    )
     if option is None:
         return ["deployment.yaml: no option with id 'cloudformation'"]
     listed = set(option.get("regions") or [])
@@ -445,7 +463,9 @@ def cross_check(repo_root: Path, profile_dir: Path) -> list[str]:
     return problems
 
 
-def run_validator(repo_root: Path, profile_dir: Path, version_file: Path, release: bool) -> int:
+def run_validator(
+    repo_root: Path, profile_dir: Path, version_file: Path, release: bool
+) -> int:
     cmd = [
         sys.executable,
         str(repo_root / VALIDATOR),
@@ -463,9 +483,15 @@ def run_validator(repo_root: Path, profile_dir: Path, version_file: Path, releas
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--profile-dir", type=Path, help="default: <repo-root>/solution-profile")
-    parser.add_argument("--release", action="store_true", help="apply the contract's release rules")
-    parser.add_argument("--contract-only", action="store_true", help="run the validator only")
+    parser.add_argument(
+        "--profile-dir", type=Path, help="default: <repo-root>/solution-profile"
+    )
+    parser.add_argument(
+        "--release", action="store_true", help="apply the contract's release rules"
+    )
+    parser.add_argument(
+        "--contract-only", action="store_true", help="run the validator only"
+    )
     parser.add_argument(
         "--stamp-version",
         metavar="PEP440",
@@ -476,8 +502,12 @@ def main(argv: list[str] | None = None) -> int:
     profile_dir: Path = (args.profile_dir or repo_root / PROFILE_DIR).resolve()
 
     if args.stamp_version:
-        changed = stamp_manifest_version(profile_dir / "solution-profile.yaml", args.stamp_version)
-        print(f"solution-profile.yaml: version {contract_version(args.stamp_version)}{'' if changed else ' (unchanged)'}")
+        changed = stamp_manifest_version(
+            profile_dir / "solution-profile.yaml", args.stamp_version
+        )
+        print(
+            f"solution-profile.yaml: version {contract_version(args.stamp_version)}{'' if changed else ' (unchanged)'}"
+        )
         return 0
 
     pep440 = (repo_root / "VERSION").read_text(encoding="utf-8").strip()
@@ -516,7 +546,9 @@ def main(argv: list[str] | None = None) -> int:
     problems = cross_check(repo_root, profile_dir)
     for problem in problems:
         print(problem)
-    print("cross-checks: " + ("passed" if not problems else f"{len(problems)} problem(s)"))
+    print(
+        "cross-checks: " + ("passed" if not problems else f"{len(problems)} problem(s)")
+    )
     return 1 if status != 0 or problems else 0
 
 
