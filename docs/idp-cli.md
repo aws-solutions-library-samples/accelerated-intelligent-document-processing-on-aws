@@ -1097,7 +1097,7 @@ idp-cli run-inference [OPTIONS]
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
 - `--batch-id`: Custom batch ID (auto-generated if omitted, ignored with --test-set)
-- `--batch-prefix`: Prefix for auto-generated batch ID (default: `cli-batch`)
+- `--batch-prefix`: Prefix for auto-generated batch ID (default: `cli-batch`). A generated batch ID is `<prefix>-<YYYYMMDD-HHMMSS>-<8 hex characters>`: the UTC time it was created, then a random suffix, so two batches started with the same prefix in the same second get different IDs. Pass `--batch-id` to choose the ID yourself.
 - `--file-pattern`: File pattern for directory/S3 scanning (default: `*.pdf`)
 - `--recursive/--no-recursive`: Include subdirectories (default: recursive)
 - `--number-of-files`: Limit number of files to process
@@ -1257,7 +1257,7 @@ idp-cli reprocess \
 idp-cli reprocess \
     --stack-name my-stack \
     --step extraction \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --monitor
 
 # Automated rerun (skip confirmation - perfect for CI/CD)
@@ -1268,6 +1268,11 @@ idp-cli reprocess \
     --force \
     --monitor
 ```
+
+**Documents that could not be queued** are listed after the summary, one per line,
+with the reason. `Document not found` means the stack's tracking table has no record
+for that key. Any other failure — a stack with no tracking table, a DynamoDB error,
+a document the malware gate refuses — is printed as itself.
 
 **What Gets Cleared:**
 
@@ -1318,7 +1323,7 @@ idp-cli status [OPTIONS]
 
 The `--batch-id` option performs a PK substring search in the DynamoDB tracking table. This means:
 - It searches for all documents where the PK (Primary Key) contains your search string
-- You can search for exact batch IDs: `cli-batch-20251015-143000`
+- You can search for exact batch IDs: `cli-batch-20251015-143000-7f3a9c1e`
 - You can search for partial matches: `batch-123` finds all documents with "batch-123" in their path
 - You can search across multiple batches: `invoice` finds all documents with "invoice" in their name
 
@@ -1328,7 +1333,7 @@ The `--batch-id` option performs a PK substring search in the DynamoDB tracking 
 # Search for all documents in a batch (PK substring search)
 idp-cli status \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000
+    --batch-id cli-batch-20251015-143000-7f3a9c1e
 
 # Search for documents across batches with partial match
 idp-cli status \
@@ -1560,13 +1565,13 @@ idp-cli download-results [OPTIONS]
 # Download all results
 idp-cli download-results \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --output-dir ./results/
 
 # Download only extraction results
 idp-cli download-results \
     --stack-name my-stack \
-    --batch-id cli-batch-20251015-143000 \
+    --batch-id cli-batch-20251015-143000-7f3a9c1e \
     --output-dir ./results/ \
     --file-types sections
 
@@ -1589,7 +1594,7 @@ idp-cli download-results \
 
 ```
 ./results/
-└── cli-batch-20251015-143000/
+└── cli-batch-20251015-143000-7f3a9c1e/
     └── invoice.pdf/
         ├── pages/
         │   └── 1/
@@ -1740,18 +1745,18 @@ idp-cli delete-documents \
 # Delete all documents in a batch
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123
+    --batch-id cli-batch-20250123-091500-2b8e4d60
 
 # Delete only failed documents in a batch
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123 \
+    --batch-id cli-batch-20250123-091500-2b8e4d60 \
     --status-filter FAILED
 
 # Dry run to see what would be deleted
 idp-cli delete-documents \
     --stack-name my-stack \
-    --batch-id cli-batch-20250123 \
+    --batch-id cli-batch-20250123-091500-2b8e4d60 \
     --dry-run
 
 # Delete documents matching a wildcard pattern
@@ -1781,15 +1786,15 @@ idp-cli delete-documents \
 **Output Example:**
 ```
 Connecting to stack: my-stack
-Getting documents for batch: cli-batch-20250123
+Getting documents for batch: cli-batch-20250123-091500-2b8e4d60
 Found 15 document(s) in batch
   (filtered by status: FAILED)
 
 ⚠️  Documents to be deleted:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • cli-batch-20250123/doc1.pdf
-  • cli-batch-20250123/doc2.pdf
-  • cli-batch-20250123/doc3.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc1.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc2.pdf
+  • cli-batch-20250123-091500-2b8e4d60/doc3.pdf
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Delete 3 document(s) permanently? [y/N]: y
@@ -3229,8 +3234,8 @@ idp-cli test-compare \
 
 **Output:**
 - **Console**: Side-by-side table with accuracy, precision, recall, F1 score, and cost for each test run
-- **JSON file**: `comparison-<timestamp>.json` - Complete comparison data with full test results and config differences
-- **CSV file**: `comparison-<timestamp>.csv` - Metrics table suitable for spreadsheets
+- **JSON file**: `comparison-<timestamp>-<suffix>.json` - Complete comparison data with full test results and config differences
+- **CSV file**: `comparison-<timestamp>-<suffix>.csv` - Metrics table suitable for spreadsheets
 
 **Configuration Differences:**
 - Automatically detects and displays configuration differences between test runs

@@ -32,6 +32,7 @@ Policy Discovery is the **rules counterpart** of the classes-based [Discovery Mo
   - [Default Prompts](#default-prompts)
 - [Using the Module](#using-the-module)
   - [Web UI Interface](#web-ui-interface)
+  - [Policy Groups](#policy-groups)
   - [API Integration](#api-integration)
   - [Output Format](#output-format)
 - [Rule Validation Integration](#rule-validation-integration)
@@ -60,6 +61,7 @@ All rules for a policy document are grouped into a single **policy class** — a
 - **🔄 Traditional & Agentic Modes**: Single-shot LLM call or multi-turn Strands agent with reviewer feedback loop
 - **📚 Append-Only Persistence**: Re-uploading or uploading a second policy document appends a new policy class — earlier policies are never overwritten
 - **🔖 Unique Class Naming**: Class names are derived from the source filename with a hex suffix (e.g., `NCCI_Medicare_Policy_839f3946`) so multiple uploads remain distinguishable
+- **🗂 Policy Groups**: Uploads that name the same optional **policy group** — the chapters of one manual, say — add their rules to **one** policy class, so one regex matches the whole policy. See [Policy Groups](#policy-groups)
 - **🏷 Discriminated Jobs**: Policy discovery jobs are tagged with `jobType: 'rules'` so the UI can surface them distinctly from classes discovery jobs
 - **🔗 Deep-Link to Configuration**: Finishing a job renders a "View in Configuration" link that navigates to the Policy Schema tab and auto-selects the newly extracted class
 
@@ -295,9 +297,10 @@ The full default task prompt also defines the JSON output format the LLM must re
 1. Navigate to the **Discovery** page
 2. Select the **Policy Discovery** tab (the third tab, after Single Document and Multiple Documents)
 3. Select a **Configuration Profile** to save the extracted rules to
-4. Upload a policy PDF
-5. Click **"Start Discovery"**
-6. Monitor progress in the Discovery Jobs table below
+4. Optionally enter a **Policy group** (see [Policy Groups](#policy-groups))
+5. Upload a policy PDF
+6. Click **"Start Discovery"**
+7. Monitor progress in the Discovery Jobs table below
 
 **Monitoring Progress:**
 - Status messages refreshed by 10-second polling (e.g., `Analyzing policy document...`, `Extracted N rules - appended to policy_classes...`); GraphQL subscriptions are not used
@@ -309,15 +312,36 @@ The full default task prompt also defines the JSON output format the LLM must re
 - The newly extracted class is auto-selected and scrolled into view
 - Inspect the rules, optionally edit descriptions, and save
 
+### Policy Groups
+
+A policy too large for one extraction has to be uploaded in parts, usually by chapter. Without a group each part becomes its own policy class, and each class then needs the same document-matching regex. A **policy group** is a name you give to the upload that says "these uploads are one policy":
+
+- The **first** upload naming a group creates one policy class for it. The class name is derived from the group name rather than the filename, with characters other than letters and digits replaced by `_` (`NCCI Policy Manual` → `NCCI_Policy_Manual`), and the group is stored on the class as `x-aws-idp-policy-group`.
+- Every **later** upload naming the same group adds its rules to that class. Group names are compared ignoring case and spacing, so `ncci  policy manual` is the same group; the class keeps the first upload's spelling.
+- Everything else on the class is left as it was: its name, its description, and any Document Name Regex or Page Content Regex you have added. **One regex configured on the group's class covers every upload in the group.**
+- All rule categories the model returns for a grouped upload go into the group's one class.
+- An upload with no group behaves exactly as before: it creates its own class, named from the filename with a random suffix.
+
+**Re-uploading into a group appends; it never replaces.** A later upload adds rules and does not supersede, merge or delete any rule already in the group. If an uploaded rule has a name the class already holds, it is added beside the earlier one under a suffixed name (`limit_on_units` → `limit_on_units_2`), and the job's status message lists every such rename. Both copies are then evaluated on every document. So re-uploading the same chapter doubles its rules, and an amendment that restates a rule adds a second rule rather than replacing the first. Remove the copy you do not want in **Configuration → Policy Schema**. Letting a later upload — an amended manual or a rider — replace rules in its group is planned as a separate change.
+
+Group names are 1 to 64 characters, start with a letter or digit, and contain only letters, digits, spaces, underscores, hyphens and dots. A name outside that is refused when you submit the upload, and the API refuses a `policyGroup` on a classes discovery.
+
+**A group cannot be combined with Save mode "Replace existing schema".** Replace removes every policy class in the profile — the group's class and every other one — before discovery runs, so a grouped upload under Replace would lose the earlier uploads it was meant to join. The form disables Start Discovery for that combination and the API refuses it (`saveMode: "replace"` with a `policyGroup`). To rebuild a group from scratch, delete its class in **Configuration → Policy Schema** and upload its parts again with Add. The API also refuses a `policyGroup` together with `pageRanges`. If two policy classes in the profile carry the same group (for example, after one was copied by hand), the job fails without saving, because there is no single class to add to; remove the group from all but one of them.
+
+**Relation to the regex requirement and to duplicate rules.** A profile whose policy is one group holds one policy class, so the [multiple-class regex requirement](#required-add-a-document-matching-regex) does not apply to it, and a regex you add to the group's class keeps working as more chapters arrive. Uploading two different policies, grouped or not, still creates two classes, and the requirement then applies as usual. The job's [duplicate-rule warning](#limitations) still compares against rules in *other* classes; rules that collide *inside* the group are reported by the rename warning above instead.
+
+**Concurrent uploads.** Two Policy Discovery jobs saving into one configuration profile at the same time are serialised by a short lease, so the rules of two chapters uploaded together both land. A job that cannot take the lease within a minute fails rather than saving unguarded; run it again. A job that stopped while saving holds the lease until it expires, five minutes after that save began, so a retry within that window fails the same way. The lease covers Policy Discovery saves only. The profile's other writers do not take it — a Policy Schema edit saved from the UI, a classes discovery saving into the same profile, and the Replace clear at the start of a discovery — so one of those overlapping a Policy Discovery save can still overwrite one with the other.
+
 ### API Integration
 
 **API operation** (`POST /op/uploadDiscoveryDocument`; the shape below is the contract in `schema.graphql`):
 ```graphql
-mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String) {
+mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $version: String, $policyGroup: String) {
   uploadDiscoveryDocument(
     fileName: $fileName
     discoveryType: $discoveryType
     version: $version
+    policyGroup: $policyGroup
   ) {
     presignedUrl
     objectKey
@@ -325,7 +349,7 @@ mutation UploadDiscoveryDocument($fileName: String!, $discoveryType: String, $ve
 }
 ```
 
-Pass `discoveryType: "rules"` to route the upload to Policy Discovery instead of classes discovery.
+Pass `discoveryType: "rules"` to route the upload to Policy Discovery instead of classes discovery. Pass `policyGroup` to add the upload's rules to that [policy group](#policy-groups); omit it, or send an empty string, for an ungrouped upload.
 
 **Reading job status:** poll `listDiscoveryJobs` and filter client-side for the
 job id. GraphQL subscriptions are not used — `onDiscoveryJobStatusChange` is
@@ -348,6 +372,13 @@ discovery = RulesDiscovery(
 result = discovery.discovery_rules_from_document(
     input_bucket="my-discovery-bucket",
     input_prefix="policies/ncci-medicare-manual.pdf",
+)
+
+# Or add them to a policy group, creating its one class on the first upload
+result = discovery.discovery_rules_from_document(
+    input_bucket="my-discovery-bucket",
+    input_prefix="policies/ncci-medicare-manual-ch2.pdf",
+    policy_group="NCCI Medicare Manual",
 )
 
 # Or extract from a local file without persisting
@@ -383,7 +414,7 @@ A rule class appended to `policy_classes` has the following JSON-Schema shape:
 ```
 
 **Field explanations:**
-- `$id` / `x-aws-idp-policy-type`: the unique policy class name, derived from the source filename (first 20 sanitized chars) plus an 8-hex suffix so repeated uploads of the same document each land as a distinct class
+- `$id` / `x-aws-idp-policy-type`: the unique policy class name, derived from the source filename (first 20 sanitized chars) plus an 8-hex suffix so repeated uploads of the same document each land as a distinct class. A grouped upload's class is named from the group instead, and also carries `x-aws-idp-policy-group` (see [Policy Groups](#policy-groups))
 - `rule_properties`: a dict keyed by snake_case rule name. Each value carries a `description` (the validation question) and a `page` reference into the source policy
 - `description` at the class level: a free-text summary of the policy document's overall purpose
 
@@ -441,6 +472,7 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 **Naming & Regex:**
 - Immediately after each extraction, set the `Document Name Regex` on the new class. Undocumented regex ⇒ rules never fire.
 - When you upload the same policy document twice (e.g., iterating on prompts), remember each upload creates a new class with a fresh 8-hex suffix. Delete or disable the stale ones.
+- When a policy has to be uploaded in parts, give every part the same **Policy group**, and set the regex once on the group's class. Re-uploading a part into its group adds its rules a second time, so remove the old copies rather than expecting them to be replaced.
 
 
 ## Troubleshooting
@@ -467,16 +499,15 @@ If **multiple policy classes** are configured, `PolicyClassificationService` req
 
 ## Limitations
 
-- **Single-document rule extraction only.** Policy Discovery does not currently support multi-document clustering (unlike [Multi-Document Collection Discovery](discovery.md#multi-document-collection-discovery)). Each policy manual is processed independently.
-
-  Note that the workaround for the token limit below — splitting a manual by chapter into several uploads — interacts with this: **each upload becomes its own policy class**, so one logical policy ends up fragmented across several classes that must each be given the same matching regex. There is no `policy_group` concept to accumulate several uploads into one class, and no way for a later upload (an amendment or rider) to supersede a rule in an earlier one; the two rules simply coexist.
+- **Single-document rule extraction only.** Policy Discovery does not currently support multi-document clustering (unlike [Multi-Document Collection Discovery](discovery.md#multi-document-collection-discovery)). Each upload is extracted independently; giving several uploads one [policy group](#policy-groups) is what puts their rules into one policy class.
+- **A later upload cannot supersede an earlier one.** Uploading into a policy group only appends, so an amendment or rider that restates a rule produces a second rule beside the first, and both are evaluated. Superseding is planned as a separate change; until then, remove the outdated rule in **Configuration → Policy Schema**.
 - **No automatic regex generation.** The LLM extracts rules but does not propose a `Document Name Regex` for the policy class. Regex authoring is a manual step today.
 
-  Because rule validation requires a regex once a configuration holds **more than one** policy class, a *second* Policy Discovery run switches rule validation off for **every** policy class until you add one — the first policy's rules were evaluating, and now nothing is. The discovery job reports this in its status message when its save creates that state, but the remedy is manual: add a `Document Name Regex` (or `Page Content Regex`) to each policy class in **Configuration → Policy Schema**.
+  Because rule validation requires a regex once a configuration holds **more than one** policy class, a *second* ungrouped Policy Discovery run (or one into a different [policy group](#policy-groups)) switches rule validation off for **every** policy class until you add one — the first policy's rules were evaluating, and now nothing is. The discovery job reports this in its status message when its save creates that state, but the remedy is manual: add a `Document Name Regex` (or `Page Content Regex`) to each policy class in **Configuration → Policy Schema**.
 - **No cross-policy deduplication.** If two policy documents contain the same underlying rule, it will appear in both policy classes. Duplicate detection across policies is not provided.
 
   This is more than untidy output: Rule Validation answers **each copy** with its own LLM call for **every** document processed, so a rule duplicated across three payer manuals is a standing 3× cost multiplier on that rule, not a one-time extraction cost. The copies are also worded differently (each is extracted verbatim from its own source), so they can return **contradictory** Pass/Fail answers with nothing indicating they were ever the same rule. The discovery job now reports rule names that collide with other policy classes in its status message; removing the duplicates in **Configuration → Policy Schema** is still manual.
-- **Token limits on very large manuals.** Manuals with thousands of rules may exceed a single Bedrock call's output token limit even at the default `max_tokens`, which requests the model's maximum output. Split the document by chapter/section into multiple uploads for very large sources.
+- **Token limits on very large manuals.** Manuals with thousands of rules may exceed a single Bedrock call's output token limit even at the default `max_tokens`, which requests the model's maximum output. Split the document by chapter/section into multiple uploads for very large sources, giving every upload the same [policy group](#policy-groups) so the chapters stay one policy class.
 
   A truncated response does **not** silently persist a partial ruleset — a compliance validation set quietly missing rules would report documents as compliant against a fraction of the policy, so the job fails instead. The mechanism differs by extraction method, and both end in a failed job naming the remedy:
 

@@ -591,6 +591,7 @@
         "idp_sdk/_core/cleanup_orphaned.py": 98.35,
         "idp_sdk/_core/document_processor.py": 100.0,
         "idp_sdk/_core/evaluation_processor.py": 100.0,
+        "idp_sdk/_core/ids.py": 100.0,
         "idp_sdk/_core/load_test.py": 100.0,
         "idp_sdk/_core/manifest_parser.py": 98.88,
         "idp_sdk/_core/naming.py": 100.0,

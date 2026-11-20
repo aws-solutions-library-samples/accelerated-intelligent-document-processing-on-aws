@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from idp_common import bedrock, s3, utils
 from idp_common.models import Document, RuleValidationResult
-from idp_common.rule_validation.concurrency import resolve_semaphore
+from idp_common.rule_validation.concurrency import resolve_semaphore, run_sync
 from idp_common.rule_validation.models import LLMResponse
 from idp_common.utils.transient_errors import reraise_if_transient
 
@@ -1831,47 +1831,8 @@ tr:hover {
 
         ``section_uris`` is forwarded unchanged; see :meth:`load_section_results`.
         """
-        import asyncio
-        import concurrent.futures
-
-        try:
-            # Try to get the current event loop
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're in an environment with a running event loop (like Jupyter)
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(
-                        asyncio.run,
-                        self.consolidate_and_save_all(
-                            document,
-                            config,
-                            multiple_sections,
-                            section_uris,
-                        ),
-                    )
-                    return future.result()
-            else:
-                # Event loop exists but not running, we can use it
-                return loop.run_until_complete(
-                    self.consolidate_and_save_all(
-                        document,
-                        config,
-                        multiple_sections,
-                        section_uris,
-                    )
-                )
-        except RuntimeError:
-            # No event loop exists, create a new one
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(
-                    self.consolidate_and_save_all(
-                        document,
-                        config,
-                        multiple_sections,
-                        section_uris,
-                    )
-                )
-            finally:
-                loop.close()
+        return run_sync(
+            lambda: self.consolidate_and_save_all(
+                document, config, multiple_sections, section_uris
+            )
+        )

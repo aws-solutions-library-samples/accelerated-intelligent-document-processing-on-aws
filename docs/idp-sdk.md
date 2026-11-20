@@ -275,6 +275,8 @@ Process a single document (upload and queue for processing).
 
 **Returns:** `DocumentUploadResult` with `document_id`, `status`, and `timestamp`
 
+The file is uploaded under its own generated prefix, so `document_id` is `single-doc-<YYYYMMDD-HHMMSS>-<8 hex characters>/<filename>`.
+
 ```python
 result = client.document.process(
     file_path="/path/to/invoice.pdf",
@@ -464,7 +466,7 @@ Process multiple documents through the IDP pipeline.
 - `s3_uri` (str, optional): S3 URI (s3://bucket/prefix/)
 - `test_set` (str, optional): Test set identifier
 - `batch_id` (str, optional): Custom batch ID
-- `batch_prefix` (str, optional): Batch ID prefix (default: "sdk-batch")
+- `batch_prefix` (str, optional): Batch ID prefix (default: "sdk-batch"). When `batch_id` is omitted the ID is generated as `<prefix>-<YYYYMMDD-HHMMSS>-<8 hex characters>` (UTC time, then a random suffix), so two batches with the same prefix started in the same second do not share an ID or an S3 prefix. `idp_sdk.generate_timestamped_id(prefix)` produces the same shape.
 - `file_pattern` (str, optional): File pattern for filtering (default: "*.pdf")
 - `recursive` (bool, optional): Recursively process subdirectories (default: True)
 - `number_of_files` (int, optional): Limit number of files to process
@@ -758,6 +760,10 @@ Reprocess existing documents from a specific pipeline step.
 **Note:** Must specify either `document_ids` or `batch_id`
 
 **Returns:** `BatchReprocessResult` with `documents_queued`, `documents_failed`, `failed_documents`, and `step`
+
+Each entry of `failed_documents` has an `object_key` and an `error`. `error` is
+`"Document not found"` only when the tracking table has no record for the key; any
+other failure reading or queueing the document carries that failure's own message.
 
 ```python
 from idp_sdk import RerunStep

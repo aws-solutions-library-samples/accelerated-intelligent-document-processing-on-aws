@@ -355,6 +355,7 @@ def handle_upload_discovery_document(event, context):
         # saveMode: 'replace' clears the version's discovered schema up front so
         # discovery rebuilds it; 'augment' (default) keeps existing classes.
         save_mode = arguments.get('saveMode') or 'augment'
+        policy_group = _policy_group_argument(arguments, discovery_type, save_mode, page_ranges)
 
         if not file_name:
             raise ValueError("fileName is required")
@@ -419,7 +420,7 @@ def handle_upload_discovery_document(event, context):
                     create_discovery_job(job_id, object_key, gt_object_key, version, page_range=page_range, class_name_hint=page_label)
             else:
                 job_id = str(uuid.uuid4())
-                create_discovery_job(job_id, object_key, gt_object_key, version, discovery_type=discovery_type)
+                create_discovery_job(job_id, object_key, gt_object_key, version, discovery_type=discovery_type, policy_group=policy_group)
         else:
             logger.info("skipJobCreation=True — returning presigned URL only, no jobs created")
 
@@ -429,6 +430,39 @@ def handle_upload_discovery_document(event, context):
     except Exception as e:
         logger.error(f"Error generating presigned URL: {str(e)}")
         raise
+
+
+def _policy_group_argument(arguments, discovery_type, save_mode='augment', page_ranges=None):
+    """The request's ``policyGroup``, validated, or None when it names none.
+
+    A group means something only to Policy Discovery (uploads naming one append
+    their rules to one policy class), so one sent with a classes discovery is
+    refused rather than ignored. It is refused with ``saveMode: replace`` too:
+    Replace clears every policy class in the profile before the job runs, so it
+    would empty the group the upload is meant to add to — the opposite of what a
+    group promises. And it is refused with ``pageRanges``, which this resolver
+    turns into classes-discovery jobs that would drop the group. The name rule is
+    ``normalize_policy_group``'s, shared with the discovery job that saves the
+    rules. Raises ValueError (HTTP 400).
+    """
+    raw = arguments.get('policyGroup')
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    # Imported only for a request that names a group: the module pulls in the
+    # whole discovery package, which no other upload needs.
+    from idp_common.discovery.rules_discovery import normalize_policy_group
+
+    policy_group = normalize_policy_group(raw)
+    if policy_group and discovery_type != 'rules':
+        raise ValueError("policyGroup applies only to Policy Discovery (discoveryType 'rules')")
+    if policy_group and save_mode == 'replace':
+        raise ValueError(
+            "policyGroup cannot be combined with saveMode 'replace': Replace removes every "
+            "policy class in the profile, including the group's, before discovery runs"
+        )
+    if policy_group and page_ranges:
+        raise ValueError("policyGroup cannot be combined with pageRanges")
+    return policy_group
 
 
 def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, prefix):
@@ -469,7 +503,7 @@ def create_s3_signed_post_url(bucket_name, content_type, file_name, file_type, p
     return object_key, presigned_post
 
 
-def create_discovery_job(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None):
+def create_discovery_job(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None):
     """
     Create a new discovery job entry in DynamoDB.
     
@@ -480,6 +514,7 @@ def create_discovery_job(job_id, document_key, ground_truth_key, version, discov
         version (str): Configuration version to use
         discovery_type (str): Type of discovery - "classes" or "rules"
         page_range (str, optional): Page range string (e.g., "1-3") for multi-section discovery
+        policy_group (str, optional): Validated policy group for a rules job
     """
     try:
         table_name = os.environ.get('DISCOVERY_TRACKING_TABLE')
@@ -522,17 +557,20 @@ def create_discovery_job(job_id, document_key, ground_truth_key, version, discov
             item['discoveryType'] = discovery_type
             if discovery_type == 'rules':
                 item['jobType'] = 'rules'
+
+        if policy_group:
+            item['policyGroup'] = policy_group
         
         table.put_item(Item=item)
         logger.info(f"Created discovery job: {job_id}" + (f" (pages {page_range})" if page_range else ""))
         
-        send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type=discovery_type, page_range=page_range, class_name_hint=class_name_hint)
+        send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type=discovery_type, page_range=page_range, class_name_hint=class_name_hint, policy_group=policy_group)
         
     except Exception as e:
         logger.error(f"Error creating discovery job: {str(e)}")
         # Don't fail the upload if job tracking fails
 
-def send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None):
+def send_discovery_message(job_id, document_key, ground_truth_key, version, discovery_type='classes', page_range=None, class_name_hint=None, policy_group=None):
     """
     Send a message to the discovery processing queue.
     
@@ -565,6 +603,9 @@ def send_discovery_message(job_id, document_key, ground_truth_key, version, disc
 
         if class_name_hint:
             message['classNameHint'] = class_name_hint
+
+        if policy_group:
+            message['policyGroup'] = policy_group
         
         sqs_client.send_message(
             QueueUrl=queue_url,
