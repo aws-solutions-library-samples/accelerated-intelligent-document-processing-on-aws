@@ -140,6 +140,7 @@ def _service(
     few_shot_examples: bool = False,
     segmentation: Optional[Dict[str, Any]] = None,
     labeling: Optional[Dict[str, Any]] = None,
+    max_workers: int = 20,
     **classification: Any,
 ) -> ClassificationService:
     cfg: Dict[str, Any] = {
@@ -172,6 +173,7 @@ def _service(
     cfg.update(classification)
     return ClassificationService(
         region="us-west-2",
+        max_workers=max_workers,
         config={
             "classes": _classes(
                 *(classes or ["invoice", "receipt"]), examples=few_shot_examples
@@ -213,6 +215,11 @@ class _Router:
     The stage is on the config dict rather than inferred from the prompt,
     because that is exactly what the production code routes on — the metering
     context, the model and the prompts all come from it.
+
+    Section labels go out in the order the sections ask, so a test that asserts
+    which section got which label builds its service with ``max_workers=1``:
+    with several workers the sections are labelled concurrently, and which one
+    asks first is a matter of thread timing.
     """
 
     def __init__(
@@ -721,7 +728,7 @@ class TestSplitThenClassifyPacket:
     def test_one_splitting_call_then_one_section_classification_call_per_segment(
         self,
     ):
-        service = _service(granularity="packet")
+        service = _service(max_workers=1, granularity="packet")
         router = _Router(
             packet_segments=[
                 {"ordinal_start_page": 1, "ordinal_end_page": 2},
@@ -1423,7 +1430,7 @@ class TestASplittingAnswerThatLeavesAPageOut:
     classification then labels the segment it joined."""
 
     def test_the_trailing_page_is_kept_labelled_and_reported(self):
-        service = _service(granularity="packet")
+        service = _service(max_workers=1, granularity="packet")
         document = _document(3)
         router = _Router(
             packet_segments=[
