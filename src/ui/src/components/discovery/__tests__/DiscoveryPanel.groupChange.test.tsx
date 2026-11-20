@@ -63,7 +63,10 @@ beforeEach(() => {
     if (query === 'listDiscoveryJobs') return { data: { listDiscoveryJobs: { DiscoveryJobs: [] } } };
     return { data: {} };
   });
-  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 204, text: async () => '' })));
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async () => ({ ok: true, status: 204, text: async () => '' })),
+  );
 });
 
 afterEach(() => {

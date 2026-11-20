@@ -506,7 +506,10 @@ def _assert_policy_group_change_possible(version, policy_group, mode, superseded
     if mode == 'append' or not policy_group:
         return
     from idp_common.config.configuration_manager import ConfigurationManager
-    from idp_common.discovery.rules_discovery import PolicyGroupChangeRefused, check_policy_group_change
+    from idp_common.discovery.rules_discovery import (
+        PolicyGroupChangeRefused,
+        check_policy_group_change,
+    )
 
     existing = ConfigurationManager().get_raw_configuration("Config", version=version) or {}
     policy_classes = existing.get('policy_classes') or []
