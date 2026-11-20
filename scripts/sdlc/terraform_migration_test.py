@@ -668,7 +668,8 @@ def feature_destroy_problems(plan: Dict[str, Any]) -> List[str]:
     anyway, one of the dataset or gateway stacks, or the MCP integration's own
     resource server. An empty plan is a problem too: the procedure would then have
     destroyed nothing."""
-    from idp_sdk._core.terraform_migrate import RECREATE_SAFE_TYPES
+    # The command's own list, so this check cannot drift from what `plan` recreates.
+    from idp_sdk._core.terraform_migrate import RECREATE_SAFE_TYPES  # noqa: TID251
 
     mcp_module = FEATURE_DESTROY_TARGETS[0] + "."
     problems: List[str] = []
@@ -684,7 +685,9 @@ def feature_destroy_problems(plan: Dict[str, Any]) -> List[str]:
         deleted += 1
         if tf_type in RECREATE_SAFE_TYPES:
             continue
-        if tf_type == "aws_cloudformation_stack" and address in FEATURE_DESTROY_TARGETS:
+        if tf_type == "aws_cloudformation_stack" and (
+            address in FEATURE_DESTROY_TARGETS or address.startswith(mcp_module)
+        ):
             continue
         if tf_type == "aws_cognito_resource_server" and address.startswith(mcp_module):
             continue
@@ -2210,9 +2213,7 @@ class Run:
             for i in insts
             if i["type"] == "aws_cloudformation_stack"
         }
-        gateway_stack = (
-            f"{FEATURE_DESTROY_TARGETS[0]}.aws_cloudformation_stack.agentcore_gateway[0]"
-        )
+        gateway_stack = f"{FEATURE_DESTROY_TARGETS[0]}.aws_cloudformation_stack.agentcore_gateway[0]"
         wanted = {gateway_stack, *FEATURE_DESTROY_TARGETS[1:]}
         if set(stacks) != wanted:
             raise PhaseFailed(
@@ -2238,7 +2239,9 @@ class Run:
             raise PhaseFailed(f"{gateway_stack} records no GatewayId output")
         pool_id = self.ctx["old"]["user_pool_id"]
         cognito = self.boto("cognito-idp")
-        cognito.describe_resource_server(UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER)
+        cognito.describe_resource_server(
+            UserPoolId=pool_id, Identifier=MCP_RESOURCE_SERVER
+        )
 
         before = self.dataset_snapshot(bucket, table)
         empty = self.dataset_problems(before)
@@ -2366,7 +2369,9 @@ class Run:
             b, a = before[test_set], after[test_set]
             missing = [k for k in b["objects"] if k not in a["objects"]]
             rewritten = [
-                k for k in b["objects"] if k in a["objects"] and a["objects"][k] != b["objects"][k]
+                k
+                for k in b["objects"]
+                if k in a["objects"] and a["objects"][k] != b["objects"][k]
             ]
             if missing or rewritten:
                 findings.append(

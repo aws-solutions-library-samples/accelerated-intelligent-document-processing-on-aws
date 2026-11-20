@@ -2425,3 +2425,245 @@ def test_a_sweep_that_cannot_read_the_setting_reports_it_and_sweeps(
     (finding,) = run.ctx["findings"]
     assert "cannot read the API Gateway account settings" in finding
     assert swept == [tmt.iam_role_name(SWEPT_ROLE)]
+
+
+# -- the mcp-datasets variant ----------------------------------------------------
+
+_EXAMPLE_MAIN = """
+resource "aws_s3_bucket" "input_bucket" {
+  bucket = "x-{y}"
+}
+
+module "genai_idp_accelerator" {
+  source = "../.."
+
+  # A comment with a brace: {
+  api = {
+    enabled = true
+    label   = "not a } brace"
+    knowledge_base = {
+      enabled = var.create_knowledge_base
+    }
+    enable_test_studio = var.enable_test_studio
+  }
+
+  rbac = var.rbac
+}
+"""
+
+
+def test_the_variant_turns_mcp_on_and_the_base_run_keeps_it_off():
+    base = tmt.upstream_tfvars("gitf2", "run1", "us-west-2")
+    variant = tmt.upstream_tfvars(
+        "gitf2", "run1", "us-west-2", tmt.MCP_DATASETS_VARIANT
+    )
+    assert "enable_mcp                  = false" in base
+    assert "enable_mcp                  = true" in variant
+    assert base.replace("= false\n", "") != variant.replace("= true\n", "")
+
+
+def test_the_datasets_override_restates_the_api_argument_with_both_flags():
+    text = tmt.datasets_override(_EXAMPLE_MAIN)
+    assert text.count('module "genai_idp_accelerator" {') == 1
+    # The example's own api expression is kept whole, with the two flags inside it.
+    api = text.split("api = ", 1)[1]
+    assert 'label   = "not a } brace"' in api
+    assert "enable_test_studio = var.enable_test_studio" in api
+    assert "enable_w2_dataset  = true" in api and "enable_fcc_dataset = true" in api
+    # Nothing outside the api argument is restated (an override replaces whole
+    # arguments, so restating rbac or source would be harmless but is not wanted).
+    assert "rbac" not in text and "source" not in text
+    # The braces balance: the override is one module block holding one object.
+    body = text[text.index("module") :]
+    assert tmt._block_end(body, body.index("{")) == len(body.rstrip())
+
+
+@pytest.mark.parametrize(
+    "main_tf, reason",
+    [
+        ('module "other" {\n  api = {}\n}\n', "no module"),
+        ('module "genai_idp_accelerator" {\n  api = local.api\n}\n', "literal"),
+        (
+            'module "genai_idp_accelerator" {\n  api = {\n    enable_w2_dataset = true\n  }\n}\n',
+            "already sets",
+        ),
+        ('module "genai_idp_accelerator" {\n  api = {\n', "unclosed"),
+    ],
+)
+def test_the_datasets_override_refuses_a_layout_it_cannot_read(main_tf, reason):
+    with pytest.raises(ValueError, match=reason):
+        tmt.datasets_override(main_tf)
+
+
+def _rc(address, tf_type, actions=("delete",)):
+    return {
+        "address": address,
+        "type": tf_type,
+        "mode": "managed",
+        "change": {"actions": list(actions)},
+    }
+
+
+_MCP = tmt.FEATURE_DESTROY_TARGETS[0]
+
+
+def test_the_guides_targeted_destroy_is_accepted():
+    plan = {
+        "resource_changes": [
+            _rc(f"{_MCP}.aws_cloudformation_stack.agentcore_gateway[0]", "x")
+            | {"type": "aws_cloudformation_stack"},
+            _rc(
+                f"{_MCP}.aws_cognito_resource_server.mcp[0]",
+                "aws_cognito_resource_server",
+            ),
+            _rc(
+                f"{_MCP}.aws_lambda_function.agentcore_mcp_handler[0]",
+                "aws_lambda_function",
+            ),
+            _rc(
+                f"{_MCP}.aws_cognito_user_pool_client.mcp_client[0]",
+                "aws_cognito_user_pool_client",
+            ),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack"),
+            _rc(tmt.FEATURE_DESTROY_TARGETS[2], "aws_cloudformation_stack"),
+            _rc(
+                "module.x.aws_lambda_function.unrelated_dependent",
+                "aws_lambda_function",
+            ),
+            _rc("data.aws_region.current", "aws_region", ("read",)) | {"mode": "data"},
+            _rc("module.x.aws_s3_bucket.kept", "aws_s3_bucket", ("no-op",)),
+        ]
+    }
+    assert tmt.feature_destroy_problems(plan) == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        # Data the migration keeps.
+        _rc("module.x.aws_s3_bucket.test_sets", "aws_s3_bucket"),
+        _rc("module.x.aws_dynamodb_table.tracking", "aws_dynamodb_table"),
+        _rc("aws_cognito_user_pool.user_pool", "aws_cognito_user_pool"),
+        _rc("module.x.aws_cognito_user.admin", "aws_cognito_user"),
+        # A setting of a kept bucket or table.
+        _rc("module.x.aws_s3_bucket_policy.p", "aws_s3_bucket_policy"),
+        _rc("module.x.aws_dynamodb_table_item.i", "aws_dynamodb_table_item"),
+        # A stack the guide does not name, and a resource server outside MCP.
+        _rc("module.x.aws_cloudformation_stack.other[0]", "aws_cloudformation_stack"),
+        _rc("module.x.aws_cognito_resource_server.r", "aws_cognito_resource_server"),
+        # Anything but a delete.
+        _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack", ("create",)),
+        _rc(
+            f"{_MCP}.aws_lambda_function.f", "aws_lambda_function", ("delete", "create")
+        ),
+    ],
+)
+def test_a_targeted_destroy_beyond_the_guide_is_refused(change):
+    ok = _rc(tmt.FEATURE_DESTROY_TARGETS[1], "aws_cloudformation_stack")
+    problems = tmt.feature_destroy_problems({"resource_changes": [ok, change]})
+    assert len(problems) == 1 and problems[0].startswith(change["address"])
+
+
+def test_a_targeted_destroy_that_deletes_nothing_is_refused():
+    assert tmt.feature_destroy_problems({"resource_changes": []}) == [
+        "the targeted destroy deletes nothing"
+    ]
+
+
+def test_the_dataset_keys_are_the_ones_both_deployers_write():
+    """Read from this repository's deployers, which the new deployment runs: the
+    verify phase's no-re-download check is about these keys."""
+    for test_set, prefix in tmt.DATASETS:
+        name = {"fake-w2": "w2", "realkie-fcc-verified": "fcc"}[test_set]
+        source = (
+            tmt.REPO_ROOT / "src" / "lambda" / f"{name}_dataset_deployer" / "index.py"
+        ).read_text()
+        assert re.search(
+            rf"^TEST_SET_ID = ['\"]{re.escape(test_set)}['\"]", source, re.M
+        )
+        assert re.search(
+            rf"^DATASET_PREFIX = ['\"]{re.escape(prefix)}['\"]", source, re.M
+        )
+
+
+def test_the_resource_server_identifier_is_the_modules():
+    template = (tmt.REPO_ROOT / "template.yaml").read_text()
+    block = template.split("  MCPResourceServer:\n", 1)[1].split("\n\n", 1)[0]
+    assert f"Identifier: {tmt.MCP_RESOURCE_SERVER}" in block
+
+
+def test_the_procedure_runs_before_plan_and_the_base_run_skips_it(tmp_path):
+    assert tmt.PHASES.index("pre-plan-features") < tmt.PHASES.index("migrate-plan")
+    assert tmt.PHASES.index("pre-plan-features") < tmt.PHASES.index("migrate-freeze")
+    run = tmt.Run(_settings(tmp_path))
+    assert run.phase_pre_plan_features() == "nothing to do for the base variant"
+    findings = []
+    assert run.verify_features(findings) == "" and findings == []
+
+
+def test_a_resumed_run_of_another_variant_is_refused():
+    recorded = {"oldName": "gitf2", "newName": "gitfnew2", "variant": "mcp-datasets"}
+    assert tmt.stored_name_problems(recorded, "gitf2", "gitfnew2", None, "base")
+    assert not tmt.stored_name_problems(
+        recorded, "gitf2", "gitfnew2", None, "mcp-datasets"
+    )
+    # A run recorded before variants existed was the base one.
+    old = {"oldName": "gitf2", "newName": "gitfnew2"}
+    assert not tmt.stored_name_problems(old, "gitf2", "gitfnew2", None, "base")
+    assert tmt.stored_name_problems(old, "gitf2", "gitfnew2", None, "mcp-datasets")
+    # A fresh work directory has recorded nothing.
+    assert not tmt.stored_name_problems({"runId": "x"}, "a", "b", None, "mcp-datasets")
+
+
+def test_the_variant_is_a_flag_and_the_makefile_passes_it():
+    argv = ["--old-name", "gitf2", "--new-name", "gitfnew2"]
+    argv += ["--terraform-module-url", "https://example.com/m.zip"]
+    argv += ["--terraform-bin", "/bin/true"]
+    assert tmt.parse_args(argv).variant == "base"
+    assert (
+        tmt.parse_args(argv + ["--variant", "mcp-datasets"]).variant == "mcp-datasets"
+    )
+    makefile = (tmt.REPO_ROOT / "Makefile").read_text()
+    assert (
+        "$(if $(VARIANT),--variant $(VARIANT),)"
+        in makefile.split("_TFMIG_ARGS =", 1)[1].split("\n\n", 1)[0]
+    )
+
+
+class _Gateways(_FakeClients):
+    def __init__(self):
+        super().__init__()
+        self.gateways = [
+            {"gatewayId": "g1", "name": "gitf2-abc-api-analytics-gateway"},
+            {"gatewayId": "g2", "name": "gitfnew2-analytics-gateway"},
+            {"gatewayId": "g3", "name": "someone-analytics-gateway"},
+        ]
+
+    def get_paginator(self, name):
+        if name == "list_gateways":
+            return _Pages("items", self.gateways)
+        if name == "list_gateway_targets":
+            return _Pages("items", [{"targetId": "t"}])
+        return super().get_paginator(name)
+
+    def list_buckets(self):
+        return {"Buckets": []}
+
+    def delete_gateway_target(self, gatewayIdentifier, targetId):
+        self.deleted.append(f"{gatewayIdentifier}/{targetId}")
+
+    def delete_gateway(self, gatewayIdentifier):
+        self.deleted.append(gatewayIdentifier)
+
+
+def test_the_variants_sweep_deletes_only_the_runs_gateways(tmp_path, monkeypatch):
+    run = tmt.Run(_settings(tmp_path, variant=tmt.MCP_DATASETS_VARIANT))
+    fake = _Gateways()
+    monkeypatch.setattr(run, "boto", fake)
+    deleted, errors = tmt.Sweeper(run, {}).sweep()
+    assert errors == []
+    assert fake.deleted == ["g1/t", "g1", "g2/t", "g2"]
+    # The base variant never lists gateways.
+    base = tmt.Run(_settings(tmp_path / "b"))
+    monkeypatch.setattr(base, "boto", fake)
+    assert tmt.Sweeper(base, {})._gateways() == []
