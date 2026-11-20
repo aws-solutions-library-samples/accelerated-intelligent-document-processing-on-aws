@@ -647,13 +647,17 @@ def test_the_drop_warning_log_names_keys_never_values(caplog):
         Bucket=BUCKET,
         Key="in/doc.pdf",
         Body=b"%PDF",
-        Metadata={"idp-attr-big": "SECRET-VALUE-" + "x" * da.MAX_STRING_BYTES},
+        Metadata={
+            "idp-attr-big": "SECRET-VALUE-" + "x" * da.MAX_STRING_BYTES,
+            "idp-attr-kept": "SECRET-ACCEPTED",
+        },
     )
-    with caplog.at_level(logging.WARNING, logger="idp_common"):
+    with caplog.at_level(logging.DEBUG, logger="idp_common"):
         Document.from_s3_event(_event("in/doc.pdf"), "out")
     ours = [r.getMessage() for r in caplog.records if r.name.startswith("idp_common")]
     assert any("big" in m for m in ours)
     assert not any("SECRET-VALUE" in m for m in ours)
+    assert not any("SECRET-ACCEPTED" in m for m in ours)
 
 
 class _RecordingS3:
