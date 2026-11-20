@@ -164,8 +164,11 @@ LIVE_STACK_SECTION_PREFIXES = ("Stack tests",)
 #: release's Terraform module, upgrades it in place to another and destroys it, so it
 #: needs a live deployment of its own and cannot run in a scanned section. 28 since
 #: ``stacktest-load`` joined: it submits documents to an existing deployed stack and
-#: reads their executions back, so it cannot run without one.
-LIVE_STACK_SECTION_TARGET_COUNT = 28
+#: reads their executions back, so it cannot run without one. 29 since
+#: ``stacktest-decision-window`` joined: it invokes a deployed decision-model
+#: function, installed on a host stack as an extension, so it cannot run without
+#: one either (its ``DRY_RUN=1`` mode only builds the requests).
+LIVE_STACK_SECTION_TARGET_COUNT = 29
 
 #: Name shapes that make a target a check wherever it lives. This is what stops
 #: :data:`GATE_SECTION_PREFIXES` from being a section-scoped hole: a ``check-*`` or

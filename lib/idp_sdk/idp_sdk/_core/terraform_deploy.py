@@ -570,7 +570,11 @@ def variable_specs(manifest: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _hcl_value(value: Any) -> str:
     """A tfvars value. JSON is valid HCL for strings, numbers and lists once
-    template sequences (``${``, ``%{``) are escaped."""
+    template sequences (``${``, ``%{``) are escaped. A non-empty object is spaced
+    as ``terraform fmt`` spaces one (``{ "k" : "v" }``), which is still JSON."""
+    if isinstance(value, dict) and value:
+        items = (f"{_hcl_value(str(k))} : {_hcl_value(v)}" for k, v in value.items())
+        return "{ " + ", ".join(items) + " }"
     text = json.dumps(value)
     return text.replace("${", "$${").replace("%{", "%%{")
 
@@ -579,10 +583,20 @@ def _parse_hcl_value(text: str) -> Any:
     return json.loads(text.replace("$${", "${").replace("%%{", "%{"))
 
 
+def _aligned(pairs: List[Tuple[str, str]], indent: str = "") -> List[str]:
+    """``name = value`` lines with the ``=`` padded to one column.
+
+    ``terraform fmt`` aligns the ``=`` of consecutive single-line attributes, so
+    a file written this way passes ``fmt -check`` in a repository that gates on
+    it. Every caller passes values that fit on one line.
+    """
+    width = max((len(name) for name, _ in pairs), default=0)
+    return [f"{indent}{name.ljust(width)} = {value}" for name, value in pairs]
+
+
 def render_tfvars(values: Dict[str, Any]) -> str:
     lines = [ROOT_MARKER, "# Values for the variables declared in main.tf."]
-    for name in sorted(values):
-        lines.append(f"{name} = {_hcl_value(values[name])}")
+    lines += _aligned([(name, _hcl_value(values[name])) for name in sorted(values)])
     return "\n".join(lines) + "\n"
 
 
@@ -639,6 +653,8 @@ def render_provider_blocks(
     object attribute (``assume_role = { role_arn = ... }``).
     """
     lines: List[str] = []
+    # Already as `terraform fmt` lays it out: it does not align `region`'s `=`
+    # with that of `assume_role = {`, whose value spans lines.
     for name, opener in (("aws", "  assume_role {"), ("awscc", "  assume_role = {")):
         lines.append(f'provider "{name}" {{')
         lines.append(f"  region = {json.dumps(region)}")
@@ -750,16 +766,18 @@ def render_main_tf(
         names = sorted([*names, TAGS_VARIABLE])
     for name in names:
         spec = specs.get(name, {"type": "string", "sensitive": False})
-        blocks.append(f'variable "{name}" {{')
-        blocks.append(f"  type = {spec['type']}")
+        attributes = [("type", str(spec["type"]))]
         if spec.get("sensitive"):
-            blocks.append("  sensitive = true")
+            attributes.append(("sensitive", "true"))
+        blocks.append(f'variable "{name}" {{')
+        blocks += _aligned(attributes, "  ")
         blocks.append("}")
         blocks.append("")
     blocks.append('module "idp" {')
-    blocks.append(f"  source = {json.dumps(source)}")
-    for name in names:
-        blocks.append(f"  {name} = var.{name}")
+    blocks += _aligned(
+        [("source", json.dumps(source))] + [(name, f"var.{name}") for name in names],
+        "  ",
+    )
     blocks.append("}")
     return "\n".join(blocks) + "\n"
 
@@ -1086,7 +1104,8 @@ def _write_parameters_file(
 
 
 _VARIABLE_HEADER = re.compile(r'^variable "([^"]+)" \{$')
-_DEFAULT_LINE = re.compile(r"^  default = (.*)$")
+# The module's `=` are aligned as `terraform fmt` aligns them, so padded.
+_DEFAULT_LINE = re.compile(r"^  default\s+= (.*)$")
 
 
 def module_variable_defaults(variables_tf: str) -> Dict[str, Any]:

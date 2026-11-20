@@ -12,6 +12,8 @@ pipeline's own writers — and the scan runs against a moto table, so the filter
 expression is evaluated by moto's DynamoDB emulation rather than asserted on.
 """
 
+from unittest.mock import Mock
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -141,3 +143,21 @@ def test_the_status_filter_is_an_exact_match(tracking_table):
     assert get_documents_by_batch(
         tracking_table, "batch-3", status_filter="RULE_VALIDATION"
     ) == ["batch-3/validating.pdf"]
+
+
+@pytest.mark.parametrize("select", [get_documents_by_batch, get_documents_by_pattern])
+@pytest.mark.parametrize("bogus", ["PROCESSING", "PENDING_UPLOAD", "completed"])
+def test_a_value_no_document_carries_is_refused_before_scanning(select, bogus):
+    """A direct caller is refused the same way the SDK refuses its own callers.
+
+    Without the check the scan matches nothing and the empty selection is
+    indistinguishable from a batch with nothing to delete. ``PENDING_UPLOAD`` is
+    an enum member but a Jobs API status, and ``completed`` differs only in case.
+    """
+    table = Mock()
+    target = "batch-1" if select is get_documents_by_batch else "batch-1/*"
+
+    with pytest.raises(ValueError, match="Unknown status_filter"):
+        select(table, target, status_filter=bogus)
+
+    table.scan.assert_not_called()

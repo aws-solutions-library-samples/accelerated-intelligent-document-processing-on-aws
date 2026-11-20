@@ -14,7 +14,8 @@ client raises as ``DecisionModelRefused``, as it would for the real decider.
 Sizes are estimated the way ``idp_common.decision_model.budget`` estimates them,
 so this checks that callers cut to the budget they claim to cut to. It does not
 check that the budget's constants match the deployed model; that needs the
-endpoint and is a live probe's job (#2053).
+endpoint, and ``make stacktest-decision-window``
+(``scripts/sdlc/decision_model_window_check.py``) does it live (#2051).
 
 A refusal is also recorded in :data:`OVERSIZE`, because a caller may turn a refusal
 into a failed section that a test does not look at. Each module with a fake binds

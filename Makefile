@@ -1334,6 +1334,31 @@ ifndef STACK_NAME
 endif
 	$(RUN_FIRST_PARTY) scripts/sdlc/load_probe.py --stack-name $(STACK_NAME) $(if $(REGION),--region $(REGION),) $(if $(DRY_RUN),--dry-run,) $(LOAD_PROBE_ARGS)
 
+# Usage: make stacktest-decision-window STACK_NAME=<host> [INSTALL=1] [UNINSTALL=1]
+#        [BUCKET_BASENAME=<artifacts bucket basename>] [REGION=<region>]
+#        make stacktest-decision-window ENDPOINT=<decider function or alias ARN>
+#        make stacktest-decision-window DRY_RUN=1
+# Decision-model window check (#2051): sends the largest request each caller
+# builds (section classification and extraction confidence, in text, both and
+# images, at the largest max_pages and the max_input_tokens cap) to a DEPLOYED
+# Strands Decider, plus calibration probes either side of its window, and fails
+# when a request is refused for its size, when a measured token count beats the
+# estimate plus PROMPT_RESERVE_TOKENS, or when the window, prompt or image cost no
+# longer matches the constants in idp_common.decision_model. With STACK_NAME the
+# endpoint is the decision-model-decider extension's DeciderEndpoint output;
+# INSTALL=1 installs the extension on that host from this checkout first (and
+# refuses if it is already there); UNINSTALL=1, with INSTALL=1, deletes the
+# extension stack this run created afterwards. Only 1, true or yes turn either on.
+# The host stack is never touched.
+# DRY_RUN=1 builds and estimates the requests offline. Opt-in, in neither CI.
+# Exit 0 = PASS, 1 = FAIL, 2 = could not run. Report:
+# ./scratch/window-check/<timestamp>/report.json.
+stacktest-decision-window: ## Decision-model window check: the callers' largest requests against a deployed decider (STACK_NAME=... [INSTALL=1] [UNINSTALL=1], or ENDPOINT=...; DRY_RUN=1 touches nothing)
+ifeq ($(DRY_RUN)$(STACK_NAME)$(ENDPOINT),)
+	$(error Set STACK_NAME=<host stack>, ENDPOINT=<decider ARN> or DRY_RUN=1. Usage: make stacktest-decision-window STACK_NAME=<host> [INSTALL=1] [UNINSTALL=1])
+endif
+	$(RUN_FIRST_PARTY) scripts/sdlc/decision_model_window_check.py $(if $(DRY_RUN),--dry-run,$(if $(ENDPOINT),--endpoint $(ENDPOINT),--stack-name $(STACK_NAME))) $(if $(REGION),--region $(REGION),) $(if $(filter 1 true yes,$(INSTALL)),--install,) $(if $(filter 1 true yes,$(UNINSTALL)),--uninstall,) $(if $(BUCKET_BASENAME),--bucket-basename $(BUCKET_BASENAME),)
+
 # Live authorization checks that need real AWS behaviour rather than mocks, but
 # NOT a deployed stack: each creates its own throwaway Cognito pool / state
 # machines / IAM roles and deletes them again. Not in CI (they create IAM roles).

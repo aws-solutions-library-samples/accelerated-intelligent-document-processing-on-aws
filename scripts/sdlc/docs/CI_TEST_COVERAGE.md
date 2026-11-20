@@ -25,6 +25,7 @@ its `make` target and the skill that documents how to run it.
 | Jobs API (VPC) | `make stacktest-jobsapi VPC_ID=…` | `.claude/skills/run-stack-tests.md` |
 | Tenant isolation (`TenantIsolationMode=Strict`) | `make stacktest-tenancy` · against an existing Strict stack: `make verify-tenant-isolation STACK_NAME=…` | `.claude/skills/run-stack-tests.md` |
 | Load probe: a few dozen packets at once against an existing stack (also on its own weekly schedule, while it is active) | `make stacktest-load STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests.md` |
+| Decision-model window: the callers' largest requests against a deployed decider (on demand only) | `make stacktest-decision-window STACK_NAME=…` (`DRY_RUN=1` touches nothing) | `.claude/skills/run-stack-tests.md` |
 | List deploy-variant stack-tests | `make stacktest-list` | `.claude/skills/run-stack-tests.md` |
 | Release-vs-release benchmark | `make benchmark-release …` (alias `make stacktest-benchmark`) | `.claude/skills/run-benchmarks.md` |
 | In-place upgrade (X→Y) test | `make stacktest-upgrade` (pointer) | `.claude/skills/test-upgrade.md` |

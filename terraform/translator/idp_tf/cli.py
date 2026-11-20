@@ -14,6 +14,7 @@ from . import completeness, moved, safety, suppressions
 from .assets import deterministic_zip
 from .awscc_schema import AwsccSchema
 from .expand import expand, load_template, offline_placeholders
+from .hclfmt import format_hcl
 from .static_files import VERSIONS_TF, bridge_tf, label_tf
 from .translate import (
     LIFECYCLE_OVERRIDES,
@@ -151,7 +152,9 @@ def write_module(
         )
     out.mkdir(parents=True, exist_ok=True)
     for name, text in files.items():
-        (out / name).write_text(text)
+        # Laid out as `terraform fmt` would leave it, so a module vendored into a
+        # repository with a formatting gate passes `terraform fmt -check`.
+        (out / name).write_text(format_hcl(text) if name.endswith(".tf") else text)
     if tr.custom_tokens:
         # Source alongside for reading; the function deploys the zip.
         (out / "bridge").mkdir(exist_ok=True)

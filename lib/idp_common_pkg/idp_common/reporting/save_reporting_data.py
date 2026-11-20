@@ -478,6 +478,19 @@ class SaveReportingData:
         # it, which leaves the table as it was.
         return merged, merged != stored
 
+    @staticmethod
+    def _merge_glue_table_parameters(
+        existing_table: Dict[str, Any], parameters: Dict[str, str]
+    ) -> Dict[str, str]:
+        """Keep the table's existing ``Parameters`` under the code's own keys.
+
+        ``UpdateTable`` replaces the table-level parameters with the ones it is
+        sent, so sending only the keys this code manages would discard any a
+        crawler or an operator recorded on the table. The code's keys still win.
+        """
+        existing = existing_table.get("Table", {}).get("Parameters") or {}
+        return {**existing, **parameters}
+
     def _create_or_update_glue_table(
         self, section_type: str, schema: pa.Schema, new_section_created: bool = False
     ) -> bool:
@@ -552,6 +565,9 @@ class SaveReportingData:
                 existing_columns, columns
             )
             table_input["StorageDescriptor"]["Columns"] = merged_columns
+            table_input["Parameters"] = self._merge_glue_table_parameters(
+                existing_table, table_input["Parameters"]
+            )
 
             # Check if location has changed
             existing_location = (
@@ -594,6 +610,11 @@ class SaveReportingData:
                 logger.info(
                     f"Creating new Glue table {table_name} for section type: {section_type}"
                 )
+                # Glue stores names lowercased, so collapse the document's own
+                # names that differ only in case, as an update would.
+                table_input["StorageDescriptor"]["Columns"] = self._merge_glue_columns(
+                    [], columns
+                )[0]
                 try:
                     self.glue_client.create_table(
                         DatabaseName=self.database_name, TableInput=table_input
@@ -1758,15 +1779,21 @@ class SaveReportingData:
 
             if columns_changed:
                 table_input["StorageDescriptor"]["Columns"] = merged_columns
+                table_input["Parameters"] = self._merge_glue_table_parameters(
+                    existing_table_response, table_input["Parameters"]
+                )
                 self.glue_client.update_table(
                     DatabaseName=self.database_name, TableInput=table_input
                 )
                 logger.info(f"Updated Glue table {table_name}")
                 return True
-            return True
+            return False
 
         except Exception as e:
             if "EntityNotFoundException" in str(e):
+                table_input["StorageDescriptor"]["Columns"] = self._merge_glue_columns(
+                    [], columns
+                )[0]
                 try:
                     self.glue_client.create_table(
                         DatabaseName=self.database_name, TableInput=table_input
