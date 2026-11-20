@@ -275,6 +275,7 @@ class StackOperation:
         assume_role_arn: Optional[str] = None,
         allow_replace_stateful: bool = False,
         allow_replace_retained: bool = False,
+        tags: Optional[Dict[str, str]] = None,
     ) -> StackDeploymentResult:
         """Deploy or update the accelerator with Terraform (or OpenTofu).
 
@@ -320,6 +321,14 @@ class StackOperation:
                 replaces a retained or stateful resource (its data is lost).
             allow_replace_retained: The earlier name of
                 ``allow_replace_stateful``; either one allows it.
+            tags: Tags for every taggable resource, as CloudFormation stack
+                tags are: the module merges them into each ``awscc`` resource
+                (that provider has no ``default_tags``), and ``main.tf`` gives
+                them to the ``aws`` provider's ``default_tags``. A tag a
+                template sets on a resource keeps its value. They replace the
+                deployment's tags (``{}`` removes them); ``None`` keeps the tags
+                of the previous deploy from this directory. Refused for a module
+                published before the module accepted tags.
 
         Returns:
             StackDeploymentResult with operation ``APPLY`` and the label stack's
@@ -383,6 +392,7 @@ class StackOperation:
             manifest=manifest,
             assume_role_arn=assume_role_arn,
             recorded=tf.label_parameter_values(stack),
+            tags=tags,
         )
         operation = "UPDATE" if (directory / "terraform.tfstate").exists() else "CREATE"
         runner.init(upgrade=tf.needs_upgrade(directory, module_url))

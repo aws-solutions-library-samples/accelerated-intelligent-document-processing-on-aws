@@ -614,11 +614,21 @@ def check_assume_role_arn(role_arn: Optional[str]) -> Optional[str]:
     return role_arn
 
 
-def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -> str:
+#: The module variable ``--tags`` sets, and the root variable of the same name.
+TAGS_VARIABLE = "tags"
+
+
+def render_provider_blocks(
+    region: str, assume_role_arn: Optional[str] = None, default_tags: bool = False
+) -> str:
     """The ``aws`` and ``awscc`` provider blocks, both in ``region``, and both
     assuming ``assume_role_arn`` when it is given. The two must agree: the module
     creates resources through both, and a role on one alone splits the
     deployment across two identities.
+
+    With ``default_tags`` the ``aws`` block tags every resource it creates with
+    ``var.tags``. ``awscc`` has no ``default_tags``; the module merges the same
+    variable into each of its ``awscc`` resources instead.
 
     The two providers spell it differently, and the wrong spelling fails
     ``validate`` with "Unsupported block type": in ``hashicorp/aws`` it is a
@@ -632,6 +642,10 @@ def render_provider_blocks(region: str, assume_role_arn: Optional[str] = None) -
         if assume_role_arn:
             lines.append(opener)
             lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
+            lines.append("  }")
+        if default_tags and name == "aws":
+            lines.append("  default_tags {")
+            lines.append(f"    tags = var.{TAGS_VARIABLE}")
             lines.append("  }")
         lines.append("}")
         lines.append("")
@@ -677,7 +691,11 @@ def set_assume_role(
         )
     new = (
         text[: match.start()]
-        + render_provider_blocks(recorded_region, assume_role_arn)
+        + render_provider_blocks(
+            recorded_region,
+            assume_role_arn,
+            default_tags="  default_tags {" in match.group("aws"),
+        )
         + "\n"
         + text[match.end() :]
     )
@@ -690,6 +708,7 @@ def render_main_tf(
     values: Dict[str, Any],
     specs: Dict[str, Dict[str, Any]],
     assume_role_arn: Optional[str] = None,
+    tags: Optional[Dict[str, str]] = None,
 ) -> str:
     """Root configuration: providers in the region and ``module "idp"``.
 
@@ -698,6 +717,11 @@ def render_main_tf(
     in the directory unless the user adds a backend in another file. With
     ``assume_role_arn`` both providers assume that role, so Terraform creates the
     deployment's resources as the role rather than as the caller.
+
+    With ``tags`` (non-empty), a ``tags`` variable is declared and given to the
+    module, which merges it into its ``awscc`` resources, and to the ``aws``
+    provider's ``default_tags``, which covers the rest. Without, the file is
+    what it was before the module had a tags input.
     """
     source = terraform_module_source(module_url)
     blocks = [
@@ -712,9 +736,15 @@ def render_main_tf(
         "  }",
         "}",
         "",
-        render_provider_blocks(region, assume_role_arn),
+        render_provider_blocks(region, assume_role_arn, default_tags=bool(tags)),
     ]
     names = sorted(values)
+    if tags:
+        specs = {
+            **specs,
+            TAGS_VARIABLE: {"type": "map(string)", "sensitive": False},
+        }
+        names = sorted([*names, TAGS_VARIABLE])
     for name in names:
         spec = specs.get(name, {"type": "string", "sensitive": False})
         blocks.append(f'variable "{name}" {{')
@@ -752,9 +782,14 @@ class RootConfigValues(dict):
       ``None`` when no label stack was read;
     - ``upgrade``: whether an earlier deploy was found (a label stack or this
       directory's own record);
-    - ``local``: whether this directory held a record of an earlier deploy.
+    - ``local``: whether this directory held a record of an earlier deploy;
+    - ``tags``: the deployment's tags as written (empty for none), and
+      ``tags_kept``: whether they are the previous deploy's, kept because none
+      were passed.
     """
 
+    tags: Dict[str, str]
+    tags_kept: bool
     kept: Dict[str, Any]
     kept_from: Dict[str, str]
     recorded: Optional[frozenset]
@@ -791,10 +826,17 @@ def write_root_config(
     manifest: Dict[str, Any],
     assume_role_arn: Optional[str] = None,
     recorded: Optional[Dict[str, str]] = None,
+    tags: Optional[Dict[str, str]] = None,
 ) -> RootConfigValues:
     """Write ``main.tf`` and ``terraform.tfvars`` into ``directory``.
 
     ``assume_role_arn`` puts ``assume_role`` in both provider blocks.
+
+    ``tags`` replaces the deployment's tags, as a CloudFormation update given
+    tags replaces the stack's (an empty dict removes them). ``None`` keeps the
+    tags this directory's ``terraform.tfvars`` holds from the previous deploy,
+    as a CloudFormation update given none keeps the stack's. Refuses tags for a
+    module that has no tags input (its manifest has no ``tagsVariable``).
 
     Refuses a ``main.tf`` that idp-cli did not write. A parameter that is not
     passed keeps the value the deployment has, as a CloudFormation update keeps
@@ -833,6 +875,7 @@ def write_root_config(
     specs = variable_specs(manifest)
     known = manifest.get("parameters") or {}
     previous: Dict[str, Any] = {}
+    previous_tags: Dict[str, str] = {}
     local_source = SOURCE_TFVARS
     if tfvars.exists():
         text = tfvars.read_text()
@@ -842,6 +885,7 @@ def write_root_config(
                 "overwrite it."
             )
         previous_vars = parse_tfvars(text)
+        previous_tags = previous_vars.pop(TAGS_VARIABLE, None) or {}
         # Earlier values are remembered by CloudFormation parameter name, which
         # is stable; a Terraform variable name can change between module
         # versions, and keying on it would drop the value without a word.
@@ -931,13 +975,40 @@ def write_root_config(
     values.recorded = frozenset(recorded) if recorded is not None else None
     values.local = tfvars.exists()
     values.upgrade = recorded is not None or values.local
+    values.tags_kept = tags is None and bool(previous_tags)
+    values.tags = dict(previous_tags if tags is None else tags)
+    if values.tags and manifest.get("tagsVariable") != TAGS_VARIABLE:
+        where = (
+            "this directory's previous deploy has tags"
+            if values.tags_kept
+            else "tags were passed"
+        )
+        raise IDPConfigurationError(
+            f"{where}, and this module has no tags input (it was published "
+            "before the Terraform module accepted tags). Use a newer module, or "
+            f"deploy without tags: remove the tags line from {tfvars}, or pass "
+            "tags={} to the SDK."
+        )
+    if values.tags_kept:
+        logger.info(
+            "Keeping the previous deploy's tags (%s); pass tags to replace them",
+            ", ".join(sorted(values.tags)),
+        )
     main_tf.write_text(
         render_main_tf(
-            region, module_url, values, specs, check_assume_role_arn(assume_role_arn)
+            region,
+            module_url,
+            values,
+            specs,
+            check_assume_role_arn(assume_role_arn),
+            tags=values.tags,
         )
     )
     # The values can include NoEcho parameters.
-    write_private(tfvars, render_tfvars(values))
+    tfvars_values = dict(values)
+    if values.tags:
+        tfvars_values[TAGS_VARIABLE] = values.tags
+    write_private(tfvars, render_tfvars(tfvars_values))
     _write_parameters_file(directory, manifest, values)
     return values
 

@@ -67,6 +67,74 @@ def _object(attributes: dict[str, Any]) -> Hint:
     return hint
 
 
+#: How a resource's tag attribute is spelled in the awscc schema, which decides
+#: how the module's ``tags`` variable is merged into it:
+#:
+#: - ``kv``: a list or set of ``{key, value}`` objects (the CloudFormation
+#:   ``Tags: [{Key, Value}]`` shape, most types);
+#: - ``map``: ``map(string)`` (types whose registry schema declares a JSON
+#:   object of tags, such as SSM parameters);
+#: - ``json``: a ``string`` holding a JSON object (types whose registry schema
+#:   declares ``Tags`` as ``Json``, such as Glue crawlers).
+TAG_SHAPES = ("kv", "map", "json")
+
+
+def _tag_shape(spec: dict[str, Any]) -> str | None:
+    """The :data:`TAG_SHAPES` member an attribute spec is, or None."""
+    nested = spec.get("nested_type")
+    if nested is not None:
+        attrs = nested.get("attributes", {})
+        if nested.get("nesting_mode") in ("list", "set") and set(attrs) == {
+            "key",
+            "value",
+        }:
+            if all(a.get("type") == "string" for a in attrs.values()):
+                return "kv"
+        return None
+    t = spec.get("type")
+    if t == ["map", "string"]:
+        return "map"
+    if t == "string":
+        return "json"
+    return None
+
+
+def _is_tag_attribute(name: str) -> bool:
+    """CloudFormation names a resource's tag property ``Tags`` or
+    ``<Something>Tags`` (``IdentityPoolTags``, ``UserPoolTags``); awscc spells
+    the property in snake_case."""
+    return name == "tags" or name.endswith("_tags")
+
+
+def tag_attribute_of(attributes: dict[str, Any], label: str) -> tuple[str, str] | None:
+    """``(awscc attribute, shape)`` of a resource type's settable tag attribute,
+    from the type's top-level schema ``attributes``; None when the schema gives
+    the type no tag attribute, or only a computed one. Read from the schema, so
+    a type gains or loses the merge with the provider version the schema is for.
+
+    Raises ValueError for a tag attribute in a shape the translator cannot merge
+    into, or for a type with two: either would otherwise leave the resource
+    without the module's tags and nothing said. ``label`` names the type in the
+    message.
+    """
+    found = []
+    for name, spec in attributes.items():
+        if not _is_tag_attribute(name):
+            continue
+        if not (spec.get("optional") or spec.get("required")):
+            continue  # computed only: the provider does not accept a value
+        shape = _tag_shape(spec)
+        if shape is None:
+            raise ValueError(
+                f"{label}: tag attribute {name!r} has a shape the translator "
+                "cannot merge the module's tags into"
+            )
+        found.append((name, shape))
+    if len(found) > 1:
+        raise ValueError(f"{label}: more than one tag attribute: {found}")
+    return found[0] if found else None
+
+
 def awscc_type_name(cfn_type: str) -> str:
     _, service, resource = cfn_type.split("::")
     s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", resource)
@@ -92,3 +160,11 @@ class AwsccSchema:
             block = self._resources[name]["block"]
             self._cache[name] = _object(block.get("attributes", {}))
         return self._cache[name]
+
+    def tag_attribute(self, cfn_type: str) -> tuple[str, str] | None:
+        """``(awscc attribute, shape)`` of the type's settable tag attribute; see
+        :func:`tag_attribute_of`."""
+        name = awscc_type_name(cfn_type)
+        return tag_attribute_of(
+            self._resources[name]["block"].get("attributes", {}), cfn_type
+        )
