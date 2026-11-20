@@ -137,6 +137,21 @@ class discovery flows), on `DiscoveryAgent.analyze_cluster` and `reflect`, and o
 rules path (`discovery_rules_from_document` and `to_policy_class`). Existing, authored
 classes in the target profile are not cleaned.
 
+### Multi-document results separate noise from failed embeddings
+
+`MultiDocDiscoveryResult` reports two disjoint sets of documents that no
+discovered class covers. `failed_embedding_keys` (count `num_failed_embeddings`)
+holds the documents whose embedding failed, which never reach clustering.
+`noise_document_keys` (count `num_noise_documents`) holds the documents that were
+embedded and clustered but labelled `-1`, because `ClusteringService` relabels a
+cluster smaller than `min_cluster_size` as noise. `noise_document_keys()` derives
+the second from `ClusterResult.cluster_labels`, which is indexed like
+`EmbeddingResult.valid_keys`, and refuses a label count that does not match. Both
+new fields default to an empty list, so a result constructed without them, and a
+reader of the older `to_dict()` keys, are unaffected. The SDK maps them to
+`noise_documents`/`noise_document_keys` and
+`failed_embeddings`/`failed_embedding_keys`.
+
 ### The multi-document agent's tools are bounded
 
 `DiscoveryAgent.analyze_cluster` binds `ClusterAnalysisTool` to the cluster under

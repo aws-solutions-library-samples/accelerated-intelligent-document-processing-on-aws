@@ -44,6 +44,29 @@ from .s3_security import apply_enforce_ssl_only
 LIB_DEPENDENCY = "./lib/idp_common_pkg/idp_common"
 LIB_PKG_PATH = "./lib/idp_common_pkg"
 
+#: The resource types whose ``PackageType: Image`` makes ``sam package`` demand an
+#: image repository.
+_FUNCTION_TYPES = ("AWS::Lambda::Function", "AWS::Serverless::Function")
+
+
+def declares_container_image_function(template_path: str) -> bool:
+    """Whether the template at ``template_path`` declares a container-image function.
+
+    ``sam package`` refuses a template with one unless it is given an image
+    repository, whether or not it has an image to push. A missing template declares
+    nothing.
+    """
+    if not os.path.isfile(template_path):
+        return False
+    resources = load_cfn_template(template_path).get("Resources") or {}
+    return any(
+        isinstance(body, dict)
+        and body.get("Type") in _FUNCTION_TYPES
+        and (body.get("Properties") or {}).get("PackageType") == "Image"
+        for body in resources.values()
+    )
+
+
 # Files the multi-doc discovery CodeBuild project needs from the source zip in
 # order to build its container image. Kept as a constant so the packaging step
 # and its test assert on the same list.
@@ -845,11 +868,16 @@ STDERR:
                 cmd.append("--debug")
 
             # Patterns with container images need --image-repository even with SkipBuild: True
-            # SAM package uses this to generate correct ImageUri references in the template
+            # SAM package uses this to generate correct ImageUri references in the template.
+            # A bundled extension that declares a container-image function needs it too:
+            # sam package refuses such a template without one, even though the image is
+            # built later, in the deploying account (#1656).
             if directory in [
                 "patterns/unified",
                 "nested/multi-doc-discovery",
-            ]:
+            ] or declares_container_image_function(
+                os.path.join(directory, "template.yaml")
+            ):
                 placeholder_ecr = (
                     f"{self.account_id}.dkr.ecr.{self.region}.amazonaws.com/placeholder"
                 )

@@ -328,7 +328,7 @@ running basedpyright, not by inspecting the JSON.
 
 `make terraform-check` is a static gate that is not part of `make lint`, because it
 needs network access and about two gigabytes of cache. Each CI runs it as its own job,
-`terraform_checks`. It works in four steps:
+`terraform_checks`. It works in five steps:
 
 1. It translates `template.yaml`, with the nested templates read from source, into a
    temporary directory using `terraform/translator` in `--offline` mode. No AWS call
@@ -348,12 +348,22 @@ needs network access and about two gigabytes of cache. Each CI runs it as its ow
    `scripts/terraform_scan_baseline.json` explains it. Findings on checks with no
    CloudFormation counterpart are pinned per check and resource type in
    `scripts/terraform_scan_tf_only_baseline.json`, so a new one fails too.
+5. It runs `make terraform-replay-releases`: the current translator, offline, over the
+   template tree of every release listed in `terraform/tools/replay_releases.json`,
+   each read with `git archive` from the commit recorded there. Any translation
+   failure, a template the translator cannot read, or a recorded commit missing from
+   the clone fails the gate, naming the release. This step needs the repository's
+   history, so both CI jobs check out full history; it needs no network of its own.
+   A release is added to the file when it is tagged.
 
 The gate proves that the generated HCL parses, that its references resolve, and that
 every resource and attribute type-checks against the pinned provider schemas, on the
 oldest and newest releases the module claims to support. It does **not** plan or
 deploy anything, so a value AWS would reject at apply time, an IAM policy grammar
 error, or an ordering problem between resources is outside what it can see. The
+release replay shows that the current translator still translates the templates of
+older releases; it does not show that a deployment of one of them upgrades to the
+current module, which is the weekly Terraform-upgrade run's question. The
 translator's and bridge's own unit tests run in `make test` (layer 1) and are not
 repeated here. `scripts/tests/test_terraform_check.py` covers the gate's own checks
 offline: refusing an archive that matches neither hash, failing on an error while
@@ -523,7 +533,10 @@ CloudFormation nightly by that variable alone, so it leaves the UX review stack 
 the nightly first-time-user stories to the CloudFormation nightly, and the two runs
 queue for the same deploy lock rather than overlapping. Straight after its apply it
 plans the deployment again, and a plan that is not empty fails the run, naming the
-changed addresses. To run that mode by hand, set
+changed addresses. A weekly schedule carrying `IDP_TERRAFORM_VPC=true` as well, while
+it is active, runs the same Terraform run with the stack deployed into the
+pipeline's persistent test VPC (`DeployInVPC=true`), labelled
+`WEEKLY TERRAFORM VPC RUN`. To run that mode by hand, set
 `IDP_IAC=terraform` for the deploy driver, `scripts/sdlc/codebuild_deployment.py`;
 how it differs from the CloudFormation run, and the CI pipeline-stack update it
 needs before the schedule is turned on, are in the coverage document below.
@@ -577,7 +590,7 @@ the rows run only when a person asks.
 | Terraform property parity (also on a Terraform schedule carrying `IDP_TERRAFORM_PARITY=true`, while it is active, against a CloudFormation twin the run deploys) | that a Terraform deployment of the release stores the same configuration as a CloudFormation deployment of it with the same parameters, every resource of the main and nested stacks read back through Cloud Control, beyond the explained differences in `terraform/tools/parity_baseline.json`. Read-only; needs both deployments | `make terraform-parity CFN_STACK=… TF_STACK=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier I) |
 | In-place upgrade (X→Y) | that an existing customer stack survives `update-stack` without rollback **and still works afterwards** | `make stacktest-upgrade` (pointer) | [`test-upgrade`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/test-upgrade.md) |
 | Migration from `genai-idp-terraform` (also on the weekly Terraform-migration schedule, while it is active) | that a deployment of the separate [`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform) implementation, at one of the releases the driver pins (the weekly schedule takes a different one each week) and seeded with documents, users, a configuration edit, a baseline and a test set, moves onto this repository's module with every phase of `idp-cli terraform migrate-from-genai-idp-terraform`, keeping every object and item, and that afterwards both users sign in to the new deployment with their old passwords and keep their scope, a new document is processed by the new deployment only, and destroying the old deployment leaves the adopted resources and the Region's API Gateway CloudWatch role setting in place; the teardown sets that setting back to its value at the start before deleting the role upstream pointed it at. Deploys and destroys both deployments: measured end to end at 166 minutes, 76 of them waiting on DynamoDB's two time-to-live intervals and 33 the adoption apply and writes `result.json` and `summary.txt` in its work directory | `make stacktest-terraform-migration OLD_NAME=… NEW_NAME=… TERRAFORM_MODULE_URL=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier J) |
-| In-place Terraform upgrade (X→Y) | that a **Terraform** deployment of release X, seeded with documents, two users, a configuration edit, a baseline and a test set, survives `idp-cli deploy --terraform` against release Y's module: every bucket, table, user pool and key keeps its physical identity (so a `moved` block that is missing shows up as the replacement it would cause), every object and item is still there, both users sign in with their old passwords and keep their scope, the configuration edit survives the deploy's own config rewrite, the label stack moves to the new version, and a document uploaded afterwards still processes. It never passes `--terraform-allow-replace-stateful`, so a plan the deploy guard refuses fails the run and names the addresses. The Terraform counterpart of the in-place upgrade row above; deploys and destroys one deployment, and writes `result.json` and `summary.txt` in its work directory | `make stacktest-terraform-upgrade STACK_NAME=… ADMIN_EMAIL=… FROM_MODULE_URL=… TO_MODULE_URL=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier K) |
+| In-place Terraform upgrade (X→Y) (also on the weekly Terraform-upgrade schedule, while it is active, from the newest published release to the build under test) | that a **Terraform** deployment of release X, seeded with documents, two users, a configuration edit, a baseline and a test set, survives `idp-cli deploy --terraform` against release Y's module: every bucket, table, user pool and key keeps its physical identity (so a `moved` block that is missing shows up as the replacement it would cause), every object and item is still there, both users sign in with their old passwords and keep their scope, the configuration edit survives the deploy's own config rewrite, the label stack moves to the new version, and a document uploaded afterwards still processes. It never passes `--terraform-allow-replace-stateful`, so a plan the deploy guard refuses fails the run and names the addresses; it records every address the upgrade plan destroys or replaces, and fails when the re-plan straight after the upgrade is not empty, judged by the same check as the nightly Terraform run's re-plan. The Terraform counterpart of the in-place upgrade row above; deploys and destroys one deployment, and writes `result.json` and `summary.txt` in its work directory | `make stacktest-terraform-upgrade STACK_NAME=… ADMIN_EMAIL=… FROM_MODULE_URL=… TO_MODULE_URL=…` | [`release-validation`](https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/develop/.claude/skills/release-validation.md) (tier K) |
 
 ### The UX review, and recording it
 

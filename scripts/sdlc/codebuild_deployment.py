@@ -4804,6 +4804,59 @@ def terraform_unsupported_reason(environ: dict | None = None) -> str | None:
     return None
 
 
+#: The weekly Terraform VPC run: a Terraform run whose primary stack is deployed
+#: into the persistent test VPC (the ids _test_vpc_params reads). The schedule
+#: carries IDP_TERRAFORM_VPC=true beside IDP_IAC=terraform, and the choice reaches
+#: the build in ci_run_options.json as ``terraform_vpc``.
+TERRAFORM_VPC_VARIABLE = "IDP_TERRAFORM_VPC"
+TERRAFORM_VPC_RUN_LABEL = "WEEKLY TERRAFORM VPC RUN"
+
+
+def terraform_vpc_mode(
+    environ: dict | None = None, options: dict | None = None
+) -> bool:
+    """Whether this build deploys the Terraform primary stack into the test VPC:
+    IDP_TERRAFORM_VPC in the environment (a run started by hand), else the
+    schedule's choice in ci_run_options.json. main() writes the answer back."""
+    env = os.environ if environ is None else environ
+    value = str(env.get(TERRAFORM_VPC_VARIABLE, "")).strip().lower()
+    if not value and isinstance(options, dict):
+        value = "true" if options.get("terraform_vpc") is True else ""
+    return value == "true"
+
+
+def terraform_vpc_param_pairs(environ: dict | None = None) -> list[str]:
+    """The `--parameters` pairs a Terraform VPC run adds to the primary ones.
+
+    Empty when this is not a VPC run. Raises ValueError when it is one and the
+    persistent test VPC's ids are absent: unlike a requires_vpc probe, which
+    skips, this run exists only to deploy into a VPC, so deploying without one
+    would report a VPC result for a stack that was not in a VPC.
+    """
+    env = os.environ if environ is None else environ
+    if not terraform_vpc_mode(env):
+        return []
+    if not terraform_run(env):
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true needs {IAC_VARIABLE}=terraform: the "
+            "VPC settings are applied by the Terraform deploy only"
+        )
+    if terraform_parity_mode(env):
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true cannot be combined with "
+            f"{TERRAFORM_PARITY_VARIABLE}=true: the parity check's CloudFormation "
+            "twin is deployed outside the VPC"
+        )
+    vpc = _test_vpc_params(env)
+    if vpc is None:
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true, but the persistent test VPC is not "
+            "configured (IDP_TEST_VPC_ID / IDP_TEST_PRIVATE_SUBNET_IDS / "
+            "IDP_TEST_LAMBDA_SG_ID / IDP_TEST_APIGW_VPCE_ID)"
+        )
+    return [f"{key}={value}" for key, value in vpc.items()]
+
+
 def terraform_work_directory(stack_name: str, environ: dict | None = None) -> str:
     """The absolute ``--terraform-dir`` for this run's deployment."""
     env = os.environ if environ is None else environ
@@ -5996,8 +6049,9 @@ def _deploy_primary_terraform_attempt(stack_name, admin_email, terraform):
         return result
 
     print("Step 1: Deploying with Terraform...")
-    param_pairs = _primary_param_pairs(
-        permissions_boundary_arn, _integration_malware_mode()
+    param_pairs = (
+        _primary_param_pairs(permissions_boundary_arn, _integration_malware_mode())
+        + terraform_vpc_param_pairs()
     )
     try:
         stage_terraform_root(stack_name, admin_email, terraform, param_pairs)
@@ -11252,7 +11306,7 @@ PROBE_VARIANTS = [
 ]
 
 
-def _test_vpc_params():
+def _test_vpc_params(environ: dict | None = None):
     """Resolve the persistent-test-VPC CFN params from env, or None if unset.
 
     Returns the dict of VPC params a requires_vpc probe must pass, populated
@@ -11263,10 +11317,11 @@ def _test_vpc_params():
     values — idp-cli's --parameters parser splits only on commas followed by a
     `key=`, so an embedded subnet list survives.
     """
-    vpc_id = os.environ.get("IDP_TEST_VPC_ID", "").strip()
-    subnets = os.environ.get("IDP_TEST_PRIVATE_SUBNET_IDS", "").strip()
-    sg_id = os.environ.get("IDP_TEST_LAMBDA_SG_ID", "").strip()
-    vpce_id = os.environ.get("IDP_TEST_APIGW_VPCE_ID", "").strip()
+    env = os.environ if environ is None else environ
+    vpc_id = env.get("IDP_TEST_VPC_ID", "").strip()
+    subnets = env.get("IDP_TEST_PRIVATE_SUBNET_IDS", "").strip()
+    sg_id = env.get("IDP_TEST_LAMBDA_SG_ID", "").strip()
+    vpce_id = env.get("IDP_TEST_APIGW_VPCE_ID", "").strip()
     if not (vpc_id and subnets and sg_id and vpce_id):
         return None
     return {
@@ -11703,6 +11758,8 @@ def ux_nightly_update_requested(options: dict, environ: dict | None = None) -> b
         and not terraform_run(env)
         and options.get("terraform_migration") is not True
         and not terraform_migration_mode(env)
+        and options.get("terraform_upgrade") is not True
+        and not terraform_upgrade_mode(env)
     )
 
 
@@ -12130,6 +12187,13 @@ def label_terraform_run(summary_text: str, environ: dict | None = None) -> str:
     """The summary, headed with TERRAFORM_RUN_LABEL on a Terraform run."""
     if not terraform_run(environ):
         return summary_text
+    if terraform_vpc_mode(environ):
+        return (
+            f"🧱 {TERRAFORM_VPC_RUN_LABEL} — the primary suite ran against a "
+            "Terraform deployment of the accelerator in the persistent test VPC "
+            "(DeployInVPC=true). This is not the CloudFormation nightly result.\n\n"
+            + summary_text
+        )
     return (
         f"🧱 {TERRAFORM_RUN_LABEL} — the primary suite ran against a Terraform "
         "deployment of the accelerator. This is not the CloudFormation nightly "
@@ -12139,10 +12203,15 @@ def label_terraform_run(summary_text: str, environ: dict | None = None) -> str:
 
 def label_ci_run(summary_text: str, environ: dict | None = None) -> str:
     """The summary with every label that applies: probe run, region run,
-    Terraform run."""
-    return label_terraform_migration_run(
-        label_terraform_run(
-            label_region_run(label_variant_probe_run(summary_text, environ), environ),
+    Terraform run, migration run, upgrade run."""
+    return label_terraform_upgrade_run(
+        label_terraform_migration_run(
+            label_terraform_run(
+                label_region_run(
+                    label_variant_probe_run(summary_text, environ), environ
+                ),
+                environ,
+            ),
             environ,
         ),
         environ,
@@ -12158,10 +12227,18 @@ def failure_subject(stack_name: str, environ: dict | None = None) -> str:
     if region is not None:
         labels.append(f"{REGION_RUN_LABEL.lower()} · {region}")
     if terraform_run(environ):
-        labels.append(TERRAFORM_RUN_LABEL.lower())
+        labels.append(
+            (
+                TERRAFORM_VPC_RUN_LABEL
+                if terraform_vpc_mode(environ)
+                else TERRAFORM_RUN_LABEL
+            ).lower()
+        )
     env = os.environ if environ is None else environ
     if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() == "true":
         labels.append(TERRAFORM_MIGRATION_RUN_LABEL.lower())
+    if str(env.get(TERRAFORM_UPGRADE_VARIABLE, "")).strip().lower() == "true":
+        labels.append(TERRAFORM_UPGRADE_RUN_LABEL.lower())
     if not labels:
         return f"IDP CI failure: {stack_name}"
     return f"IDP CI failure ({'; '.join(labels)}): {stack_name}"
@@ -12605,7 +12682,10 @@ def terraform_migration_timeout_shortfall(codebuild=None) -> str | None:
 
 
 def terraform_migration_budget(
-    elapsed_seconds: float, limit_minutes: int | None = None
+    elapsed_seconds: float,
+    limit_minutes: int | None = None,
+    reserve_seconds: int = TERRAFORM_MIGRATION_RESERVE_SECONDS,
+    fallback_minutes: int = TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES,
 ) -> tuple[int, int]:
     """(driver deadline, driver timeout) in seconds, given how long the build has
     already run and its timeout (``limit_minutes``; None falls back to
@@ -12614,9 +12694,9 @@ def terraform_migration_budget(
     teardown and the `-iam` cleanup; the timeout is the hard stop, five minutes
     short of the limit. Derived from the build's own limit, so the deadline moves
     with the project's timeout rather than with a constant beside it."""
-    limit = (limit_minutes or TERRAFORM_MIGRATION_MIN_TIMEOUT_MINUTES) * 60
+    limit = (limit_minutes or fallback_minutes) * 60
     left = limit - int(elapsed_seconds)
-    return max(left - TERRAFORM_MIGRATION_RESERVE_SECONDS, 0), max(left - 300, 0)
+    return max(left - reserve_seconds, 0), max(left - 300, 0)
 
 
 #: How much of the driver's newest logs a failure analysis reads: the failing
@@ -12645,17 +12725,25 @@ def migration_failure_evidence(work_dir: str) -> str:
     return "\n\n".join(parts) or "(the driver wrote no logs)"
 
 
-def generate_migration_failure_summary(summary_text: str, evidence: str) -> str:
-    """An AI analysis of a failed migration run, from the driver's own summary
-    (which names the failing phase) and the tails of its newest logs. Never
-    raises: a failed analysis is reported in place of one."""
+MIGRATION_ANALYSIS_DESCRIPTION = (
+    "The weekly Terraform-migration integration test of the IDP accelerator "
+    "failed. It deploys a pinned awslabs/genai-idp-terraform release, migrates "
+    "it in place onto this repository's Terraform module with every phase of "
+    "`idp-cli terraform migrate-from-genai-idp-terraform`, verifies, and "
+    "destroys both deployments."
+)
+
+
+def generate_migration_failure_summary(
+    summary_text: str, evidence: str, description: str = MIGRATION_ANALYSIS_DESCRIPTION
+) -> str:
+    """An AI analysis of a failed migration or upgrade run, from the driver's own
+    summary (which names the failing phase) and the tails of its newest logs.
+    ``description`` says what the run does. Never raises: a failed analysis is
+    reported in place of one."""
     try:
         prompt = dedent(f"""
-        The weekly Terraform-migration integration test of the IDP accelerator
-        failed. It deploys a pinned awslabs/genai-idp-terraform release, migrates
-        it in place onto this repository's Terraform module with every phase of
-        `idp-cli terraform migrate-from-genai-idp-terraform`, verifies, and
-        destroys both deployments. Identify the failing phase and its root cause.
+        {description} Identify the failing phase and its root cause.
 
         Driver summary:
         {summary_text}
@@ -12773,6 +12861,299 @@ def run_terraform_migration(stack_name, module_url, terraform_bin, started=None)
         # First: chat posts keep only the start of the summary.
         summary = f"{analysis}\n\n{summary}"
     return success, summary
+
+
+# ---------------------------------------------------------------------------
+# Weekly Terraform-upgrade run (IDP_RUN_TERRAFORM_UPGRADE=true)
+#
+# Instead of the primary suite, the build runs scripts/sdlc/terraform_upgrade_test.py:
+# it deploys the module of the newest published release (FROM, resolved from the
+# public release bucket's idp-terraform-latest.json pointer, the same pointer
+# `idp-cli deploy --terraform` reads by default), seeds it, upgrades it in place to
+# the module this build published (TO), proves nothing was lost and that the re-plan
+# after the upgrade is empty, and tears it down. Terraform's providers run as this
+# run's TFDeployRole, created by the same `-iam` pre-stack a Terraform nightly uses;
+# the driver's own reads and seeding run as the build, as a nightly's steps do.
+# ---------------------------------------------------------------------------
+
+TERRAFORM_UPGRADE_VARIABLE = "IDP_RUN_TERRAFORM_UPGRADE"
+#: Heads the summary and marks the failure email on an upgrade run, so its result
+#: is never read as a nightly's.
+TERRAFORM_UPGRADE_RUN_LABEL = "WEEKLY TERRAFORM UPGRADE RUN"
+#: The CodeBuild project timeout an upgrade run needs. The driver budgets about two
+#: and a half hours end to end (its own docstring: the first apply, the seed
+#: documents, the upgrade apply and the destroy), and publish and the `-iam`
+#: pre-stack come in front of it. The project's 240 covers it; a shorter build is
+#: refused before publish (terraform_upgrade_timeout_shortfall).
+TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES = 210
+#: What the driver's failure teardown needs: one deployment's destroy (about
+#: twenty minutes) and the sweep, and the `-iam` cleanup after it.
+TERRAFORM_UPGRADE_RESERVE_SECONDS = 35 * 60
+#: The newest release's module is read from the public release bucket of the run's
+#: Region. The pointer names its version; the module itself is then taken from that
+#: version's own key, which a later publish never overwrites (docs/terraform.md,
+#: "Getting the module"), and its bytes are held to the pointer's checksum.
+_RELEASE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def terraform_upgrade_mode(
+    environ: dict | None = None, options: dict | None = None
+) -> bool:
+    """Whether this build runs the upgrade test: IDP_RUN_TERRAFORM_UPGRADE in the
+    environment (a run started by hand), else the schedule's choice in
+    ci_run_options.json. main() writes the answer back to the environment."""
+    env = os.environ if environ is None else environ
+    value = str(env.get(TERRAFORM_UPGRADE_VARIABLE, "")).strip().lower()
+    if not value and isinstance(options, dict):
+        value = "true" if options.get("terraform_upgrade") is True else ""
+    return value == "true"
+
+
+def terraform_upgrade_unsupported_reason(environ: dict | None = None) -> str | None:
+    """Why this build cannot be an upgrade run, or None. The run replaces the
+    primary suite, so it combines with nothing that changes the primary suite."""
+    env = os.environ if environ is None else environ
+    if terraform_run(env):
+        return (
+            f"{TERRAFORM_UPGRADE_VARIABLE}=true cannot be combined with "
+            f"{IAC_VARIABLE}=terraform: the upgrade run replaces the primary suite"
+        )
+    if str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() == "true":
+        return (
+            f"{TERRAFORM_UPGRADE_VARIABLE}=true cannot be combined with "
+            f"{TERRAFORM_MIGRATION_VARIABLE}=true; give each its own schedule"
+        )
+    if variant_probe_run(env):
+        return (
+            f"{TERRAFORM_UPGRADE_VARIABLE}=true cannot be combined with "
+            "IDP_RUN_PROBES=true; give each its own schedule"
+        )
+    region = region_run(env)
+    if region is not None:
+        return (
+            f"{TERRAFORM_UPGRADE_VARIABLE}=true runs in {PRIMARY_CI_REGION} only; "
+            f"this build is in {region}"
+        )
+    return None
+
+
+def label_terraform_upgrade_run(summary_text: str, environ: dict | None = None) -> str:
+    env = os.environ if environ is None else environ
+    if str(env.get(TERRAFORM_UPGRADE_VARIABLE, "")).strip().lower() != "true":
+        return summary_text
+    return (
+        f"⏫ {TERRAFORM_UPGRADE_RUN_LABEL} — a deployment of the newest published "
+        "release's Terraform module was upgraded in place to this build's. This is "
+        "not the nightly result.\n\n" + summary_text
+    )
+
+
+def terraform_upgrade_timeout_shortfall(codebuild=None) -> str | None:
+    """Why this build is too short for an upgrade run, or None; checked before
+    publish, as terraform_migration_timeout_shortfall is."""
+    minutes = build_timeout_minutes(codebuild)
+    if minutes is None or minutes >= TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES:
+        return None
+    return (
+        f"this build's timeout is {minutes} min, and a Terraform-upgrade run needs "
+        f"at least {TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES}; update the CI account's "
+        "codepipeline stack (scripts/sdlc/cfn/codepipeline-s3.yml) first"
+    )
+
+
+def _fetch_public_https(url: str) -> bytes:
+    if not url.startswith("https://"):
+        raise ValueError(f"refusing to read a non-HTTPS URL: {url}")
+    import urllib.request
+
+    with urllib.request.urlopen(url, timeout=120) as resp:  # nosec B310 - https only
+        return resp.read()
+
+
+def resolve_terraform_upgrade_from(
+    region: str, fetch: Callable[[str], bytes] | None = None
+) -> dict:
+    """The module an upgrade run deploys first: the newest published release's.
+
+    Reads the release bucket's ``idp-terraform-latest.json`` for ``region`` once,
+    the pointer `idp-cli deploy --terraform` reads when given no module (its
+    TEMPLATE_URLS and idp_sdk.default_terraform_pointer_url, imported rather than
+    restated). The pointer is overwritten by every publish, so only its
+    ``version`` and ``sha256`` are taken from it, together, from that one read; the
+    module URL returned is that version's own key, which no publish overwrites,
+    and the bytes there must hash to the pointer's ``sha256``. A pointer whose
+    ``moduleUrl`` is not that key is refused rather than followed: it would mean
+    the release layout changed, and the run would no longer know what it deploys.
+
+    Returns ``{"module_url", "version", "sha256", "pointer_url"}``; raises
+    ValueError naming what is wrong.
+    """
+    from idp_cli.cli import TEMPLATE_URLS
+    from idp_sdk import default_terraform_pointer_url
+
+    read = fetch or _fetch_public_https
+    template_url = TEMPLATE_URLS.get(region)
+    if not template_url:
+        raise ValueError(f"no published release bucket is known for {region}")
+    pointer_url = default_terraform_pointer_url(template_url)
+    try:
+        pointer = json.loads(read(pointer_url))
+    except ValueError as e:
+        raise ValueError(f"{pointer_url} is not JSON: {e}") from e
+    if not isinstance(pointer, dict):
+        raise ValueError(f"{pointer_url} is not a JSON object")
+    version = pointer.get("version")
+    sha = pointer.get("sha256")
+    if not isinstance(version, str) or not _RELEASE_VERSION_RE.match(version):
+        raise ValueError(f"{pointer_url} names no release version: {version!r}")
+    if not isinstance(sha, str) or not _SHA256_RE.match(sha):
+        raise ValueError(f"{pointer_url} names no sha256: {sha!r}")
+    base = template_url.rpartition("/")[0]
+    module_url = f"{base}/{version}/terraform/idp-terraform-{version}.zip"
+    if pointer.get("moduleUrl") != module_url:
+        raise ValueError(
+            f"{pointer_url} names moduleUrl {pointer.get('moduleUrl')!r}, not the "
+            f"release's own key {module_url}"
+        )
+    actual = hashlib.sha256(read(module_url)).hexdigest()
+    if actual != sha:
+        raise ValueError(
+            f"{module_url} has sha256 {actual}, but {pointer_url} says {sha}"
+        )
+    return {
+        "module_url": module_url,
+        "version": version,
+        "sha256": sha,
+        "pointer_url": pointer_url,
+    }
+
+
+def terraform_upgrade_driver_command(
+    stack_name,
+    admin_email,
+    from_module_url,
+    to_module_url,
+    terraform_bin,
+    work_dir,
+    region,
+    account,
+    role_arn,
+    boundary_arn,
+):
+    """The upgrade driver's argv. The boundary is the first deploy's one
+    parameter, and the upgrade repeats it from that deploy's tfvars as a customer's
+    would; both deploys' providers assume the run's TFDeployRole."""
+    return [
+        sys.executable,
+        "scripts/sdlc/terraform_upgrade_test.py",
+        "--stack-name",
+        stack_name,
+        "--admin-email",
+        admin_email,
+        "--region",
+        region,
+        "--from-module-url",
+        from_module_url,
+        "--to-module-url",
+        to_module_url,
+        "--work-dir",
+        work_dir,
+        "--terraform-bin",
+        terraform_bin,
+        "--terraform-assume-role-arn",
+        role_arn,
+        "--expected-account",
+        account,
+        "--parameters",
+        f"PermissionsBoundaryArn={boundary_arn}",
+    ]
+
+
+def run_terraform_upgrade(stack_name, module_url, terraform_bin, started=None):
+    """Run the upgrade driver from the newest published release's module to
+    ``module_url`` (this build's). Returns ``(success, summary_text)``; never
+    raises. ``started`` is the build's ``time.monotonic()`` at start."""
+    region = ci_region()
+    work_dir = terraform_work_directory(f"upgrade-{stack_name}")
+    os.makedirs(work_dir, exist_ok=True)
+    summary = ""
+    success = False
+    iam_created = False
+    try:
+        source = resolve_terraform_upgrade_from(region)
+        summary += (
+            f"FROM: release {source['version']} ({source['module_url']}, sha256 "
+            f"{source['sha256'][:12]}…, named by {source['pointer_url']})\n"
+            f"TO: this build ({module_url})\n\n"
+        )
+        print(f"⏫ Terraform upgrade run: {source['version']} -> this build")
+        role_arn, boundary_arn = create_iam_resources(
+            stack_name, terraform_deployer_arn=_caller_principal_arn()
+        )
+        iam_created = True
+        if not role_arn or not boundary_arn or not _wait_until_assumable(role_arn):
+            return False, summary + (
+                f"❌ the run's TFDeployRole for {stack_name} was not usable"
+            )
+        account = boto3.client("sts").get_caller_identity()["Account"]
+        cmd = terraform_upgrade_driver_command(
+            stack_name,
+            SUPPRESS_INVITE_ADMIN_EMAIL,
+            source["module_url"],
+            module_url,
+            terraform_bin,
+            work_dir,
+            region,
+            account,
+            role_arn,
+            boundary_arn,
+        )
+        deadline, timeout = terraform_migration_budget(
+            time.monotonic() - started if started is not None else 0,
+            build_timeout_minutes(),
+            reserve_seconds=TERRAFORM_UPGRADE_RESERVE_SECONDS,
+            fallback_minutes=TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES,
+        )
+        cmd += ["--deadline-seconds", str(deadline)]
+        print(f"⏫ deadline {deadline // 60} min, hard stop {timeout // 60} min")
+        try:
+            proc = subprocess.run(cmd, timeout=timeout, check=False)  # nosec B603
+            success = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            summary += (
+                f"❌ the upgrade driver ran past {timeout // 60} minutes and was "
+                "stopped; its teardown may not have finished\n\n"
+            )
+        summary_path = os.path.join(work_dir, "summary.txt")
+        if os.path.isfile(summary_path):
+            with open(summary_path) as f:
+                summary += f.read()
+        else:
+            summary += "❌ the upgrade driver wrote no summary"
+    except Exception as e:  # noqa: BLE001 - reported as the run's result
+        summary += f"❌ the upgrade run failed before the driver finished: {e}"
+    finally:
+        if iam_created:
+            for finding in cleanup_iam_resources(stack_name):
+                summary += f"\n⚠️ IAM cleanup: {finding}"
+    if not success:
+        analysis = generate_migration_failure_summary(
+            summary,
+            migration_failure_evidence(work_dir),
+            description=TERRAFORM_UPGRADE_ANALYSIS_DESCRIPTION,
+        )
+        summary = f"{analysis}\n\n{summary}"
+    return success, summary
+
+
+TERRAFORM_UPGRADE_ANALYSIS_DESCRIPTION = (
+    "The weekly Terraform-upgrade integration test of the IDP accelerator failed. "
+    "It deploys the newest published release's Terraform module, seeds it, "
+    "upgrades it in place with `idp-cli deploy --terraform` to the module built "
+    "from the commit under test, verifies identities, data, sign-in, processing "
+    "and an empty re-plan, and destroys the deployment."
+)
 
 
 #: The driver's context beside run.json in a migration run's mirror
@@ -13031,6 +13412,7 @@ def main():
     run_options = read_ci_run_options()
     terraform = None
     migration = False
+    upgrade = False
     parity = False
     parity_twin = None
     try:
@@ -13038,6 +13420,9 @@ def main():
         os.environ[IAC_VARIABLE] = iac
         migration = terraform_migration_mode(options=run_options)
         os.environ[TERRAFORM_MIGRATION_VARIABLE] = "true" if migration else ""
+        os.environ[TERRAFORM_VPC_VARIABLE] = (
+            "true" if terraform_vpc_mode(options=run_options) else ""
+        )
         if migration:
             refusal = (
                 terraform_migration_unsupported_reason()
@@ -13046,6 +13431,17 @@ def main():
             if refusal:
                 raise ValueError(refusal)
             print("🔀 Weekly Terraform-migration run: the primary suite does not run")
+            terraform_bin = ensure_terraform_binary()
+        upgrade = terraform_upgrade_mode(options=run_options)
+        os.environ[TERRAFORM_UPGRADE_VARIABLE] = "true" if upgrade else ""
+        if upgrade:
+            refusal = (
+                terraform_upgrade_unsupported_reason()
+                or terraform_upgrade_timeout_shortfall()
+            )
+            if refusal:
+                raise ValueError(refusal)
+            print("⏫ Weekly Terraform-upgrade run: the primary suite does not run")
             terraform_bin = ensure_terraform_binary()
         if iac == IAC_TERRAFORM:
             refusal = terraform_unsupported_reason()
@@ -13059,6 +13455,12 @@ def main():
         else:
             print("IaC: CloudFormation")
         parity = resolve_terraform_parity(run_options, stack_name)
+        # The VPC run is refused here, before a sweep or a deploy, rather than at
+        # the deploy: after the parity choice is in the environment, because it
+        # refuses that combination, and on either IaC branch, because it refuses a
+        # CloudFormation run too.
+        if terraform_vpc_param_pairs():
+            print("🧱 Weekly Terraform VPC run: DeployInVPC=true in the test VPC")
     except Exception as e:  # noqa: BLE001
         refusal_text = label_ci_run(f"❌ Run refused before deploying anything: {e}")
         print(refusal_text)
@@ -13157,7 +13559,7 @@ def main():
 
     # Step 1: Publish templates to S3
     try:
-        artifacts = publish_artifacts(IAC_TERRAFORM if migration else iac)
+        artifacts = publish_artifacts(IAC_TERRAFORM if migration or upgrade else iac)
         template_url = artifacts["template_url"]
         print(f"Publish script ran successfully template url {template_url}")
         if iac == IAC_TERRAFORM:
@@ -13173,11 +13575,19 @@ def main():
         failure_reason = f"publish/build failed: {e}"
         ai_summary = generate_publish_failure_summary(str(e))
 
-    # A weekly Terraform-migration run ends here: the driver replaces the primary
-    # suite, the headless check and the probes, and its own summary is the result.
-    if migration:
-        if publish_success:
+    # A weekly Terraform-migration run ends here, and so does a weekly
+    # Terraform-upgrade run: the driver replaces the primary suite, the headless
+    # check and the probes, and its own summary is the result.
+    if migration or upgrade:
+        if publish_success and migration:
             ok, migration_summary = run_terraform_migration(
+                stack_name,
+                artifacts["terraform_module_url"],
+                terraform_bin,
+                started=main_started,
+            )
+        elif publish_success:
+            ok, migration_summary = run_terraform_upgrade(
                 stack_name,
                 artifacts["terraform_module_url"],
                 terraform_bin,

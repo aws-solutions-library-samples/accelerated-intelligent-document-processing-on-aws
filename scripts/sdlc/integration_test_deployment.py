@@ -222,6 +222,44 @@ def iac_requested(environ: dict | None = None) -> str:
     return value
 
 
+#: The weekly Terraform VPC schedule: a Terraform run (``IDP_IAC=terraform``) whose
+#: primary stack is deployed into the pipeline's persistent test VPC
+#: (``DeployInVPC=true`` and the test VPC's subnet, security group and execute-api
+#: endpoint ids). The same name codebuild_deployment.py reads in terraform_vpc_mode.
+#: Reaches the build in ci_run_options.json as ``terraform_vpc``.
+TERRAFORM_VPC_VARIABLE = "IDP_TERRAFORM_VPC"
+
+
+def terraform_vpc_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform VPC run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError when the schedule does not also carry
+    ``IDP_IAC=terraform``: the VPC settings are applied by the Terraform deploy
+    path only, so a CloudFormation run carrying the variable would report a VPC
+    result for a deployment that was not in a VPC. Raises too beside
+    ``IDP_TERRAFORM_PARITY=true``, whose CloudFormation twin is not in the VPC.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_VPC_VARIABLE, "")).strip().lower() != "true":
+        return False
+    if iac_requested(env) != IAC_TERRAFORM:
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true needs {IAC_VARIABLE}=terraform on the "
+            "same schedule: the VPC settings are applied by the Terraform deploy only."
+        )
+    if str(env.get(TERRAFORM_PARITY_VARIABLE, "")).strip().lower() == "true":
+        raise ValueError(
+            f"{TERRAFORM_VPC_VARIABLE}=true cannot be combined with "
+            f"{TERRAFORM_PARITY_VARIABLE}=true: the parity check's CloudFormation "
+            "twin is deployed outside the VPC, so every VPC setting would read as a "
+            "difference. Give each its own schedule."
+        )
+    return True
+
+
 #: The weekly Terraform-migration schedule: the build runs
 #: scripts/sdlc/terraform_migration_test.py instead of the primary suite (the same
 #: name codebuild_deployment.py reads in terraform_migration_mode). Reaches the
@@ -254,6 +292,50 @@ def terraform_migration_requested(environ: dict | None = None) -> bool:
             raise ValueError(
                 f"{TERRAFORM_MIGRATION_VARIABLE}=true cannot be combined with "
                 f"{clash}: the migration run replaces the primary suite. Give each "
+                "its own schedule."
+            )
+    return True
+
+
+#: The weekly Terraform-upgrade schedule: the build runs
+#: scripts/sdlc/terraform_upgrade_test.py instead of the primary suite, upgrading a
+#: deployment of the newest published release's module to the module this build
+#: publishes (the same name codebuild_deployment.py reads in
+#: terraform_upgrade_mode). Reaches the build in ci_run_options.json as
+#: ``terraform_upgrade``.
+TERRAFORM_UPGRADE_VARIABLE = "IDP_RUN_TERRAFORM_UPGRADE"
+
+
+def terraform_upgrade_requested(environ: dict | None = None) -> bool:
+    """Whether this run is the weekly Terraform-upgrade run.
+
+    Honoured on a scheduled pipeline only, for the reason variant_probes_requested
+    gives. Raises ValueError beside any other selector of what a scheduled run
+    does (the probes, a region run, a Terraform run, the migration run): the
+    upgrade run replaces the primary suite, so any of those would report a result
+    for a run that never happened.
+    """
+    env = os.environ if environ is None else environ
+    if env.get("CI_PIPELINE_SOURCE", "") != "schedule":
+        return False
+    if str(env.get(TERRAFORM_UPGRADE_VARIABLE, "")).strip().lower() != "true":
+        return False
+    for clash, asked in (
+        (f"{VARIANT_PROBES_VARIABLE}=true", variant_probes_requested(env)),
+        (REGION_RUN_VARIABLE, bool(region_run_requested(env))),
+        (
+            f"{IAC_VARIABLE}=terraform",
+            str(env.get(IAC_VARIABLE, "")).strip().lower() == IAC_TERRAFORM,
+        ),
+        (
+            f"{TERRAFORM_MIGRATION_VARIABLE}=true",
+            str(env.get(TERRAFORM_MIGRATION_VARIABLE, "")).strip().lower() == "true",
+        ),
+    ):
+        if asked:
+            raise ValueError(
+                f"{TERRAFORM_UPGRADE_VARIABLE}=true cannot be combined with "
+                f"{clash}: the upgrade run replaces the primary suite. Give each "
                 "its own schedule."
             )
     return True
@@ -566,6 +648,11 @@ PROBE_RUN_MONITOR_MAX_WAIT_SECONDS = 11700  # 195 min
 # headroom.
 MIGRATION_RUN_MONITOR_HANDOFF_SECONDS = 15000  # 250 min
 MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS = 15600  # 260 min
+# The weekly Terraform-upgrade run is budgeted against the same 240-minute build
+# timeout (TERRAFORM_UPGRADE_MIN_TIMEOUT_MINUTES in codebuild_deployment.py), so
+# its monitor watches as long as the migration run's.
+UPGRADE_RUN_MONITOR_HANDOFF_SECONDS = MIGRATION_RUN_MONITOR_HANDOFF_SECONDS
+UPGRADE_RUN_MONITOR_MAX_WAIT_SECONDS = MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS
 # Re-assume this far before the ~1h chained-session expiry.
 CREDENTIAL_REFRESH_SECONDS = 3000  # 50 min
 GITLAB_ROLE_NAME = "idp-sdlc-GitLab"
@@ -638,6 +725,8 @@ def write_ci_run_options(
         "iac": iac_requested(env),
         "terraform_migration": terraform_migration_requested(env),
         "terraform_parity": terraform_parity_requested(env),
+        "terraform_upgrade": terraform_upgrade_requested(env),
+        "terraform_vpc": terraform_vpc_requested(env),
     }
     try:
         pathlib.Path(path).write_text(
@@ -1034,6 +1123,8 @@ def main():
         iac = iac_requested()
         migration = terraform_migration_requested()
         parity = terraform_parity_requested()
+        upgrade = terraform_upgrade_requested()
+        vpc = terraform_vpc_requested()
     except ValueError as e:
         print(f"❌ {e}")
         sys.exit(1)
@@ -1042,8 +1133,19 @@ def main():
             "🔀 Weekly Terraform-migration run — migrating a genai-idp-terraform "
             "deployment onto the built-in module instead of the primary suite"
         )
-    if iac == IAC_TERRAFORM:
+    if upgrade:
+        print(
+            "⏫ Weekly Terraform-upgrade run — upgrading a deployment of the newest "
+            "published release's module to this build's instead of the primary suite"
+        )
+    if iac == IAC_TERRAFORM and vpc:
+        print(
+            "🧱 Weekly Terraform VPC run — deploying the accelerator with Terraform "
+            "into the persistent test VPC"
+        )
+    elif iac == IAC_TERRAFORM:
         print("🧱 Nightly Terraform run — deploying the accelerator with Terraform")
+    if iac == IAC_TERRAFORM:
         if parity:
             print(
                 "🪞 With the parity check — a CloudFormation twin of the same commit "
@@ -1061,7 +1163,7 @@ def main():
 
     # Execute deployment steps
     write_ci_run_options()
-    if (iac == IAC_TERRAFORM or migration) and not pathlib.Path(
+    if (iac == IAC_TERRAFORM or migration or upgrade) and not pathlib.Path(
         CI_RUN_OPTIONS_FILE
     ).is_file():
         # The file is the only way the choice reaches CodeBuild, which reads no
@@ -1083,6 +1185,13 @@ def main():
             version_id,
             max_wait=MIGRATION_RUN_MONITOR_MAX_WAIT_SECONDS,
             handoff_after=MIGRATION_RUN_MONITOR_HANDOFF_SECONDS,
+        )
+    elif upgrade:
+        result = monitor_pipeline(
+            pipeline_name,
+            version_id,
+            max_wait=UPGRADE_RUN_MONITOR_MAX_WAIT_SECONDS,
+            handoff_after=UPGRADE_RUN_MONITOR_HANDOFF_SECONDS,
         )
     elif variant_probes_requested():
         result = monitor_pipeline(

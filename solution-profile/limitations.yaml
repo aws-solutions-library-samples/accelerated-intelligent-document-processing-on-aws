@@ -377,6 +377,26 @@ limitations:
     mitigations:
       - none
 
+  - id: unsupported-file-format
+    title: Files of a type the OCR step does not route are guessed, not refused
+    description: >-
+      The OCR step routes a file by its extension (PDF, the image types, Word,
+      Excel, CSV and plain text). A file with any other extension, such as a
+      PowerPoint deck, an HEIC photo, an email message or a zip archive, is not
+      refused at upload: its type is guessed from the content (a PDF header, an
+      Office zip, UTF-8 text) and anything else is read as a PDF, so the document
+      fails or is processed as text. Such files need converting before upload or
+      in a preprocessing hook. The fit check refuses them before upload.
+    evidence:
+      - lib/idp_common_pkg/idp_common/ocr/file_types.py
+      - lib/idp_common_pkg/idp_common/ocr/service.py
+      - docs/fit-check.md
+    impact: low
+    detect_with:
+      - question:file-formats
+    mitigations:
+      - extension:pipeline-hook-preprocessing
+
   # ----------------------------------------------------- access-control gaps
   - id: profile-scope-gaps
     title: Some surfaces are not scoped by configuration profile

@@ -1151,8 +1151,12 @@ CloudFormation deployment of the same version, but these things differ:
   inputs are not known until apply is checked during the apply; see
   [Using the module beside your own resources](#using-the-module-beside-your-own-resources).
 - The full stack has been applied, re-planned with no changes, and destroyed with both
-  Terraform and OpenTofu, in a development account. The headless and GovCloud
-  modules are validated offline on every pull request, but neither has been applied.
+  Terraform and OpenTofu, in a development account. The standard module has also been
+  applied with `DeployInVPC=true` into a VPC with private subnets, NAT egress and an
+  `execute-api` interface endpoint, in `us-east-1` with Terraform: it re-planned with no
+  changes, processed a sample document end to end with the pipeline's functions in the
+  VPC, and was destroyed. The headless and GovCloud modules are validated offline on
+  every pull request, but neither has been applied.
 - `terraform validate` and `plan` print deprecation warnings for `hash_key` and
   `range_key` on the DynamoDB tables. They are warnings from version 6 of the `aws`
   provider and do not affect the deployment.

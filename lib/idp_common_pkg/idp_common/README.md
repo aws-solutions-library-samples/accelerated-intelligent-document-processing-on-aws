@@ -725,12 +725,21 @@ So:
   (three throttles, a missing table, a server error, all `ClientError`), the client-side
   family is `BotoCoreError`, and both shipped callers turn an empty selection into a
   reported success. Propagating cannot widen a delete, since a raise selects nothing.
-- A record the predicate cannot read propagates too, rather than being skipped. An
-  `ObjectKey` written as a DynamoDB `N` arrives as a `Decimal`, and a selector that
-  skipped it would return a **partial** list — which is the one shape of the old
-  behaviour that actually deleted something and called it complete. Note that
-  `get_documents_by_pattern` answers `TypeError` for this and for a caller who passed a
-  non-string pattern, so the message is what distinguishes them.
+- A record's document key is read from its partition key (`PK = "doc#<key>"`), not
+  from its `ObjectKey` attribute. `PK` is the table's hash key, declared as a string,
+  so every record DynamoDB returns has one, and it is the identity the deleter
+  addresses. `ObjectKey` has no type guarantee — one written as a DynamoDB `N` arrives
+  as a `Decimal`, and a `NULL` or missing one arrives as `None` or not at all — so a
+  selector that read it either raised on such a record, failing the whole delete
+  (#2165), or skipped it, returning a **partial** list. Reading `PK`, the record is
+  selected on the same terms as every other, and one `WARNING` counts and names the
+  selected records whose `ObjectKey` could not be read. `ObjectKey` is the
+  fallback only when `PK` is not a string; a string `PK` without the `doc#` prefix, or a
+  record with no usable key at all, raises `TypeError`, because its membership is
+  unknown. This scan cannot return either from a real table.
+- A document is selected once. Each output-version run adds a `run#<id>` record under
+  the document's `PK`, so the scan sees a document once per run plus once for the
+  document record, and the selectors de-duplicate the keys, keeping first-seen order.
 
 Callers need not add their own handling to stay safe, but should expect to see these:
 `idp_sdk`'s `batch.delete_documents()` re-raises as `IDPProcessingError` and

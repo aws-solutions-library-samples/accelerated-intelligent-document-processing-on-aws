@@ -39,6 +39,7 @@ export default defineConfig({
             },
             { label: "Hands-on Workshops", slug: "workshops" },
             { label: "Solution Profile", slug: "solution-profile" },
+            { label: "Fit Check", slug: "fit-check" },
           ],
         },
         {
@@ -199,6 +200,10 @@ export default defineConfig({
                 {
                   label: "Auto Optimizer (Beta)",
                   slug: "extensions/auto-optimizer",
+                },
+                {
+                  label: "Decision Model: Strands Decider",
+                  slug: "extensions/decision-model-decider",
                 },
                 {
                   label: "IDP Monitor",

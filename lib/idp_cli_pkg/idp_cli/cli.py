@@ -7850,8 +7850,19 @@ def multi_discover(
 
     if result.noise_documents > 0:
         console.print(
-            f"[yellow]⚠ {result.noise_documents} documents failed embedding[/yellow]"
+            f"[yellow]⚠ {result.noise_documents} documents were left in no class "
+            "(their cluster was too small and was dropped as noise)[/yellow]"
         )
+        for key in result.noise_document_keys:
+            console.print(f"[yellow]    {escape(key)}[/yellow]")
+
+    if result.failed_embeddings > 0:
+        console.print(
+            f"[yellow]⚠ {result.failed_embeddings} documents failed embedding "
+            "and were not clustered[/yellow]"
+        )
+        for key in result.failed_embedding_keys:
+            console.print(f"[yellow]    {escape(key)}[/yellow]")
 
     if result.config_version:
         console.print(
@@ -8783,6 +8794,11 @@ cli.add_command(_tenancy_group)
 from .mcp import mcp as _mcp_group  # noqa: E402
 
 cli.add_command(_mcp_group)
+
+# `idp-cli fit-check`, likewise.
+from .fit_check import fit_check as _fit_check_command  # noqa: E402
+
+cli.add_command(_fit_check_command)
 
 # `idp-cli terraform ...` (Terraform-only commands) likewise.
 from .terraform import configure as _configure_terraform  # noqa: E402

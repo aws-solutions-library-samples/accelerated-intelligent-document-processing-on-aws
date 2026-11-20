@@ -98,6 +98,12 @@ the event and the response as the result. That is the direct-invocation contract
 the Strands Decider's Lambda deployment. `sagemaker` and `bedrock_custom` are declared
 on `ExternalModelConfig` and refused until they are implemented.
 
+The `decision-model-decider` Feature Platform extension
+(`feature-platform/decision-model-decider/`) deploys a function that serves this
+contract, `GENAIIDP-decider`, and its stack's `DeciderEndpoint` output is the `live`
+alias ARN to configure. The client accepts an alias- or version-qualified ARN and
+meters on the bare function name.
+
 The function name must start with `GENAIIDP-`, the same convention `LambdaHook` uses.
 The pipeline's existing invoke permission is scoped to that prefix, so no new IAM is
 needed. `endpoint` is required: a configuration that selects a decision

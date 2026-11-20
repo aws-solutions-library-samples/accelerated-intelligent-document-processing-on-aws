@@ -524,6 +524,11 @@ terraform_checks:
     # developer-tests.yml and the Makefile disagree.
     TERRAFORM_CHECK_BINARIES: "terraform@1.7.5 terraform@1.17.1 tofu@1.7.10 tofu@1.13.9"
     TERRAFORM_CHECK_CACHE: "$CI_PROJECT_DIR/.cache/idp-terraform-check"
+    # Full history, mirroring GitHub's fetch-depth: 0: `make
+    # terraform-replay-releases` (inside terraform-check) reads the template tree
+    # of each release in terraform/tools/replay_releases.json from its recorded
+    # commit.
+    GIT_DEPTH: 0
 
   # Verified binaries plus the provider plugin cache (~430 MB compressed). Keyed on
   # the file that pins both and on the vendored awscc schema whose version the gate
@@ -657,6 +662,12 @@ integration_tests:
   #     with terraform/tools/parity.py (terraform_parity_requested, honoured on a
   #     schedule only and refused without IDP_IAC=terraform). Meant for a weekly
   #     schedule: it adds one CloudFormation deployment to the run.
+  #   - the weekly Terraform VPC schedule        → auto, primary suite only, against
+  #     a Terraform deployment of the accelerator in the pipeline's persistent test
+  #     VPC (DeployInVPC=true with the IDP_TEST_* ids). The schedule carries
+  #     IDP_IAC=terraform AND IDP_TERRAFORM_VPC=true; terraform_vpc_requested
+  #     honours the second only on a schedule and refuses it without the first.
+  #     Inactive until the schedule is created; same resource_group.
   #   - the weekly Terraform-migration schedule  → auto, and NOT the primary suite:
   #     the build runs scripts/sdlc/terraform_migration_test.py instead, which
   #     deploys a pinned awslabs/genai-idp-terraform release, migrates it in place
@@ -667,6 +678,16 @@ integration_tests:
   #     the schedule is created, and holds the same resource_group. ⚠️ Under the
   #     run's TFDeployRole the upstream deploy is refused today (upstream's IAM
   #     roles carry no permissions boundary); see CI_TEST_COVERAGE.md.
+  #   - the weekly Terraform-upgrade schedule    → auto, and NOT the primary suite:
+  #     the build runs scripts/sdlc/terraform_upgrade_test.py instead, which
+  #     deploys the newest published release's module (read from the release
+  #     bucket's idp-terraform-latest.json, then taken from that version's own
+  #     key), upgrades it in place to the module the build published, verifies
+  #     and destroys it. The schedule carries IDP_RUN_TERRAFORM_UPGRADE=true,
+  #     honoured on a schedule only (terraform_upgrade_requested) and refused
+  #     beside IDP_RUN_PROBES, IDP_TEST_REGION, IDP_IAC=terraform or
+  #     IDP_RUN_TERRAFORM_MIGRATION. Inactive until the schedule is created, and
+  #     holds the same resource_group.
   #   - any MR targeting develop                 → MANUAL button on the MR page
   #   - push to develop                          → MANUAL button on the pipeline
   #   - anything else                            → never
@@ -1053,7 +1074,12 @@ integration_tests:
       if region_run:
           status = f"🌍 WEEKLY REGION RUN · {region_run} · " + status
       if terraform_run:
-          status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+          # The weekly Terraform VPC run is a Terraform run whose schedule also
+          # carries IDP_TERRAFORM_VPC=true (terraform_vpc_requested).
+          vpc_run = os.environ.get("IDP_TERRAFORM_VPC", "").strip().lower() == "true"
+          status = (
+              "🧱 WEEKLY TERRAFORM VPC RUN · " if vpc_run else "🧱 NIGHTLY TERRAFORM RUN · "
+          ) + status
       # The weekly Terraform-migration run, read the same way as the build reads it
       # (terraform_migration_requested in integration_test_deployment.py).
       migration_run = (
@@ -1062,11 +1088,19 @@ integration_tests:
       )
       if migration_run:
           status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+      # The weekly Terraform-upgrade run, read the same way as the build reads it
+      # (terraform_upgrade_requested in integration_test_deployment.py).
+      upgrade_run = (
+          os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+          and os.environ.get("IDP_RUN_TERRAFORM_UPGRADE", "").strip().lower() == "true"
+      )
+      if upgrade_run:
+          status = "⏫ WEEKLY TERRAFORM UPGRADE RUN · " + status
       # And the CloudFormation nightly: a schedule that is none of the above, so
       # every scheduled post in the channel names the run it is.
       cloudformation_run = (
           os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
-          and not (probe_run or region_run or terraform_run or migration_run)
+          and not (probe_run or region_run or terraform_run or migration_run or upgrade_run)
       )
       if cloudformation_run:
           status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
@@ -2218,7 +2252,12 @@ nightly_notification:
               and os.environ.get("IDP_IAC", "").strip().lower() == "terraform"
           )
           if terraform_run:
-              status = "🧱 NIGHTLY TERRAFORM RUN · " + status
+              # The weekly Terraform VPC run is a Terraform run whose schedule also
+              # carries IDP_TERRAFORM_VPC=true (terraform_vpc_requested).
+              vpc_run = os.environ.get("IDP_TERRAFORM_VPC", "").strip().lower() == "true"
+              status = (
+                  "🧱 WEEKLY TERRAFORM VPC RUN · " if vpc_run else "🧱 NIGHTLY TERRAFORM RUN · "
+              ) + status
           # And the weekly Terraform-migration run, read exactly as the post in
           # integration_tests reads it.
           migration_run = (
@@ -2227,11 +2266,19 @@ nightly_notification:
           )
           if migration_run:
               status = "🔀 WEEKLY TERRAFORM MIGRATION RUN · " + status
+          # And the weekly Terraform-upgrade run, read exactly as the post in
+          # integration_tests reads it.
+          upgrade_run = (
+              os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
+              and os.environ.get("IDP_RUN_TERRAFORM_UPGRADE", "").strip().lower() == "true"
+          )
+          if upgrade_run:
+              status = "⏫ WEEKLY TERRAFORM UPGRADE RUN · " + status
           # And the CloudFormation nightly, read exactly as the post in
           # integration_tests reads it.
           cloudformation_run = (
               os.environ.get("CI_PIPELINE_SOURCE", "") == "schedule"
-              and not (probe_run or region_run or terraform_run or migration_run)
+              and not (probe_run or region_run or terraform_run or migration_run or upgrade_run)
           )
           if cloudformation_run:
               status = "☁️ NIGHTLY CLOUDFORMATION RUN · " + status
@@ -2334,6 +2381,8 @@ ai_ux_test_stories_nightly:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_IAC =~ /^\s*terraform\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_TERRAFORM_MIGRATION =~ /^\s*true\s*$/i
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_TERRAFORM_UPGRADE =~ /^\s*true\s*$/i
       when: never
     - if: $CI_PIPELINE_SOURCE == "schedule" && $IDP_RUN_LOAD_PROBE =~ /^\s*true\s*$/i
       when: never

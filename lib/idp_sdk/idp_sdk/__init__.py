@@ -67,6 +67,7 @@ from .models import (
     ChatResponse,
     # Config models
     ConfigActivateResult,
+    ConfigBootstrapResult,
     ConfigCreateResult,
     ConfigDeleteResult,
     ConfigDownloadResult,
@@ -104,6 +105,7 @@ from .models import (
     FailureAnalysis,
     FailureCause,
     FieldComparison,
+    FitCheckResult,
     # Manifest models
     LoadTestResult,
     ManifestDocument,
@@ -232,6 +234,7 @@ __all__ = [
     "FieldComparison",
     "DeleteResult",
     "UseAsBaselineResult",
+    "FitCheckResult",
     # Assessment models
     "AssessmentConfidenceResult",
     "AssessmentFieldConfidence",
@@ -251,6 +254,7 @@ __all__ = [
     "ConfigActivateResult",
     "ConfigVersionInfo",
     "ConfigListResult",
+    "ConfigBootstrapResult",
     "ConfigDeleteResult",
     "ConfigSyncBdaResult",
     "ConfigRevisionInfo",
