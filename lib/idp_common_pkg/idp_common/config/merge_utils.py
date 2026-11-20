@@ -1005,6 +1005,7 @@ def validate_config(
     _validate_schema_fields(config.get("classes", []), result)
     _validate_fallback_class(validated, result)
     _validate_page_order(validated, result)
+    _validate_agentic_flag_against_mode(config, validated, result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
     # and the runtime reads `config.extraction.agentic.enabled` off this same model.
@@ -2126,6 +2127,38 @@ def _validate_page_order(validated: Any, result: Dict[str, Any]) -> None:
             "from: every multi-page document keeps its scan order and carries a "
             "classification_page_order_not_applied warning."
         )
+
+
+def _validate_agentic_flag_against_mode(
+    config: Dict[str, Any], validated: Any, result: Dict[str, Any]
+) -> None:
+    """Warn when ``extraction.mode`` overrides the ``agentic.enabled`` the author set.
+
+    ``extraction.mode`` decides the extraction path whenever it is set, and
+    ``agentic.enabled`` is derived from it (``reconcile_mode_and_agentic``). A
+    configuration downloaded in full carries ``mode: simple``, so adding
+    ``agentic.enabled: true`` to it runs simple extraction, and nothing in a result
+    says so except ``extraction_method: traditional``. Compared against the config as
+    submitted, so only a flag the author wrote is reported, and against the validated
+    model, which is what the runtime reads.
+    """
+    extraction = config.get("extraction")
+    agentic = extraction.get("agentic") if isinstance(extraction, dict) else None
+    if not isinstance(agentic, dict) or agentic.get("enabled") is None:
+        return
+    written = agentic["enabled"]
+    if isinstance(written, str):
+        written = written.strip().lower() in ("true", "1", "yes", "on")
+    requested = bool(written)
+    if requested == validated.extraction.agentic.enabled:
+        return
+    wanted = "advanced" if requested else "simple"
+    result["warnings"].append(
+        f"extraction.agentic.enabled is {str(requested).lower()}, but "
+        f"extraction.mode is '{validated.extraction.mode}', and the mode decides the "
+        f"extraction path, so extraction will run in {validated.extraction.mode} "
+        f"mode. Set extraction.mode: {wanted} to get what agentic.enabled asks for."
+    )
 
 
 def _validate_schema_fields(
