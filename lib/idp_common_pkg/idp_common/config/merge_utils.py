@@ -912,6 +912,7 @@ def validate_config(
     _validate_document_image_placeholders(validated, sent_prompts, result)
     _validate_schema_fields(config.get("classes", []), result)
     _validate_fallback_class(validated, result)
+    _validate_page_order(validated, result)
     # The extraction path is decided by the validated model, never by re-reading the
     # merged dict: `reconcile_mode_and_agentic` makes `extraction.mode` authoritative,
     # and the runtime reads `config.extraction.agentic.enabled` off this same model.
@@ -2006,6 +2007,33 @@ def _validate_fallback_class(validated: Any, result: Dict[str, Any]) -> None:
         f"schema and nothing is extracted from it. Name a configured class, or use "
         f"the built-in '{UNCLASSIFIED_CLASS}'.{hint}"
     )
+
+
+def _validate_page_order(validated: Any, result: Dict[str, Any]) -> None:
+    """Warn when ``document_shape.pageOrder: printed_page_numbers`` cannot act.
+
+    The page numbers are read from the OCR text classification already has, so the
+    setting does nothing with no OCR text (``ocr.backend: none``) and nothing in
+    BDA mode, where the pipeline's classification step does not run. Neither is
+    an error: the documents are still classified, in scan order. The first case
+    also records a ``classification_page_order_not_applied`` warning on every
+    multi-page document, which is the cost worth knowing before saving it.
+    """
+    if validated.classification.document_shape.pageOrder != "printed_page_numbers":
+        return
+    if validated.use_bda:
+        result["warnings"].append(
+            "classification.document_shape.pageOrder is 'printed_page_numbers', "
+            "but use_bda is true and BDA mode does not run the classification step "
+            "that reads page numbers, so pages keep their scan order."
+        )
+    elif str(validated.ocr.backend).lower() == "none":
+        result["warnings"].append(
+            "classification.document_shape.pageOrder is 'printed_page_numbers', "
+            "but ocr.backend is 'none', so there is no OCR text to read page numbers "
+            "from: every multi-page document keeps its scan order and carries a "
+            "classification_page_order_not_applied warning."
+        )
 
 
 def _validate_schema_fields(

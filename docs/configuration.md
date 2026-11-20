@@ -1292,6 +1292,7 @@ classification:
   document_shape:                  # applies under both strategies
     sectionSplitting: llm_determined
     maxPagesForClassification: ALL
+    pageOrder: scan                # or printed_page_numbers; see classification.md#page-order
 ```
 
 Four notes on reading that:
