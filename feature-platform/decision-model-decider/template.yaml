@@ -126,15 +126,19 @@ Parameters:
       decision_model.max_concurrency to cap the decider's share; a reservation
       the account cannot spare fails the install.
 
-  AlarmTopicArn:
+  AlarmEmail:
     Type: String
     Default: ''
+    AllowedPattern: '^$|^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    ConstraintDescription: must be empty or an email address
     Description: >
-      Optional SNS topic ARN the decider's error and throttle alarms notify. Empty
-      leaves the alarms visible in CloudWatch with no notification.
+      Optional email address for the decider's error and throttle alarms. When set,
+      the stack creates the alarms, an encrypted SNS topic and an email
+      subscription, which delivers nothing until the recipient confirms it. Empty
+      creates none of them: an alarm with nobody to notify is not created.
 
 Conditions:
-  HasAlarmTopic: !Not [!Equals [!Ref AlarmTopicArn, '']]
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
   HasPermissionsBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, '']]
   EnableXRayTracingCondition: !Equals [!Ref EnableXRayTracing, 'true']
   UseSnapStart: !Equals [!Ref EnableSnapStart, 'true']
@@ -562,9 +566,28 @@ Resources:
 
   # Errors are refusals and failed calls, which also fail the section they were
   # for; throttles mean the account's Lambda concurrency, or ReservedConcurrency,
-  # could not hold another 10,240 MB environment.
+  # could not hold another 10,240 MB environment. The host's AlertsTopic is not
+  # exported, so the alarms notify a topic of this stack's own, encrypted with the
+  # host's key (whose policy lets CloudWatch alarms use it for SNS), and exist only
+  # when someone is subscribed to it.
+  DeciderAlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      DisplayName: Decision model alerts
+      KmsMasterKeyId: { 'Fn::ImportValue': !Sub '${MainStackName}-CustomerManagedEncryptionKeyArn' }
+
+  DeciderAlarmTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref DeciderAlarmTopic
+      Protocol: email
+      Endpoint: !Ref AlarmEmail
+
   DeciderFunctionErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
     Properties:
       AlarmDescription: The decision model function returned errors
       Namespace: AWS/Lambda
@@ -578,10 +601,12 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
-      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+      AlarmActions:
+        - !Ref DeciderAlarmTopic
 
   DeciderFunctionThrottlesAlarm:
     Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
     Properties:
       AlarmDescription: The decision model function was throttled
       Namespace: AWS/Lambda
@@ -595,7 +620,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       TreatMissingData: notBreaching
-      AlarmActions: !If [HasAlarmTopic, [!Ref AlarmTopicArn], !Ref 'AWS::NoValue']
+      AlarmActions:
+        - !Ref DeciderAlarmTopic
 
   ###########################################################################
   # UI deployer: copies the UI bundle, registers the feature, and installs the
