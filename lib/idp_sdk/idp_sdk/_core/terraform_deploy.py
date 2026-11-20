@@ -579,10 +579,20 @@ def _parse_hcl_value(text: str) -> Any:
     return json.loads(text.replace("$${", "${").replace("%%{", "%{"))
 
 
+def _aligned(pairs: List[Tuple[str, str]], indent: str = "") -> List[str]:
+    """``name = value`` lines with the ``=`` padded to one column.
+
+    ``terraform fmt`` aligns the ``=`` of consecutive single-line attributes, so
+    a file written this way passes ``fmt -check`` in a repository that gates on
+    it. Every caller passes values that fit on one line.
+    """
+    width = max((len(name) for name, _ in pairs), default=0)
+    return [f"{indent}{name.ljust(width)} = {value}" for name, value in pairs]
+
+
 def render_tfvars(values: Dict[str, Any]) -> str:
     lines = [ROOT_MARKER, "# Values for the variables declared in main.tf."]
-    for name in sorted(values):
-        lines.append(f"{name} = {_hcl_value(values[name])}")
+    lines += _aligned([(name, _hcl_value(values[name])) for name in sorted(values)])
     return "\n".join(lines) + "\n"
 
 
@@ -639,11 +649,18 @@ def render_provider_blocks(
     object attribute (``assume_role = { role_arn = ... }``).
     """
     lines: List[str] = []
-    for name, opener in (("aws", "  assume_role {"), ("awscc", "  assume_role = {")):
+    for name in ("aws", "awscc"):
         lines.append(f'provider "{name}" {{')
-        lines.append(f"  region = {json.dumps(region)}")
+        if assume_role_arn and name == "awscc":
+            # Two consecutive attributes, so `terraform fmt` aligns their `=`.
+            lines += _aligned(
+                [("region", json.dumps(region)), ("assume_role", "{")], "  "
+            )
+        else:
+            lines.append(f"  region = {json.dumps(region)}")
+            if assume_role_arn:
+                lines.append("  assume_role {")
         if assume_role_arn:
-            lines.append(opener)
             lines.append(f"    role_arn = {json.dumps(assume_role_arn)}")
             lines.append("  }")
         if default_tags and name == "aws":
@@ -750,16 +767,18 @@ def render_main_tf(
         names = sorted([*names, TAGS_VARIABLE])
     for name in names:
         spec = specs.get(name, {"type": "string", "sensitive": False})
-        blocks.append(f'variable "{name}" {{')
-        blocks.append(f"  type = {spec['type']}")
+        attributes = [("type", str(spec["type"]))]
         if spec.get("sensitive"):
-            blocks.append("  sensitive = true")
+            attributes.append(("sensitive", "true"))
+        blocks.append(f'variable "{name}" {{')
+        blocks += _aligned(attributes, "  ")
         blocks.append("}")
         blocks.append("")
     blocks.append('module "idp" {')
-    blocks.append(f"  source = {json.dumps(source)}")
-    for name in names:
-        blocks.append(f"  {name} = var.{name}")
+    blocks += _aligned(
+        [("source", json.dumps(source))] + [(name, f"var.{name}") for name in names],
+        "  ",
+    )
     blocks.append("}")
     return "\n".join(blocks) + "\n"
 
