@@ -2157,8 +2157,8 @@ def _validate_agentic_flag_against_mode(
     result["warnings"].append(
         "extraction.agentic.enabled is true, but extraction.mode is "
         f"'{validated.extraction.mode}', and the mode decides the extraction path, so "
-        "extraction will run in simple mode. Set extraction.mode: advanced for "
-        "agentic extraction."
+        "extraction will run in simple mode. Set extraction.mode: advanced to run "
+        "advanced extraction."
     )
 
 
