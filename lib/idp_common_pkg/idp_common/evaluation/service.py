@@ -2088,9 +2088,21 @@ class EvaluationService:
                     for actual_section, expected_section in section_pairs
                 }
 
-                # Collect results as they complete
+                # Wait for every section, stopping at the first transient
+                # failure: the whole evaluation is retried, so the sections not
+                # yet started would be wasted judge calls.
                 for future in concurrent.futures.as_completed(future_to_section):
-                    section_id = future_to_section[future]
+                    error = future.exception()
+                    if error is not None and is_transient_error(error):
+                        for pending in future_to_section:
+                            pending.cancel()
+                        raise error
+
+                # Fold the results in section order rather than completion
+                # order, so the document's weighted score (a float sum) and its
+                # excluded-sections list are the same on every evaluation of
+                # the same document (#2133).
+                for future, section_id in future_to_section.items():
                     try:
                         result, metrics = future.result()
                         if result is None:
@@ -2169,13 +2181,7 @@ class EvaluationService:
                             unweighted_score_count += 1
 
                     except Exception as e:
-                        if is_transient_error(e):
-                            # The whole evaluation is retried (the outer except
-                            # surfaces this as TransientError), so the sections
-                            # not yet started would be wasted judge calls.
-                            for pending in future_to_section:
-                                pending.cancel()
-                            raise
+                        # A transient failure was raised by the wait above.
                         logger.error(
                             f"Error evaluating section {section_id}: {traceback.format_exc()}"
                         )

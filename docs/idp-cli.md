@@ -1332,7 +1332,7 @@ idp-cli status [OPTIONS]
 - `--document-id`: Single document ID (check individual document)
 
 **Optional Filters and Display:**
-- `--object-status`: Filter by status (COMPLETED, FAILED, QUEUED, RUNNING, PROCESSING)
+- `--object-status`: Only show documents whose current status is exactly this value, for example `COMPLETED`, `FAILED`, `QUEUED`, `RUNNING` or a step such as `OCR` or `EXTRACTING`. The accepted values are the statuses a document can be recorded with, and `idp-cli status --help` lists them. Without it, documents in every status are shown.
 - `--show-details`: Show detailed document information in table format
 - `--get-time`: Calculate and display timing statistics (processing time, queue time, total time)
 - `--include-metering`: Include Lambda metering statistics (GB-seconds by stage) - requires `--get-time`
@@ -1719,8 +1719,9 @@ idp-cli delete-documents [OPTIONS]
 
 **Options:**
 - `--stack-name` (required): CloudFormation stack name
-- `--status-filter`: Only delete documents with this status (use with --batch-id or --pattern)
-  - Options: `FAILED`, `COMPLETED`, `PROCESSING`, `QUEUED`
+- `--status-filter`: Only delete documents whose current status is exactly this value (use with --batch-id or --pattern).
+  - Accepts any status a document can be recorded with, for example `FAILED`, `COMPLETED` or `QUEUED`; `idp-cli delete-documents --help` lists them all.
+  - A document still being processed carries the name of its current step, such as `RUNNING`, `OCR` or `EXTRACTING`. There is no `PROCESSING` status, and the option refuses that value.
 - `--dry-run`: Show what would be deleted without actually deleting
 - `--force`, `-y`: Skip confirmation prompt
 - `--region`: AWS region (optional)

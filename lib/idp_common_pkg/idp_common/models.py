@@ -828,6 +828,20 @@ class HitlMetadata:
         )
 
 
+def _directory_id_order(entry: Tuple[str, str]) -> Tuple[int, int, str]:
+    """Sort key for an ``(id, prefix)`` pair listed under ``pages/`` or ``sections/``.
+
+    Numeric IDs sort numerically, so page 10 follows page 9 rather than page 1;
+    any other ID sorts after every numeric one, by string. The ID itself is the
+    last element, so two IDs with the same number (``"1"`` and ``"01"``) still
+    have a fixed order and the result never depends on the input order.
+    """
+    entry_id = entry[0]
+    if entry_id.isdecimal():
+        return (0, int(entry_id), entry_id)
+    return (1, 0, entry_id)
+
+
 @dataclass
 class Document:
     """
@@ -1599,8 +1613,13 @@ class Document:
                     page_id = page_dir.split("/")[-2]  # Extract page ID from path
                     page_dirs.add((page_id, page_dir))
 
-            # Process each page directory
-            for page_id, page_dir in page_dirs:
+            # Process each page directory in page-ID order. ``page_dirs`` is a
+            # set, and string hashing is randomised per process, so iterating
+            # it directly gave a different page and section order in each
+            # Lambda process - and with it a different order of the per-packet
+            # section details and of the sums behind the grouping scores
+            # (#2133).
+            for page_id, page_dir in sorted(page_dirs, key=_directory_id_order):
                 result_key = f"{page_dir}result.json"
 
                 try:
@@ -1655,8 +1674,10 @@ class Document:
                     ]  # Extract section ID from path
                     section_dirs.add((section_id, section_dir))
 
-            # Process each section directory
-            for section_id, section_dir in section_dirs:
+            # Process each section directory in section-ID order (see pages).
+            for section_id, section_dir in sorted(
+                section_dirs, key=_directory_id_order
+            ):
                 result_key = f"{section_dir}result.json"
 
                 try:

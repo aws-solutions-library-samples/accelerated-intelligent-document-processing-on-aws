@@ -10,7 +10,7 @@ import io
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import boto3
 import pyarrow as pa
@@ -29,6 +29,11 @@ from idp_common.utils import parse_s3_uri
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+# The members of a Glue ``Column`` in a ``TableInput``. An existing column read
+# back from ``GetTable`` is copied with these members only, so the update sends
+# exactly what the ``Column`` shape defines.
+_GLUE_COLUMN_KEYS = ("Name", "Type", "Comment", "Parameters")
 
 
 class SaveReportingData:
@@ -425,6 +430,67 @@ class SaveReportingData:
 
         return columns
 
+    @staticmethod
+    def _merge_glue_columns(
+        existing_columns: List[Dict[str, Any]], new_columns: List[Dict[str, str]]
+    ) -> Tuple[List[Dict[str, Any]], bool]:
+        """Merge a document's columns into a Glue table's existing columns.
+
+        Glue stores column names lowercased, while the columns built from a
+        document keep the casing of the extraction schema's field names, so
+        names are compared lowercased on both sides. Comparing them as written
+        made every field with an upper-case letter look new, which ran
+        ``UpdateTable`` (and archived a table version) on every save.
+
+        The result is the existing columns in their stored order, with any
+        column the document adds appended. No existing column is removed or
+        renamed: a column an earlier document contributed stays queryable
+        when the current document lacks that field. A column whose type the
+        document maps differently is updated to the document's type, which is
+        the type this code writes to the parquet files; an existing column
+        that carries no type is left as it is.
+
+        Args:
+            existing_columns: ``StorageDescriptor.Columns`` from ``GetTable``.
+            new_columns: Columns derived from the current document's schema.
+
+        Returns:
+            The merged column list and whether it differs from the existing one.
+        """
+        stored: List[Dict[str, Any]] = [
+            {key: col[key] for key in _GLUE_COLUMN_KEYS if key in col}
+            for col in existing_columns
+        ]
+        merged = [dict(col) for col in stored]
+        position = {col["Name"].lower(): i for i, col in enumerate(merged)}
+        for col in new_columns:
+            key = col["Name"].lower()
+            if key not in position:
+                position[key] = len(merged)
+                merged.append(dict(col))
+                continue
+            current = merged[position[key]]
+            current_type = current.get("Type")
+            if current_type and current_type.lower() != col["Type"].lower():
+                current["Type"] = col["Type"]
+        # Decided on the result, not on the steps: two of the document's own
+        # names that differ only in case can rewrite a type and then restore
+        # it, which leaves the table as it was.
+        return merged, merged != stored
+
+    @staticmethod
+    def _merge_glue_table_parameters(
+        existing_table: Dict[str, Any], parameters: Dict[str, str]
+    ) -> Dict[str, str]:
+        """Keep the table's existing ``Parameters`` under the code's own keys.
+
+        ``UpdateTable`` replaces the table-level parameters with the ones it is
+        sent, so sending only the keys this code manages would discard any a
+        crawler or an operator recorded on the table. The code's keys still win.
+        """
+        existing = existing_table.get("Table", {}).get("Parameters") or {}
+        return {**existing, **parameters}
+
     def _create_or_update_glue_table(
         self, section_type: str, schema: pa.Schema, new_section_created: bool = False
     ) -> bool:
@@ -495,8 +561,13 @@ class SaveReportingData:
                 .get("StorageDescriptor", {})
                 .get("Columns", [])
             )
-            existing_column_names = {col["Name"] for col in existing_columns}
-            new_column_names = {col["Name"] for col in columns}
+            merged_columns, columns_changed = self._merge_glue_columns(
+                existing_columns, columns
+            )
+            table_input["StorageDescriptor"]["Columns"] = merged_columns
+            table_input["Parameters"] = self._merge_glue_table_parameters(
+                existing_table, table_input["Parameters"]
+            )
 
             # Check if location has changed
             existing_location = (
@@ -506,8 +577,7 @@ class SaveReportingData:
             )
             new_location = table_input["StorageDescriptor"]["Location"]
 
-            # Check if columns or location have changed
-            columns_changed = bool(new_column_names - existing_column_names)
+            # Check if location has changed
             location_changed = existing_location != new_location
 
             # If there are new columns or location has changed, update the table
@@ -540,6 +610,11 @@ class SaveReportingData:
                 logger.info(
                     f"Creating new Glue table {table_name} for section type: {section_type}"
                 )
+                # Glue stores names lowercased, so collapse the document's own
+                # names that differ only in case, as an update would.
+                table_input["StorageDescriptor"]["Columns"] = self._merge_glue_columns(
+                    [], columns
+                )[0]
                 try:
                     self.glue_client.create_table(
                         DatabaseName=self.database_name, TableInput=table_input
@@ -1698,19 +1773,27 @@ class SaveReportingData:
             existing_columns = existing_table_response["Table"]["StorageDescriptor"][
                 "Columns"
             ]
-            existing_column_names = {col["Name"] for col in existing_columns}
-            new_column_names = {col["Name"] for col in columns}
+            merged_columns, columns_changed = self._merge_glue_columns(
+                existing_columns, columns
+            )
 
-            if not new_column_names.issubset(existing_column_names):
+            if columns_changed:
+                table_input["StorageDescriptor"]["Columns"] = merged_columns
+                table_input["Parameters"] = self._merge_glue_table_parameters(
+                    existing_table_response, table_input["Parameters"]
+                )
                 self.glue_client.update_table(
                     DatabaseName=self.database_name, TableInput=table_input
                 )
                 logger.info(f"Updated Glue table {table_name}")
                 return True
-            return True
+            return False
 
         except Exception as e:
             if "EntityNotFoundException" in str(e):
+                table_input["StorageDescriptor"]["Columns"] = self._merge_glue_columns(
+                    [], columns
+                )[0]
                 try:
                     self.glue_client.create_table(
                         DatabaseName=self.database_name, TableInput=table_input
