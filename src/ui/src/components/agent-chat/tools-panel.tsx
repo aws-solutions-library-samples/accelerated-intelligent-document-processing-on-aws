@@ -15,6 +15,7 @@ import {
   Modal,
   Header,
 } from '@cloudscape-design/components';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
 import { listAvailableAgents } from '../../graphql/generated';
 
 const client = generateClient();
@@ -27,7 +28,155 @@ interface Agent {
   sample_queries?: string[];
 }
 
+const messages = defineMessages<{
+  loadFailed: NoMessageValues;
+  title: NoMessageValues;
+  intro: NoMessageValues;
+  loading: NoMessageValues;
+  empty: NoMessageValues;
+  description: NoMessageValues;
+  sampleQueries: NoMessageValues;
+  insertSampleQuery: { readonly query: string };
+  mcpButton: NoMessageValues;
+  learnMore: NoMessageValues;
+  docsAgentChat: NoMessageValues;
+  docsCustomMcp: NoMessageValues;
+  docsMcpServer: NoMessageValues;
+  mcpTitle: NoMessageValues;
+  mcpClose: NoMessageValues;
+  mcpWhatTitle: NoMessageValues;
+  mcpWhatBody: NoMessageValues;
+  mcpAddingTitle: NoMessageValues;
+  mcpAddingBody: NoMessageValues;
+  mcpLearnMoreTitle: NoMessageValues;
+  mcpLearnMoreBody: { readonly link: MessageTag };
+}>({
+  loadFailed: {
+    id: 'helpPanel.agentChat.loadFailed',
+    defaultMessage: 'Failed to load available agents',
+    description: 'Error in the Agent Chat help panel when the list of agents could not be loaded.',
+  },
+  title: {
+    id: 'helpPanel.agentChat.title',
+    defaultMessage: 'Available Agents',
+    description: 'Heading of the Agent Chat help panel, which lists the agents the chat can use.',
+  },
+  intro: {
+    id: 'helpPanel.agentChat.intro',
+    defaultMessage:
+      'Ask questions about IDP and get answers about the code, features, and more. See available agents below for capabilities.',
+    description: 'First paragraph of the Agent Chat help panel, above the list of agents. IDP is the name of the solution.',
+  },
+  loading: {
+    id: 'helpPanel.agentChat.loading',
+    defaultMessage: 'Loading agents...',
+    description: 'Shown in the Agent Chat help panel while the list of agents loads.',
+  },
+  empty: {
+    id: 'helpPanel.agentChat.empty',
+    defaultMessage: 'No agents available',
+    description: 'Shown in the Agent Chat help panel when the deployment has no agents.',
+  },
+  description: {
+    id: 'helpPanel.agentChat.description',
+    defaultMessage: 'Description:',
+    description: "Label above an agent's description in the Agent Chat help panel. The description shows as the agent registry sends it.",
+  },
+  sampleQueries: {
+    id: 'helpPanel.agentChat.sampleQueries',
+    defaultMessage: 'Sample Queries:',
+    description:
+      "Label above an agent's sample questions in the Agent Chat help panel. Each question is a button that puts it into the chat input.",
+  },
+  insertSampleQuery: {
+    id: 'helpPanel.agentChat.insertSampleQuery',
+    defaultMessage: 'Insert sample query: {query}',
+    description:
+      'Screen-reader label of a sample-question button in the Agent Chat help panel, which puts the question into the chat input. {query} is the question, as the agent registry sends it.',
+  },
+  mcpButton: {
+    id: 'helpPanel.agentChat.mcpButton',
+    defaultMessage: 'NEW: Integrate your own systems with MCP!',
+    description: 'Button in the Agent Chat help panel that explains custom MCP agents. A rocket emoji is shown before it.',
+  },
+  learnMore: {
+    id: 'helpPanel.agentChat.learnMore',
+    defaultMessage: 'Learn more',
+    description: 'Heading of the documentation links at the bottom of the Agent Chat help panel.',
+  },
+  docsAgentChat: {
+    id: 'helpPanel.agentChat.docsAgentChat',
+    defaultMessage: 'Agent Companion Chat',
+    description: 'Documentation link in the Agent Chat help panel: the page about the Agent Companion Chat.',
+  },
+  docsCustomMcp: {
+    id: 'helpPanel.agentChat.docsCustomMcp',
+    defaultMessage: 'Custom MCP Agents',
+    description: 'Documentation link in the Agent Chat help panel: the page about adding your own MCP agents.',
+  },
+  docsMcpServer: {
+    id: 'helpPanel.agentChat.docsMcpServer',
+    defaultMessage: 'MCP Server',
+    description: "Documentation link in the Agent Chat help panel: the page about the solution's MCP server.",
+  },
+  mcpTitle: {
+    id: 'helpPanel.agentChat.mcp.title',
+    defaultMessage: 'Custom MCP Agents',
+    description: 'Title of the dialog, opened from the Agent Chat help panel, that explains custom MCP agents.',
+  },
+  mcpClose: {
+    id: 'helpPanel.agentChat.mcp.close',
+    defaultMessage: 'Close',
+    description: 'Button that closes the custom MCP agents dialog of the Agent Chat help panel.',
+  },
+  mcpWhatTitle: {
+    id: 'helpPanel.agentChat.mcp.whatTitle',
+    defaultMessage: 'What are MCP Agents?',
+    description: 'Heading in the custom MCP agents dialog of the Agent Chat help panel.',
+  },
+  mcpWhatBody: {
+    id: 'helpPanel.agentChat.mcp.whatBody',
+    defaultMessage:
+      'Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your document analysis workflow.',
+    description: 'Paragraph in the custom MCP agents dialog of the Agent Chat help panel, under "What are MCP Agents?".',
+  },
+  mcpAddingTitle: {
+    id: 'helpPanel.agentChat.mcp.addingTitle',
+    defaultMessage: 'Adding Custom Agents',
+    description: 'Heading in the custom MCP agents dialog of the Agent Chat help panel.',
+  },
+  mcpAddingBody: {
+    id: 'helpPanel.agentChat.mcp.addingBody',
+    defaultMessage:
+      "You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate custom tools, APIs, and services specific to your organization's needs without any code changes or redeployments.",
+    description:
+      'Paragraph in the custom MCP agents dialog of the Agent Chat help panel, under "Adding Custom Agents". AWS Secrets Manager is a product name.',
+  },
+  mcpLearnMoreTitle: {
+    id: 'helpPanel.agentChat.mcp.learnMoreTitle',
+    defaultMessage: 'Learn More',
+    description: 'Heading in the custom MCP agents dialog of the Agent Chat help panel, above the link to the documentation.',
+  },
+  mcpLearnMoreBody: {
+    id: 'helpPanel.agentChat.mcp.learnMoreBody',
+    defaultMessage: 'For detailed setup instructions and examples, see the <link>Custom MCP Agent Documentation</link>',
+    description:
+      'Last paragraph of the custom MCP agents dialog of the Agent Chat help panel. The text inside <link> links to the custom MCP agent documentation.',
+  },
+});
+
+/** Renders a `<link>...</link>` element value: the custom MCP agent documentation. */
+const mcpDocsLink = (chunks: React.ReactNode[]): React.JSX.Element => (
+  <Link
+    external
+    href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/custom-MCP-agent.md"
+  >
+    {chunks}
+  </Link>
+);
+
 const ToolsPanel = (): React.JSX.Element => {
+  const intl = useIntl();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,14 +197,14 @@ const ToolsPanel = (): React.JSX.Element => {
         setError(null);
       } catch (err) {
         logger.error('Error fetching agents:', err);
-        setError('Failed to load available agents');
+        setError(intl.formatMessage(messages.loadFailed));
       } finally {
         setLoading(false);
       }
     };
 
     fetchAgents();
-  }, []);
+  }, [intl]);
 
   const handleSampleQueryClick = (query: string): void => {
     // Dispatch a custom event that the chat input can listen to
@@ -70,16 +219,26 @@ const ToolsPanel = (): React.JSX.Element => {
   };
 
   return (
-    <HelpPanel header={<h2>Available Agents</h2>}>
+    <HelpPanel
+      header={
+        <h2>
+          <FormattedMessage {...messages.title} />
+        </h2>
+      }
+    >
       <SpaceBetween size="l">
         <Box>
-          <p>Ask questions about IDP and get answers about the code, features, and more. See available agents below for capabilities.</p>
+          <p>
+            <FormattedMessage {...messages.intro} />
+          </p>
         </Box>
 
         <Box>
           {loading && (
             <Box textAlign="center">
-              <StatusIndicator type="loading">Loading agents...</StatusIndicator>
+              <StatusIndicator type="loading">
+                <FormattedMessage {...messages.loading} />
+              </StatusIndicator>
             </Box>
           )}
 
@@ -91,7 +250,9 @@ const ToolsPanel = (): React.JSX.Element => {
 
           {!loading && !error && agents.length === 0 && (
             <Box textAlign="center">
-              <StatusIndicator type="info">No agents available</StatusIndicator>
+              <StatusIndicator type="info">
+                <FormattedMessage {...messages.empty} />
+              </StatusIndicator>
             </Box>
           )}
 
@@ -108,7 +269,9 @@ const ToolsPanel = (): React.JSX.Element => {
                   <SpaceBetween size="s">
                     {agent.agent_description && (
                       <Box>
-                        <strong>Description:</strong>
+                        <strong>
+                          <FormattedMessage {...messages.description} />
+                        </strong>
                         <br />
                         {agent.agent_description}
                       </Box>
@@ -116,7 +279,9 @@ const ToolsPanel = (): React.JSX.Element => {
 
                     {agent.sample_queries && agent.sample_queries.length > 0 && (
                       <Box>
-                        <strong>Sample Queries:</strong>
+                        <strong>
+                          <FormattedMessage {...messages.sampleQueries} />
+                        </strong>
                         <SpaceBetween size="xs">
                           {agent.sample_queries.map((query) => (
                             <Button
@@ -124,7 +289,7 @@ const ToolsPanel = (): React.JSX.Element => {
                               variant="link"
                               iconName="copy"
                               onClick={() => handleSampleQueryClick(query)}
-                              ariaLabel={`Insert sample query: ${query}`}
+                              ariaLabel={intl.formatMessage(messages.insertSampleQuery, { query })}
                             >
                               {query}
                             </Button>
@@ -140,12 +305,12 @@ const ToolsPanel = (): React.JSX.Element => {
         </Box>
 
         <Button variant="inline-link" onClick={() => setShowMcpInfoModal(true)} {...({ fontSize: 'body-s' } as Record<string, unknown>)}>
-          🚀 NEW: Integrate your own systems with MCP!
+          🚀 <FormattedMessage {...messages.mcpButton} />
         </Button>
 
         <Box>
           <h3>
-            Learn more <Icon name="external" />
+            <FormattedMessage {...messages.learnMore} /> <Icon name="external" />
           </h3>
           <ul>
             <li>
@@ -154,7 +319,7 @@ const ToolsPanel = (): React.JSX.Element => {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Agent Companion Chat
+                <FormattedMessage {...messages.docsAgentChat} />
               </a>
             </li>
             <li>
@@ -163,7 +328,7 @@ const ToolsPanel = (): React.JSX.Element => {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                Custom MCP Agents
+                <FormattedMessage {...messages.docsCustomMcp} />
               </a>
             </li>
             <li>
@@ -172,7 +337,7 @@ const ToolsPanel = (): React.JSX.Element => {
                 target="_blank"
                 rel="noopener noreferrer"
               >
-                MCP Server
+                <FormattedMessage {...messages.docsMcpServer} />
               </a>
             </li>
           </ul>
@@ -181,11 +346,15 @@ const ToolsPanel = (): React.JSX.Element => {
       <Modal
         onDismiss={() => setShowMcpInfoModal(false)}
         visible={showMcpInfoModal}
-        header={<Header>Custom MCP Agents</Header>}
+        header={
+          <Header>
+            <FormattedMessage {...messages.mcpTitle} />
+          </Header>
+        }
         footer={
           <Box float="right">
             <Button variant="primary" onClick={() => setShowMcpInfoModal(false)}>
-              Close
+              <FormattedMessage {...messages.mcpClose} />
             </Button>
           </Box>
         }
@@ -193,36 +362,28 @@ const ToolsPanel = (): React.JSX.Element => {
         <SpaceBetween size="m">
           <Box>
             <Box fontWeight="bold" fontSize="body-m">
-              What are MCP Agents?
+              <FormattedMessage {...messages.mcpWhatTitle} />
             </Box>
             <Box>
-              Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your
-              document analysis workflow.
+              <FormattedMessage {...messages.mcpWhatBody} />
             </Box>
           </Box>
 
           <Box>
             <Box fontWeight="bold" fontSize="body-m">
-              Adding Custom Agents
+              <FormattedMessage {...messages.mcpAddingTitle} />
             </Box>
             <Box>
-              You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate
-              custom tools, APIs, and services specific to your organization&apos;s needs without any code changes or redeployments.
+              <FormattedMessage {...messages.mcpAddingBody} />
             </Box>
           </Box>
 
           <Box>
             <Box fontWeight="bold" fontSize="body-m">
-              Learn More
+              <FormattedMessage {...messages.mcpLearnMoreTitle} />
             </Box>
             <Box>
-              For detailed setup instructions and examples, see the{' '}
-              <Link
-                external
-                href="https://github.com/aws-solutions-library-samples/accelerated-intelligent-document-processing-on-aws/blob/main/docs/custom-MCP-agent.md"
-              >
-                Custom MCP Agent Documentation
-              </Link>
+              <FormattedMessage {...messages.mcpLearnMoreBody} values={{ link: mcpDocsLink }} />
             </Box>
           </Box>
         </SpaceBetween>

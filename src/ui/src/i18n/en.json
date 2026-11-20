@@ -755,6 +755,18 @@
     "defaultMessage": "Some Bedrock quotas could not be read",
     "description": "Heading of a warning shown above the capacity results when the service could not read one or more Bedrock model quotas from AWS Service Quotas."
   },
+  "common.createIssueButton.label": {
+    "defaultMessage": "Create GitHub issue",
+    "description": "Text and screen-reader label of the menu button under an Agent Chat answer that opens a pre-filled GitHub issue form."
+  },
+  "common.createIssueButton.reportBug": {
+    "defaultMessage": "Report a bug",
+    "description": "Item of the Create GitHub issue menu under an Agent Chat answer: opens a pre-filled GitHub bug report in a new tab."
+  },
+  "common.createIssueButton.requestFeature": {
+    "defaultMessage": "Request a feature",
+    "description": "Item of the Create GitHub issue menu under an Agent Chat answer: opens a pre-filled GitHub feature request in a new tab."
+  },
   "common.dateRangeFields.bothDatesRequired": {
     "defaultMessage": "Both start and end dates are required.",
     "description": "Validation error of a UTC date range when the start or end date is empty."
@@ -1954,6 +1966,90 @@
   "guidedTour.tutorial.title": {
     "defaultMessage": "Get started with GenAI IDP",
     "description": "Title of the guided tour of the console. \"GenAI IDP\" is the product name and may stay as it is in the translation."
+  },
+  "helpPanel.agentChat.description": {
+    "defaultMessage": "Description:",
+    "description": "Label above an agent's description in the Agent Chat help panel. The description shows as the agent registry sends it."
+  },
+  "helpPanel.agentChat.docsAgentChat": {
+    "defaultMessage": "Agent Companion Chat",
+    "description": "Documentation link in the Agent Chat help panel: the page about the Agent Companion Chat."
+  },
+  "helpPanel.agentChat.docsCustomMcp": {
+    "defaultMessage": "Custom MCP Agents",
+    "description": "Documentation link in the Agent Chat help panel: the page about adding your own MCP agents."
+  },
+  "helpPanel.agentChat.docsMcpServer": {
+    "defaultMessage": "MCP Server",
+    "description": "Documentation link in the Agent Chat help panel: the page about the solution's MCP server."
+  },
+  "helpPanel.agentChat.empty": {
+    "defaultMessage": "No agents available",
+    "description": "Shown in the Agent Chat help panel when the deployment has no agents."
+  },
+  "helpPanel.agentChat.insertSampleQuery": {
+    "defaultMessage": "Insert sample query: {query}",
+    "description": "Screen-reader label of a sample-question button in the Agent Chat help panel, which puts the question into the chat input. {query} is the question, as the agent registry sends it."
+  },
+  "helpPanel.agentChat.intro": {
+    "defaultMessage": "Ask questions about IDP and get answers about the code, features, and more. See available agents below for capabilities.",
+    "description": "First paragraph of the Agent Chat help panel, above the list of agents. IDP is the name of the solution."
+  },
+  "helpPanel.agentChat.learnMore": {
+    "defaultMessage": "Learn more",
+    "description": "Heading of the documentation links at the bottom of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.loadFailed": {
+    "defaultMessage": "Failed to load available agents",
+    "description": "Error in the Agent Chat help panel when the list of agents could not be loaded."
+  },
+  "helpPanel.agentChat.loading": {
+    "defaultMessage": "Loading agents...",
+    "description": "Shown in the Agent Chat help panel while the list of agents loads."
+  },
+  "helpPanel.agentChat.mcp.addingBody": {
+    "defaultMessage": "You can add your own MCP agents by configuring external MCP servers in AWS Secrets Manager. This allows you to integrate custom tools, APIs, and services specific to your organization's needs without any code changes or redeployments.",
+    "description": "Paragraph in the custom MCP agents dialog of the Agent Chat help panel, under \"Adding Custom Agents\". AWS Secrets Manager is a product name."
+  },
+  "helpPanel.agentChat.mcp.addingTitle": {
+    "defaultMessage": "Adding Custom Agents",
+    "description": "Heading in the custom MCP agents dialog of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.mcp.close": {
+    "defaultMessage": "Close",
+    "description": "Button that closes the custom MCP agents dialog of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.mcp.learnMoreBody": {
+    "defaultMessage": "For detailed setup instructions and examples, see the <link>Custom MCP Agent Documentation</link>",
+    "description": "Last paragraph of the custom MCP agents dialog of the Agent Chat help panel. The text inside <link> links to the custom MCP agent documentation."
+  },
+  "helpPanel.agentChat.mcp.learnMoreTitle": {
+    "defaultMessage": "Learn More",
+    "description": "Heading in the custom MCP agents dialog of the Agent Chat help panel, above the link to the documentation."
+  },
+  "helpPanel.agentChat.mcp.title": {
+    "defaultMessage": "Custom MCP Agents",
+    "description": "Title of the dialog, opened from the Agent Chat help panel, that explains custom MCP agents."
+  },
+  "helpPanel.agentChat.mcp.whatBody": {
+    "defaultMessage": "Model Context Protocol (MCP) agents allow you to connect external tools and services to extend the capabilities of your document analysis workflow.",
+    "description": "Paragraph in the custom MCP agents dialog of the Agent Chat help panel, under \"What are MCP Agents?\"."
+  },
+  "helpPanel.agentChat.mcp.whatTitle": {
+    "defaultMessage": "What are MCP Agents?",
+    "description": "Heading in the custom MCP agents dialog of the Agent Chat help panel."
+  },
+  "helpPanel.agentChat.mcpButton": {
+    "defaultMessage": "NEW: Integrate your own systems with MCP!",
+    "description": "Button in the Agent Chat help panel that explains custom MCP agents. A rocket emoji is shown before it."
+  },
+  "helpPanel.agentChat.sampleQueries": {
+    "defaultMessage": "Sample Queries:",
+    "description": "Label above an agent's sample questions in the Agent Chat help panel. Each question is a button that puts it into the chat input."
+  },
+  "helpPanel.agentChat.title": {
+    "defaultMessage": "Available Agents",
+    "description": "Heading of the Agent Chat help panel, which lists the agents the chat can use."
   },
   "helpPanel.documents.docsCircuitBreaker": {
     "defaultMessage": "Circuit Breaker",
