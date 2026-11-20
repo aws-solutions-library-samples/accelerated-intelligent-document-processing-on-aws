@@ -155,8 +155,9 @@ class ClassesDiscovery:
                     ),
                 )
             except ValueError:
-                # The target version doesn't exist yet (e.g. a fresh "quickstart"
-                # version that will be created when we save the discovered class).
+                # The target version doesn't exist yet (e.g. the fresh
+                # quickstart-<date>-<time>-<code> profile Quick Start names, created
+                # when we save the discovered class).
                 # Discovery only needs the discovery settings, which come from the
                 # active/default config, so load that for settings while keeping
                 # self.version as the write target.

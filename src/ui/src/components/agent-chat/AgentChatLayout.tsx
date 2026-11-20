@@ -420,7 +420,7 @@ const AgentChatLayout = ({
     },
     {
       id: 'QuickStartAddType',
-      prompt: 'Set up another document type alongside my existing ones',
+      prompt: 'Add a document type to one of my profiles',
     },
   ];
 

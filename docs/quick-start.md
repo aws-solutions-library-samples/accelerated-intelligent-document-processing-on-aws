@@ -131,15 +131,18 @@ ends the conversation.
    something Quick Start changes: they're under **Extraction** on the Configuration
    page.
 6. **Activate.** When you approve, the agent creates a configuration profile and
-   **activates** it, then confirms it's ready. Upload a document from **Upload
-   Documents** in the side navigation and it's processed with your new
+   **activates** it, then confirms it's ready. As with attached documents, it
+   activates straight away only on a stack with no profile of its own yet;
+   otherwise it names the profile in use and asks first. Upload a document from
+   **Upload Documents** in the side navigation and it's processed with your new
    configuration.
 
 The agent's own writes, processing options included, refuse `default` and
 stack-managed profiles (presets the stack deployed, which a stack update replaces).
 Documents you attach never reach an existing profile, because the panel always sends
-them to the new one it named. The agent adds a class to another existing profile
-only when you name that profile and ask it to.
+them to the new one it named. The agent is instructed to add a class to another
+existing profile only when you name that profile and ask it to; the refusal of
+`default` and stack-managed profiles is what the code enforces.
 
 You can review or switch configurations at any time from
 **Configuration › View/Edit Configuration** (see
