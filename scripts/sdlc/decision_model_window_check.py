@@ -272,7 +272,8 @@ class _CapturingLambda:
         return {"StatusCode": 200, "Payload": io.BytesIO(json.dumps(body).encode())}
 
 
-CAPTURE_ENDPOINT = "arn:aws:lambda:us-east-1:111122223333:function:GENAIIDP-capture"
+# A fake endpoint for the in-process capture client: it is never invoked.
+CAPTURE_ENDPOINT = "arn:aws:lambda:us-east-1:111122223333:function:GENAIIDP-capture"  # arn-partition-ok: fake, never invoked
 
 
 def section_cases(png: bytes) -> List[Case]:

@@ -291,7 +291,8 @@ def test_every_stateful_edge_in_the_standard_template_is_handled(standard):
     # stack's output that is a custom resource's.
     assert any("PATTERNSTACK:BDAOCRProject" in e["sources"] for e in edges)
     text = (standard / "modules" / "documentkb" / "main.tf").read_text()
-    assert "ignore_changes = [knowledge_base_id]" in text
+    # The written module is laid out by `terraform fmt`'s rules: `=` may be padded.
+    assert re.search(r"^\s*ignore_changes\s+= \[knowledge_base_id\]$", text, re.M)
 
 
 def test_no_declaration_is_stale_for_the_standard_template(standard):
@@ -811,7 +812,7 @@ def test_the_mappers_that_ignore_changes_are_pinned():
 
 
 RESOURCE_HEADER = re.compile(r'^resource "([^"]+)" "[^"]+" \{$', re.M)
-IGNORE_CHANGES = re.compile(r"ignore_changes = \[([^\]]*)\]")
+IGNORE_CHANGES = re.compile(r"ignore_changes\s+= \[([^\]]*)\]")
 
 
 def _emitted_ignore_changes(root: Path) -> dict[str, set[str]]:
