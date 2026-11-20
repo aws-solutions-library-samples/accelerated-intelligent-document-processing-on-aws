@@ -41,7 +41,7 @@ Classification rules, in order:
    level, plus the S3 spellings (``SlowDown``, ``ServiceUnavailable``,
    ``InternalError``), the streaming error, the bare HTTP statuses botocore uses as
    the code when a reply names no error (``"500"``, ``"502"``, ``"503"``,
-   ``"504"``; #2036), and the standard-library / botocore / urllib3 network and
+   ``"504"``, #2036; and the throttle ``"429"``, #2112), and the standard-library / botocore / urllib3 network and
    timeout exception TYPES. Message markers are limited to network-transport text
    that carries no error code of its own.
 
@@ -62,6 +62,14 @@ Classification rules, in order:
    ``TRANSIENT_MESSAGE_MARKERS`` (transient text in an exception with no code) and
    is deliberately just as narrow: only text naming a reproducible outcome
    qualifies. The one entry today is Bedrock's mid-stream ToolUse failure (#895).
+5. An exception that carries its OWN retry verdict — a ``retry_later`` attribute
+   holding a ``bool`` — is judged by that verdict, and the walk ends there. This is
+   the decision-model client's contract: ``DecisionModelError`` and its subclasses
+   say whether repeating the step can re-run paid work, and only the client knows
+   whether the invocation may have started. Its ``ClientError`` cause is kept for
+   the log, not for a second opinion, so a bare ``"500"`` or ``"429"`` that the
+   client reported as ``retry_later=False`` stays not transient here, as it does in
+   section classification (#2112). Checked after rule 4 and before everything else.
 """
 
 from __future__ import annotations
@@ -263,6 +271,10 @@ TRANSIENT_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
 
 _MAX_CHAIN = 16
 
+#: The attribute through which an exception states its own retry verdict (rule 5).
+#: ``idp_common.decision_model.DecisionModelError`` defines it.
+RETRY_VERDICT_ATTRIBUTE = "retry_later"
+
 
 class TransientError(Exception):
     """A failure the handler judged transient; re-raised so Step Functions retries it.
@@ -302,6 +314,12 @@ def _verdict(node: BaseException) -> bool | None:
     # for a modelStreamErrorException carrying the ToolUse text (#895).
     if any(marker in text for marker in DETERMINISTIC_MESSAGE_MARKERS):
         return False
+    # Rule 5: an exception that states its own retry verdict is the authority for
+    # its chain (the decision-model client's ``retry_later``; #2112). Read as an
+    # attribute so this module does not import the decision-model package.
+    own_verdict = getattr(node, RETRY_VERDICT_ATTRIBUTE, None)
+    if isinstance(own_verdict, bool):
+        return own_verdict
     if isinstance(node, TransientError):
         return True
     if isinstance(node, TRANSIENT_EXCEPTION_TYPES):
@@ -311,7 +329,8 @@ def _verdict(node: BaseException) -> bool | None:
         # A definite service code is the verdict for this node AND its chain: a
         # ValidationException raised after a swallowed throttle is still hard.
         # A bare HTTP 500/502/503/504 in place of a code is botocore saying the
-        # reply named no error, only that the server failed (#2036). The status
+        # reply named no error, only that the server failed (#2036); a bare 429,
+        # that a front end throttled the request (#2112). The status
         # of a NAMED code is not consulted: Lambda answers several deterministic
         # errors with a 502, and rule 1 lets the name decide.
         return (

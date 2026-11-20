@@ -375,6 +375,16 @@ def _version_for_document(
             profile_exists=_memo_exists(manager, seam_cache),
             allowed_profiles=list(allowed_versions) if allowed_versions else None,
         )
+        if decided.rejected and decided.unresolvable:
+            # Refused rather than reprocessed under the caller's profile (#597): the
+            # mapping for this prefix names a profile that does not exist, and that
+            # is a broken routing rule for the admin to fix, not a contest the
+            # request wins by default. Same marker and metric as ingest.
+            logger.warning(
+                "Stale prefix mapping for %s: %s", object_key, decided.reason
+            )
+            _emit("PrefixMappingUnresolvable")
+            raise ValueError(_unresolvable_refusal(object_key, decided.mapping_prefix))
         if decided.rejected:
             _emit("PrefixMappingRejected")
             logger.warning("Refusing to reprocess %s: %s", object_key, decided.reason)
@@ -487,6 +497,11 @@ def _version_for_document(
         # line on this path sends them to the wrong Lambda.
         logger.warning("Stale prefix mapping for %s: %s", object_key, assignment.reason)
         _emit("PrefixMappingUnresolvable")
+    if assignment.rejected:
+        # Only reachable through an unresolvable mapping: with no profile requested
+        # there is nothing for a `reject` mapping to conflict with. Refused rather
+        # than reprocessed under the active profile (#597).
+        raise ValueError(_unresolvable_refusal(object_key, assignment.mapping_prefix))
     if assignment.scope_denied or not assignment.mapping_prefix:
         if assignment.scope_denied:
             logger.warning(
@@ -511,6 +526,21 @@ def _version_for_document(
         assignment.revision,
         assignment.source,
         assignment.mapping_prefix,
+    )
+
+
+def _unresolvable_refusal(object_key, mapping_prefix):
+    """The reprocess refusal for a mapping that names a profile that does not exist.
+
+    Names the prefix rather than the profile, as the conflict refusal does: the
+    prefix is what the admin edits to fix it. A caller outside the scope of the
+    mapped profile never reaches this -- the resolver reports a scope denial first.
+    """
+    return (
+        f"Refused: {object_key!r} is governed by the configuration prefix mapping "
+        f"for {mapping_prefix!r}, which names a Configuration Profile that does not "
+        f"exist. Recreate that profile, or change or delete the mapping, then "
+        f"reprocess."
     )
 
 

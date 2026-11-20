@@ -1041,6 +1041,11 @@ The BedrockClient automatically handles common failure scenarios:
   their default vocabulary; `utils.transient_errors` uses only its bare-status half
   (see the [utils README](../utils/README.md)). The Z3 rule translator has its own
   retry list and does not use it.
+- A 429 reply that names no error type (botocore's code `"429"`, typically a front
+  end throttling the request) is retried by the same rule, and is logged and counted
+  as throttling (`BedrockThrottling`). Only the bare code counts: a 429 carrying a
+  named code is judged by the name, so `ThrottlingException` is retried and
+  `ModelNotReadyException`, which neither ladder lists, is not (#2112).
 - Detailed logging with appropriate content sanitization
 - Metrics collection for request counts, latencies, and token usage
 - A retry frees the attempt it replaces before it starts. Every ladder here

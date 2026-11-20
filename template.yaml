@@ -10709,7 +10709,7 @@ Resources:
   PrefixMappingLookupFailedAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not read its configuration prefix mappings. Resolution FAILS OPEN by design: the document runs under the profile its upload named, or the active one. While this lasts every 'Refuse the conflict' mapping is bypassed and every mapped prefix reads as unmapped, so documents may run under the wrong configuration without saying so. Three Lambdas publish it and all three log 'Could not read the configuration prefix mappings'; one of them, UploadResolver, is the authorization case. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/monitoring.md for the emitters and what each window means."
+      AlarmDescription: !Sub "Alert when ${AWS::StackName} could not read its configuration prefix mappings. Resolution FAILS OPEN by design: the document runs under the profile its upload named, or the active one. While this lasts every 'Refuse the conflict' mapping is bypassed and every mapped prefix reads as unmapped, so documents may run under the wrong configuration; each one processed in that window carries a warning processing issue saying no mapping was applied. Three Lambdas publish it and all three log 'Could not read the configuration prefix mappings'; one of them, UploadResolver, is the authorization case. Usual cause is a KMS or table-policy change denying dynamodb:GetItem on the ConfigurationTable. See docs/monitoring.md for the emitters and what each window means."
       MetricName: PrefixMappingLookupFailed
       Namespace: !Ref AWS::StackName
       Statistic: Sum
@@ -10746,7 +10746,7 @@ Resources:
   PrefixMappingUnresolvableAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: !Sub "Alert when a ${AWS::StackName} configuration prefix mapping names a Configuration Profile that is not resolvable at routing time. The document still processes -- under the profile its upload named, or the active one -- so nothing fails, but every document arriving at that prefix runs under a configuration nobody chose for it. A PRUNED pinned revision is a different condition and is not seen here; such a document fails later, when the configuration is loaded. Creating a mapping refuses an absent profile and deleting a profile refuses while a mapping names it, so reaching this means the profile went by another route. Fix or delete the mapping at Configuration > Prefix Mappings. Emitters log 'Stale prefix mapping for'; see docs/monitoring.md."
+      AlarmDescription: !Sub "Alert when a ${AWS::StackName} configuration prefix mapping names a Configuration Profile that is not resolvable at routing time. Every document arriving at that prefix is refused and recorded as Failed, with a reason naming the mapping and the missing profile, rather than processed under some other profile. A PRUNED pinned revision is a different condition and is not seen here; such a document fails later, when the configuration is loaded. Creating a mapping refuses an absent profile and deleting a profile refuses while a mapping names it, so reaching this means the profile went by another route. Fix or delete the mapping at Configuration > Prefix Mappings. Emitters log 'Stale prefix mapping for'; see docs/monitoring.md."
       MetricName: PrefixMappingUnresolvable
       Namespace: !Ref AWS::StackName
       Statistic: Sum

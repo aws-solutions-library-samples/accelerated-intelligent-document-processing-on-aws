@@ -852,7 +852,7 @@ Two halves, deliberately separate, and the split is what makes the rule testable
 
 | Half | What it is |
 |---|---|
-| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites |
+| `PrefixMappingStore` | The DynamoDB side. One aggregate item, `ConfigPrefixMap#__index`, holding `Mappings` (the entry list) plus `IndexSeq` for optimistic-concurrency rewrites, and an append-only change log beside it (below) |
 | `resolve_config_assignment()` | The decision. **No boto3, no environment** — its only seams are three injected callables (`active_profile`, `published_revision`, `profile_exists`), all lazy because each costs a DynamoDB read on a per-document path |
 
 Lives here rather than in a Lambda for the reason `config_scope` does: the rule runs
@@ -889,8 +889,9 @@ land on every queued document, not on the admin who caused it.
 
 ⚠️ **`profile_exists` is the only existence check, and a pinned revision gets none.**
 `unresolvable` is set in that branch alone; `_resolve_revision` returns a pinned
-revision as given, with no lookup. So a mapping whose profile has been deleted falls
-back and is reported, while a mapping whose pinned *revision* has been deleted or has
+revision as given, with no lookup. So a mapping whose profile does not exist **refuses
+the document** (`rejected` and `unresolvable` both set, whatever the metadata says),
+while a mapping whose pinned *revision* has been deleted or has
 expired resolves cleanly at ingest and raises in
 `ConfigurationManager._load_revision_config` downstream. That is the intended trade —
 the per-document cost of a second lookup against a failure that surfaces loudly anyway —
@@ -904,6 +905,29 @@ unconditionally — so swallowing a throttle would turn one admin's write into "
 mapping list is now exactly this one entry", silently deleting every other mapping,
 and report success. Read failures are handled by the **caller**, which knows whether
 it is on the ingest path (fall open, emit a metric) or the admin path (refuse).
+
+### The change log
+
+Every `put` and `delete` appends one record, in the **same `TransactWriteItems`** as the
+aggregate update, so a change and its record land together or not at all. Each record
+is its own item, `ConfigPrefixMapHistory#<12-digit seq>`, holding `Seq`, `Timestamp`,
+`Actor` (byte-bounded like the entry's actor strings) and `Changes` — one element per
+changed prefix with `action` and the normalized entry `before` and `after`, derived by
+`describe_changes` from the two entry lists rather than told by the caller. The
+sequence lives on its own head item, `ConfigPrefixMapHistory#__head`, advanced under a
+condition in the same transaction, so recreating the aggregate by hand cannot make a
+later record collide with an earlier one; each record is `Put` with
+`attribute_not_exists`, which is what makes the log append-only in code. Neither key
+matches `begins_with(Configuration, "Config#")`.
+
+The count is **uncapped**, deliberately: the log is not on the aggregate, so it does not
+grow the item ingest reads or approach the 400 KB bound, and each record is bounded by
+two entries' worth of fields. `history(prefix=None, limit, before)` reads it newest first
+by `BatchGetItem` over descending sequence numbers — no `Scan` — and examines at most
+`MAX_HISTORY_EXAMINED` records per call, so a filtered read of a long log returns a
+short page and a `nextBefore` cursor rather than reading everything. A cancelled
+transaction is retried only when every cancellation reason is a lost condition; any
+other reason is raised as itself. A direct write to the table records nothing.
 
 ⚠️ **A revision carried across a profile change reads a configuration nobody asked
 for.** Revision numbers are per profile, so when the resolved profile differs from the
@@ -920,7 +944,25 @@ apply — failing open means a transient DynamoDB error bypasses every `reject` 
 in the deployment. It is still the right call, because the alternative is halting
 document ingest for the whole deployment when a *routing* table is unreadable, and
 every one of those objects processed under the active profile before this feature
-existed. The metric is alarmed so the window is visible rather than silent.
+existed. The metric is alarmed so the window is visible rather than silent, and
+`queue_sender` records a warning `ProcessingIssue` (`config_prefix_mapping_lookup_failed`,
+stage `ingest`) on each document processed in the window. It is a **document-level**
+issue — `Document.processing_issues`, persisted as the tracking row's top-level
+`ProcessingIssues` by `serialize_issue_list` — because the row is created before any
+section exists. Its `root_cause` is the error's type and AWS error code, never the
+message, which can carry a role ARN.
+
+### Only named internal producers are exempt
+
+Rule 1 applies only when `submission_source` is in `INTERNAL_SUBMISSION_SOURCES`
+(`test-studio`, `pii-anonymizer`), compared exactly by `is_internal_producer`. Any other
+value is an ordinary upload: it is mapped and adjudicated like one, and
+`tenants.ingest_rejection_reason` treats it as external too. The set is the exact values
+the two writers in this repository stamp (`src/lambda/test_file_copier` and the PII
+anonymizer hook), so a new producer must be added there deliberately. A browser cannot
+set the key at all, because the upload resolver's presigned-POST policy names every
+field it accepts; a principal with direct `s3:PutObject` on the Input bucket can, and is
+trusted because it already chooses the key.
 
 Note the asymmetry in `upload_resolver`: the **routing** read fails open, the **scope**
 read fails closed. They answer different questions — an unreadable mapping means a

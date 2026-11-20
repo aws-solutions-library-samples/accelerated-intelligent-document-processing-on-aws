@@ -13,9 +13,11 @@ With ``input`` ``text`` or ``both`` the section's pages are joined into one stat
 cut from the end so the request fits ``decision_model.max_input_tokens`` (an
 estimate; see ``idp_common.decision_model.budget``). The first page is kept whole
 when it fits. Text past the cut is never sent, so a class cue only there is not
-seen. A section whose text would be cut to nothing (the question and images fill
-the limit) is not sent: the call is refused and the section fails like any refused
-call, rather than being classified from no evidence.
+seen. A section whose text would be cut to nothing, or to little more than its
+``Page N:`` lines (the question and images fill most of the limit), is not sent: the
+call is refused and the section fails like any refused call, rather than being
+classified from no evidence. So is a section whose question and images alone are
+over the limit, in every ``input`` mode.
 
 A failed call fails its section: the segment keeps no class and the error is
 recorded on it, exactly as an LLM labeling call that fails. A request the client
@@ -45,6 +47,7 @@ from idp_common.decision_model import (
     encode_image,
     estimate_tokens,
     fit_text,
+    require_room,
     state_budget,
 )
 from idp_common.utils.transient_errors import TransientError
@@ -56,6 +59,9 @@ logger = logging.getLogger(__name__)
 
 #: The metering context, beside ``SectionClassification/bedrock/...``.
 METERING_CONTEXT = "SectionClassification"
+
+#: The line in front of each page's text in a section's state.
+PAGE_HEADER = "Page {ordinal}:\n"
 
 #: The question's name in the request and the answer.
 QUESTION_NAME = "doc_class"
@@ -109,7 +115,7 @@ class DecisionModelSectionLabeler:
         state = ""
         if mode in ("text", "both"):
             state = "\n\n".join(
-                f"Page {ordinal}:\n{pages_content.get(page_id, '')}"
+                PAGE_HEADER.format(ordinal=ordinal) + pages_content.get(page_id, "")
                 for ordinal, page_id in enumerate(page_ids, start=1)
             )
         images: List[str] = []
@@ -130,12 +136,21 @@ class DecisionModelSectionLabeler:
         # the images. Cutting from the end keeps the first page whole whenever it
         # fits; text past the cut is never sent, so the model never reads it, and
         # text that would be cut to nothing is refused rather than sent empty.
+        # The question and images alone are checked first, in every mode, so a
+        # request ``images`` mode would send oversize is refused here, naming why.
         question_tokens = estimate_tokens(json.dumps(question.model_dump(mode="json")))
-        budget = state_budget(
-            int(self.cfg.max_input_tokens), question_tokens, len(images)
-        )
+        max_input_tokens = int(self.cfg.max_input_tokens)
+        pages = ", ".join(page_ids)
+        require_room(max_input_tokens, question_tokens, len(images), f"pages {pages}")
+        budget = state_budget(max_input_tokens, question_tokens, len(images))
+        # The "Page N:" lines are not evidence: a cut that keeps little more than
+        # them is refused rather than classified from no page text.
+        headers = [
+            PAGE_HEADER.format(ordinal=ordinal)
+            for ordinal in range(1, len(page_ids) + 1)
+        ]
         return SystemOneRequest(
-            state=fit_text(state, budget, f"the text of pages {', '.join(page_ids)}"),
+            state=fit_text(state, budget, f"the text of pages {pages}", headers),
             images=images,
             questions={QUESTION_NAME: question},
         )

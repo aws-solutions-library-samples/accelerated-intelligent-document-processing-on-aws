@@ -80,7 +80,15 @@ _RUNTIME_ERROR_PREFIX = "Runtime."
 
 
 class DecisionModelError(Exception):
-    """A decision-model call that produced no answer."""
+    """A decision-model call that produced no answer.
+
+    ``retry_later`` is this client's verdict on whether a caller may repeat its
+    whole step, and ``utils.transient_errors.is_transient_error`` takes it as final
+    for the exception and its cause chain (#2112). It is False unless a subclass
+    sets it, so a refusal is never retried.
+    """
+
+    retry_later: bool = False
 
 
 class DecisionModelRefused(DecisionModelError):
@@ -226,7 +234,8 @@ class DecisionModelClient:
                 # A retry with a cause never ran (throttled, refused for capacity,
                 # or the connection never opened), so it is ``retry_later``; a
                 # crashed environment has no cause and is not. The cause stays the
-                # ``__cause__`` for the log and for ``is_transient_error`` (#2034).
+                # ``__cause__`` for the log; ``is_transient_error`` reads
+                # ``retry_later``, not the cause (#2112).
                 if attempt >= self.max_retries:
                     self._put_metric("DecisionModelRequestsFailed", 1)
                     raise DecisionModelUnavailable(

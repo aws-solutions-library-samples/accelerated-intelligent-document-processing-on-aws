@@ -64,6 +64,36 @@ are load-bearing:
   watching, and ingest is where the volume is. Do not add a cache on all four
   callers without arguing against this paragraph.
 
+Change history
+--------------
+
+Every write also appends one **history record** — who, when, and each changed entry
+before and after — and the record is written in the **same transaction** as the
+aggregate item, so a mapping change and its record land together or not at all. A
+mapping decides which profile, and so which users, a document belongs to, so "who
+changed this prefix, and from what" must survive the next edit; ``createdBy`` and
+``updatedBy`` on the entry only ever hold the latest values.
+
+* **One item per change, not a list on the aggregate.** The aggregate is read for
+  every document queued and its size is budgeted against ``MAX_MAPPINGS``, so
+  history on it would grow the ingest read and eventually break the 400 KB bound.
+  A separate item per change is bounded by two entries' worth of fields, and the
+  number of them is **uncapped**: storage grows by a few KB per admin edit, which is
+  not a quantity worth discarding audit evidence to save.
+* **Keyed by a sequence held on its own head item**,
+  ``ConfigPrefixMapHistory#__head``, rather than by the aggregate's ``IndexSeq``.
+  The head is never rewritten except to advance it, so deleting or recreating the
+  aggregate item by hand cannot make a later record collide with an earlier one.
+  Records are ``ConfigPrefixMapHistory#<12-digit seq>``, which makes the log
+  enumerable newest-first by ``BatchGetItem`` with no ``Scan``. Neither key matches
+  ``begins_with(Configuration, "Config#")``.
+* **Append-only by construction in code, not by IAM.** Each record is written with
+  ``attribute_not_exists`` and nothing in this repository updates or deletes one. A
+  principal with write access to the table can still alter them, as it can alter the
+  mappings themselves; the table's point-in-time recovery is the control for that.
+* A write made directly to the table (rather than through :class:`PrefixMappingStore`)
+  records nothing. Every writer in this repository goes through the store.
+
 ``MAX_MAPPINGS`` is enforced at write time rather than left to DynamoDB.
 ``revisions.py`` needs no such guard because ``DEFAULT_REVISION_CAP`` bounds its list;
 nothing bounds this one, and a ``ValidationException`` at entry 201 would be an
@@ -127,27 +157,29 @@ reads a configuration that corresponds to nothing anybody asked for — and
 ``queue_processor`` will not correct it, because its backfill only fires when the
 revision is absent.
 
-Internal producers are exempt
------------------------------
+Internal producers are exempt, and only by name
+-----------------------------------------------
 
-An object carrying ``x-amz-meta-submission-source`` is exempt from mappings entirely.
-Three of this repository's own components write into the Input bucket with a
-deliberately chosen configuration, and for two of them an override is not a
-preference but a defect:
+An object whose ``x-amz-meta-submission-source`` is one of
+:data:`INTERNAL_SUBMISSION_SOURCES` is exempt from mappings entirely. That set is the
+exact values this repository's own producers write, and nothing else: **any other
+value, however it is spelled, is an ordinary upload** and is mapped and adjudicated
+like one. Before the set existed any truthy value exempted the object, so any
+principal able to set one metadata key could pick any profile under any mapping,
+including another team's under ``reject``.
 
-* The **PII anonymizer** copies a redacted document back into the Input bucket beside
-  the original, stamped with a *companion* profile that has no preprocessing hook.
-  Overriding that stamp runs the copy under whatever hooks the mapped profile
-  registers instead of under none. Under ``reject`` it is far worse than a
-  misconfiguration: in ``redactcopy_and_stop`` the hook returns ``halt=true`` and the
-  host then deletes the original, so a reject on that prefix loses the original *and*
-  never processes the copy — unrecoverable loss of the document, from one mapping an
-  admin typed. (The redaction loop itself is not at risk: that is stopped by the
-  ``_is_redacted_key`` filename check, which does not depend on the configuration the
-  copy runs under.)
-* **Test Studio** stamps the profile and revision a run is defined by. Overriding it
-  does not fail the run; it produces accuracy and confidence numbers describing a
-  configuration other than the one recorded, which is worse than a failure.
+What keeps a *user* upload from carrying one of those values is not this module. The
+web upload is a presigned POST whose policy names every form field it accepts, and S3
+refuses a POST carrying a field its policy does not list, so a browser cannot add the
+key at all; the sample-upload path is a server-side copy whose metadata is either
+replaced with ``config-version``/``config-revision`` or, with no profile chosen,
+copied from the bundled sample in the deployment's own configuration bucket. A principal holding ``s3:PutObject`` on the
+Input bucket directly can still set it, and is trusted by construction: it already
+chooses the key, and so the mapping, it writes under.
+
+Two of this repository's own components write into the Input bucket with a
+deliberately chosen configuration, and for both an override is not a preference but
+a defect:
 
 The **Jobs/batch API** is deliberately *not* exempt: it stamps metadata only when its
 caller chose a profile, so a job with a choice is adjudicated like any other upload
@@ -163,8 +195,18 @@ argument does apply here — failing open means a transient DynamoDB error bypas
 ``reject`` mapping in the deployment. It is still the right call, because the
 alternative is halting document ingest for the whole deployment when a *routing* table
 is unreadable, and every one of those objects processes under the active profile today.
-The metric is alarmed so the window is visible rather than silent. This is the one
-place this module knowingly departs from the repository's fail-closed posture.
+The metric is alarmed so the window is visible rather than silent, and ``queue_sender``
+also records a warning-severity processing issue (``config_prefix_mapping_lookup_failed``)
+on each document processed in that window, so the document itself says that no mapping
+was consulted for it. This is the one place this module knowingly departs from the
+repository's fail-closed posture.
+
+A mapping that names a profile which **does not exist** is the opposite case and is
+refused: the document is failed with a reason naming the mapping, rather than
+processed under the upload's own profile or the active one. The mapping store was
+read successfully there, so the routing policy is known, and it says this prefix
+belongs to a profile that cannot run — processing the document under any other
+profile is exactly the silent re-routing a mapping exists to prevent.
 """
 
 from __future__ import annotations
@@ -189,6 +231,22 @@ PREFIX_MAP_INDEX_KEY = f"{PREFIX_MAP_INDEX_PREFIX}#__index"
 # The attribute holding the entry list, and the concurrency counter beside it.
 MAPPINGS_ATTRIBUTE = "Mappings"
 SEQ_ATTRIBUTE = "IndexSeq"
+
+# The change log. See "Change history" in the module docstring.
+HISTORY_KEY_PREFIX = f"{PREFIX_MAP_INDEX_PREFIX}History#"
+HISTORY_HEAD_KEY = f"{HISTORY_KEY_PREFIX}__head"
+HISTORY_SEQ_ATTRIBUTE = "LastSeq"
+HISTORY_ACTION_CREATE = "create"
+HISTORY_ACTION_UPDATE = "update"
+HISTORY_ACTION_DELETE = "delete"
+# Bounds on one history read: the page the caller asked for, and how many records a
+# single call may examine while filtering for one prefix. The second is what keeps a
+# filtered read of a long log a bounded amount of work; the caller pages on with
+# ``before``.
+DEFAULT_HISTORY_PAGE = 50
+MAX_HISTORY_PAGE = 100
+MAX_HISTORY_EXAMINED = 1000
+_BATCH_GET_LIMIT = 100
 
 # Hard ceiling on the number of mappings, enforced at write time. See the module
 # docstring: the aggregate item is on the ingest path, so overflowing DynamoDB's
@@ -259,9 +317,92 @@ SOURCE_EXPLICIT_REQUEST = "explicit-request"
 SOURCE_INTERNAL_PRODUCER = "internal-producer"
 SOURCE_REJECTED = "rejected"
 
+# The exact ``submission-source`` values this repository's own producers write. Only
+# these exempt an object from mappings: see "Internal producers are exempt" above.
+# Every writer is named so that adding one is a deliberate edit here rather than a
+# new value that silently stops being exempt (or, before this set, any value at all
+# that silently was).
+SUBMISSION_SOURCE_TEST_STUDIO = "test-studio"  # src/lambda/test_file_copier
+SUBMISSION_SOURCE_PII_ANONYMIZER = "pii-anonymizer"  # feature-platform/pii-anonymizer
+INTERNAL_SUBMISSION_SOURCES = frozenset(
+    {SUBMISSION_SOURCE_TEST_STUDIO, SUBMISSION_SOURCE_PII_ANONYMIZER}
+)
+
+
+def is_internal_producer(submission_source: Optional[str]) -> bool:
+    """Whether ``submission_source`` names one of this deployment's own producers.
+
+    Exact and case-sensitive: S3 lowercases metadata *keys* but preserves values,
+    and the producers write these values verbatim, so a near-miss such as
+    ``Test-Studio`` is not a spelling of an internal producer but an upload that
+    set the key itself.
+    """
+    return submission_source in INTERNAL_SUBMISSION_SOURCES
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def history_key(seq: int) -> Dict[str, str]:
+    """The key of history record ``seq``. Zero-padded so the keys sort as numbers."""
+    return {"Configuration": f"{HISTORY_KEY_PREFIX}{int(seq):012d}"}
+
+
+def describe_changes(
+    before: Sequence[Mapping[str, Any]], after: Sequence[Mapping[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Every entry that differs between two normalized entry lists, by prefix.
+
+    One element per changed prefix, with ``action`` and the entry ``before`` and
+    ``after`` (``None`` for the side on which it does not exist). Derived from the
+    two lists rather than told by the caller, so a mutation cannot record one thing
+    and write another.
+    """
+    old = {e["prefix"]: dict(e) for e in before}
+    new = {e["prefix"]: dict(e) for e in after}
+    changes = []
+    for prefix in sorted(set(old) | set(new)):
+        was, now = old.get(prefix), new.get(prefix)
+        if was == now:
+            continue
+        action = (
+            HISTORY_ACTION_CREATE
+            if was is None
+            else HISTORY_ACTION_DELETE
+            if now is None
+            else HISTORY_ACTION_UPDATE
+        )
+        changes.append(
+            {"prefix": prefix, "action": action, "before": was, "after": now}
+        )
+    return changes
+
+
+def normalize_history_record(item: Mapping[str, Any]) -> Dict[str, Any]:
+    """One stored history record at its declared types (``Decimal`` → ``int``)."""
+    return {
+        "seq": coerce_int(item.get("Seq")),
+        "timestamp": item.get("Timestamp"),
+        "actor": item.get("Actor"),
+        "changes": [
+            {
+                "prefix": str(c.get("prefix") or ""),
+                "action": str(c.get("action") or ""),
+                "before": normalize_entry(c["before"]) if c.get("before") else None,
+                "after": normalize_entry(c["after"]) if c.get("after") else None,
+            }
+            for c in item.get("Changes") or []
+        ],
+    }
+
+
+# Cancellation reasons that mean another writer got there first.
+_RACE_CANCELLATION_CODES = ("ConditionalCheckFailed", "TransactionConflict")
+
+
+class PrefixMappingHistoryCorrupt(RuntimeError):
+    """The change log's head item is behind its records, so no change can be saved."""
 
 
 class PrefixMappingConflict(RuntimeError):
@@ -556,10 +697,11 @@ def resolve_config_assignment(
 
     The order, which is the whole contract:
 
-    1. ``submission_source`` set → **mappings are not consulted at all**. These are
-       this deployment's own producers and their routing is already decided; for two
-       of them an override is a defect rather than a preference (see the module
-       docstring).
+    1. ``submission_source`` is one of :data:`INTERNAL_SUBMISSION_SOURCES` →
+       **mappings are not consulted at all**. These are this deployment's own
+       producers and their routing is already decided; for both an override is a
+       defect rather than a preference (see the module docstring). Any other value
+       is treated as though it were absent.
     2. No mapping matches → the metadata's profile if it named one, else the active
        profile. The **profile** is what a deployment with no mappings always
        resolved; the one difference is that an unnamed profile's revision is now
@@ -572,6 +714,11 @@ def resolve_config_assignment(
     5. Both, and they disagree → ``metadataPrecedence`` decides: ``mapping`` (the
        default) ignores the metadata, ``metadata`` honours it, ``reject`` fails the
        document rather than guessing.
+
+    A matched mapping whose profile ``profile_exists`` says is absent **refuses the
+    document** (``rejected`` and ``unresolvable`` both set), whatever the metadata
+    says: see "Failing open" in the module docstring for why that is not the
+    fall-through a failed *read* gets.
 
     ``allowed_profiles`` is the caller's configuration scope, and is only meaningful
     where a caller exists. Pass ``None`` from ``queue_sender``, which handles an S3
@@ -623,7 +770,8 @@ def resolve_config_assignment(
     # get an internal submission refused by a mapping it had explicitly bypassed,
     # which contradicts this module's own precedence contract.
     if allowed_profiles is not None:
-        matched = None if submission_source else find_match(object_key, mappings or [])
+        internal = is_internal_producer(submission_source)
+        matched = None if internal else find_match(object_key, mappings or [])
         # Three profiles, not one, and the third is the one easiest to miss.
         #
         # `assignment.profile` is what this request resolves to, and the matched
@@ -643,7 +791,7 @@ def resolve_config_assignment(
         # outside their scope even where a mapping would have won, which is the
         # fail-closed reading and costs a legitimate caller nothing: they are
         # naming a configuration they are not entitled to either way.
-        requested = None if submission_source else metadata_profile
+        requested = None if internal else metadata_profile
         checked = [
             p
             for p in (
@@ -753,8 +901,9 @@ def _decide(
             reason=reason,
         )
 
-    # (1) This deployment's own producers route themselves.
-    if submission_source:
+    # (1) This deployment's own producers route themselves -- named ones only. An
+    # unrecognised value is an upload that set the key itself, so it is mapped.
+    if is_internal_producer(submission_source):
         if metadata_profile:
             return ConfigAssignment(
                 profile=metadata_profile,
@@ -805,10 +954,12 @@ def _decide(
     mapped_profile = match["configProfile"]
     precedence = match["metadataPrecedence"]
 
-    # A mapping naming a profile that no longer exists must not strand the document.
-    # It falls through to the next rule and the caller emits
-    # PrefixMappingUnresolvable, because a routing table that has gone stale is an
-    # operator problem rather than a reason to stop processing documents.
+    # A mapping naming a profile that does not exist REFUSES the document. It used to
+    # fall through to the metadata or the active profile, flagged and counted, which
+    # processed every document at that prefix under a configuration the mapping says
+    # it must not run under -- the silent re-routing a mapping exists to prevent. A
+    # profile-existence lookup that *fails* still reads as "exists": that is a read
+    # failure, handled like the mapping read, not knowledge that the profile is gone.
     if profile_exists is not None:
         try:
             exists = profile_exists(mapped_profile)
@@ -816,29 +967,16 @@ def _decide(
             logger.warning(f"Could not confirm profile {mapped_profile!r} exists: {e}")
             exists = True
         if not exists:
-            fallback = (
-                _from_metadata(
-                    f"Prefix mapping {prefix!r} names profile {mapped_profile!r}, "
-                    f"which no longer exists; the upload's own profile "
-                    f"{metadata_profile!r} was used instead."
-                )
-                if metadata_profile
-                else _active()
-            )
             return ConfigAssignment(
-                profile=fallback.profile,
-                revision=fallback.revision,
-                source=fallback.source,
+                source=SOURCE_REJECTED,
                 mapping_prefix=prefix,
+                rejected=True,
                 unresolvable=True,
                 reason=(
-                    fallback.reason
-                    if metadata_profile
-                    else (
-                        f"Prefix mapping {prefix!r} names profile "
-                        f"{mapped_profile!r}, which no longer exists; the active "
-                        f"profile was used instead."
-                    )
+                    f"Refused: this object was uploaded to {prefix!r}, which is "
+                    f"mapped to Configuration Profile {mapped_profile!r}, but that "
+                    f"profile does not exist. Recreate the profile, or change or "
+                    f"delete the mapping, then submit the document again."
                 ),
             )
 
@@ -1016,12 +1154,23 @@ class PrefixMappingStore:
 
     # ----- writes ----------------------------------------------------------
 
-    def _rewrite(self, mutate: Callable[[List[Dict[str, Any]]], Any]) -> None:
+    def _rewrite(
+        self,
+        mutate: Callable[[List[Dict[str, Any]]], Any],
+        *,
+        actor: Optional[str] = None,
+    ) -> None:
         """Read-modify-write the entry list, guarded by ``IndexSeq`` with one retry.
 
         ``mutate(entries)`` returns the new list, or ``None`` to abort without
         writing. Raises :class:`PrefixMappingConflict` when a concurrent write wins
         twice, rather than returning a boolean a caller might only log.
+
+        The aggregate update, the history head's advance and the history record are
+        one ``TransactWriteItems``, so the change and its record cannot diverge: if
+        the record cannot be written, neither is the mapping. Both condition checks
+        -- the aggregate's ``IndexSeq`` and the head's ``LastSeq`` -- are what a
+        concurrent writer trips, and either one means "re-read and retry".
         """
         for attempt in (1, 2):
             item = self._read_item(consistent=True)
@@ -1036,31 +1185,113 @@ class PrefixMappingStore:
                     f"prefix mappings and this change would make {len(updated)}. "
                     f"Delete one before adding another."
                 )
+            head = (
+                self.table.get_item(
+                    Key={"Configuration": HISTORY_HEAD_KEY}, ConsistentRead=True
+                ).get("Item")
+                or {}
+            )
+            last = coerce_int(head.get(HISTORY_SEQ_ATTRIBUTE))
+            now = _now()
+            record = {
+                **history_key(last + 1),
+                "Seq": last + 1,
+                "Timestamp": now,
+                "Actor": _truncate_bytes(actor or "system", _MAX_ACTOR_LEN),
+                "Changes": describe_changes(
+                    entries, [normalize_entry(e) for e in updated]
+                ),
+            }
+            table_name = self.table.name
             try:
-                self.table.update_item(
-                    Key=self.index_key(),
-                    UpdateExpression=(
-                        f"SET {MAPPINGS_ATTRIBUTE} = :m, UpdatedAt = :ts, "
-                        f"{SEQ_ATTRIBUTE} = :next"
-                    ),
-                    ConditionExpression=(
-                        f"attribute_not_exists({SEQ_ATTRIBUTE}) OR "
-                        f"{SEQ_ATTRIBUTE} = :seq"
-                    ),
-                    ExpressionAttributeValues={
-                        ":m": updated,
-                        ":ts": _now(),
-                        ":seq": seq,
-                        ":next": seq + 1,
-                    },
+                self.table.meta.client.transact_write_items(
+                    TransactItems=[
+                        {
+                            "Update": {
+                                "TableName": table_name,
+                                "Key": self.index_key(),
+                                "UpdateExpression": (
+                                    f"SET {MAPPINGS_ATTRIBUTE} = :m, UpdatedAt = :ts, "
+                                    f"{SEQ_ATTRIBUTE} = :next"
+                                ),
+                                "ConditionExpression": (
+                                    f"attribute_not_exists({SEQ_ATTRIBUTE}) OR "
+                                    f"{SEQ_ATTRIBUTE} = :seq"
+                                ),
+                                "ExpressionAttributeValues": {
+                                    ":m": updated,
+                                    ":ts": now,
+                                    ":seq": seq,
+                                    ":next": seq + 1,
+                                },
+                            }
+                        },
+                        {
+                            "Update": {
+                                "TableName": table_name,
+                                "Key": {"Configuration": HISTORY_HEAD_KEY},
+                                "UpdateExpression": f"SET {HISTORY_SEQ_ATTRIBUTE} = :n",
+                                "ConditionExpression": (
+                                    f"attribute_not_exists({HISTORY_SEQ_ATTRIBUTE}) OR "
+                                    f"{HISTORY_SEQ_ATTRIBUTE} = :last"
+                                ),
+                                "ExpressionAttributeValues": {
+                                    ":n": last + 1,
+                                    ":last": last,
+                                },
+                            }
+                        },
+                        {
+                            "Put": {
+                                "TableName": table_name,
+                                "Item": record,
+                                # Append-only: a record is never overwritten.
+                                "ConditionExpression": (
+                                    "attribute_not_exists(Configuration)"
+                                ),
+                            }
+                        },
+                    ]
                 )
                 return
             except ClientError as e:
                 if (
                     e.response.get("Error", {}).get("Code")
-                    != "ConditionalCheckFailedException"
+                    != "TransactionCanceledException"
                 ):
                     raise
+                reasons = [
+                    (r or {}).get("Code")
+                    for r in e.response.get("CancellationReasons") or []
+                ]
+                # Only a race is worth retrying: a lost condition, or DynamoDB's
+                # own TransactionConflict when two transactions overlap on the
+                # same item. Anything else -- a validation failure, a throttle --
+                # is raised as it is rather than reported as a concurrent edit.
+                if reasons and any(
+                    code not in (None, "None", *_RACE_CANCELLATION_CODES)
+                    for code in reasons
+                ):
+                    raise
+                # The aggregate and the head both held and only the record's
+                # append-only condition failed: a record already exists at the
+                # sequence the head says is next, so the head is behind the log
+                # (it was deleted or rewound by hand). Retrying cannot fix that,
+                # and calling it a concurrent edit would send the admin the wrong
+                # way.
+                if (
+                    len(reasons) == 3
+                    and reasons[2] == "ConditionalCheckFailed"
+                    and all(code in (None, "None") for code in reasons[:2])
+                ):
+                    raise PrefixMappingHistoryCorrupt(
+                        f"The configuration prefix mapping change log already holds "
+                        f"record {last + 1}, which its head item says is the next "
+                        f"one to write, so the head item "
+                        f"({HISTORY_HEAD_KEY}) has been altered outside this "
+                        f"solution. No change was saved. Restore the head's "
+                        f"{HISTORY_SEQ_ATTRIBUTE} to the highest record number."
+                    ) from e
                 logger.info(
                     "The configuration prefix mapping index changed underneath us "
                     f"(attempt {attempt}); retrying"
@@ -1069,6 +1300,83 @@ class PrefixMappingStore:
             "Another administrator changed the configuration prefix mappings while "
             "this change was being saved. Reload and try again."
         )
+
+    def history(
+        self,
+        prefix: Optional[str] = None,
+        *,
+        limit: int = DEFAULT_HISTORY_PAGE,
+        before: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Change records, newest first, optionally only those touching ``prefix``.
+
+        Returns ``{"entries": [...], "nextBefore": <seq or None>}``. Each entry is
+        one changed mapping: ``seq``, ``timestamp``, ``actor``, ``prefix``,
+        ``action`` and the entry ``before`` and ``after``. ``nextBefore`` is the
+        cursor for the next page and ``None`` when the log is exhausted.
+
+        At most ``MAX_HISTORY_EXAMINED`` records are read per call, so a filtered
+        read of a long log returns a short (possibly empty) page with a cursor
+        rather than reading the whole log. Raises on a read failure, like every
+        other read here.
+        """
+        limit = max(1, min(int(limit or DEFAULT_HISTORY_PAGE), MAX_HISTORY_PAGE))
+        head = (
+            self.table.get_item(
+                Key={"Configuration": HISTORY_HEAD_KEY}, ConsistentRead=True
+            ).get("Item")
+            or {}
+        )
+        top = coerce_int(head.get(HISTORY_SEQ_ATTRIBUTE))
+        if before is not None:
+            top = min(top, int(before) - 1)
+        entries: List[Dict[str, Any]] = []
+        cursor = top
+        examined = 0
+        client = self.table.meta.client
+        table_name = self.table.name
+        while cursor >= 1 and len(entries) < limit and examined < MAX_HISTORY_EXAMINED:
+            low = max(1, cursor - _BATCH_GET_LIMIT + 1)
+            keys = [history_key(n) for n in range(cursor, low - 1, -1)]
+            found: List[Dict[str, Any]] = []
+            request: Dict[str, Any] = {
+                table_name: {"Keys": keys, "ConsistentRead": True}
+            }
+            for _ in range(5):
+                response = client.batch_get_item(RequestItems=request)
+                found.extend(response.get("Responses", {}).get(table_name, []))
+                request = response.get("UnprocessedKeys") or {}
+                if not request:
+                    break
+            if request:
+                raise RuntimeError(
+                    "Could not read the configuration prefix mapping history: "
+                    "DynamoDB left keys unprocessed after retrying"
+                )
+            records = sorted(
+                (normalize_history_record(r) for r in found),
+                key=lambda r: r["seq"],
+                reverse=True,
+            )
+            for record in records:
+                for change in record["changes"]:
+                    if prefix is not None and change["prefix"] != prefix:
+                        continue
+                    entries.append(
+                        {
+                            "seq": record["seq"],
+                            "timestamp": record["timestamp"],
+                            "actor": record["actor"],
+                            **change,
+                        }
+                    )
+                if len(entries) >= limit:
+                    cursor = record["seq"] - 1
+                    break
+            else:
+                cursor = low - 1
+            examined += len(keys)
+        return {"entries": entries, "nextBefore": cursor + 1 if cursor >= 1 else None}
 
     def put(
         self,
@@ -1127,7 +1435,7 @@ class PrefixMappingStore:
             remaining = [e for e in entries if e["prefix"] != prefix]
             return sort_entries([*remaining, entry])
 
-        self._rewrite(mutate)
+        self._rewrite(mutate, actor=actor)
         logger.info(
             f"Configuration prefix mapping {prefix!r} -> {config_profile!r}"
             + (
@@ -1139,7 +1447,7 @@ class PrefixMappingStore:
         )
         return stored
 
-    def delete(self, prefix: str) -> bool:
+    def delete(self, prefix: str, *, actor: Optional[str] = None) -> bool:
         """Remove the mapping for ``prefix``. Returns whether one was there.
 
         ⚠️ The answer is **"no such mapping remains"**, not "this call removed it".
@@ -1167,7 +1475,7 @@ class PrefixMappingStore:
             found["value"] = True
             return remaining
 
-        self._rewrite(mutate)
+        self._rewrite(mutate, actor=actor)
         if found["value"]:
             logger.info(f"Deleted configuration prefix mapping {prefix!r}")
         return found["value"]
