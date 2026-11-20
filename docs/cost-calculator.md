@@ -28,6 +28,7 @@ follows the mode each document was processed under, not a deployment-time choice
 
 #### Pipeline mode (`use_bda: false`, the default)
 - **Amazon Textract**: Costs based on the number of pages processed, when the Textract OCR backend is used.
+- **Converted documents** (text, CSV, Excel and Word files): no per-page charge. The OCR step renders these pages itself with local libraries instead of calling an OCR service, so their `converted/document_conversion` metering row is priced at $0.00. What they cost is the Lambda compute that rendering uses, which is metered and priced with the rest of that function's work.
 - **Amazon Bedrock**: Costs based on the models used, input tokens processed, and output tokens generated — across classification, extraction, assessment and summarization. This is normally the largest line in this mode.
 
 ### 2. Storage Costs
