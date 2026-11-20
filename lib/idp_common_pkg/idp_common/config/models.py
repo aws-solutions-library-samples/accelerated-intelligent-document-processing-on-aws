@@ -2978,6 +2978,14 @@ SECTION_SPLITTING_VALUES = ("llm_determined", "disabled", "page")
 DEFAULT_SECTION_SPLITTING = "llm_determined"
 
 
+#: The values of ``document_shape.pageOrder``: classify pages in scan order, or in
+#: the order of their printed page numbers (``idp_common.classification.page_order``).
+PAGE_ORDER_VALUES = ("scan", "printed_page_numbers")
+
+#: What an unset ``pageOrder`` means: the scan order.
+DEFAULT_PAGE_ORDER = "scan"
+
+
 def _unusable_page_limit(value: Any) -> str:
     """``'ALL'``, plus the warning that the operator's page limit is not in force."""
     import logging
@@ -3014,6 +3022,18 @@ class DocumentShapeConfig(BaseModel):
         description=(
             "With sectionSplitting 'disabled', classify only the first N pages and "
             "give the whole document their majority class. 'ALL' classifies every page."
+        ),
+    )
+    pageOrder: str = Field(
+        default="scan",
+        description=(
+            "'scan' (default): pages are classified in the order they were scanned. "
+            "'printed_page_numbers': read each page's printed page number from its "
+            "OCR text (header and footer lines, no model call) and classify the "
+            "pages in that order, but only when every page has exactly one number "
+            "and the numbers form one gap-free sequence; otherwise the scan order "
+            "is kept and a warning issue says why. Page IDs in the results are "
+            "unchanged either way."
         ),
     )
 
@@ -3065,6 +3085,27 @@ class DocumentShapeConfig(BaseModel):
                 "classification.document_shape.sectionSplitting must be one of "
                 f"{', '.join(SECTION_SPLITTING_VALUES)} (or empty for the default, "
                 f"{DEFAULT_SECTION_SPLITTING}), got {v!r}"
+            )
+        return v_str
+
+    @field_validator("pageOrder", mode="before")
+    @classmethod
+    def validate_page_order(cls, v: Any) -> str:
+        """One of :data:`PAGE_ORDER_VALUES`; empty is the default; else raises.
+
+        Refused rather than normalised, as ``sectionSplitting`` is and for the
+        second of its two reasons: the key is new, so no stored profile can hold an
+        unrecognised value, and a misspelt ``printed_page_numbers`` read as
+        ``scan`` would switch the feature off with nothing to say so.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_PAGE_ORDER
+        v_str = str(v).strip().lower()
+        if v_str not in PAGE_ORDER_VALUES:
+            raise ValueError(
+                "classification.document_shape.pageOrder must be one of "
+                f"{', '.join(PAGE_ORDER_VALUES)} (or empty for the default, "
+                f"{DEFAULT_PAGE_ORDER}), got {v!r}"
             )
         return v_str
 
