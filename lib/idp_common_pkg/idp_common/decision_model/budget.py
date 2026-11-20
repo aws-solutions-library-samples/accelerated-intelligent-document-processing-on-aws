@@ -14,6 +14,7 @@ decision model never reads it.
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import re
@@ -50,12 +51,29 @@ MIN_EVIDENCE_SHARE = 0.5
 
 
 #: Tokens counted for each character, by class. Every character not named here,
-#: digits, ASCII punctuation and non-ASCII such as CJK, counts as a whole token.
+#: digits, ASCII punctuation and non-ASCII such as kana and common CJK
+#: ideographs, counts as a whole token.
 #: A letter in a run of letters and digits that holds a digit (a serial, an
 #: invoice number, a hex id) is split by the tokenizer almost letter by letter.
 MIXED_RUN_LETTER_TOKENS = 0.75
 #: A letter in a run of letters only: words, all-capital headings included.
 WORD_LETTER_TOKENS = 0.5
+#: A letter in a run of letters only that does not read as a word (see
+#: ``_reads_as_code``): a random code, a base64 chunk, a mixed-case token.
+CODE_RUN_LETTER_TOKENS = 0.75
+#: A CJK ideograph in neither GB 2312's nor JIS X 0208's first level, the
+#: characters of everyday Chinese and Japanese text, but in Big5's first level
+#: (common traditional Chinese characters).
+TRADITIONAL_IDEOGRAPH_TOKENS = 1.5
+#: Any other CJK ideograph of the Basic Multilingual Plane outside extension A:
+#: rare name characters and surnames, GB 2312's second level.
+RARE_IDEOGRAPH_TOKENS = 2.5
+#: An ideograph of extension A (U+3400 to U+4DBF): three UTF-8 bytes, which the
+#: tokenizer spells a token each.
+EXTENSION_A_IDEOGRAPH_TOKENS = 3.0
+#: An ideograph above the Basic Multilingual Plane (extension B onwards): four
+#: UTF-8 bytes, a token each.
+SUPPLEMENTARY_IDEOGRAPH_TOKENS = 4.0
 #: A space, tab or line break.
 WHITESPACE_TOKENS = 0.5
 
@@ -70,17 +88,22 @@ def _token_weights(text: str) -> Iterator[float]:
     the live decider (#2051): every digit is a token of its own, and so is ASCII
     punctuation (the pipes, slashes, commas and points of a markdown statement
     table); a letter beside digits in one run is nearly one; a non-ASCII
-    character such as CJK is about one. Word letters, which run three to five a
-    token, are counted at two a token, and whitespace at ``WHITESPACE_TOKENS``.
+    character such as kana or a common CJK ideograph is about one. Word letters,
+    which run three to five a token, are counted at two a token, and whitespace at
+    ``WHITESPACE_TOKENS``. Two kinds of text the tokenizer splits finer are
+    weighted up (#2212): letter-only runs that read as codes
+    (``CODE_RUN_LETTER_TOKENS``) and CJK ideographs outside the everyday sets
+    (``_ideograph_weight``).
     """
     position = 0
     for run in _ALNUM_RUN.finditer(text):
         yield from (_other_weight(c) for c in text[position : run.start()])
-        letter = (
-            MIXED_RUN_LETTER_TOKENS
-            if any("0" <= c <= "9" for c in run.group())
-            else WORD_LETTER_TOKENS
-        )
+        if any("0" <= c <= "9" for c in run.group()):
+            letter = MIXED_RUN_LETTER_TOKENS
+        elif _reads_as_code(run.group()):
+            letter = CODE_RUN_LETTER_TOKENS
+        else:
+            letter = WORD_LETTER_TOKENS
         for c in run.group():
             yield 1.0 if "0" <= c <= "9" else letter
         position = run.end()
@@ -88,20 +111,96 @@ def _token_weights(text: str) -> Iterator[float]:
 
 
 def _other_weight(c: str) -> float:
-    return WHITESPACE_TOKENS if c in " \t\n\r" else 1.0
+    if c in " \t\n\r":
+        return WHITESPACE_TOKENS
+    return _ideograph_weight(c) if c >= "\u3400" else 1.0
+
+
+_VOWELS = frozenset("aeiouyAEIOUY")
+
+
+def _reads_as_code(run: str) -> bool:
+    """Whether a run of letters only reads as a random code rather than a word.
+
+    The tokenizer joins the letters of a word three to five a token, and splits a
+    random string of letters one or two a token whatever its case. Three signs
+    tell them apart: the case flips at least once every three letters after the
+    first (``kQzRbT``; a capitalised or all-capital word never flips, and
+    CamelCase of ordinary words flips about twice a word); five consonants in a
+    row, which almost no word holds; or, in six letters or more, under a fifth
+    vowels (``y`` counted as one; five letters with no vowel are five consonants
+    already). About 0.3% of the letters of this repository's
+    English documentation read as code by these signs, among them a few real
+    words (``strengths``, ``rhythm``, ``eBay``), which are then overcounted.
+    """
+    flips = sum(1 for a, b in zip(run[1:], run[2:]) if a.isupper() != b.isupper())
+    if len(run) >= 4 and 3 * flips >= len(run) - 1:
+        return True
+    consonants = longest = 0
+    for c in run:
+        consonants = 0 if c in _VOWELS else consonants + 1
+        longest = max(longest, consonants)
+    if longest >= 5:
+        return True
+    return len(run) >= 6 and 5 * sum(c in _VOWELS for c in run) < len(run)
+
+
+def _in_first_level(c: str, codec: str, low: int, high: int) -> bool:
+    """Whether ``c`` encodes in ``codec`` to a first two bytes in ``low``..``high``.
+
+    A character outside the codec's double-byte set (EUC-JP's three-byte JIS X
+    0212, which starts at 0x8F) falls below every range asked about.
+    """
+    try:
+        encoded = c.encode(codec)
+    except UnicodeEncodeError:
+        return False
+    return low <= (encoded[0] << 8 | encoded[1]) <= high
+
+
+@functools.lru_cache(maxsize=None)
+def _ideograph_weight(c: str) -> float:
+    """The weight of a character at or above U+3400: by level, if an ideograph.
+
+    Measured with the decider's tokenizer (#2212), a character of GB 2312's or
+    JIS X 0208's first level is about one token, the further first-level
+    characters of Big5 about 1.7, any other ideograph of the Basic Multilingual
+    Plane two or three, and one of extension A three and of the supplementary
+    blocks four: the tokenizer has no token for it and spells its UTF-8 bytes.
+    No character of extension A or above is in any of the three codecs' sets.
+    """
+    point = ord(c)
+    if not (
+        0x3400 <= point <= 0x4DBF
+        or 0x4E00 <= point <= 0x9FFF
+        or 0xF900 <= point <= 0xFAFF
+        or 0x20000 <= point <= 0x323AF
+    ):
+        return 1.0
+    if point >= 0x20000:
+        return SUPPLEMENTARY_IDEOGRAPH_TOKENS
+    if point <= 0x4DBF:
+        return EXTENSION_A_IDEOGRAPH_TOKENS
+    if _in_first_level(c, "gb2312", 0xB0A1, 0xD7FE) or _in_first_level(
+        c, "euc_jp", 0xB0A1, 0xCFFE
+    ):
+        return 1.0
+    if _in_first_level(c, "big5", 0xA440, 0xC67E):
+        return TRADITIONAL_IDEOGRAPH_TOKENS
+    return RARE_IDEOGRAPH_TOKENS
 
 
 def estimate_tokens(text: str) -> float:
     """A conservative token count for ``text``, from its characters.
 
     The sum of each character's weight (see ``_token_weights``). Measured with
-    the decider's tokenizer, it is within about 5% of the real count or above it
+    the decider's tokenizer, it is within about 10% of the real count or above it
     on markdown and tab-separated statement tables, figures, phone numbers,
-    serials and hex ids that mix letters and digits, and common CJK, which
+    serials and hex ids that mix letters and digits, letter-only random codes
+    (mixed-case, base64-like, capital letters), common CJK and rare CJK
+    characters (GB 2312's second level, rare surnames and name kanji), which
     ``PROMPT_RESERVE_TOKENS`` covers; on prose it is three to four times the real
-    count. It still undercounts letter-only random codes (to about 1.35 times)
-    and rare CJK characters such as uncommon name characters (to about 1.9
-    times), which the tokenizer splits into several byte tokens each.
+    count (#2051, #2212).
     """
     return sum(_token_weights(text))
 
