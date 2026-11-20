@@ -50,6 +50,7 @@
         "idp_common/agents/code_intelligence/agent.py": 28.89,
         "idp_common/agents/common/__init__.py": 100.0,
         "idp_common/agents/common/bedrock_error_messages.py": 100.0,
+        "idp_common/agents/common/chat_text.py": 100.0,
         "idp_common/agents/common/config.py": 73.61,
         "idp_common/agents/common/cost_metrics.py": 97.44,
         "idp_common/agents/common/dynamodb_logger.py": 100.0,
