@@ -308,6 +308,25 @@ def test_a_missing_prompt_file_fails_loudly(defaults_dir):
         )
 
 
+def test_the_mode_root_file_is_resolved_too(defaults_dir, monkeypatch):
+    """``pattern-*.yaml`` is read on its own path, not through ``_inherits``.
+
+    No shipped mode root holds a reference today, so this uses a synthetic
+    defaults directory: a reference there must resolve like one in a module.
+    """
+    (defaults_dir / DEFAULT_PROMPTS_DIR / "s" / "root.txt").write_text("root\n")
+    (defaults_dir / DEFAULT_PROMPTS_DIR / "s" / "mod.txt").write_text("mod\n")
+    (defaults_dir / "base-x.yaml").write_text(
+        f"x:\n  m: {{{FILE_REFERENCE_KEY}: {DEFAULT_PROMPTS_DIR}/s/mod.txt}}\n"
+    )
+    (defaults_dir / "pattern-2.yaml").write_text(
+        "_inherits: [base-x.yaml]\n"
+        f"x:\n  r: {{{FILE_REFERENCE_KEY}: {DEFAULT_PROMPTS_DIR}/s/root.txt}}\n"
+    )
+    monkeypatch.setattr(merge_utils, "get_system_defaults_dir", lambda: defaults_dir)
+    assert load_system_defaults("pattern-2") == {"x": {"m": "mod", "r": "root"}}
+
+
 def test_an_operator_configuration_is_never_resolved(defaults_dir):
     """Only the shipped defaults are resolved; a merged-in reference stays inert."""
     user = {"classification": {"combined": {"page": {"task_prompt": "mine"}}}}

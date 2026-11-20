@@ -1338,7 +1338,9 @@ and accuracy figures behind each — see
 [Classification](./classification.md#choosing-granularity-modality-and-strategy).
 The authoritative list of every key with its shipped default and an inline
 rationale is
-`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`.
+`lib/idp_common_pkg/idp_common/config/system_defaults/base-classification.yaml`;
+for the prompts it holds a reference to each prompt's own file, listed under
+[Default prompts](./classification.md#default-prompts).
 
 ## Section Splitting
 

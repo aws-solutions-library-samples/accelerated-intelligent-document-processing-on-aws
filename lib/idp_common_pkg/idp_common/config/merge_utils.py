@@ -397,10 +397,10 @@ def _read_referenced_file(reference: Any, defaults_dir: Path) -> str:
         )
     prompts_root = (defaults_dir / DEFAULT_PROMPTS_DIR).resolve()
     target = (defaults_dir / reference).resolve()
+    # An absolute path, a `..` climb and a symlink out of prompts/ all resolve
+    # outside prompts_root; prompts/ itself has no `.txt` suffix.
     if (
-        Path(reference).is_absolute()
-        or not target.is_relative_to(prompts_root)
-        or target == prompts_root
+        not target.is_relative_to(prompts_root)
         or target.suffix != DEFAULT_PROMPT_SUFFIX
     ):
         raise ValueError(
