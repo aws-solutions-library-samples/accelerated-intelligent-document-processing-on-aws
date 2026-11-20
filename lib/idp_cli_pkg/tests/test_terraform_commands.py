@@ -88,6 +88,7 @@ class TestDeployTerraform:
                 "https://s3.us-west-2.amazonaws.com/aws-ml-blog-us-west-2/"
                 "artifacts/genai-idp/terraform/idp-terraform-latest.json"
             ),
+            "module_version": None,
             "terraform_dir": None,
             "terraform_bin": "terraform",
             "assume_role_arn": None,
@@ -103,6 +104,67 @@ class TestDeployTerraform:
             if t.startswith("https://")
         ]
         assert ("https", "app.example.com") in [(u.scheme, u.hostname) for u in printed]
+
+    @pytest.mark.parametrize(
+        "variant, stem",
+        [(None, "idp-terraform"), ("headless", "idp-terraform-headless")],
+    )
+    def test_a_module_version_is_passed_with_the_regions_pointer(
+        self, runner, variant, stem
+    ):
+        """The version is resolved by the SDK through the index beside the
+        pointer, so the CLI passes both, for the variant's pointer too."""
+        client = _client()
+        args = ["deploy", "--terraform", "--stack-name", "tfidp", "--region"]
+        args += ["us-west-2", "--terraform-module-version", "0.6.15"]
+        if variant:
+            args.append(f"--{variant}")
+        else:
+            args += ["--admin-email", "a@example.com"]
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(cli_module.cli, args)
+        assert result.exit_code == 0, result.output
+        kwargs = client.stack.deploy_terraform.call_args.kwargs
+        assert kwargs["module_version"] == "0.6.15"
+        assert kwargs["module_url"] is None
+        assert kwargs["pointer_url"].endswith(f"/terraform/{stem}-latest.json")
+        assert "version 0.6.15" in result.output
+
+    @pytest.mark.parametrize(
+        "extra, named",
+        [
+            (["--terraform-module-url", "https://example.com/m.zip"], "module-url"),
+            (["--from-code", "."], "--from-code"),
+        ],
+    )
+    def test_a_module_version_with_another_module_source_is_refused(
+        self, runner, extra, named
+    ):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["deploy", "--terraform", "--stack-name", "tfidp", "--region"]
+                + ["us-west-2", "--terraform-module-version", "0.6.15"]
+                + extra,
+            )
+        assert result.exit_code == 1
+        assert "--terraform-module-version" in result.output
+        assert named in result.output
+        client.stack.deploy_terraform.assert_not_called()
+        client.publish.build.assert_not_called()
+
+    def test_a_module_version_without_terraform_is_refused(self, runner):
+        client = _client()
+        with patch.object(cli_module, "IDPClient", return_value=client):
+            result = runner.invoke(
+                cli_module.cli,
+                ["deploy", "--stack-name", "s", "--admin-email", "a@example.com"]
+                + ["--terraform-module-version", "0.6.15"],
+            )
+        assert result.exit_code == 1
+        assert "used with --terraform" in result.output
+        client.stack.deploy.assert_not_called()
 
     def test_explicit_module_dir_and_binary(self, runner):
         client = _client()

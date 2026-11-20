@@ -194,21 +194,48 @@ saved.
 
 `max_input_tokens` counts the request's text, its images and its question (for
 classification, every class description) together. The count is an estimate from
-characters, because the model's tokenizer is not available to the pipeline, and it
-errs high. The default, 3584, is the 4,096-token window less 512 for the model's own
+characters, because the model's tokenizer is not available to the pipeline. It
+counts each digit, punctuation mark and non-ASCII character as a token, a letter
+inside a code that mixes letters and digits as three quarters of one, and other
+letters and spaces as half of one, with two exceptions for text the model's
+tokenizer splits finely. A run of letters that does not read as a word (a random
+code, a base64 chunk, a mixed-case token such as `kQzRbT`) counts three quarters a
+letter, like a code with digits. A CJK ideograph outside the first level of GB 2312
+and JIS X 0208, the characters of everyday Chinese and Japanese text, counts one and
+a half when it is in Big5's first level (common traditional Chinese characters),
+two and a half otherwise (rare surnames and name characters, GB 2312's second
+level), and three or four in the extension blocks, whose characters the tokenizer
+spells byte by byte. On statement tables, figures, serial numbers, letter-only codes, common CJK
+text and rare CJK characters the estimate is within about 10% of the Strands
+Decider model's own count or above it; on prose it is several times too high, so
+long prose is cut before it needs to be. Those exceptions raise the estimate of
+English prose by about 0.5%, of simplified Chinese and Japanese prose by nothing,
+of Japanese names with rare kanji by 2 to 7%, and of traditional Chinese prose by
+about 6 to 12%, so such text keeps nearly all the room it had. The default, 3584, is the 4,096-token window less 512 for the model's own
 prompt, and it is also the largest value used: a larger one would let dense text
 overflow the window, so it is capped at 3584 with a warning in the logs. Lower it if
 requests are still refused.
 
-⚠️ **Extraction confidence with `input: text` or `both` can be refused over dense
-tables.** The estimate undercounts text that is mostly punctuation, digits and
-capitals, such as a markdown table of dates and amounts or a list of serial
-numbers. Against the Strands Decider extension's model in November 2026, at the
-default `max_input_tokens` of 3584, a confidence request over one such page in
-`text` or `both` mode was refused as over the 4,096-token window; a refused request
-fails the section's confidence pass. The default, `input: images`, sends no text
-and was well inside the window, and section classification fit on the same pages.
-For table-heavy documents, keep extraction confidence at `input: images`.
+Dense text is counted closely enough to fit. Against the
+Strands Decider extension's model in November 2026, at the default
+`max_input_tokens` of 3584, extraction confidence and section classification
+requests over a page of a markdown statement table, of figures, of 17-character
+serial numbers, of CJK, of prose, of random letter codes (mixed-case, base64-like
+and capital-letter) and of rare CJK characters (GB 2312's second level, rare
+surnames and name characters) fit the 4,096-token window in every `input`
+mode. A text this dense is cut shorter than prose: a confidence request keeps
+about 3,800 characters of such a table, about 4,300 of serial numbers, about 5,100
+of mixed-case codes and about 1,600 of rare CJK characters.
+
+⚠️ **Some scripts are still undercounted, and a request over a page of them can be
+refused.** Half-width katakana (common in Japanese bank-transfer payee names) cost
+about 1.6 tokens a character against an estimate of one, so a Japanese transfer
+statement can come to about 1.2 times its estimate; rare Hangul syllables, emoji,
+Ethiopic script and full-width Latin letters are undercounted too, measured with
+the model's tokenizer. Over a page of such text, extraction confidence with
+`input: text` or `both` can overflow the window at the default `max_input_tokens`;
+keep extraction confidence at the default `input: images` for such documents, or
+lower `max_input_tokens`.
 
 To check these figures against the decision model you deployed, for example after
 changing its model, run `make stacktest-decision-window` from a checkout: it sends

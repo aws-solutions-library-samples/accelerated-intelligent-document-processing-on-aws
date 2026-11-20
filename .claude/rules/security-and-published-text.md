@@ -24,6 +24,10 @@ permanent.
   registries, CI config, hooks, `CLAUDE.md` and `.claude/` untouched.
 - Branch from `develop` using a `feature/`, `fix/` or `docs/` prefix, and reach
   `develop` through a PR.
+- Keep `develop` identical on the GitLab origin and the GitHub repository by
+  fetching both, merging them locally (fast-forward where possible) and pushing
+  `develop` to both remotes. Put `ALLOW_SHARED_BRANCH=1` in front of each of those
+  pushes. A sync needs no pull or merge request.
 - For live troubleshooting, use `AWS_PROFILE=default`, and confirm the account
   with `aws sts get-caller-identity` before anything else.
 - When the `check-commit-text` hook blocks a string that is legitimately public,
@@ -39,8 +43,9 @@ permanent.
   JWT.
 - Install a first-party package by bare name. Those names on public PyPI belong
   to unrelated parties.
-- Commit or push directly to `develop` or `main`, or export the `ALLOW_*`
-  overrides in a shell profile.
+- Commit or push directly to `develop` or `main`, except for the two-remote sync
+  above, or export the `ALLOW_*` overrides in a shell profile.
+- Force-push `develop` or `main` on either remote.
 - Push, merge, approve or comment on a PR during a review unless the user asks.
 
 ## Verify with

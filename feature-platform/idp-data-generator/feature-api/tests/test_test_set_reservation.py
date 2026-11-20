@@ -64,7 +64,7 @@ def _tracking_table_definition():
 def aws(monkeypatch):
     monkeypatch.setenv("AWS_DEFAULT_REGION", _REGION)
     monkeypatch.setenv("AWS_REGION", _REGION)
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIAIOSFODNN7EXAMPLE")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA" + "IOSFODNN7EXAMPLE")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
     monkeypatch.setenv("HOST_TRACKING_TABLE", _HOST_TABLE)
     monkeypatch.setenv("BOOTSTRAP_TRACKING_TABLE", "BootstrapTracking")

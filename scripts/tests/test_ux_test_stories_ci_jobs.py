@@ -831,9 +831,21 @@ def test_the_run_jobs_take_the_runner_class_the_mr_ux_test_takes(
 ) -> None:
     """The same confined browser, so the same runner; the digest runs no browser."""
     tags = ci_config[SETUP_JOB]["tags"]
-    assert tags == ["size:large"]
+    assert tags == ["arch:amd64"]
+    size = {
+        k: v
+        for k, v in ci_config[SETUP_JOB]["variables"].items()
+        if k.startswith("KUBERNETES_")
+    }
+    assert size["KUBERNETES_MEMORY_LIMIT"] == "16Gi"
     for name in RUN_JOBS:
         assert jobs[name]["tags"] == tags, name
+        run_size = {
+            k: v
+            for k, v in jobs[name]["variables"].items()
+            if k.startswith("KUBERNETES_")
+        }
+        assert run_size == size, name
     assert "tags" not in jobs[DIGEST_JOB]
 
 
