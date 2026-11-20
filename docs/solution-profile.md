@@ -7,8 +7,9 @@ SPDX-License-Identifier: MIT-0
 
 # Solution Profile
 
-Each release of the GenAI IDP Accelerator publishes a **solution profile**: a small,
-versioned, machine-readable description of the accelerator. It says what the
+From the first release after 0.6.15, each release of the GenAI IDP Accelerator
+publishes a **solution profile**: a small, versioned, machine-readable description of
+the accelerator. It says what the
 accelerator does, where it can be extended, where it stops, which questions test
 whether it fits a need, what sizes a deployment, and how a delivery usually starts.
 
@@ -34,7 +35,7 @@ the customer deploys, owns and operates it.
 
 ## Download and verify it
 
-Each GitHub Release from the first release that carries a profile has two assets:
+From the first release after 0.6.15, each GitHub Release has two assets:
 
 - `solution-profile-genai-idp-accelerator-<version>.tar.gz`
 - `solution-profile-genai-idp-accelerator-<version>.tar.gz.sha256`

@@ -248,7 +248,7 @@ For detailed deployment and testing instructions, see the [Deployment Guide](./d
 
 ### Solution Profile
 
-Each GitHub Release carries a **solution profile**: a small, versioned set of YAML files describing what the accelerator does, where it can be extended, where it stops (with numbers), the questions that test whether it fits a need, and how a delivery usually starts. It is built from the release tag, every statement cites its evidence, and it is meant for anyone, including an AI assistant, judging fit before deploying. See [Solution Profile](./docs/solution-profile.md) for how to download, verify and read it.
+From the first release after 0.6.15, each GitHub Release carries a **solution profile**: a small, versioned set of YAML files describing what the accelerator does, where it can be extended, where it stops (with numbers), the questions that test whether it fits a need, and how a delivery usually starts. It is built from the release tag, every statement cites its evidence, and it is meant for anyone, including an AI assistant, judging fit before deploying. See [Solution Profile](./docs/solution-profile.md) for how to download, verify and read it.
 
 ## Security
 
