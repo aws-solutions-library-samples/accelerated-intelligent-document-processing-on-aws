@@ -101,7 +101,8 @@ While packaging, the publisher replaces tokens in `template.yaml`:
   a real release, with that string in every key. Check it by hand with `cat VERSION`.
 - Set the version with `make version V=<x.y.z>`. It validates the version, then rewrites
   `VERSION`, the 9 package version files, the seller entitlement service template's
-  version and the project's own entry in `lib/idp_common_pkg/uv.lock`: 12 paths in all,
+  version, the project's own entry in `lib/idp_common_pkg/uv.lock` and the solution
+  profile manifest's `version`: 13 paths in all,
   which it lists when it finishes. Do not edit `VERSION` or the lockfile by hand. The
   lockfile line matters because `make setup` and every CI job that builds the Python
   environment run `uv export --locked`, which refuses a lockfile whose project version
@@ -184,8 +185,9 @@ git describe --tags --abbrev=0   # should print the previous release tag
 ```
 
 **Success:** every file the command stamps — `VERSION`, the 9 package version files, the
-seller entitlement service template and the lockfile's project entry — reads `<x.y.z>`, and
-the command lists the 12 paths it changed.
+seller entitlement service template, the lockfile's project entry and the solution profile
+manifest — reads `<x.y.z>`, and
+the command lists the 13 paths it changed.
 
 ### Step 2 — Cut the CHANGELOG
 

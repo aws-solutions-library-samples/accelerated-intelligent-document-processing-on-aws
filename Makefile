@@ -371,11 +371,7 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 		exit 1; \
 	fi
 
-	@echo "Solution profile check"
-	@if ! make solution-profile-check; then \
-		echo -e "$(RED)ERROR: the solution profile in solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)"; \
-		exit 1; \
-	fi
+	@make solution-profile-check || (echo -e "$(RED)ERROR: solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)" && exit 1)
 
 	@echo "Retired-service documentation check"
 	@if ! make check-retired-services; then \
@@ -542,14 +538,11 @@ check-retired-services: ## Fail if documentation presents a retired service (App
 # preset, file format, selectable model or launch Region the profile does not cover.
 # The contract's release rules (reviewed_for_version == version, a changes.yaml entry
 # for it) apply automatically when VERSION is a final X.Y.Z, or with
-# SOLUTION_PROFILE_RELEASE=1. The release workflow
-# (.github/workflows/solution-profile-release.yml) runs the build below.
+# SOLUTION_PROFILE_RELEASE=1. The asset is built by `solution-profile-build`
+# (under Version Management), which the release workflow runs.
 solution-profile-check: ## Validate solution-profile/ against its contract and cross-check it with the code
 	@$(PYTHON) scripts/check_solution_profile.py || \
 		(echo -e "$(RED)ERROR: solution profile check failed!$(NC)" && exit 1)
-
-solution-profile-build: ## Build the deterministic solution-profile release tarball and .sha256 into dist/ (TAG=v<x.y.z> optional)
-	@$(PYTHON) scripts/build_solution_profile.py --out-dir dist --validate $(if $(TAG),--tag $(TAG),)
 
 # Discovered from `git ls-files` rather than listed. The previous
 # `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
@@ -1890,6 +1883,12 @@ endif
 	@echo "  - feature-platform/seller-entitlement-service/template.yaml"
 	@echo "  - solution-profile/solution-profile.yaml"
 
+
+# The release asset for the solution profile (docs/solution-profile.md). Not a
+# gate: .github/workflows/solution-profile-release.yml builds it when a release is
+# published, and scripts/tests/test_solution_profile.py proves it byte-identical.
+solution-profile-build: ## Build the deterministic solution-profile release tarball and .sha256 into dist/ (TAG=v<x.y.z> optional)
+	@$(PYTHON) scripts/build_solution_profile.py --out-dir dist --validate $(if $(TAG),--tag $(TAG),)
 
 ##@ Documentation
 docs: docs-build ## Build and serve the documentation site locally
