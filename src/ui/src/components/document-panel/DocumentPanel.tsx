@@ -37,6 +37,7 @@ import useDocumentActions from '../document-actions/use-document-actions';
 import type { DocumentView } from '../document-actions/use-document-actions';
 import useDocumentDownload from '../document-actions/use-document-download';
 import { useFormatters } from '../../i18n/format';
+import type { CallerAttributeEntry } from '../common/caller-attributes';
 // Uncomment the line below to enable debugging
 
 interface MappedDocument {
@@ -54,6 +55,8 @@ interface MappedDocument {
   configAssignmentError?: string;
   /** Issues recorded on the document rather than a section — today, ingest warnings only. */
   documentProcessingIssues?: { severity?: string | null; message?: string | null; code?: string | null }[];
+  /** Caller-supplied document attributes, as text rows (see caller-attributes.ts). */
+  callerAttributes?: CallerAttributeEntry[];
   pageCount?: number;
   evaluationStatus?: string;
   evaluationReportUri?: string;
@@ -208,9 +211,10 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
           </Box>
         )}
         {/*
-          Document-level issues, shown beside the configuration because the only
-          one written today says how that configuration was chosen: the prefix
-          mappings could not be read, so none was applied.
+          Document-level issues, all of them ingest warnings, shown beside the
+          configuration because most say how it was chosen (the prefix mappings
+          could not be read, so none was applied); the other says intake dropped
+          some of the document's attributes.
         */}
         {(item.documentProcessingIssues ?? []).map((issue) => (
           <Box
@@ -245,7 +249,31 @@ export const DocumentAttributes = ({ item, versions, evaluationCell }: DocumentA
       </Field>
       <Field label="Summary">{item.summaryReportUri ? 'Available' : 'N/A'}</Field>
       <MalwareScanAttribute item={item} />
+      <CallerAttributesField entries={item.callerAttributes} />
     </ColumnLayout>
+  );
+};
+
+/**
+ * The caller-supplied attributes as a detail field, one `key: value` line each.
+ *
+ * Rendered only when the document carries any, so a document uploaded without
+ * attributes shows the same grid as before. Values are untrusted caller input and
+ * are rendered as React text children, never as HTML.
+ */
+export const CallerAttributesField = ({ entries }: { entries?: CallerAttributeEntry[] }): React.JSX.Element | null => {
+  if (!entries || entries.length === 0) return null;
+  return (
+    <Field label="Attributes">
+      {entries.map(({ key, value }) => (
+        <Box key={key} fontSize="body-s">
+          <Box variant="span" fontWeight="bold">
+            {key}
+          </Box>
+          {`: ${value}`}
+        </Box>
+      ))}
+    </Field>
   );
 };
 

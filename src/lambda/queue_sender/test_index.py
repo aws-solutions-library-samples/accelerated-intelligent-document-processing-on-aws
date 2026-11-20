@@ -19,6 +19,7 @@ from botocore.exceptions import ClientError
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "../../../lib/idp_common_pkg")
 )
+from idp_common import document_attributes as real_document_attributes  # noqa: E402
 from idp_common import testrun_status as real_testrun_status  # noqa: E402
 from idp_common.config import prefix_mappings as real_prefix_mappings  # noqa: E402
 from idp_common.config import tenants as real_tenants  # noqa: E402
@@ -78,6 +79,9 @@ sys.modules["idp_common.config.tenants"] = mock_tenants_module
 # vouch for a document is the property the replay tests below pin, and a stubbed set
 # would let them pass against any value.
 sys.modules["idp_common.testrun_status"] = real_testrun_status
+# Kept REAL: which keys are sidecars, and the code the verdict path carries over,
+# are the behaviour the attribute tests below pin (#1851).
+sys.modules["idp_common.document_attributes"] = real_document_attributes
 
 mock_xray_core = MagicMock()
 # capture() is used as a decorator; make it a pass-through.
@@ -3667,3 +3671,94 @@ class TestReusedKeyVerdictOrdering:
         assert "MalwareScanVerdictDuplicate" not in metrics
         mock_sqs.send_message.assert_not_called()
         assert len(row.writes) == 2
+
+
+@pytest.mark.unit
+class TestDocumentAttributes:
+    """Caller-supplied attributes at ingest (#1851)."""
+
+    def test_an_attributes_sidecar_is_not_processed_as_a_document(self):
+        import index
+
+        with (
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "delete_current_output_objects") as mock_purge,
+            patch.object(index.Document, "from_s3_event") as mock_from_event,
+        ):
+            response = index.handler(
+                make_event("batch/doc.pdf" + real_document_attributes.SIDECAR_SUFFIX),
+                None,
+            )
+
+        assert response["skipped"] == "document_attributes_sidecar"
+        mock_from_event.assert_not_called()
+        mock_doc_service.create_document.assert_not_called()
+        mock_sqs.send_message.assert_not_called()
+        mock_purge.assert_not_called()
+
+    def test_a_document_whose_name_only_resembles_a_sidecar_is_processed(self):
+        import index
+
+        doc = _mock_document("batch/doc.idp-attributes.pdf")
+        with (
+            patch.object(index, "sqs") as mock_sqs,
+            patch.object(index, "document_service"),
+            patch.object(index, "delete_current_output_objects", return_value=0),
+            patch.object(index.Document, "from_s3_event", return_value=doc),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            response = index.handler(make_event("batch/doc.idp-attributes.pdf"), None)
+
+        assert "skipped" not in response
+        mock_sqs.send_message.assert_called_once()
+
+    def test_the_verdict_carries_the_rows_snapshot_and_its_warning(self):
+        """The verdict pass does not re-read attributes (a sidecar edited during
+        the scan must not change them), and its write of ProcessingIssues must
+        keep the drop warning the upload recorded rather than erase it."""
+        import index
+
+        dropped = ProcessingIssue(
+            stage="ingest",
+            severity="warning",
+            code=real_document_attributes.ISSUE_ATTRIBUTES_DROPPED,
+            message="1 dropped",
+        )
+        unrelated = ProcessingIssue(
+            stage="ingest", severity="warning", code="something_else", message="m"
+        )
+        row = _row_double()
+        row.attributes = {"account_id": "ACME-0042"}
+        row.processing_issues = [dropped, unrelated]
+        doc = _mock_document()
+        doc.attributes = {"account_id": "FROM-A-RE-READ"}
+        doc.processing_issues = []
+        with (
+            patch.object(index, "MALWARE_SCANNING_ENABLED", True),
+            patch.object(index, "INPUT_BUCKET", "test-input-bucket"),
+            patch.object(index, "sqs"),
+            patch.object(index, "sns"),
+            patch.object(index, "cloudwatch"),
+            patch.object(index, "document_service") as mock_doc_service,
+            patch.object(index, "s3"),
+            patch.object(
+                index,
+                "malware_policy_for",
+                return_value={"allow_unscannable": False, "alert_on_block": True},
+            ),
+            patch.object(index.Document, "from_s3_event", return_value=doc) as build,
+            patch.object(index, "resolve_configuration", return_value=None),
+            patch.object(index.xray_recorder, "current_segment", return_value=None),
+        ):
+            mock_doc_service.get_document.return_value = row
+            index.handler(make_scan_result_event(), None)
+
+        assert build.call_args.kwargs.get("read_attributes") is False
+        assert doc.attributes == {"account_id": "ACME-0042"}
+        written = mock_doc_service.update_document_status.call_args.kwargs[
+            "extra_attributes"
+        ]["ProcessingIssues"]
+        assert [i["code"] for i in written] == [
+            real_document_attributes.ISSUE_ATTRIBUTES_DROPPED
+        ]

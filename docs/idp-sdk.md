@@ -272,6 +272,7 @@ Process a single document (upload and queue for processing).
 - `file_path` (str, required): Path to local file to upload
 - `document_id` (str, optional): Custom document ID (defaults to filename without extension)
 - `stack_name` (str, optional): Stack name override
+- `attributes` (dict, optional, keyword-only): [Document attributes](./document-attributes.md) stored with the document and returned with its results. Invalid attributes raise `IDPConfigurationError` before anything is uploaded
 
 **Returns:** `DocumentUploadResult` with `document_id`, `status`, and `timestamp`
 
@@ -473,6 +474,7 @@ Process multiple documents through the IDP pipeline.
 - `config_path` (str, optional): Path to custom configuration file
 - `config_profile` (alias: `config_version`) (str, optional): Configuration profile to use for processing
 - `context` (str, optional): Context for test set processing
+- `attributes` (dict, optional, keyword-only): [Document attributes](./document-attributes.md) for every document in the batch; a manifest row's own `attributes` override them per key. Refused with `test_set`
 - `stack_name` (str, optional): Stack name override
 
 **Returns:** `BatchProcessResult` with `batch_id`, `document_ids`, `queued`, `uploaded`, `failed`, `baselines_uploaded`, `source`, `output_prefix`, and `timestamp`
@@ -584,7 +586,7 @@ Get extracted metadata and fields for all documents in a batch, with pagination 
 - `next_token` (str, optional): Pagination token from previous request
 - `stack_name` (str, optional): Stack name override
 
-**Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list of per-document result dicts), and optional `next_token`
+**Returns:** `dict` with `batch_id`, `section_id`, `count`, `total_in_batch`, `documents` (list of per-document result dicts), and optional `next_token`. A document that carries [document attributes](./document-attributes.md) has an `attributes` key in its result dict; the key is absent otherwise. `get_document_results()` returns the same per-document dict
 
 ```python
 result = client.batch.get_results(batch_id="batch-20250123-123456", limit=20)

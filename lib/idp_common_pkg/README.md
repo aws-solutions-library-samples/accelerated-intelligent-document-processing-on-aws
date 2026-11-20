@@ -215,6 +215,52 @@ same mistake. `scripts/tests/test_dynamodb_query_filter_keys.py` guards the quer
 tree-wide, at source, because the expression is rejected by the service rather than by
 any library: neither a mock nor `moto` refuses it.
 
+## Document attributes
+
+`Document.attributes` holds caller-supplied key-value attributes (an account id, a
+claim number) that a caller attached at upload. It is separate from
+`Document.metadata`, which carries internal processing data, and nothing in the
+pipeline reads it. The user-facing description, with the input routes and limits,
+is [docs/document-attributes.md](../../docs/document-attributes.md).
+
+`idp_common.document_attributes` is the one implementation of the rules; the SDK,
+the queue sender (through `Document.from_s3_event`) and the reprocess resolver all
+call it.
+
+- `validate_attributes(candidate)` returns the set or raises
+  `AttributeValidationError` naming every violation. Use it on any route with a
+  caller to answer.
+- `sanitize_attributes(candidate)` keeps what satisfies the rules and reports the
+  rest as `(key, reason)` pairs, considering keys in sorted order so which ones
+  survive the count and size bounds is deterministic.
+- `read_object_attributes(metadata, bucket, s3_client)` is the S3 intake route:
+  inline `idp-attr-<name>` metadata (`-` in the name becomes `_`) and the
+  `idp-attributes-uri` sidecar, which must be in the same bucket with a key ending
+  in `.idp-attributes.json` and is read up to the 32 KB bound. It never raises for
+  bad input.
+- `idp_common.models.attributes_dropped_issue(dropped)` builds the document-level
+  `ingest_attributes_dropped` warning, naming keys and reasons but never values.
+  It is in `models` so that `document_attributes` imports nothing from it.
+- `encode_for_upload(attributes, base_metadata)` picks the transport for an
+  upload: inline when that reproduces the set exactly, otherwise a sidecar body the
+  caller uploads first.
+- `loggable_metadata(metadata)` replaces attribute values with `<redacted>`.
+  `from_s3_event` logs metadata only through it, because a value can be personal
+  data.
+
+Three properties to keep when extending it:
+
+- **An empty set is invisible.** `to_dict()` emits `attributes` and the tracking
+  item gets `DocumentAttributes` only when the set is non-empty, so a document
+  without attributes serialises byte-for-byte as before.
+- **The intake snapshot is authoritative.** `from_s3_event(..., read_attributes=False)`
+  skips the read for a caller that already holds the stored set: the malware-gate
+  verdict path does, and copies the set and its drop warning from the tracking row,
+  so a sidecar edited during the scan cannot change them. Reprocess copies them
+  from the row for the same reason.
+- **`update_document` never writes them.** Only `create_document` does, so a
+  whole-document update from a payload without attributes cannot clear them.
+
 ## ⚙️ Configuration
 
 The configuration module retrieves and merges configuration from DynamoDB:

@@ -49,6 +49,7 @@ This folder contains detailed documentation on various aspects of the GenAI Inte
 - [Few-Shot Examples](./few-shot-examples.md) - Implementing few-shot examples for improved accuracy
 - [Human-in-the-Loop Review](./human-review.md) - Human review workflows with built-in review system
 - [Review Queues](./review-queues.md) - System-wide HITL review queues; Admins assign items to Annotators; the review status contract
+- [Document Attributes](./document-attributes.md) - Attach caller-supplied key-value attributes (account id, claim number) at upload and get them back with the results
 - [Document Versions](./document-versions.md) - Each processing run of a document is kept as a version, so reprocessing or re-uploading does not lose prior results
 - [Rule Validation](./rule-validation.md) - Business rule validation and compliance checking
 - [Z3 Symbolic Rule Validation Engine](./rule-validation-z3.md) - Deterministic, formal rule validation with the Z3 theorem prover, routed per rule alongside the LLM engine
