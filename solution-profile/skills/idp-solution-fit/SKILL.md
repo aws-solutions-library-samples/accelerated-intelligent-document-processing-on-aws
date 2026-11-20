@@ -5,11 +5,14 @@ description: Assess whether the GenAI IDP Accelerator fits a document-processing
 
 # Assess fit for the GenAI IDP Accelerator
 
-This skill works from the accelerator's **solution profile**: the YAML files in the profile
-directory that holds this skill's `skills/` directory, published with each release. Read the profile of
-the release you are assessing, not a newer or older one; `solution-profile.yaml`
-says which release it describes (`version`) and which release a person last
-reviewed it against (`reviewed_for_version`).
+This skill works from the accelerator's **solution profile**, a set of YAML files
+published with each release. The profile files sit two directories above this file:
+this skill is `skills/idp-solution-fit/SKILL.md` inside the profile directory, beside
+`solution-profile.yaml`.
+
+Read the profile of the release you are assessing, not a newer or older one.
+`solution-profile.yaml` says which release it describes (`version`) and which release
+a person last reviewed it against (`reviewed_for_version`).
 
 ## 1. Read the profile
 
@@ -25,8 +28,9 @@ reviewed it against (`reviewed_for_version`).
 | `delivery.yaml` | How a delivery usually starts, and typical work items with effort |
 | `changes.yaml` | What each release changed, and what an upgrade requires someone to act on |
 
-Every item carries `evidence`: a path in the accelerator's repository at the
-release commit, or a documentation URL. Cite evidence when you state a fact, and
+Capabilities, extension points, limitations and deployment options carry
+`evidence`: a path in the accelerator's repository at the release commit, or a
+documentation URL. Discovery questions cite their sources in their `implications`. Cite evidence when you state a fact, and
 prefer the evidence over your own memory of the product.
 
 Items are cited as `<kind>:<id>`, for example `limitation:simple-extraction-row-limit`.
@@ -69,8 +73,8 @@ preferred** category that closes it. The order of preference is:
 4. **core-enhancement**: a change to the accelerator itself, contributed upstream.
    It ships when the maintainers release it, so its timing is not the customer's to
    decide.
-5. **fork**: a private copy with code changes. Least preferred: with releases this
-   frequent, every upgrade then has to be merged by hand.
+5. **fork**: a private copy with code changes. Least preferred: every upgrade then
+   has to be merged by hand, and `changes.yaml` shows how often releases arrive.
 6. **other**: work outside the accelerator, with an `other_kind` of `aws-service`,
    `integration`, `data`, `process`, `security-review` or `infrastructure`.
 
