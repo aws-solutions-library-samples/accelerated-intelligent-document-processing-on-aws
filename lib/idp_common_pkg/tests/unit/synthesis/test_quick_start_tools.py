@@ -203,6 +203,7 @@ class TestGenerateFromExistingConfig:
             out = json.loads(bt.list_config_versions_impl())
         assert out["versions"][0]["versionName"] == "v1"
         assert out["versions"][0]["classes"] == ["Paystub"]
+        assert out["versions"][0]["managed"] is False
 
     def test_generate_from_existing_enqueues(self):
         from idp_common.agents.quick_start.tools import bootstrap_tools as bt
