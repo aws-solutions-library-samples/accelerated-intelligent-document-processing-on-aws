@@ -274,15 +274,19 @@ def _flat_keys() -> frozenset:
 
 
 #: Sub-blocks read only when the sibling ``method`` selects them, keyed by the
-#: block's path under ``classification`` and the method value that reads it.
-_METHOD_SELECTED_BLOCKS: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+#: block's path under ``classification`` and the method values that read it.
+_METHOD_SELECTED_BLOCKS: Tuple[Tuple[Tuple[str, ...], Tuple[str, ...]], ...] = (
     (
         ("split_then_classify", "section_classification", "decision_model"),
-        "decision_model",
+        ("decision_model",),
+    ),
+    (
+        ("split_then_classify", "section_classification", "embeddings"),
+        ("embeddings",),
     ),
     (
         ("split_then_classify", "section_classification", "low_confidence"),
-        "decision_model",
+        ("decision_model", "embeddings"),
     ),
 )
 
@@ -290,11 +294,11 @@ _METHOD_SELECTED_BLOCKS: Tuple[Tuple[Tuple[str, ...], str], ...] = (
 def _unselected_method_block(classification: Dict[str, Any], path: str) -> bool:
     """Whether ``path`` lies in a method-selected block the cell does not select."""
     parts = tuple(path.split(".")[1:])
-    for block, method in _METHOD_SELECTED_BLOCKS:
+    for block, methods in _METHOD_SELECTED_BLOCKS:
         if parts[: len(block)] != block:
             continue
         selected = _get(classification, block[:-1] + ("method",))
-        return (selected or "llm") != method
+        return (selected or "llm") not in methods
     return False
 
 

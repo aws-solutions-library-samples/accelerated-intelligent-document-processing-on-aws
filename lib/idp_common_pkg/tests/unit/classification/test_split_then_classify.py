@@ -281,12 +281,10 @@ class TestStrategyConfig:
         with pytest.raises(Exception, match="strategy must be"):
             _service(strategy="three_stage")
 
-    def test_an_unimplemented_labeling_method_is_refused_by_name(self):
-        """'embeddings' and 'classifier' are the other two methods #1329
-        describes; both need a measurement before their defaults can be set
-        honestly, so the enum ships with one value and says so."""
-        with pytest.raises(Exception, match="1329"):
-            _service(labeling={"method": "embeddings"})
+    def test_an_unknown_labeling_method_is_refused_by_name(self):
+        """'classifier' is the other method #1329 describes; it is not a value."""
+        with pytest.raises(Exception, match="must be one of 'llm', 'decision_model'"):
+            _service(labeling={"method": "classifier"})
 
     def test_an_unknown_labeling_pages_value_is_refused(self):
         with pytest.raises(Exception, match="section_classification.pages must be"):
