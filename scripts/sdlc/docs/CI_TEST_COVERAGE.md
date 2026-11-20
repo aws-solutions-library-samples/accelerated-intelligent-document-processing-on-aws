@@ -328,6 +328,31 @@ ignored):
   of run, and nothing in it depends on which schedule started the sweep. The
   resource group keeps the two runs from overlapping in any case.
 
+**The re-plan after apply.** Straight after the apply and the health check, the run
+plans the deployment again with `terraform plan -detailed-exitcode`
+(`check_terraform_convergence` in `codebuild_deployment.py`), and the plan must be
+empty: a module whose plan never empties would otherwise pass every gate. The result
+is the first row of the primary suite's table, `Step 2b: Terraform re-plan after
+apply is empty`, and the suite still runs after it, so a night that does not
+converge also reports what the steps found.
+
+| `plan` exit | Meaning | Run |
+|---|---|---|
+| 0 | the plan is empty | passes the row |
+| 2 | the plan has changes | fails, naming each changed address with its actions and the attribute paths an update touches (at most `TERRAFORM_REPLAN_LISTED_CHANGES`, then a count). Values are never printed: the saved plan holds them in clear, so it is read without being echoed and then deleted |
+| 1, or a timeout | the plan did not run | fails as an error, saying that whether the module converges is unknown, with the end of the plan's output |
+
+The plan's own text is kept in `terraform-replan.log` beside the deploy log, and is
+part of the Terraform log tail the failure analysis reads.
+`TERRAFORM_REPLAN_EXEMPT_CHANGES` lists the re-plan changes that are known defects
+and are reported without failing the run, one address each, registered in
+`scripts/tests/gate_exemptions.json`. It holds the API Gateway stage's
+access-log destination (#2006), accepted only as a plain update that adds `:*` to the
+stored ARN and touches nothing else on that resource.
+`scripts/sdlc/tests/test_terraform_replan_convergence.py` translates the template
+offline and fails once the generated module stops producing the shape an entry
+describes, so the entry goes when #2006 is fixed.
+
 **Scheduling it after the CloudFormation nightly.** Both runs hold
 `resource_group: integration_deploy`, so whichever reaches `integration_tests`
 second waits for the first to release it. Waiting is safe — a queued job's timeout

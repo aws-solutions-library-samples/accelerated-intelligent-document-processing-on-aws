@@ -521,7 +521,9 @@ same Slack channel. A second nightly schedule, while it is active (carrying
 CloudFormation stack, labelled `NIGHTLY TERRAFORM RUN`. It is told apart from the
 CloudFormation nightly by that variable alone, so it leaves the UX review stack and
 the nightly first-time-user stories to the CloudFormation nightly, and the two runs
-queue for the same deploy lock rather than overlapping. To run that mode by hand, set
+queue for the same deploy lock rather than overlapping. Straight after its apply it
+plans the deployment again, and a plan that is not empty fails the run, naming the
+changed addresses. To run that mode by hand, set
 `IDP_IAC=terraform` for the deploy driver, `scripts/sdlc/codebuild_deployment.py`;
 how it differs from the CloudFormation run, and the CI pipeline-stack update it
 needs before the schedule is turned on, are in the coverage document below.
