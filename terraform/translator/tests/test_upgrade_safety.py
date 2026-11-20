@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from idp_tf import completeness, create_only, moved, safety, translate
 from idp_tf.awscc_schema import AwsccSchema, awscc_type_name
+from idp_tf.hcl import norm
 from idp_tf.cli import VENDORED_SCHEMA, main, render_tree, tree_checks, tree_resources
 from idp_tf.translate import Translator
 
@@ -878,7 +879,23 @@ def test_every_ignore_changes_the_translator_emits_is_declared(standard_tree, sc
     owned = _translate_owned_ignores(schema)
     assert not set(owned) & set(expected), "a type would be counted twice"
     expected.update(owned)
-    assert _emitted_ignore_changes(standard_tree) == expected
+    emitted = _emitted_ignore_changes(standard_tree)
+    # translate.UPDATED_BY_REPLACEMENT ignores whichever settable properties
+    # the template sets, so it is bounded by the type's settable attributes
+    # rather than pinned to a list, and must reach the HCL at least once.
+    for cfn_type in translate.UPDATED_BY_REPLACEMENT:
+        tf_type = awscc_type_name(cfn_type)
+        assert tf_type not in expected, "a type would be counted twice"
+        fixed = {norm(p[0]) for p in create_only.paths(cfn_type)}
+        hint = schema.hint(cfn_type)
+        settable = {
+            tf_name
+            for key, (tf_name, _) in hint.attrs.items()
+            if key not in fixed and key not in hint.computed_only
+        }
+        got = emitted.pop(tf_type, set())
+        assert got and got <= settable, (cfn_type, got, settable)
+    assert emitted == expected
 
 
 def test_the_key_check_feeds_no_create_only_property(standard):
