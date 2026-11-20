@@ -463,6 +463,7 @@ class TestCreateConfigVersionErrors:
         out = self._create(RuntimeError("throttled"))
         assert out["refused"] is False
         assert "try again" in out["error"]
+        assert "throttled" not in out["error"]
 
 
 class TestSetProcessingOptionsTool:
@@ -505,3 +506,4 @@ class TestSetProcessingOptionsTool:
         out, _ = self._call("v1", "one", None, error=RuntimeError("throttled"))
         assert out["refused"] is False
         assert "try again" in out["error"]
+        assert "throttled" not in out["error"]

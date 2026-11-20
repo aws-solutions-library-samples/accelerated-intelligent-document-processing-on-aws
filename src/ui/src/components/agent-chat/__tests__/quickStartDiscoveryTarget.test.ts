@@ -18,9 +18,17 @@ import { activatesWithoutAsking, newQuickStartProfileName } from '../quickStartD
 
 describe('the profile a Quick Start conversation saves into', () => {
   it('is a new, valid profile name taken from the time', () => {
-    const name = newQuickStartProfileName(new Date(Date.UTC(2026, 10, 20, 9, 5, 7)));
-    expect(name).toBe('quickstart-20261120-090507');
+    const when = new Date(Date.UTC(2026, 10, 20, 9, 5, 7));
+    expect(newQuickStartProfileName(when, 'ab12')).toBe('quickstart-20261120-090507-ab12');
+    const name = newQuickStartProfileName(when);
+    expect(name).toMatch(/^quickstart-20261120-090507-[0-9a-f]{4}$/);
     expect(name).toMatch(/^[a-zA-Z0-9._-]+$/);
+  });
+
+  it('differs between two conversations started in the same second', () => {
+    const when = new Date(Date.UTC(2026, 10, 20, 9, 5, 7));
+    const names = new Set(Array.from({ length: 20 }, () => newQuickStartProfileName(when)));
+    expect(names.size).toBeGreaterThan(1);
   });
 
   const target = 'quickstart-20261120-090507';
@@ -28,6 +36,34 @@ describe('the profile a Quick Start conversation saves into', () => {
   it.each([
     ['the caller sees no profile at all, so their scope hides some', [], false],
     ['only default exists', [{ versionName: 'default', isActive: true }], true],
+    [
+      'a freshly deployed stack: default active beside its inactive stack-managed presets',
+      [
+        { versionName: 'default', isActive: true },
+        { versionName: 'fake-w2', isActive: false, managed: true },
+        { versionName: 'docsplit', isActive: false, managed: true },
+        { versionName: 'ocr-benchmark', isActive: false, managed: true },
+        { versionName: 'realkie-fcc-verified', isActive: false, managed: true },
+      ],
+      true,
+    ],
+    [
+      'a stack-managed preset someone made active',
+      [
+        { versionName: 'default', isActive: false },
+        { versionName: 'docsplit', isActive: true, managed: true },
+      ],
+      false,
+    ],
+    [
+      'default active beside the presets and a profile of the stack',
+      [
+        { versionName: 'default', isActive: true },
+        { versionName: 'docsplit', isActive: false, managed: true },
+        { versionName: 'team-invoices', isActive: false },
+      ],
+      false,
+    ],
     [
       'it is already the active profile',
       [
@@ -51,11 +87,10 @@ describe('the profile a Quick Start conversation saves into', () => {
     expect(activatesWithoutAsking(versions, target)).toBe(activates);
   });
 
-  it('is never made active without asking from a profile list that has not loaded or failed', () => {
+  it('is decided when Discovery finishes, from a refreshed list that loaded without error', () => {
     const layout = readFileSync(join(__dirname, '..', 'AgentChatLayout.tsx'), 'utf-8');
-    expect(layout).toMatch(
-      /activateDiscoveryTargetRef\.current = versionsLoaded && !versionsError && activatesWithoutAsking\(versions, version\);/,
-    );
+    expect(layout).toMatch(/const version = discoveryTargetRef\.current;\s*void fetchVersions\(\);/);
+    expect(layout).toMatch(/latest\.loaded && !latest\.error && activatesWithoutAsking\(latest\.versions, result\.configVersion\)/);
   });
 
   it('tells the agent it is active only once the activation has succeeded', () => {

@@ -321,14 +321,14 @@ def create_config_version_impl(schema_text: str, version_name: str = "") -> str:
                 "error": str(e),
             }
         )
-    except Exception as e:
-        logger.error(f"Error saving config version '{version}': {e}")
+    except Exception:
+        logger.error(f"Error saving config version '{version}'", exc_info=True)
         return json.dumps(
             {
                 "config_version": version,
                 "activated": False,
                 "refused": False,
-                "error": f"The profile could not be saved, try again: {e}",
+                "error": "The profile could not be saved; try again.",
             }
         )
     return json.dumps({"config_version": version, "activated": False})
@@ -370,13 +370,15 @@ def set_processing_options_impl(
         return json.dumps(
             {"config_version": version_name, "refused": False, "error": str(e)}
         )
-    except Exception as e:
-        logger.error(f"Error setting processing options on '{version_name}': {e}")
+    except Exception:
+        logger.error(
+            f"Error setting processing options on '{version_name}'", exc_info=True
+        )
         return json.dumps(
             {
                 "config_version": version_name,
                 "refused": False,
-                "error": f"The options could not be saved, try again: {e}",
+                "error": "The options could not be saved; try again.",
             }
         )
     return json.dumps({"config_version": version_name, "applied": applied})
