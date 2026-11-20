@@ -184,7 +184,10 @@ def validate_unpacked(repo_root: Path, tarball: Path, release: bool) -> int:
     checkout with ``--repo-root``.
     """
     with tempfile.TemporaryDirectory() as tmp:
-        with tarfile.open(tarball, "r:gz") as tar:
+        # filter="data" refuses absolute paths, ".." members, links out of the target
+        # and special files: the traversal semgrep's tarfile-extractall-traversal
+        # rule warns about, which is why its marker is on the `with` line it reports.
+        with tarfile.open(tarball, "r:gz") as tar:  # nosemgrep
             tar.extractall(tmp, filter="data")
         unpacked = Path(tmp) / TOP
         version = yaml.safe_load(
