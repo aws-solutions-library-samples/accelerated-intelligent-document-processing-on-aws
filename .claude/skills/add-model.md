@@ -164,6 +164,12 @@ Cross-check against the file map below.
 - [ ] `docs/README.md` — index link if a new doc was added.
 - [ ] `CHANGELOG.md` — `[Unreleased]` entry stating what IS and IS NOT supported
       (regions, caching, GovCloud, agentic/discovery).
+- [ ] `solution-profile/capabilities.yaml` — add a `model:<base id>` tag to the
+      `bedrock-model-choice` capability. `make solution-profile-check` (part of
+      `make lint`) fails on a selectable model the profile does not tag, and on a
+      tag whose model is gone. The same check covers new presets, routed file
+      extensions, hook points and launch Regions; see
+      `.claude/skills/update-solution-profile.md`.
 
 ### G. Tests
 - [ ] `tests/unit/test_bedrock_openai_responses.py` (mantle) or the relevant

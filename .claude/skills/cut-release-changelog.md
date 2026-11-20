@@ -14,6 +14,10 @@ release changelog", "add the Templates block for this release".
    net-since-release content in three subsections. Do not cut the release
    section over an unpruned body.
 2. Then this skill: rename the heading, append the Templates block.
+3. Then [update-solution-profile](update-solution-profile.md): review the
+   solution profile against the section you just cut, add its `changes.yaml`
+   entry and set `reviewed_for_version`. With `VERSION` final,
+   `make solution-profile-check` stays red until that is done.
 
 If the user asks for both in one go, do the prune, show it, then cut.
 

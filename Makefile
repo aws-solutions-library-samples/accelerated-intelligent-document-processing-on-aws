@@ -225,8 +225,8 @@ setup-node: ## Install src/ui and docs-site npm dependencies from their lockfile
 	@scripts/setup_node.sh required
 
 ##@ Code Quality
-lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
-fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
+lint: ruff-lint format check-lint-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links solution-profile-check validate-buildspec cfn-lint ui-lint check-ui-i18n-catalog check-ui-string-debt codegen-check ## Run all linting (ruff, format, ARN checks, account-id scan, filtered scans, retired-service docs, threat-model currency, Markdown links, buildspec, UI, then the UI message catalog and string debt, codegen). Use FORCE=1 to force UI lint re-run despite checksum match.
+fastlint: ruff-lint format check-lint-debt check-ui-i18n-catalog check-ui-string-debt check-arn-partitions check-account-ids check-filtered-scans check-data-plane-tags check-retired-services check-threat-model-currency check-markdown-links solution-profile-check validate-buildspec ## Quick lint: lint without ui-lint, cfn-lint and codegen-check. The two UI i18n gates still run when src/ui/node_modules exists; without it they print a visible SKIP (not a pass)
 
 # Pin the linter, for the same reason spelled out at CFN_LINT_VERSION below: an
 # UNPINNED tool on a blocking gate is the one realistic way this red-lines the
@@ -368,6 +368,12 @@ lint-cicd: ## CI/CD lint — checks only, no modifications
 	@echo "Data-plane Lambda tag check"
 	@if ! make check-data-plane-tags; then \
 		echo -e "$(RED)ERROR: Data-plane Lambda tag check failed (see docs/reporting-sql-layer.md §10.3)$(NC)"; \
+		exit 1; \
+	fi
+
+	@echo "Solution profile check"
+	@if ! make solution-profile-check; then \
+		echo -e "$(RED)ERROR: the solution profile in solution-profile/ is invalid or behind the code (see docs/solution-profile.md)$(NC)"; \
 		exit 1; \
 	fi
 
@@ -530,6 +536,17 @@ check-markdown-links: ## Resolve every relative Markdown link, anchor, and publi
 check-retired-services: ## Fail if documentation presents a retired service (AppSync) as current (issue #929)
 	@$(PYTHON) scripts/sdlc/check_retired_services.py || \
 		(echo -e "$(RED)ERROR: Retired-service documentation check failed!$(NC)" && exit 1)
+
+# The solution profile (solution-profile/, docs/solution-profile.md): the vendored
+# reference validator, then cross-checks that fail when the code gains a hook point,
+# preset, file format, selectable model or launch Region the profile does not cover.
+# The contract's release rules (reviewed_for_version == version, a changes.yaml entry
+# for it) apply automatically when VERSION is a final X.Y.Z, or with
+# SOLUTION_PROFILE_RELEASE=1. The asset is built by `solution-profile-build`
+# (under Version Management), which the release workflow runs.
+solution-profile-check: ## Validate solution-profile/ against its contract and cross-check it with the code
+	@$(PYTHON) scripts/check_solution_profile.py || \
+		(echo -e "$(RED)ERROR: solution profile check failed!$(NC)" && exit 1)
 
 # Discovered from `git ls-files` rather than listed. The previous
 # `patterns/*/buildspec.yml` glob read ONE of the four buildspec files in the tree,
@@ -1829,6 +1846,10 @@ endif
 		 echo -e "$(YELLOW)Valid examples: 0.5.3, 1.0.0, 0.6.0.dev1, 1.0.0a1, 1.0.0rc1, 1.0.0.post1$(NC)" && \
 		 echo -e "$(YELLOW)Invalid examples: 0.5.3.wip5, 1.0-beta, v1.0.0$(NC)" && \
 		 exit 1)
+	@# Before anything is written: the solution profile needs a contract form of the
+	@# version (X.Y.Z with an optional suffix), and a refusal after the files below
+	@# were stamped would leave the tree half-bumped.
+	@$(PYTHON) scripts/check_solution_profile.py --check-version $(V)
 	@echo "Updating version to $(V)..."
 	@echo "$(V)" > VERSION
 	@sed -i.bak 's/^version = ".*"/version = "$(V)"/' lib/idp_cli_pkg/pyproject.toml && rm -f lib/idp_cli_pkg/pyproject.toml.bak
@@ -1852,6 +1873,9 @@ endif
 	@# version line moves; nothing is re-resolved, so no dependency pin can change
 	@# as a side effect of a version bump (#1818).
 	@$(PYTHON) -c "import re,pathlib; p=pathlib.Path('lib/idp_common_pkg/uv.lock'); t=p.read_text(); n,c=re.subn(r'(\[\[package\]\]\nname = \"idp-common\"\nversion = \")[^\"]*(\")', r'\g<1>$(V)\g<2>', t); p.write_text(n); raise SystemExit(0 if c==1 else f'ERROR: expected 1 idp-common version line in lib/idp_common_pkg/uv.lock, replaced {c}')"
+	@# The solution profile carries the version in its contract's form
+	@# (0.6.16.dev1 -> 0.6.16-dev1); see scripts/check_solution_profile.py.
+	@$(PYTHON) scripts/check_solution_profile.py --stamp-version $(V)
 	@echo -e "$(GREEN)✅ Version updated to $(V) in:$(NC)"
 	@echo "  - VERSION"
 	@echo "  - lib/idp_cli_pkg/pyproject.toml"
@@ -1865,7 +1889,14 @@ endif
 	@echo "  - lib/idp_feature_sdk/pyproject.toml"
 	@echo "  - lib/idp_feature_sdk/idp_feature_sdk/__init__.py"
 	@echo "  - feature-platform/seller-entitlement-service/template.yaml"
+	@echo "  - solution-profile/solution-profile.yaml"
 
+
+# The release asset for the solution profile (docs/solution-profile.md). Not a
+# gate: .github/workflows/solution-profile-release.yml builds it when a release is
+# published, and scripts/tests/test_solution_profile.py proves it byte-identical.
+solution-profile-build: ## Build the deterministic solution-profile release tarball and .sha256 into dist/ (TAG=v<x.y.z> optional)
+	@$(PYTHON) scripts/build_solution_profile.py --out-dir dist --validate $(if $(TAG),--tag $(TAG),)
 
 ##@ Documentation
 docs: docs-build ## Build and serve the documentation site locally
