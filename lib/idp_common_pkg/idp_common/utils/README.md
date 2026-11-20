@@ -151,7 +151,13 @@ except Exception as e:
 ```
 
 Neither ever wraps a `TransientError` in another one, so a failure that passes through
-several nested handlers still reports one name and one cause. Rule validation is where
+several nested handlers still reports one name and one cause.
+
+`reraise_if_transient(e, where=..., metering=m)` also attaches `m`, the usage of the
+calls the failed attempt completed, to the raised `TransientError`
+(`attach_failure_metering`), so the Lambda can record that spend before Step
+Functions retries the step. It replaces anything already attached, so `m` must
+include `failure_metering(e)` when `e` carried some. Rule validation is where
 this matters most, because its blocks nest: a transient re-raised for one rule travels
 up through `asyncio.gather` into a document-level `except` that returns a document
 marked failed (#1101).

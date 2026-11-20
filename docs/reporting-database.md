@@ -148,8 +148,12 @@ with: their rows are not rewritten.
 **Failed runs are included.** An execution that ends `FAILED`, `TIMED_OUT` or
 `ABORTED` writes the usage its stages had recorded on the document's tracking record
 before it stopped, so a sum over the table is actual spend, failed attempts
-included. Usage the failing step itself incurred is not recorded there and is not
-included. Rows written before `execution_status` existed hold NULL in it and come
+included. Usage the failing step itself incurred is generally not recorded there and
+is not included; classification and summarization are the exception, because an
+attempt of either that fails transiently writes the usage of the calls it completed to
+the tracking record (as does a summarization that fails outright). Only the most recent
+failed attempt of a step is there, because each retry starts by replacing that record's
+usage; see [Cost calculator](cost-calculator.md). Rows written before `execution_status` existed hold NULL in it and come
 from executions that succeeded. To break failed attempts out:
 
 ```sql

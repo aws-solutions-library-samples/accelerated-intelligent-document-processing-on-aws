@@ -4,6 +4,7 @@
 """
 Lambda function to summarize document content using the SummarizationService from idp_common.
 """
+import copy
 import json
 import os
 import logging
@@ -13,8 +14,12 @@ import time
 from idp_common import get_config, summarization
 from idp_common.models import Document, Status
 from idp_common.docs_service import create_document_service
-from idp_common.utils import calculate_lambda_metering, merge_metering_data
-from idp_common.utils.transient_errors import raise_if_transient
+from idp_common.utils import (
+    calculate_lambda_metering,
+    failure_metering,
+    merge_metering_data,
+)
+from idp_common.utils.transient_errors import is_transient_error, raise_if_transient
 
 # Configuration will be loaded in handler function
 
@@ -89,6 +94,9 @@ def _handle(event, context):
         document_service = create_document_service()
         logger.info(f"Updating document status to {document.status}")
         document_service.update_document(document)
+        # The document as this attempt started it, before the service mutates it.
+        # A transient failure writes this back with the attempt's usage added.
+        attempt_start = copy.deepcopy(document)
         
         # Load configuration - use document's version if specified, otherwise use active version
         config_version = getattr(document, 'config_version', None)
@@ -147,7 +155,18 @@ def _handle(event, context):
         
     except Exception as e:
         logger.error(f"Error in summarization function: {str(e)}", exc_info=True)
-        
+
+        if is_transient_error(e):
+            # Step Functions retries the step, so the document is not FAILED: it
+            # keeps its SUMMARIZING status, and only a final failure is persisted.
+            # The model calls the attempt completed were billed, so their usage
+            # (attached to the error by the service) goes onto the tracking
+            # record, which is what an execution that ends unsuccessfully
+            # reports (#2122).
+            if 'attempt_start' in locals():
+                _record_transient_attempt(attempt_start, e)
+            raise
+
         # Update document status to FAILED if we have a document object
         try:
             if 'document' in locals() and document:
@@ -160,3 +179,30 @@ def _handle(event, context):
             logger.error(f"Failed to update document status: {str(status_error)}", exc_info=True)
             
         raise e
+
+
+def _record_transient_attempt(attempt_start, error):
+    """Write the attempt's usage to the tracking record, leaving its status alone.
+
+    ``attempt_start`` is the document as the attempt wrote it at its start, with
+    status SUMMARIZING. A failure here is logged rather than raised, so it cannot
+    replace the transient error Step Functions retries on.
+    """
+    attempt_metering = failure_metering(error)
+    if not attempt_metering:
+        return
+    try:
+        attempt_start.metering = merge_metering_data(
+            copy.deepcopy(attempt_start.metering), attempt_metering
+        )
+        logger.info(
+            "Recording the usage of the summarization attempt that failed with a "
+            "transient error; the document stays %s for the retry",
+            attempt_start.status,
+        )
+        create_document_service().update_document(attempt_start)
+    except Exception as record_error:
+        logger.error(
+            f"Failed to record the failed attempt's usage: {record_error}",
+            exc_info=True,
+        )
