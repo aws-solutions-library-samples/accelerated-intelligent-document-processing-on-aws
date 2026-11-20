@@ -15,7 +15,7 @@ import {
   Modal,
   Header,
 } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type MessageTag, type NoMessageValues, type TypedMessageDescriptor } from 'react-intl';
 import { listAvailableAgents } from '../../graphql/generated';
 
 const client = generateClient();
@@ -179,7 +179,8 @@ const ToolsPanel = (): React.JSX.Element => {
   const intl = useIntl();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // A message, formatted at render, so it follows a language switch.
+  const [error, setError] = useState<TypedMessageDescriptor<NoMessageValues> | null>(null);
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
   const [showMcpInfoModal, setShowMcpInfoModal] = useState(false);
 
@@ -197,14 +198,14 @@ const ToolsPanel = (): React.JSX.Element => {
         setError(null);
       } catch (err) {
         logger.error('Error fetching agents:', err);
-        setError(intl.formatMessage(messages.loadFailed));
+        setError(messages.loadFailed);
       } finally {
         setLoading(false);
       }
     };
 
     fetchAgents();
-  }, [intl]);
+  }, []);
 
   const handleSampleQueryClick = (query: string): void => {
     // Dispatch a custom event that the chat input can listen to
@@ -244,7 +245,9 @@ const ToolsPanel = (): React.JSX.Element => {
 
           {error && (
             <Box textAlign="center">
-              <StatusIndicator type="error">{error}</StatusIndicator>
+              <StatusIndicator type="error">
+                <FormattedMessage {...error} />
+              </StatusIndicator>
             </Box>
           )}
 

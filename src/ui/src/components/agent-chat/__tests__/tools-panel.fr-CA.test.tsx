@@ -113,6 +113,14 @@ describe('the Agent Chat help panel under fr-CA', () => {
     expect(linkWithText(dialog, 'documentation des agents MCP personnalisés')).toHaveAttribute('href', MCP_GUIDE);
     expect(within(dialog).queryByText('Custom MCP Agent Documentation')).toBeNull();
   });
+
+  // The catalog arrives after the first render, as a new `intl`; that must not load the list again.
+  it('loads the agent list once, not again when the catalog arrives', async () => {
+    renderWithIntl(<ToolsPanel />, FR_CA);
+    expect(await screen.findByRole('heading', { name: FR['helpPanel.agentChat.title'] })).toBeInTheDocument();
+    expect(await screen.findByText(AGENT.agent_name)).toBeInTheDocument();
+    expect(state.graphql).toHaveBeenCalledTimes(1);
+  });
 });
 describe('the GitHub issue button under fr-CA', () => {
   it('reads its label and both menu items in French, each opening the same English issue form', async () => {

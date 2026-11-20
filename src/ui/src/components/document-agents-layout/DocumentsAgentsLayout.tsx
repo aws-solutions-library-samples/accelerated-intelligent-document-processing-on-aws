@@ -4,10 +4,11 @@ import React, { useEffect } from 'react';
 import { generateClient } from '../../api/client-shim';
 import { ConsoleLogger } from 'aws-amplify/utils';
 import { Container, Header, SpaceBetween, Spinner, Box } from '@cloudscape-design/components';
-import { defineMessages, FormattedMessage, useIntl, type NoMessageValues } from 'react-intl';
+import { defineMessages, FormattedMessage, useIntl, type IntlShape, type NoMessageValues } from 'react-intl';
 
 import { submitAgentQuery, getAgentJobStatus, onAgentJobComplete } from '../../graphql/generated';
 import { useAnalyticsContext } from '../../contexts/analytics';
+import type { AnalyticsError } from '../../types/analytics';
 
 import AgentQueryInput from './AgentQueryInput';
 import AgentJobStatus from './AgentJobStatus';
@@ -85,6 +86,13 @@ const messages = defineMessages<{
   },
 });
 
+/** The page's error in the UI language. A thrown error without text of its own reads as the unknown-error text. */
+const errorText = (error: AnalyticsError | null, intl: IntlShape): string | null => {
+  if (error === null || typeof error === 'string') return error;
+  if ('detail' in error) return intl.formatMessage(error.message, { error: error.detail || intl.formatMessage(messages.unknownError) });
+  return intl.formatMessage(error.message);
+};
+
 const DocumentsAgentsLayout = (): React.JSX.Element => {
   const intl = useIntl();
   const { analyticsState, updateAnalyticsState } = useAnalyticsContext();
@@ -126,35 +134,27 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
                 if (job.status === 'COMPLETED') {
                   updateAnalyticsState({ jobResult: job.result as string });
                 } else if (job.status === 'FAILED') {
-                  updateAnalyticsState({ error: (job.error as string) || intl.formatMessage(messages.jobFailed) });
+                  updateAnalyticsState({ error: (job.error as string) || { message: messages.jobFailed } });
                 }
               } else {
                 logger.error('Failed to fetch job details after completion notification');
-                updateAnalyticsState({ error: intl.formatMessage(messages.fetchAfterCompletionFailed) });
+                updateAnalyticsState({ error: { message: messages.fetchAfterCompletionFailed } });
               }
             } catch (fetchError) {
               logger.error('Error fetching job details:', fetchError);
-              updateAnalyticsState({
-                error: intl.formatMessage(messages.fetchFailed, {
-                  error: (fetchError as Error).message || intl.formatMessage(messages.unknownError),
-                }),
-              });
+              updateAnalyticsState({ error: { message: messages.fetchFailed, detail: (fetchError as Error).message } });
             }
           } else {
             logger.error('Received invalid completion notification. Full response:', JSON.stringify(subscriptionData, null, 2));
             updateAnalyticsState({
-              error: intl.formatMessage(messages.invalidNotification),
+              error: { message: messages.invalidNotification },
             });
           }
         },
         error: (err: Record<string, unknown>) => {
           logger.error('Subscription error:', err);
           logger.error('Error details:', JSON.stringify(err, null, 2));
-          updateAnalyticsState({
-            error: intl.formatMessage(messages.subscriptionError, {
-              error: (err as unknown as Error).message || intl.formatMessage(messages.unknownError),
-            }),
-          });
+          updateAnalyticsState({ error: { message: messages.subscriptionError, detail: (err as unknown as Error).message } });
         },
       });
 
@@ -162,11 +162,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
       return sub;
     } catch (err) {
       logger.error('Error setting up subscription:', err);
-      updateAnalyticsState({
-        error: intl.formatMessage(messages.subscriptionSetupFailed, {
-          error: (err as Error).message || intl.formatMessage(messages.unknownError),
-        }),
-      });
+      updateAnalyticsState({ error: { message: messages.subscriptionSetupFailed, detail: (err as Error).message } });
       return null;
     }
   };
@@ -209,7 +205,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
           if (job.status === 'COMPLETED') {
             updateAnalyticsState({ jobResult: job.result as string });
           } else if (job.status === 'FAILED') {
-            updateAnalyticsState({ error: (job.error as string) || intl.formatMessage(messages.jobFailed) });
+            updateAnalyticsState({ error: (job.error as string) || { message: messages.jobFailed } });
           } else {
             // If job is still processing, subscribe to updates
             subscribeToJobCompletion(existingJobId);
@@ -275,7 +271,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
             if (polledJob.status === 'COMPLETED') {
               updateAnalyticsState({ jobResult: polledJob.result as string });
             } else if (polledJob.status === 'FAILED') {
-              updateAnalyticsState({ error: (polledJob.error as string) || intl.formatMessage(messages.jobFailed) });
+              updateAnalyticsState({ error: (polledJob.error as string) || { message: messages.jobFailed } });
             }
           }
         } catch (pollErr) {
@@ -287,7 +283,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
       logger.error('Error submitting query:', err);
       logger.error('Error structure:', JSON.stringify(err, null, 2));
 
-      let errorMessage = intl.formatMessage(messages.submitFailed);
+      let errorMessage: AnalyticsError = { message: messages.submitFailed };
 
       const typedErr = err as Record<string, unknown>;
       // Extract error message from GraphQL error structure
@@ -345,7 +341,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
                 updateAnalyticsState({ jobResult: job.result as string });
                 clearInterval(intervalId);
               } else if (job.status === 'FAILED') {
-                updateAnalyticsState({ error: (job.error as string) || intl.formatMessage(messages.jobFailed) });
+                updateAnalyticsState({ error: (job.error as string) || { message: messages.jobFailed } });
                 clearInterval(intervalId);
               }
             }
@@ -362,7 +358,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
         clearInterval(intervalId);
       }
     };
-  }, [jobId, jobStatus, updateAnalyticsState, intl]);
+  }, [jobId, jobStatus, updateAnalyticsState]);
 
   return (
     <Container
@@ -384,7 +380,7 @@ const DocumentsAgentsLayout = (): React.JSX.Element => {
           </Box>
         )}
 
-        <AgentJobStatus jobId={jobId} status={jobStatus} error={error} />
+        <AgentJobStatus jobId={jobId} status={jobStatus} error={errorText(error, intl)} />
 
         {jobResult != null && <AgentResultDisplay result={jobResult as string | Record<string, unknown>} query={queryText as string} />}
 

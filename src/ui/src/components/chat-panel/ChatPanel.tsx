@@ -58,6 +58,15 @@ interface ChatDocumentUpdate {
 /** Cloudscape StatusIndicator accepts a limited enum for `type`. */
 type StatusType = 'loading' | 'info' | 'error' | 'success';
 
+/**
+ * The error above the chat: text from the server or from a thrown error, kept as it arrives, or one
+ * of the panel's messages, formatted at render so it follows a language switch.
+ */
+type PanelError =
+  | string
+  | { message: TypedMessageDescriptor<NoMessageValues> }
+  | { message: TypedMessageDescriptor<{ readonly error: string }>; values: { readonly error: string } };
+
 /** Subscribable shape returned by Amplify's `client.graphql({ query: subscription })`. */
 interface GraphQLSubscribable {
   subscribe: (handlers: { next: (value: { data: Record<string, unknown> }) => void; error: (err: unknown) => void }) => {
@@ -285,11 +294,19 @@ const defaultStatusLabel = (status?: string, intl?: IntlShape): string => {
   }
 };
 
+/** The panel's error in the UI language. */
+const errorText = (error: PanelError, intl: IntlShape): string => {
+  if (typeof error === 'string') return error;
+  return 'values' in error ? intl.formatMessage(error.message, error.values) : intl.formatMessage(error.message);
+};
+
 const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): React.JSX.Element => {
   const intl = useIntl();
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<PanelError | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [currentStatus, setCurrentStatus] = useState<{ status: string; label: string } | null>(null);
+  // The processor's status code, with the text it sent if any. Without that text the status's own
+  // label is worded at render, so it follows a language switch.
+  const [currentStatus, setCurrentStatus] = useState<{ status: string; label?: string } | null>(null);
   const [isWaiting, setIsWaiting] = useState(false);
   const { formatTime } = useFormatters();
 
@@ -380,13 +397,13 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       if (method === 'assistant_status') {
         setCurrentStatus({
           status: statusCode,
-          label: text || defaultStatusLabel(statusCode, intl),
+          label: text,
         });
         return;
       }
 
       if (method === 'assistant_stream') {
-        setCurrentStatus({ status: 'STREAMING', label: defaultStatusLabel('STREAMING', intl) });
+        setCurrentStatus({ status: 'STREAMING' });
         setChatMessages((prev) => {
           const next = [...prev];
           const lastIdx = next.length - 1;
@@ -452,7 +469,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
           if (lastIdx >= 0 && next[lastIdx].role === 'ai' && next[lastIdx].isStreaming) {
             next[lastIdx] = {
               ...next[lastIdx],
-              content: text || intl.formatMessage(messages.errorFallback),
+              content: text,
               isStreaming: false,
               type: 'error',
               dt: formatTime(new Date()),
@@ -461,18 +478,18 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
           }
           next.push({
             role: 'ai',
-            content: text || intl.formatMessage(messages.errorFallback),
+            content: text,
             type: 'error',
             dt: formatTime(new Date()),
           });
           return next;
         });
-        setCurrentStatus({ status: 'ERROR', label: text || defaultStatusLabel('ERROR', intl) });
+        setCurrentStatus({ status: 'ERROR', label: text });
         setIsWaiting(false);
         return;
       }
     },
-    [sessionId, formatTime, intl],
+    [sessionId, formatTime],
   );
 
   // Subscribe to streaming updates for this session (appsync transport only).
@@ -493,7 +510,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       },
       error: (err: unknown) => {
         logger.error('chat-doc subscription error', err);
-        setError(intl.formatMessage(messages.connectionLost));
+        setError({ message: messages.connectionLost });
       },
     });
     return () => {
@@ -503,7 +520,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
         logger.warn('Failed to unsubscribe chat-doc subscription', e);
       }
     };
-  }, [sessionId, handleUpdate, intl]);
+  }, [sessionId, handleUpdate]);
 
   const handlePromptSubmit = async () => {
     const prompt = textareaRef.current?.value?.trim() || '';
@@ -524,7 +541,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
     if (textareaRef.current) textareaRef.current.value = '';
     setError(null);
     setIsWaiting(true);
-    setCurrentStatus({ status: 'QUEUED', label: defaultStatusLabel('QUEUED', intl) });
+    setCurrentStatus({ status: 'QUEUED' });
 
     try {
       if (useHttpApiTransport && streamingAvailable) {
@@ -558,7 +575,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
         const knownAssistantKeys = await fetchAssistantKeys(client, sessionId);
         pollAbortRef.current?.abort();
         pollAbortRef.current = new AbortController();
-        setCurrentStatus({ status: 'CALLING_MODEL', label: defaultStatusLabel('CALLING_MODEL', intl) });
+        setCurrentStatus({ status: 'CALLING_MODEL' });
         await client.graphql({
           query: sendChatDocumentMessage,
           variables: {
@@ -605,12 +622,12 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
       if ((err as { name?: string })?.name === 'AbortError') return;
       // Extract a useful error message.
       const gqlErr = err as { errors?: { message: string; errorType?: string }[]; message?: string };
-      let errorMessage = intl.formatMessage(messages.sendFailed);
+      let errorMessage: PanelError = { message: messages.sendFailed };
       if (gqlErr.errors && gqlErr.errors.length > 0) {
         const firstError = gqlErr.errors[0];
         if (firstError.errorType === 'Unauthorized') {
           // String(): an error without a message read "undefined" here before; ICU would print nothing.
-          errorMessage = intl.formatMessage(messages.accessDenied, { error: String(firstError.message) });
+          errorMessage = { message: messages.accessDenied, values: { error: String(firstError.message) } };
         } else {
           errorMessage = firstError.message || errorMessage;
         }
@@ -637,7 +654,7 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
         >
           {error && (
             <Alert type="error" dismissible onDismiss={() => setError(null)}>
-              {error}
+              {errorText(error, intl)}
             </Alert>
           )}
 
@@ -664,7 +681,9 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
                           {post.type === 'error' ? (
                             // Error messages are plain text, not markdown — render verbatim so
                             // stack traces, raw JSON, and quoted model output aren't mangled.
-                            <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{post.content}</p>
+                            <p style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
+                              {post.content || <FormattedMessage {...messages.errorFallback} />}
+                            </p>
                           ) : (
                             <div className="chat-markdown">
                               <SafeMarkdown>{post.content || ''}</SafeMarkdown>
@@ -695,7 +714,9 @@ const ChatPanel = ({ objectKey, configVersion = 'default' }: ChatPanelProps): Re
 
           {currentStatus && (
             <div style={{ margin: '6px 0' }}>
-              <StatusIndicator type={statusToIndicatorType(currentStatus.status)}>{currentStatus.label}</StatusIndicator>
+              <StatusIndicator type={statusToIndicatorType(currentStatus.status)}>
+                {currentStatus.label || defaultStatusLabel(currentStatus.status, intl)}
+              </StatusIndicator>
             </div>
           )}
 
