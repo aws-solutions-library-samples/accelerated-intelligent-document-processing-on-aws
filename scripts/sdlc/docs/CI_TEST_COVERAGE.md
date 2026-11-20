@@ -512,11 +512,42 @@ A weekly schedule carrying `IDP_RUN_TERRAFORM_MIGRATION=true` runs
 `scripts/sdlc/terraform_migration_test.py` (`make stacktest-terraform-migration`)
 **instead of** the primary suite. The driver deploys the separate
 [`awslabs/genai-idp-terraform`](https://github.com/awslabs/genai-idp-terraform)
-implementation at the tag and commit it pins, seeds it, migrates it in place onto the
+implementation at one of the releases it pins, seeds it, migrates it in place onto the
 Terraform module the build just published with every phase of `idp-cli terraform
 migrate-from-genai-idp-terraform`, verifies, and destroys both deployments. What it
 proves is in [docs/testing.md](../../../docs/testing.md) (the live-stack tiers) and in
 tier J of `.claude/skills/release-validation.md`.
+
+The release rotates. The build passes `--upstream-tag rotate`
+(`TERRAFORM_MIGRATION_UPSTREAM_TAG` in `codebuild_deployment.py`), and the driver takes
+one release of `UPSTREAM_RELEASES` per Monday-to-Sunday week, in list order
+(`rotated_upstream_tag`), so consecutive weekly runs cover every pinned release in turn
+at the cost of one run each. The summary's first lines name the release a run took;
+`make stacktest-terraform-migration UPSTREAM_TAG=<that tag>` reproduces it on any day.
+A release is pinned to the commit and the `sources/` object it resolves to, and belongs
+in the list only if the driver can run it unchanged: the comment above
+`UPSTREAM_RELEASES` says what that requires, and why the releases before the oldest
+entry do not qualify. A resumed or reaped run keeps the release its context recorded
+(`resolve_upstream_tag`) and refuses an explicit tag that differs.
+
+After the old deployment's destroy, `verify-after-old-destroy` also fails if the
+Region's API Gateway CloudWatch role setting was cleared or changed by the destroy, or
+names a role that no longer exists. The setting is one per account and Region, so a
+destroy that resets it stops API Gateway logging for every API there. Upstream's
+deploy points the setting at a role carrying the run's old name, and the migration
+keeps both, so before the sweep deletes that role the driver sets the setting back to
+its value when the run started (`hand_back_api_gateway_role`), unless that role was
+known not to exist, in which case it clears it. If the restore is refused (the run's
+role may pass only roles named `idp*`), the driver clears the setting instead and
+records a finding, failing the run, that names the value to restore. Keeping the
+run's role would not help: the build's IAM clean-up deletes every role under the
+run's permissions boundary after the driver exits. `leftover-check` records a finding, failing the run, when the run
+still leaves the setting naming a role that no longer exists and the Region was not
+already in that state when it started.
+
+`rotated_upstream_tag` reads the UTC date when the driver starts, so a schedule that
+fires just before Monday 00:00 UTC can land either side of the week boundary and repeat
+a release. Keep the schedule clear of that hour.
 
 | Pipeline | `IDP_RUN_TERRAFORM_MIGRATION` | Runs |
 |---|---|---|
@@ -647,8 +678,8 @@ prefix older than the stack sweep's age gate (`IDP_STACK_STALE_AGE_SECONDS`, wel
 above the driver's longest phase, the hour-long time-to-live wait, between two of
 which the mirror is rewritten) and runs the driver's own `--resume --teardown-only`
 in a scratch work directory, as the run's `TFDeployRole`, with the names `run.json`
-records. The driver rebuilds what its teardown reads — the pinned upstream clone
-with the run's tfvars, IAM overrides, backend and provider lock, and the new root
+records. The driver rebuilds what its teardown reads — the upstream clone of the
+release the run's context records, with the run's tfvars, IAM overrides, backend and provider lock, and the new root
 from the mirror — and then tears down exactly as a failed run does, under every
 check it already applies: the names and account must match the stored context, and
 the run must have created something. The `-iam` pre-stack is deleted after a clean

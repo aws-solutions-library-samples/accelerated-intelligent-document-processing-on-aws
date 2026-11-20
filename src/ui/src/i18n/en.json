@@ -503,6 +503,10 @@
     "defaultMessage": "Resubmit for downstream processing (Summarization, Evaluation, post-processing hook)",
     "description": "Checkbox label in the Skip All Section Reviews dialog: whether skipping re-runs the downstream steps."
   },
+  "documentPanel.callerAttributes.label": {
+    "defaultMessage": "Attributes",
+    "description": "Label of the document detail field listing the key-value attributes the caller attached at upload."
+  },
   "documents.list.addToTestSet.disabledHint": {
     "defaultMessage": "Select at least one document that has finished processing",
     "description": "Tooltip of the Add to test set button when no selected document can be added."
