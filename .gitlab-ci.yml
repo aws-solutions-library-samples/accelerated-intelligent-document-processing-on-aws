@@ -652,6 +652,11 @@ integration_tests:
   #     no Terraform run happens. It holds the same resource_group as the
   #     CloudFormation nightly, so the two serialise; schedule it to start after
   #     the nightly normally finishes (scripts/sdlc/docs/CI_TEST_COVERAGE.md).
+  #     A Terraform schedule that also carries IDP_TERRAFORM_PARITY=true deploys
+  #     a CloudFormation twin of the same commit beside it and compares the two
+  #     with terraform/tools/parity.py (terraform_parity_requested, honoured on a
+  #     schedule only and refused without IDP_IAC=terraform). Meant for a weekly
+  #     schedule: it adds one CloudFormation deployment to the run.
   #   - the weekly Terraform-migration schedule  → auto, and NOT the primary suite:
   #     the build runs scripts/sdlc/terraform_migration_test.py instead, which
   #     deploys a pinned awslabs/genai-idp-terraform release, migrates it in place

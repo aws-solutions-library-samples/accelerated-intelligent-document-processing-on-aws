@@ -70,7 +70,8 @@ def test_the_options_are_written_in_the_documented_shape(itd):
         '  "variant_probes": false,\n'
         '  "region_run": "",\n'
         '  "iac": "cloudformation",\n'
-        '  "terraform_migration": false\n'
+        '  "terraform_migration": false,\n'
+        '  "terraform_parity": false\n'
         "}\n"
     )
     assert json.loads(text) == returned
@@ -90,6 +91,7 @@ def test_a_variable_gitlab_did_not_set_is_written_empty(itd):
         "region_run": "",
         "iac": "cloudformation",
         "terraform_migration": False,
+        "terraform_parity": False,
     }
     assert json.loads(Path("elsewhere.json").read_text(encoding="utf-8")) == returned
 

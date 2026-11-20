@@ -281,6 +281,7 @@ variable, no Terraform run happens.
 |---|---|---|
 | Nightly, probe run, region runs, buttons | not set (ignored off a schedule) | CloudFormation |
 | Nightly Terraform schedule | `terraform` | primary suite against a Terraform deployment in `us-east-1`; labelled `NIGHTLY TERRAFORM RUN` in the summary, the failure email and both Slack posts; leaves the UX review stack and the nightly story jobs alone |
+| A Terraform schedule that also carries `IDP_TERRAFORM_PARITY=true` | `terraform` | the same, plus a CloudFormation twin of the same commit compared with the Terraform deployment (see "Resource parity with a CloudFormation twin" below). Meant for a **weekly** schedule |
 | Any schedule, with `IDP_IAC=terraform` set as a **project or group** CI/CD variable | `terraform`, inherited | every schedule becomes a Terraform run, the nightly included. Set the variable on the Terraform schedule only |
 
 It is the same `integration_tests` job, distinguished by the variable, as the probe
@@ -356,6 +357,88 @@ the translator wrote the log group's ARN in CloudFormation's `:*` form and the s
 stores it without the suffix (#2006); the translator now writes the bare ARN there. The scheduled run deploys at the default
 `LogLevel` of `WARN`, which leaves the stage's access logs off, so its re-plan does not
 exercise that attribute; the translator's offline tests are what cover it.
+
+**Resource parity with a CloudFormation twin.** A Terraform schedule that also
+carries `IDP_TERRAFORM_PARITY=true` deploys the template the same build published as
+a second, CloudFormation stack, `<stack>-cfn`, with the parameters the Terraform
+deploy passes (`_primary_param_pairs`) and through the same CloudFormation deploy
+attempt the CloudFormation nightly uses. It starts at the same time as the Terraform
+deploy, on a thread of its own. After the Terraform deployment is healthy and its
+re-plan has run, `check_terraform_parity` in `codebuild_deployment.py` compares the
+two with `terraform/tools/parity.py` (`make terraform-parity`) as the run's Terraform
+deploy role, because the build role holds no Cloud Control grant. The verdict is the
+second row of the table, `Step 2c: Terraform deployment matches its CloudFormation
+twin (terraform/tools/parity.py)`, and the suite still runs after it. The twin is
+released for teardown straight after the comparison, so it is deleted while the
+suite runs.
+
+`integration_test_deployment.py` (`terraform_parity_requested`) honours the variable
+on a scheduled pipeline only and **fails the job** when the same schedule is not a
+Terraform run; the build refuses it the same way (`terraform_parity_unsupported_reason`)
+when it is set by hand without `IDP_IAC=terraform`. It reaches the build in
+`ci_run_options.json` as `terraform_parity`. Nothing in the repository turns it on.
+
+What fails the row is the tool's own verdict against
+`terraform/tools/parity_baseline.json`, unchanged:
+
+| Outcome | Row |
+|---|---|
+| no difference beyond what the baseline explains, and every baseline entry explained something | passes; the build log gives the counts, including how many differences the baseline explained and how many resources Cloud Control cannot read (listed by the tool, not compared) |
+| a property difference the baseline does not explain, a resource on one side only, or a baseline entry that explained nothing (stale) | fails, beginning `differs:` with the four counts, then each finding by resource and property path (at most `TERRAFORM_PARITY_LISTED_DIFFERENCES`, then a count) |
+| the twin did not deploy, had not finished `TERRAFORM_PARITY_TWIN_WAIT_SECONDS` after the Terraform deployment, or the comparison raised | fails, beginning `not compared:` with the reason, so it is not read as a difference |
+
+A difference the baseline should explain is fixed by adding one entry to the
+baseline, with its reason, which `scripts/tests/gate_exemptions.json` already
+registers; a real difference is fixed in the translator. ⚠️ The baseline was measured
+on one nested stack of the prototype and the tool has not been run against the full
+stack, so expect the first parity runs to fail on differences nobody has triaged yet.
+
+The findings name a resource and a property path, never a value. The tool's
+per-property text carries both sides' values, and some resources return a secret
+among the properties Cloud Control reads (a Cognito app client's secret), so the
+build log gets the same treatment as the re-plan's planned values.
+
+The twin is torn down on every path: its thread deletes it in a `finally` (straight
+away when its deploy failed), and `main()` joins that thread before the Terraform
+teardown. That order is also needed for correctness: the Terraform teardown switches
+boto3's default session to the deploy role, which the twin's teardown must not run
+under. A twin teardown finding is a teardown finding of the run, prefixed `parity
+twin:`. The join is bounded so it cannot spend the Terraform destroy's time: it waits
+at most what is left of the build's timeout less `TERRAFORM_TEARDOWN_RESERVE_SECONDS`
+(`terraform_parity_join_seconds`; without a readable timeout it waits). Past that, a
+teardown finding says so and the run goes on to the Terraform teardown with the twin's
+thread still deleting it. ⚠️ That one case gives up the ordering above: the twin's
+remaining calls can then run under the deploy role's default session, which holds
+broad grants, so they may succeed as the wrong principal or fail; which has not been
+verified. A failure leaves the twin to the startup stack sweep. So does a build killed outright: the sweep
+groups the twin with the run by its `idp-MMDD-HHMMSS` prefix.
+
+A twin that did not deploy is deleted at once, without the retention a failed
+primary stack gets, so the row names the first concrete failure from its captured
+CloudFormation events (resource, type, status and reason). The comparison's Cloud
+Control and Lambda clients use adaptive retries, so one throttled read does not cost
+the whole comparison.
+
+What it costs, as far as it is known. One more full CloudFormation deployment and
+deletion of the accelerator per parity run, standing from the start of the deploy to
+the end of the comparison plus its deletion, including one more of the account's 25
+GuardDuty Malware Protection plans for that time under the default
+`IDP_INTEGRATION_MALWARE_MODE`. The twin runs no steps, so it makes no suite calls to
+Bedrock, Textract or BDA. On wall clock, the two deploys overlap, so the run waits
+only for whatever the CloudFormation deploy takes beyond the Terraform deploy and its
+re-plan (at most `TERRAFORM_PARITY_TWIN_WAIT_SECONDS`), plus the comparison itself,
+one Cloud Control read per paired resource on each side. The comparison runs before
+the time check that guards the steps, so it is counted against what the steps have
+left. None of those times has been measured on the full stack, so no figure is
+given; the weekly run is the measurement. On a run that fails before the comparison,
+the join can also wait for the twin's deploy to finish before deleting it, up to the
+bound above.
+
+Put the variable on a **weekly** schedule, not on the nightly Terraform schedule, to
+keep the extra deployment off six nights in seven: either a separate weekly
+Terraform schedule carrying `IDP_IAC=terraform` and `IDP_TERRAFORM_PARITY=true`, with
+the nightly Terraform schedule's cron skipping that day, or the variable on the
+nightly schedule if a nightly cost is acceptable.
 
 **Scheduling it after the CloudFormation nightly.** Both runs hold
 `resource_group: integration_deploy`, so whichever reaches `integration_tests`
