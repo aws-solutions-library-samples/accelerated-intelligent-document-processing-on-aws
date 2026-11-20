@@ -1,0 +1,317 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: MIT-0
+#
+# What each release changed and what it asks users to act on (Solution Profile
+# contract v1, changesFile), newest first, from the release sections of
+# CHANGELOG.md. `date` is the commit date of the release tag.
+#
+# action_required mirrors every CHANGELOG item carrying an "Action:" marker whose
+# action is not simply "none". An item reading "none, unless/except/but ..." is
+# kept, with the exception as the text. Releases 0.6.9 and earlier use no Action
+# markers; for those, the upgrade items the CHANGELOG states imperatively (or
+# marks upgrade-visible) are listed instead.
+releases:
+  - version: 0.6.15
+    date: 2026-11-13
+    summary: >-
+      Experimental Terraform and OpenTofu deployment, with an in-place migration
+      from the separate genai-idp-terraform module; bulk Skip All Reviews and Send
+      to review; MCP credentials managed on their own page, MCP off by default and
+      MCP tools acting as the signed-in caller; comments in prompt templates.
+      Fixes chat history ownership, tenant grants bound to the Cognito sub,
+      Claude Sonnet 5 cost pricing, and upgrades stuck on slow image builds.
+    action_required:
+      - text: Before upgrading, search stored prompts for "{#"; text between "{#" and a later "#}" is now treated as a comment and no longer sent.
+        affects: [extension:prompt-customisation]
+      - text: Expect the stack update to replay the reporting rollup window (30 days by default), which takes tens of minutes of Athena on a busy stack; cost rollups, dashboard cost widgets and the analytics agent read low until it finishes.
+        affects: [capability:reporting-database, capability:cost-reporting]
+      - text: If you update with the AWS CLI, idp-cli deploy --terraform, the Terraform module or any tool that sends only named parameters, pass EnableMCP=true to keep the MCP server; turning it off revokes every MCP service credential and they are not restored.
+        affects: [capability:mcp-server]
+      - text: Add each MCP user to the Cognito group their tools need; a user in no group, or whose role lacks a tool, is now refused.
+        affects: [capability:mcp-server]
+      - text: Read MCP client secrets from Secrets Manager (aws secretsmanager get-secret-value with the new secret ARN outputs) instead of the removed stack outputs; existing client IDs and secrets stay valid.
+        affects: [capability:mcp-server, capability:mcp-connector]
+      - text: Turn External MCP agents on in each chat conversation that needs them; they are now off by default.
+        affects: [capability:agent-companion-chat]
+      - text: Reload the web UI after upgrading; existing conversations keep their history on screen but continue without their earlier turns as agent context.
+        affects: [capability:agent-companion-chat, capability:web-ui]
+      - text: Update the PII Anonymization extension to 0.2.5 if it is installed; for an email address two accounts already share under Api or Strict Manual tenant grants, follow the multi-tenancy guide.
+        affects: [capability:multi-tenancy, extension:feature-platform-extension]
+      - text: If the Pricing editor was saved while it held the Sonnet 5 rows, choose Restore default (All) on the Pricing page and then re-apply your own changes, or the old rates stay.
+        affects: [capability:cost-reporting]
+      - text: Recover a stack already stuck in UPDATE_ROLLBACK_FAILED after a slow container-image build as described in the troubleshooting guide.
+        affects: [deployment:cloudformation]
+      - text: Upload again any re-uploaded file that stayed in MALWARE_SCANNING.
+        affects: [capability:malware-scanning]
+    affects: [deployment:terraform, capability:mcp-server, capability:hitl-review-queues, capability:agent-companion-chat, capability:multi-tenancy, capability:cost-reporting]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.14
+    date: 2026-11-06
+    summary: >-
+      Tenant isolation for shared deployments (off by default, with a Strict mode),
+      with tenants granted manually, from an identity-provider claim or through an
+      API. A missing required field now sends its document to review, Reviewers
+      work production queues only, and Test Studio ground-truth editing is
+      draft-first. Fixes for reprocessing, Bedrock throttling in agentic
+      extraction and confidence, packet classification windows and
+      least-privilege roles.
+    action_required:
+      - text: Expect creating or updating a scoped user to read the tenant record and be refused if that read fails; to adopt tenant isolation, declare tenants, run idp-cli tenancy audit, then update with TenantIsolationMode=Strict.
+        affects: [capability:multi-tenancy]
+      - text: Under TenantGrantSource=IdpClaim, expect a failure to write the grant to fail the sign-in, and delete the user record of a federated user stored as Admin whose claim now maps to an ordinary role, or they stay denied. Existing stacks default to Manual.
+        affects: [capability:multi-tenancy]
+      - text: Missing required fields now route documents to review by default; set hitl.route_missing_required_fields to false in a profile to keep them informational.
+        affects: [capability:hitl-review-queues]
+      - text: Give a Reviewer who labels test sets the Annotator role and list them under the set queue's Eligible Annotators; Reviewers now work production queues only.
+        affects: [capability:hitl-review-queues, capability:test-studio]
+      - text: Remove enabledProfiles from any getMyReviewQueues query you send yourself; a query selecting it no longer matches the schema.
+        affects: [capability:hitl-review-queues]
+      - text: Install uv on PATH before running make setup or make setup-venv.
+        affects: [capability:idp-cli]
+      - text: Widen the scope of a scoped user who has lost access to single-document operations their scope does not cover; unscoped users are unaffected.
+        affects: [capability:configuration-profiles]
+      - text: Update the stack; if UserSyncFunction's Users-table trigger shows Disabled in the Lambda console, enable it and re-apply any persona change written directly to the Users table while it was disabled.
+        affects: [capability:web-ui]
+    affects: [capability:multi-tenancy, capability:hitl-review-queues, capability:test-studio]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.13
+    date: 2026-10-31
+    summary: >-
+      HITL review queues worked by Reviewers and Annotators, with a terminal
+      REJECTED status and an Inbox for every user; the split-then-classify
+      classification strategy; classification granularity and modality as
+      independent settings with page images at packet granularity (config format
+      0.9). Fixes include EU multi-document discovery, Pillow 13 security updates,
+      and processing under the configuration revision a document is pinned to.
+    action_required:
+      - text: API callers of releaseReviewItem, skipTestSetDocument and skipAllSectionsReview must now pass a reason.
+        affects: [capability:hitl-review-queues]
+      - text: If you ran holistic (packet) classification on packets over 20 pages, set classification.combined.packet.window_pages to 0 to keep one call per packet.
+        affects: [capability:classification]
+      - text: Consumers that branch on document status must handle REJECTED (terminal, not success), should read review/status.json or its EventBridge event rather than poll for COMPLETED, and must keep pre-review hooks idempotent because they run in both executions.
+        affects: [capability:hitl-review-queues, extension:downstream-integration]
+      - text: A profile missing a newer setting now inherits it from the default profile, so Save as Default changes what such profiles get; set the field on the profile to pin it.
+        affects: [capability:configuration-profiles]
+      - text: Out-of-tree callers of idp_common must use merge_config_with_defaults and service.granularity instead of the removed ConfigurationReader.simple_merge and ClassificationService.classification_method.
+        affects: [capability:classification]
+      - text: Reviewers claim an item in Home > Queues before editing it; Start Review remains only for documents waiting as Review Pending while the Default queue is off.
+        affects: [capability:hitl-review-queues]
+      - text: Expect that section IDs can no longer be renamed from the document page.
+        affects: [capability:web-ui]
+      - text: On a document not in a review queue, a reviewer who is not an Admin clicks Start Review before Process Changes.
+        affects: [capability:hitl-review-queues]
+      - text: Re-check any configuration copied from documentation examples that described retired architecture.
+        affects: [capability:configuration-presets]
+      - text: Update an EU stack to pick up the embedding model mapping for multi-document discovery, and change by hand any configuration version saved later that sets embedding_model_id to us.cohere.embed-v4:0.
+        affects: [capability:discovery, extension:model-region-availability]
+      - text: Update an installed PII Anonymization extension (0.2.1) when it shows Update available; it is a separate stack and keeps its old Pillow until then.
+        affects: [extension:feature-platform-extension]
+      - text: Review the Cognito groups of users whose persona was changed through User Management and remove any Reviewer membership they should not have.
+        affects: [capability:web-ui]
+      - text: With EnableMLflow=true every finished Test Studio run is now logged to MLflow; invoke TestRunSweeperFunction with windowDays for stalled runs older than 7 days.
+        affects: [capability:test-studio]
+      - text: Check a hand-written CustomConfigPath file for an unrecognised sectionSplitting value before upgrading; it now fails the stack create or update.
+        affects: [capability:classification, deployment:cloudformation]
+      - text: If unrecoverable_fields stays non-zero, use a stronger assessment.model.
+        affects: [capability:assessment-confidence]
+      - text: Update any consumer that enumerates geometry_source values.
+        affects: [extension:downstream-integration]
+      - text: Take a document out of the review queue with Skip All Reviews if a legacy review state needs clearing.
+        affects: [capability:hitl-review-queues]
+      - text: Re-run any idp-cli run-inference batch from a directory or S3 URI whose results were compared as a pinned revision or a non-active profile.
+        affects: [capability:idp-cli, capability:configuration-versions]
+      - text: Delete the indexes and then the vector buckets left behind by earlier S3 Vectors knowledge base deletes; they are not removed automatically.
+        affects: [capability:knowledge-base]
+      - text: If you supplied ReportingBucketName, add expiration rules for the athena-results/ and athena_query_results/ prefixes yourself.
+        affects: [capability:reporting-database]
+      - text: If you set the error analyzer's max_log_events to 5 deliberately, set it again after upgrading; a profile created earlier keeps the old prompt until you restore that field's default.
+        affects: [capability:configuration-profiles]
+      - text: If you relied on an empty classification model or top_p being substituted with a different setting, set the value explicitly; an empty value now means the shipped default.
+        affects: [capability:classification]
+    affects: [capability:hitl-review-queues, capability:classification, capability:configuration-profiles]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.12
+    date: 2026-10-16
+    summary: >-
+      Claude Sonnet 5.5; optional malware scanning of uploads with GuardDuty
+      Malware Protection for S3; configuration profiles assigned by S3 prefix;
+      Canada (Central) as a published release Region; bounding-box status for every
+      field; a per-document cost CloudWatch metric; every browser document read
+      moved behind the API. Fixes for row-shortfall and confidence-coverage
+      reporting, document deletion and the workflow-concurrency counter.
+    action_required:
+      - text: Redeploy, then reload any browser tab opened before the update; until the new UI bundle loads, page images and the file viewer answer 403. Do not re-add an S3 grant to the Identity Pool role.
+        affects: [capability:web-ui]
+      - text: Expect sections whose list row count nothing could check to show an info issue and move from OK to Auto-recovered in the UI, although their processing status is unchanged.
+        affects: [capability:simple-extraction, capability:advanced-extraction]
+      - text: Expect a small number of documents to begin carrying an assessment_coverage_incomplete warning stated in rows; nothing that completes today starts failing.
+        affects: [capability:assessment-confidence]
+      - text: Retry deleting any document left half-deleted by an earlier release; the delete is idempotent and completes the cleanup.
+        affects: [capability:web-ui]
+      - text: On a stack that ran an affected release, compare workflow_counter.active_count in the concurrency table with the running Step Functions executions; an inflated counter corrects itself, and one pinned at the ceiling recovers once the stack is updated.
+        affects: [deployment:cloudformation]
+      - text: If the new confidence-pass wall-clock issue appears, raise the Assessment function's timeout or extraction.agentic.max_concurrent_batches; lowering extraction.confidence.list_batch_size makes it more likely.
+        affects: [capability:assessment-confidence]
+      - text: Expect documents with primitive-list fields to show confidence alert rows they did not show before.
+        affects: [capability:assessment-confidence]
+      - text: Set the status of a Test Studio test set row carrying an unrecognised status to COMPLETED to restore Add documents; it becomes selectable as soon as the new UI loads.
+        affects: [capability:test-studio]
+      - text: Branch scripts on idp-cli status exit_code; a script that treated 2 as not finished will now stop on a document that cannot finish.
+        affects: [capability:idp-cli]
+    affects: [capability:malware-scanning, capability:configuration-profiles, deployment:cloudformation, capability:cost-reporting, capability:bedrock-model-choice]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.11
+    date: 2026-10-09
+    summary: >-
+      Claude Haiku 5.5 is selectable; Claude Sonnet 4 is removed ahead of its
+      2026-10-14 end of life and Claude Sonnet 4.5 is no longer any default. Fixes
+      for Advanced-mode shard timeouts and retried prompts, container image push
+      retries, EU-to-US redeploy model mapping, orphaned CloudFront policy cleanup
+      and Test Studio metrics.
+    action_required:
+      - text: If KnowledgeBaseModelId is set to Claude Sonnet 4, pass a current model for it in the same update (us.anthropic.claude-sonnet-5 or the Sonnet 4.5 id in a US Region, the eu. Sonnet 4.5 id in an EU one), or the update fails parameter validation.
+        affects: [capability:knowledge-base, capability:bedrock-model-choice]
+      - text: Repoint by hand a US stack or configuration profile that names Claude Sonnet 4 before 2026-10-14; only EU stacks are rewritten automatically.
+        affects: [capability:bedrock-model-choice]
+      - text: In a profile copied from realkie-fcc-verified, set Section splitting to disabled by hand; accuracy from runs before and after the upgrade of the managed profile is not directly comparable.
+        affects: [capability:configuration-presets, capability:test-studio]
+      - text: For a default or stack-managed profile that still reports its current revision as unavailable, follow the recovery steps in Configuration Profiles; other profiles recover on their next save.
+        affects: [capability:configuration-profiles]
+      - text: On 0.6.10 in Advanced mode with table parsing enabled, re-check the row counts of large tables whose document logged a transient extraction error; rows could have been emitted twice.
+        affects: [capability:advanced-extraction]
+      - text: Expect an EU stack that selected Opus 4.5 and is redeployed into a US Region to get Opus 4.5 rather than Sonnet 4.5, at about 1.5 times the per-token rate.
+        affects: [capability:bedrock-model-choice, extension:model-region-availability]
+      - text: Remove orphaned CloudFront response-headers policies already in the account once, by hand or with the now-working cleanup.
+        affects: [capability:idp-cli]
+      - text: Run a test set again to see predicted sections in the Classification errors panel for runs aggregated by an earlier release.
+        affects: [capability:test-studio]
+      - text: Re-run a classification-only test run finished before the upgrade to see its graded packet metrics; runs last written before 0.6.7 are recomputed when opened.
+        affects: [capability:test-studio]
+      - text: Update clients of your own that branch on HTTP status; operations given a non-existent id now answer 404 or 400 instead of 500.
+        affects: [extension:downstream-integration]
+    affects: [capability:bedrock-model-choice, capability:advanced-extraction, capability:test-studio]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.10
+    date: 2026-09-25
+    summary: >-
+      Claude Opus 5.5; processed documents can be added to test sets; document
+      class on metering rows and data-mart hardening; confidence calibration
+      measured against per-cell ground truth; the Annotator role mapped from an
+      identity-provider group; more API operations require an assigned group and
+      per-user scopes are enforced on S3 keys. Large fix set across Z3 rule
+      validation, deletion selectors, the capacity planner, idp-cli exit codes and
+      Word pagination.
+    action_required:
+      - text: If you installed one of the fine-tuned benchmark configuration files (not selectable presets) explicitly, re-point its model at your own deployment ARN; it now runs on the base model.
+        affects: [capability:fine-tuning]
+      - text: If you followed a documented pip install command for a first-party package, run python scripts/check_first_party_deps.py, follow the remediation if it fails, and rotate deployment credentials if you cannot rule out that a third-party package executed.
+        affects: [capability:idp-cli, capability:idp-sdk]
+      - text: Pass --pattern to document-deletion commands instead of relying on a batch id selecting by substring.
+        affects: [capability:idp-cli]
+      - text: Expect a direct caller of the library deletion functions to see an exception for a selector that names nothing, where it previously got an empty list.
+        affects: [capability:idp-sdk]
+      - text: Expect a profile that was active when a feature was uninstalled or rolled back to have lost its revision counters and history; this release does not reconstruct them.
+        affects: [capability:configuration-versions, extension:feature-platform-extension]
+      - text: Declare genuinely fractional Z3 rule parameters Real, and re-run any compliance report you relied on that has an Int threshold.
+        affects: [capability:rule-validation-z3]
+      - text: If overlap_percentage is set above 50 for rule validation, expect the character fallback to repeat 50% and log a warning.
+        affects: [capability:rule-validation]
+      - text: Expect agent chat transcripts already stored to stay incomplete; they are not repaired.
+        affects: [capability:agent-companion-chat]
+      - text: Expect different page counts for Word, CSV, Excel and rendered markdown documents; re-run rather than compare stored totals, per-page costs or baselines keyed by page index across the change.
+        affects: [capability:input-file-formats, capability:evaluation]
+    affects: [capability:test-studio, capability:rule-validation-z3, capability:capacity-planning, capability:idp-cli]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.9
+    date: 2026-09-19
+    summary: >-
+      IDP Monitor (Beta) in the extensions catalog; published threat model and
+      governance files; stickler-eval 1.0 with per-field comparator inference; a
+      narrowed optional CloudFormation service role; a deny-by-default API
+      dispatcher; alarm notifications to AdminEmail; onError fail enforced at every
+      reachable hook point; confidence-scoring and cost-reporting fixes.
+    action_required:
+      - text: Expect accuracy numbers on schemas with no explicit evaluation configuration to drift across this upgrade; comparisons are not like-for-like.
+        affects: [capability:evaluation]
+      - text: If you deploy headless, subscribe your own recipient to the SNSAlertsTopicARN output; a headless stack creates no alert subscription.
+        affects: [deployment:headless]
+      - text: Confirm the AWS Notification subscription email sent to AdminEmail; alarms deliver nothing until it is confirmed.
+        affects: [deployment:cloudformation]
+      - text: If you deploy through the optional CloudFormation service role, set PermissionsBoundaryArn on the IDP stack to the same ARN as CreatedRolePermissionsBoundaryArn; an empty value rolls the stack back.
+        affects: [prerequisite:iam-permissions-boundary]
+      - text: Fix any CustomConfigPath file carrying an onError value of Fail or fail-fast before upgrading; it now fails the stack create or update.
+        affects: [extension:lambda-hook-model, deployment:cloudformation]
+      - text: Expect reported costs for :1m long-context models to drop; cost comparisons across this upgrade are not like-for-like.
+        affects: [capability:cost-reporting]
+    affects: [capability:evaluation, deployment:headless, capability:cost-reporting, prerequisite:iam-permissions-boundary]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.8
+    date: 2026-09-11
+    summary: >-
+      OpenAI GPT-6 Astra and a Cohere Parse OCR hook sample; a workflow execution
+      timeout; observable and switchable prompt caching; multi-instance detection
+      in Advanced mode; editable test sets. LogLevel defaults to WARN, the content
+      security policy is hardened, federated sign-in is fixed through
+      ExternalIdPEmailMutable, and list completeness, escalation and legacy .doc
+      and .xls handling are fixed.
+    action_required:
+      - text: In a private-network deployment, allow browser egress to jsDelivr, or the Configuration, Pricing and schema editors render blank.
+        affects: [deployment:private-network]
+      - text: With an external identity provider and ExternalIdPGroupAttributeName configured, configure the provider to send the group attribute for every federated user, including users in no group.
+        affects: [capability:web-ui]
+      - text: Set ExternalIdPEmailMutable to true when creating any stack that uses an external identity provider, and never change it on an existing stack; existing federated deployments need a new stack to get the fix.
+        affects: [deployment:cloudformation]
+    affects: [capability:bedrock-model-choice, capability:advanced-extraction, capability:test-studio, deployment:private-network]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.7
+    date: 2026-09-04
+    summary: >-
+      Extraction of several documents of one class from one section; coercion and
+      validation in Simple mode; experimental forced-tool schema enforcement;
+      classification confidence; configuration-profile revisions with pinning; a
+      reporting SQL layer; SQS alarms; xAI Grok 4.6. extraction.validation moved and
+      is on by default, and OCR rendering resolution, multi-page over-splitting and
+      alarms that never fired are fixed.
+    action_required:
+      - text: When turning on x-aws-idp-multi-instance for a class, migrate that class's evaluation baselines in the same change (scripts/migrate_multi_instance_baselines.py), and add the extra records the baselines never held.
+        affects: [capability:evaluation, capability:simple-extraction]
+      - text: In a profile that turned validation on without naming fail_action, set fail_action explicitly if you relied on escalation; it no longer inherits escalate.
+        affects: [capability:simple-extraction, capability:advanced-extraction]
+      - text: Adjust reporting queries that assumed metering was partitioned by queue time; it is now partitioned by write time.
+        affects: [capability:reporting-database]
+      - text: Delete old per-release feature profiles with idp-cli config-delete if you do not want them; an upgrade leaves them in place.
+        affects: [capability:configuration-profiles]
+      - text: Name a Bedrock model newer than the release's model list directly, or upgrade; an unknown model-like ARN is now rejected.
+        affects: [capability:bedrock-model-choice]
+      - text: Expect re-running OCR on an existing document to yield more text, so some extracted values can change from null to a real value.
+        affects: [capability:ocr-backends]
+      - text: Reprocess under a profile in a scoped user's scope any documents that disappear from that user's list; they were never stamped with a profile.
+        affects: [capability:configuration-profiles]
+    affects: [capability:simple-extraction, capability:configuration-versions, capability:reporting-database, capability:bedrock-model-choice]
+    evidence: [CHANGELOG.md]
+
+  - version: 0.6.6
+    date: 2026-08-28
+    summary: >-
+      Bulk document download from the document list, Pillow 12.3.0 security update
+      and a tighter VPC endpoint security group. Fixes a stack that could stop
+      accepting documents, failed evaluations destroying documents, LLM list
+      evaluation stalls, silent list shortfalls, integrated confidence on groups,
+      and several GovCloud and headless deployment failures.
+    action_required:
+      - text: If you deploy with a restricted CloudFormation service role, add states:ListExecutions on the stack's state machine and scoped cloudwatch:PutMetricData; the stack update grants them.
+        affects: [prerequisite:iam-permissions-boundary, deployment:cloudformation]
+      - text: Expect LLM-method evaluation scores from earlier releases not to be directly comparable with current ones.
+        affects: [capability:evaluation]
+      - text: Re-run any multi-document discovery job that was in flight across the upgrade.
+        affects: [capability:discovery]
+    affects: [capability:evaluation, deployment:govcloud, deployment:headless, deployment:vpc-secured]
+    evidence: [CHANGELOG.md]

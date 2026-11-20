@@ -523,7 +523,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(
         f"Solution profile: VERSION {pep440} -> profile version {version}; "
-        f"release rules {'ON' if release else 'off (development version)'}"
+        f"release rules {'ON' if release else 'off (development version)'}",
+        flush=True,
     )
 
     with tempfile.TemporaryDirectory() as tmp:
