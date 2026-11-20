@@ -144,7 +144,24 @@ CONFIDENCE_FIELDS = {
 #: (alphanumeric serials) about 0.96, and ``cjk`` and ``words`` well below 1. Under
 #: the flat estimate before #2051 ``table`` and ``codes`` cost 1.17 to 1.21 and
 #: overflowed the window in extraction confidence.
-DENSE_STYLES = ("figures", "table", "codes", "cjk", "words")
+#: The letter-only and rare-character shapes (#2212) are ``mixedcase`` (random
+#: mixed-case letter codes and words), ``base64`` (letter-only base64 chunks),
+#: ``capscodes`` (capital-letter codes), ``rarehanzi`` (GB 2312 second-level
+#: characters) and ``rarenames`` (rare surnames and name characters), which the
+#: estimate before #2212 weighed as words and common CJK; the tokenizer splits
+#: them into several tokens a character and they would have overflowed.
+DENSE_STYLES = (
+    "figures",
+    "table",
+    "codes",
+    "cjk",
+    "words",
+    "mixedcase",
+    "base64",
+    "capscodes",
+    "rarehanzi",
+    "rarenames",
+)
 
 #: The characters of the ``codes`` style's serials: capitals and digits, without
 #: the letters serial schemes leave out (I, O, Q).
@@ -157,6 +174,23 @@ def serial(seed: int, length: int = 17) -> str:
     for _ in range(length):
         seed = (seed * 1103515245 + 12345) % 2147483648
         out.append(SERIAL_ALPHABET[(seed >> 16) % len(SERIAL_ALPHABET)])
+    return "".join(out)
+
+
+#: Rare Chinese surnames and given-name characters, and Japanese name kanji
+#: outside everyday use, for the ``rarenames`` style.
+RARE_NAME_CHARACTERS = (
+    "禤亓厍逯鬲昝隗郗仉笪郇毌珺玥煜堃喆赟昶炜琰祎犇淼焱垚彧翀骞晞"
+    "髙﨑彅遙凜雫苺颯椿柊皐澪琥珀瑛綾楓梓櫂"
+)
+
+
+def _letters(seed: int, length: int, alphabet: str) -> str:
+    """``length`` deterministic characters of ``alphabet`` (as ``serial`` does)."""
+    out = []
+    for _ in range(length):
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        out.append(alphabet[(seed >> 16) % len(alphabet)])
     return "".join(out)
 
 
@@ -186,6 +220,44 @@ def dense_page(style: str, page: int) -> str:
         return "\n".join(
             f"Page {page} line {i}: " + "statement carried forward balance " * 12
             for i in range(24)
+        )
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    if style == "mixedcase":
+        stream = _letters(page * 7919, 200 * 37, letters)
+        return "\n".join(
+            " ".join(
+                stream[i * 37 + start : i * 37 + end]
+                for start, end in ((0, 12), (12, 15), (15, 19), (19, 24), (24, 30))
+            )
+            + " "
+            + stream[i * 37 + 30 : i * 37 + 37]
+            for i in range(200)
+        )
+    if style == "base64":
+        stream = _letters(page * 7919, 120 * 64, letters + "+/")
+        return "\n".join(stream[i * 64 : (i + 1) * 64] for i in range(120))
+    if style == "capscodes":
+        stream = _letters(page * 7919, 200 * 40, letters[:26])
+        return "\n".join(
+            " ".join(stream[i * 40 + k * 10 : i * 40 + k * 10 + 10] for k in range(4))
+            for i in range(200)
+        )
+    if style == "rarehanzi":
+        return "\n".join(
+            "".join(
+                bytes((0xD8 + (i * 31 + k) % 32, 0xA1 + (i * 17 + k * 7) % 94)).decode(
+                    "gb2312"
+                )
+                for k in range(40)
+            )
+            for i in range(80)
+        )
+    if style == "rarenames":
+        names = RARE_NAME_CHARACTERS
+        return "\n".join(
+            f"{i + 1}. 氏名 "
+            + "".join(names[(i * 13 + k * 5 + page) % len(names)] for k in range(24))
+            for i in range(120)
         )
     raise ValueError(f"unknown dense style {style!r}")
 

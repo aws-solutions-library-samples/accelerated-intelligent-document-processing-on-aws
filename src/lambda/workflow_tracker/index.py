@@ -153,11 +153,22 @@ def _delete_superseded_original(object_key: str) -> None:
             input_bucket=INPUT_BUCKET,
             output_bucket=OUTPUT_BUCKET or "",
         )
-        logger.info(
-            "Deleted REDACTED_SUPERSEDED original %s: %s",
-            object_key,
-            result.get("deleted"),
-        )
+        # delete_single_document reports a failed step in ``errors`` rather than
+        # raising, so ``success`` is what says whether the un-redacted original —
+        # every version of it in the input bucket (#2166) — is actually gone.
+        if result.get("success"):
+            logger.info(
+                "Deleted REDACTED_SUPERSEDED original %s: %s",
+                object_key,
+                result.get("deleted"),
+            )
+        else:
+            logger.error(
+                "Incomplete delete of REDACTED_SUPERSEDED original %s: %s; deleted %s",
+                object_key,
+                result.get("errors"),
+                result.get("deleted"),
+            )
     except Exception as e:  # noqa: BLE001
         logger.error("Failed to delete superseded original %s: %s", object_key, e)
 
